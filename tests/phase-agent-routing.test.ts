@@ -25,7 +25,9 @@ test("resolvePhaseAgentRouting applies dynamic agent before routing fallback wit
     required: true,
   });
   assert.equal(result.effectiveSelectedAgent, "dynamic-executor");
-  assert.equal(result.phaseRoutingDecision?.selectedAgent, "routing-executor");
+  assert.equal(result.phaseRoutingDecision?.selectedAgent, "dynamic-executor");
+  assert.equal(result.phaseRoutingDecision?.staticSelectedAgent, "routing-executor");
+  assert.equal(result.phaseRoutingDecision?.selectionSource, "dynamic_agent_plan");
 });
 
 test("resolvePhaseAgentRouting uses routing selection when no dynamic agent is selected", () => {
@@ -82,5 +84,150 @@ test("resolvePhaseAgentRouting reads dynamic agent plan from phase source contex
     required: false,
   });
   assert.deepEqual(result.effectiveSelectedAgent, { agent: "phase-source-verifier", variant: "strict" });
-  assert.equal(result.phaseRoutingDecision, null);
+  assert.deepEqual(result.phaseRoutingDecision?.selectedAgent, { agent: "phase-source-verifier", variant: "strict" });
+  assert.equal(result.phaseRoutingDecision?.outcomeApplied, false);
+  assert.match(result.phaseRoutingDecision?.outcomeReason || "", /insufficient baseline evidence/);
+});
+
+test("resolvePhaseAgentRouting switches only on sufficiently strong outcome evidence", () => {
+  const result = resolvePhaseAgentRouting({
+    agents: { executor: "codex" },
+    outcomeMetrics: {
+      agents: {
+        codex: {
+          sampleSize: 20,
+          successes: 12,
+          retries: 5,
+          timeouts: 2,
+          verifierRuns: 20,
+          verifierPasses: 11,
+          evidenceCoverage: 1,
+          providerKey: "codex",
+        },
+        claude: {
+          sampleSize: 30,
+          successes: 29,
+          retries: 1,
+          timeouts: 0,
+          verifierRuns: 30,
+          verifierPasses: 28,
+          evidenceCoverage: 1,
+          providerKey: "claude:sonnet",
+        },
+      },
+    },
+    taskCategory: "bugfix",
+    phase: "execute",
+    role: "executor",
+  });
+
+  assert.equal(result.phaseAgents.executor, "claude");
+  assert.equal(result.effectiveSelectedAgent, "claude");
+  assert.equal(result.phaseRoutingDecision?.outcomeApplied, true);
+  assert.equal(result.phaseRoutingDecision?.taskCategory, "bugfix");
+  assert.match(result.phaseRoutingDecision?.reason || "", /outcome evidence selected claude/);
+});
+
+test("resolvePhaseAgentRouting preserves the Codex baseline when outcome evidence is insufficient", () => {
+  const result = resolvePhaseAgentRouting({
+    outcomeMetrics: { agents: {} },
+    taskCategory: "bugfix",
+    phase: "execute",
+    role: "executor",
+  });
+
+  assert.equal(result.phaseAgents.executor, "codex");
+  assert.equal(result.effectiveSelectedAgent, "codex");
+  assert.equal(result.phaseRoutingDecision?.selectionSource, "legacy_default");
+  assert.equal(result.phaseRoutingDecision?.outcomeApplied, false);
+  assert.match(result.phaseRoutingDecision?.outcomeReason || "", /insufficient baseline evidence/);
+});
+
+test("resolvePhaseAgentRouting overrides a required verifier only to enforce provider-family independence", () => {
+  const result = resolvePhaseAgentRouting({
+    agents: { verifier: "codex" },
+    phaseSourceContext: {
+      agentPolicy: { allowedAgents: ["codex", "claude-glm"] },
+    },
+    dynamicAgentPlan: {
+      agentConfig: { verifier: { agent: "codex", required: true } },
+    },
+    outcomeMetrics: {
+      agents: {
+        claude: {
+          sampleSize: 50,
+          successes: 50,
+          verifierRuns: 50,
+          verifierPasses: 50,
+          providerKey: "anthropic:sonnet",
+        },
+      },
+    },
+    excludedProviderFamily: "codex",
+    phase: "verify",
+    role: "verifier",
+  });
+
+  assert.equal(result.phaseAgents.verifier, "claude-glm");
+  assert.deepEqual(result.allowedAgents, ["codex", "claude-glm"]);
+  assert.equal(result.phaseRoutingDecision?.independenceApplied, true);
+  assert.equal(result.phaseRoutingDecision?.agentPolicyConflict, false);
+  assert.equal(result.phaseRoutingDecision?.excludedProviderFamily, "codex");
+  assert.match(result.phaseRoutingDecision?.reason || "", /independent verifier required/);
+});
+
+test("resolvePhaseAgentRouting fails closed when a required role is outside the allowed universe", () => {
+  const result = resolvePhaseAgentRouting({
+    agents: { verifier: "claude" },
+    phaseSourceContext: {
+      agentPolicy: { allowedAgents: ["codex", "claude-glm"] },
+      dynamicAgentPlan: {
+        agentConfig: { verifier: { agent: "claude", required: true } },
+      },
+    },
+    phase: "verify",
+    role: "verifier",
+  });
+
+  assert.equal(result.effectiveSelectedAgent, null);
+  assert.equal(result.phaseRoutingDecision?.agentPolicyConflict, true);
+  assert.deepEqual(result.phaseRoutingDecision?.allowedAgents, ["codex", "claude-glm"]);
+});
+
+test("high-assurance fixed roles outrank dynamic plans, static routing, and outcome metrics", () => {
+  const executor = resolvePhaseAgentRouting({
+    agents: { executor: "codex", verifier: "claude" },
+    phaseSourceContext: {
+      assurance: { mode: "high" },
+      dynamicAgentPlan: { agentConfig: { executor: { agent: "dynamic-executor", required: true } } },
+    },
+    routing: { executor: "routing-executor" },
+    outcomeMetrics: {
+      agents: {
+        "claude-glm": { sampleSize: 1, successes: 0, providerKey: "claude:glm" },
+        codex: { sampleSize: 50, successes: 50, verifierRuns: 50, verifierPasses: 50, providerKey: "codex" },
+      },
+    },
+    phase: "execute",
+    role: "executor",
+  });
+  const verifier = resolvePhaseAgentRouting({
+    agents: { verifier: "codex" },
+    phaseSourceContext: { assurance: { mode: "high" } },
+    outcomeMetrics: {
+      agents: {
+        codex: { sampleSize: 1, successes: 0, providerKey: "codex" },
+        claude: { sampleSize: 50, successes: 50, verifierRuns: 50, verifierPasses: 50, providerKey: "anthropic:sonnet" },
+      },
+    },
+    phase: "verify",
+    role: "verifier",
+  });
+
+  assert.equal(executor.phaseAgents.executor, "claude-glm");
+  assert.equal(executor.phaseRoutingDecision?.selectionSource, "high_assurance_policy");
+  assert.equal(executor.phaseRoutingDecision?.outcomeApplied, false);
+  assert.equal(verifier.phaseAgents.verifier, "codex");
+  assert.equal(verifier.phaseRoutingDecision?.selectionSource, "high_assurance_policy");
+  assert.equal(verifier.phaseRoutingDecision?.outcomeApplied, false);
 });

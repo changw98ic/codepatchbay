@@ -15,7 +15,7 @@
  *
  * This module MUST NOT import server/ or bridges/. Pure node:child_process.
  */
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 
 export interface CommandTreeOptions {
   cwd: string;
@@ -55,25 +55,70 @@ function resolveGraceMs(graceMs?: number): number {
 }
 
 /**
- * Kill an entire process group: SIGTERM the group (-pid) then SIGKILL after grace.
- * Safe on a bare pid (no group) — falls back to a direct signal. Mirrors
- * bridges/job-runner.ts killChildProcess, with a tunable grace.
+ * Return every current descendant before the root is signalled. ACP wrappers
+ * launch providers in detached process groups, so a root process-group signal
+ * alone is not a complete tree teardown.
  */
-export function killTree(pid: number, graceMs?: number): void {
-  if (!pid) return;
+function descendantPids(rootPid: number) {
+  if (process.platform === "win32" || !rootPid) return [];
+  const result = spawnSync("ps", ["-eo", "pid=,ppid="], { encoding: "utf8" });
+  if (result.error || typeof result.stdout !== "string") return [];
+  const children = new Map<number, number[]>();
+  for (const line of result.stdout.split("\n")) {
+    const match = line.trim().match(/^(\d+)\s+(\d+)$/);
+    if (!match) continue;
+    const childPid = Number(match[1]);
+    const parentPid = Number(match[2]);
+    if (!Number.isInteger(childPid) || !Number.isInteger(parentPid) || childPid <= 0 || parentPid <= 0) continue;
+    const entries = children.get(parentPid) || [];
+    entries.push(childPid);
+    children.set(parentPid, entries);
+  }
+  const descendants: number[] = [];
+  const pending = [...(children.get(rootPid) || [])];
+  const seen = new Set<number>();
+  while (pending.length > 0) {
+    const childPid = pending.shift();
+    if (!childPid || seen.has(childPid)) continue;
+    seen.add(childPid);
+    descendants.push(childPid);
+    pending.push(...(children.get(childPid) || []));
+  }
+  return descendants;
+}
+
+function signalPid(pid: number, signal: NodeJS.Signals) {
+  try { process.kill(pid, signal); } catch { /* already dead */ }
+}
+
+/**
+ * Kill an entire process tree: SIGTERM the root group and every captured
+ * detached descendant, then SIGKILL after grace. The returned promise resolves
+ * only after the force-kill pass, so short-lived callers cannot exit while an
+ * unref'ed cleanup timer still owns the only remaining teardown action.
+ */
+export function killTree(pid: number, graceMs?: number): Promise<void> {
+  if (!pid) return Promise.resolve();
   const grace = resolveGraceMs(graceMs);
   const useGroup = process.platform !== "win32";
+  const descendants = descendantPids(pid);
   const term = () => {
     try { if (useGroup) process.kill(-pid, "SIGTERM"); } catch { /* no group */ }
-    try { process.kill(pid, "SIGTERM"); } catch { /* already dead */ }
+    signalPid(pid, "SIGTERM");
+    for (const childPid of [...descendants].reverse()) signalPid(childPid, "SIGTERM");
   };
   const force = () => {
     try { if (useGroup) process.kill(-pid, "SIGKILL"); } catch { /* no group */ }
-    try { process.kill(pid, "SIGKILL"); } catch { /* already dead */ }
+    signalPid(pid, "SIGKILL");
+    for (const childPid of [...descendants].reverse()) signalPid(childPid, "SIGKILL");
   };
   term();
-  const t = setTimeout(force, grace);
-  t.unref?.();
+  return new Promise((resolve) => {
+    setTimeout(() => {
+      force();
+      resolve();
+    }, grace);
+  });
 }
 
 /**
@@ -97,6 +142,7 @@ export async function runCommandTree(
     let stderr = "";
     let timer: NodeJS.Timeout | null = null;
     let onSpawnDone: Promise<unknown> = Promise.resolve();
+    let teardown: Promise<void> | null = null;
     const detached = Boolean(signal || timeoutMs) && process.platform !== "win32";
 
     const cleanup = () => {
@@ -113,18 +159,18 @@ export async function runCommandTree(
         ? Promise.resolve(onExit(child.pid, code, signalOut)).catch(() => undefined)
         : Promise.resolve();
       const done = () => resolve({ exitCode: code, signal: signalOut, stdout, stderr, timedOut, aborted, error });
-      onSpawnDone.then(() => onExitStep.then(done, done), done);
+      Promise.all([onSpawnDone, onExitStep, teardown || Promise.resolve()]).then(done, done);
     };
 
     const onAbort = () => {
       if (settled || !child) return;
       aborted = true;
-      killTree(child.pid, graceMs);
+      teardown = killTree(child.pid, graceMs);
     };
     const onTimeout = () => {
       if (settled || !child) return;
       timedOut = true;
-      killTree(child.pid, graceMs);
+      teardown = killTree(child.pid, graceMs);
     };
 
     try {
@@ -136,7 +182,9 @@ export async function runCommandTree(
         stdio: ["ignore", "pipe", "pipe"],
       });
     } catch (err) {
-      finish(1, null, err as Error);
+      // Narrow unknown catch value to Error; spawn failures are always Error
+      // (ENOENT/EPERM/etc.), fallback preserves message for any non-Error throw.
+      finish(1, null, err instanceof Error ? err : new Error(String(err)));
       return;
     }
     child.detached = detached;

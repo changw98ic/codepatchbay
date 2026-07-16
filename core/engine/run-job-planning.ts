@@ -1,10 +1,9 @@
 import path from "node:path";
 
 import { resolveArtifactPath, resolveArtifactPathForRoot } from "../artifacts/artifact-paths.js";
+import { isRecord, recordValue, type LooseRecord } from "../contracts/types.js";
 
-type JsonRecord = Record<string, unknown>;
-
-export type WorkflowDagNode = JsonRecord & {
+export type WorkflowDagNode = LooseRecord & {
   id: string;
   phase: string;
   dependsOn?: string[];
@@ -15,13 +14,13 @@ export type WorkflowDagNode = JsonRecord & {
   checklistBindingSource?: string;
 };
 
-export type WorkflowDag = JsonRecord & {
+export type WorkflowDag = LooseRecord & {
   nodes: WorkflowDagNode[];
 };
 
 type ResumeContext = {
   completedNodeIds: string[];
-  resumeTarget: JsonRecord | null;
+  resumeTarget: LooseRecord | null;
 };
 
 type ArtifactRoots = {
@@ -30,7 +29,7 @@ type ArtifactRoots = {
   dataRoot?: string;
 };
 
-type RecoveredArtifact = JsonRecord & {
+type RecoveredArtifact = LooseRecord & {
   kind: string;
   name: string;
   path: string | null;
@@ -45,10 +44,6 @@ type AcceptanceChecklist = {
   items?: AcceptanceChecklistItem[];
 };
 
-function recordValue(value: unknown): JsonRecord {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as JsonRecord : {};
-}
-
 function stringValue(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
@@ -58,6 +53,7 @@ function arrayOfStrings(value: unknown): string[] {
 }
 
 function workflowDagNodes(workflowDag: { nodes?: unknown }): WorkflowDagNode[] {
+  // retain: dynamic JSON — nodes element shape is not validated at this boundary
   return Array.isArray(workflowDag.nodes) ? workflowDag.nodes as WorkflowDagNode[] : [];
 }
 
@@ -111,8 +107,8 @@ export function normalizeDagResumeContext(sourceContext: unknown = {}): ResumeCo
   const resumeTarget = retry.resumeTarget || dagResume.resumeTarget || previousFailure.resumeTarget || null;
   return {
     completedNodeIds: [...new Set(completedNodeIds)],
-    resumeTarget: resumeTarget && typeof resumeTarget === "object" && !Array.isArray(resumeTarget)
-      ? { ...resumeTarget as JsonRecord }
+    resumeTarget: isRecord(resumeTarget)
+      ? { ...resumeTarget }
       : null,
   };
 }
@@ -159,14 +155,14 @@ export function recoveredArtifactForPhase(
   if (typeof raw === "string") {
     return { kind, name: raw, path: artifactPathFromName({ ...roots, kind, value: raw }) };
   }
-  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
-    const artifact = raw as JsonRecord;
+  if (isRecord(raw)) {
+    const artifact = raw;
     const name = stringValue(artifact.name) || stringValue(artifact.path) || `${phase}-recovered`;
     return {
-      kind,
       ...artifact,
+      kind,
       name,
-      path: stringValue(artifact.path) || artifactPathFromName({ ...roots, kind, value: artifact.name }),
+      path: stringValue(artifact.path) || artifactPathFromName({ ...roots, kind, value: name }),
     };
   }
   return null;

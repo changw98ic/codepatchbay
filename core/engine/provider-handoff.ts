@@ -1,4 +1,7 @@
+import type { LooseRecord } from "../../shared/types.js";
 import { legacyAgentForPhase } from "../agents/registry.js";
+import { recordValue } from "../contracts/types.js";
+import { normalizeAllowedAgentNames, providerFamilyFor } from "../agents/outcome-routing.js";
 
 type AgentObject = {
   agent?: string | null;
@@ -29,8 +32,9 @@ type ProviderAvailabilityPayload = {
 export type ProviderServices = {
   assertProviderAvailable?: ((hubRoot: string, payload: ProviderAvailabilityPayload) => Promise<unknown> | unknown) | null;
   getProviderAdapter?: ((providerKey: string | null) => unknown) | null;
-  delegateMarkProviderUnavailable?: ((hubRoot: string, payload: Record<string, unknown>) => Promise<unknown> | unknown) | null;
-  delegateEnqueueProviderUsage?: ((hubRoot: string, payload: Record<string, unknown>) => Promise<unknown> | unknown) | null;
+  delegateMarkProviderUnavailable?: ((hubRoot: string, payload: LooseRecord) => Promise<unknown> | unknown) | null;
+  delegateEnqueueProviderUsage?: ((hubRoot: string, payload: LooseRecord) => Promise<unknown> | unknown) | null;
+  readAgentRoutingMetrics?: ((hubRoot: string, query: LooseRecord) => Promise<unknown> | unknown) | null;
 };
 
 type FallbackCandidate = {
@@ -83,15 +87,14 @@ export function resolveProviderKey(
   return selectedAgent || null;
 }
 
-function recordValue(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
-}
-
 export function normalizeProviderServices(services: unknown = {}): ProviderServices {
   const source = recordValue(services);
   const providerQuota = recordValue(source.providerQuota);
   const providerAdapters = recordValue(source.providerAdapters);
   const quotaDelegate = recordValue(source.quotaDelegate);
+  // retain: dynamic JSON boundary (services: unknown). `typeof === "function"` narrows to
+  // `Function`, which TS cannot match to these specific call signatures; narrowing without `as`
+  // would require a generic guard with `any` params (contravariant) — banned, any < as here.
   return {
     assertProviderAvailable:
       (typeof source.assertProviderAvailable === "function" ? source.assertProviderAvailable : null) as ProviderServices["assertProviderAvailable"] ||
@@ -105,6 +108,8 @@ export function normalizeProviderServices(services: unknown = {}): ProviderServi
     delegateEnqueueProviderUsage:
       (typeof source.delegateEnqueueProviderUsage === "function" ? source.delegateEnqueueProviderUsage : null) as ProviderServices["delegateEnqueueProviderUsage"] ||
       (typeof quotaDelegate.delegateEnqueueProviderUsage === "function" ? quotaDelegate.delegateEnqueueProviderUsage : null) as ProviderServices["delegateEnqueueProviderUsage"],
+    readAgentRoutingMetrics:
+      (typeof source.readAgentRoutingMetrics === "function" ? source.readAgentRoutingMetrics : null) as ProviderServices["readAgentRoutingMetrics"],
   };
 }
 
@@ -117,6 +122,8 @@ export async function preflightProvider({
   agents,
   agent,
   excludeProvider = null,
+  excludeProviderFamily = null,
+  allowedAgents = null,
 }: {
   providerServices?: ProviderServices | null;
   hubRoot?: string | null;
@@ -126,15 +133,24 @@ export async function preflightProvider({
   agents?: ProviderAgents | null;
   agent?: string | null;
   excludeProvider?: string | null;
+  excludeProviderFamily?: string | null;
+  allowedAgents?: unknown;
 }): Promise<ProviderPreflightResult | null> {
   const assertProviderAvailable = providerServices?.assertProviderAvailable;
   if (typeof assertProviderAvailable !== "function" || !hubRoot) return null;
 
   const { agent: resolvedAgent, variant } = resolveRawAgent(agents, agent, role, phase);
   const providerKey = resolveProviderKey(pool, agents?.[role], agent);
+  const normalizedAllowedAgents = normalizeAllowedAgentNames(allowedAgents);
+  const allowedSet = normalizedAllowedAgents === null ? null : new Set(normalizedAllowedAgents);
 
   // Check preferred provider.
-  if (providerKey !== excludeProvider) {
+  const preferredFamily = providerFamilyFor(resolvedAgent, providerKey);
+  if (
+    (allowedSet === null || allowedSet.has(resolvedAgent))
+    && providerKey !== excludeProvider
+    && preferredFamily !== excludeProviderFamily
+  ) {
     try {
       await assertProviderAvailable(hubRoot, {
         providerKey,
@@ -157,6 +173,10 @@ export async function preflightProvider({
   }
 
   for (const candidate of getFallbackCandidates(pool, resolvedAgent, variant, excludeProvider || providerKey)) {
+    if (allowedSet !== null && !allowedSet.has(candidate.agent)) continue;
+    if (excludeProviderFamily && providerFamilyFor(candidate.agent, candidate.providerKey) === excludeProviderFamily) {
+      continue;
+    }
     try {
       await assertProviderAvailable(hubRoot, {
         providerKey: candidate.providerKey,
@@ -186,7 +206,11 @@ export async function preflightProvider({
     switched: false,
     selectedAgent: null,
     selectedProviderKey: null,
-    reason: `all providers unavailable for ${role}`,
+    reason: normalizedAllowedAgents !== null
+      ? `all allowed providers unavailable for ${role}; allowed agents ${normalizedAllowedAgents.join(",") || "none"}`
+      : excludeProviderFamily
+      ? `all independent providers unavailable for ${role}; excluded provider family ${excludeProviderFamily}`
+      : `all providers unavailable for ${role}`,
     from: providerKey,
   };
 }
@@ -200,6 +224,9 @@ function getFallbackCandidates(
   if (pool?.fallbackCandidates) {
     try {
       const poolCandidates = pool.fallbackCandidates(agent, currentVariant, excludeKey);
+      // retain: dynamic external pool callback returns unknown; only Array.isArray is checked here
+      // and element shape is trusted (validated downstream by assertProviderAvailable). A deep-shape
+      // guard would change runtime behavior by rejecting partial shapes, breaking parity.
       return Array.isArray(poolCandidates) ? poolCandidates as FallbackCandidate[] : [];
     } catch {
       return [];

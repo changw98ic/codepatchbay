@@ -2,7 +2,10 @@
 
 Thanks for helping improve CodePatchbay.
 
-CodePatchbay is source-available for personal and non-commercial use under the PolyForm Noncommercial License 1.0.0. By contributing, you agree that your contribution may be distributed under this license and under separate commercial licenses offered by the project owner.
+CodePatchBay is free software licensed under `AGPL-3.0-only`. Unless you and
+the project owner sign a separate written agreement, contributions are
+submitted under the same AGPL license. Do not contribute code you do not have
+the right to license or code under terms incompatible with the AGPL.
 
 ## Project scope
 
@@ -38,13 +41,10 @@ Please keep contributions aligned with that scope unless an issue or maintainer 
 The GitHub workflow runs Node and shell checks. Locally, the common commands are:
 
 ```bash
-cd server && npm ci
-cd ../web && npm ci
-cd ..
-node --test tests/*.mjs
-bash tests/cpb-jobs.test.sh
-bash tests/cpb-bridges.test.sh
-bash tests/cpb-variant-env.test.sh
+npm ci
+npm run typecheck
+npm test
+npm run build:web
 ```
 
 Do not run agents against repositories you do not control.

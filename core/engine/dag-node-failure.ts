@@ -1,7 +1,7 @@
 import { FailureKind } from "../contracts/failure.js";
 import type { PhaseResult } from "../../shared/types.js";
 
-type LooseRecord = Record<string, unknown>;
+import { recordValue, type LooseRecord } from "../contracts/types.js";
 
 type HandleDagNodeFailureInput = {
   cpbRoot: string;
@@ -28,12 +28,8 @@ type FailedJobResult = {
   phaseResults: LooseRecord[];
 };
 
-function recordValue(value: unknown): LooseRecord {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as LooseRecord : {};
-}
-
 function messageOrFallback(value: unknown, fallback: string) {
-  return value || fallback;
+  return typeof value === "string" && value.length > 0 ? value : fallback;
 }
 
 function checklistIds(dagNode: unknown) {
@@ -48,6 +44,24 @@ function retryFailureCause(fail: LooseRecord) {
   const artifact = recordValue(rawArtifact);
   return {
     verdict: cause.verdict || null,
+    ...(cause.checklistVerdict ? { checklistVerdict: cause.checklistVerdict } : {}),
+    ...(cause.counterexampleDisposition
+      ? { counterexampleDisposition: cause.counterexampleDisposition }
+      : {}),
+    ...(Array.isArray(cause.requestedFixScope)
+      ? { requestedFixScope: cause.requestedFixScope }
+      : {}),
+    ...(Array.isArray(cause.allowedFixScope)
+      ? { allowedFixScope: cause.allowedFixScope }
+      : {}),
+    ...(Array.isArray(cause.targetChecklistIds)
+      ? { targetChecklistIds: cause.targetChecklistIds }
+      : {}),
+    ...(cause.expected !== undefined ? { expected: cause.expected } : {}),
+    ...(cause.observed !== undefined ? { observed: cause.observed } : {}),
+    ...(cause.verificationInfrastructure
+      ? { verificationInfrastructure: cause.verificationInfrastructure }
+      : {}),
     artifact: rawArtifact
       ? {
           kind: artifact.kind || null,

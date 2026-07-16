@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { AnyRecord } from "../shared/types.js";
+import { LooseRecord } from "../shared/types.js";
 
 import { materializeJob } from "../server/services/event/event-store.js";
 import { evaluateCompletionGate, completionGateEvent } from "../core/engine/completion-gate.js";
@@ -15,11 +15,11 @@ function ts(offset = 0) {
 
 const JOB_CREATED = { type: "job_created", jobId: "j1", project: "p", task: "t", ts: ts(0) };
 
-function materialize(...events: AnyRecord[]) {
-  return materializeJob([JOB_CREATED, ...events]) as AnyRecord;
+function materialize(...events: LooseRecord[]) {
+  return materializeJob([JOB_CREATED, ...events]) as LooseRecord;
 }
 
-function frozenChecklist(items: AnyRecord[] = [defaultItem()], overrides: AnyRecord = {}) {
+function frozenChecklist(items: LooseRecord[] = [defaultItem()], overrides: LooseRecord = {}) {
   return {
     schemaVersion: 1,
     jobId: "j1",
@@ -32,7 +32,7 @@ function frozenChecklist(items: AnyRecord[] = [defaultItem()], overrides: AnyRec
   };
 }
 
-function defaultItem(overrides: AnyRecord = {}) {
+function defaultItem(overrides: LooseRecord = {}) {
   return {
     id: "AC-001",
     requirement: "required behavior",
@@ -50,7 +50,7 @@ function defaultItem(overrides: AnyRecord = {}) {
   };
 }
 
-function freshLedger(overrides: AnyRecord = {}) {
+function freshLedger(overrides: LooseRecord = {}) {
   return {
     schemaVersion: 1,
     jobId: "j1",
@@ -80,7 +80,7 @@ function freshLedger(overrides: AnyRecord = {}) {
   };
 }
 
-function passingVerdict(overrides: AnyRecord = {}) {
+function passingVerdict(overrides: LooseRecord = {}) {
   return {
     schemaVersion: 1,
     jobId: "j1",

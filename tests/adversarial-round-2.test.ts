@@ -26,7 +26,7 @@ import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
-import { AnyRecord } from "../shared/types.js";
+import { LooseRecord } from "../shared/types.js";
 
 import { evaluateCompletionGate } from "../core/engine/completion-gate.js";
 import { evaluateChecklistCompletion } from "../core/workflow/acceptance-checklist.js";
@@ -38,7 +38,7 @@ import { tempRoot } from "./helpers.js";
 // ─── Shared fixtures ──────────────────────────────────────────────────────
 
 
-function frozenChecklist(items: AnyRecord[] = [defaultItem()]) {
+function frozenChecklist(items: LooseRecord[] = [defaultItem()]) {
   return {
     schemaVersion: 1,
     jobId: "job-stale",
@@ -50,7 +50,7 @@ function frozenChecklist(items: AnyRecord[] = [defaultItem()]) {
   };
 }
 
-function defaultItem(overrides: AnyRecord = {}) {
+function defaultItem(overrides: LooseRecord = {}) {
   return {
     id: "AC-001",
     requirement: "required behavior",
@@ -415,10 +415,10 @@ test("adversarial round 2: multi-item checklist with stale and missing evidence"
   // Gate checks: missing before stale. So outcome is evidence_missing.
   assert.equal(result.outcome, "evidence_missing",
     `expected evidence_missing, got: ${result.outcome}`);
-  assert.ok(result.missingEvidenceRefs.some((r: AnyRecord) => r.evidenceId === "EV-002"),
+  assert.ok(result.missingEvidenceRefs.some((r: LooseRecord) => r.evidenceId === "EV-002"),
     "EV-002 should be in missingEvidenceRefs");
   // EV-001 should appear in staleEvidenceRefs (it was found but stale)
-  assert.ok(result.staleEvidenceRefs.some((r: AnyRecord) => r.evidenceId === "EV-001"),
+  assert.ok(result.staleEvidenceRefs.some((r: LooseRecord) => r.evidenceId === "EV-001"),
     "EV-001 should be in staleEvidenceRefs");
 });
 

@@ -10,13 +10,32 @@ import {
   queueStatus,
   updateEntry,
 } from "../server/services/hub/hub-queue.js";
-import { HubOrchestrator } from "../server/orchestrator/hub-orchestrator.js";
+import { HubOrchestrator, normalizedSourceContext } from "../server/orchestrator/hub-orchestrator.js";
 import { hubConcurrencyEnv, resolveHubConcurrencyLimits } from "../server/services/infra.js";
 import { registerProject } from "../server/services/hub/hub-registry.js";
 import { tempRoot, oldIso, readJson, writeJson } from "./helpers.js";
 
 // Mock assignmentStore: always returns null (no active assignment)
 const noAssignmentStore = { getAssignment: async () => null };
+
+test("normalizedSourceContext carries the durable scheduler decision into the assignment", () => {
+  const schedulerDecision = {
+    mode: "smart",
+    rank: 2,
+    score: 71,
+    reasons: ["evidence-backed-fresh-attempt"],
+    retryStrategy: "fresh_attempt",
+    failureFingerprint: "sha256:failure",
+  };
+
+  const context = normalizedSourceContext({
+    id: "queue-1",
+    metadata: { schedulerDecision },
+  });
+
+  assert.equal(context.queueEntryId, "queue-1");
+  assert.deepEqual(context.schedulerDecision, schedulerDecision);
+});
 
 function highConfidenceCapabilityMetadata() {
   const projectCapabilityMap = {
@@ -387,6 +406,25 @@ test("HubOrchestrator.tick stops on leader lock loss", async () => {
   assert.equal(released, true);
 });
 
+test("HubOrchestrator.start releases leadership when initialization fails", async () => {
+  const hubRoot = await tempRoot("cpb-orch-start-cleanup");
+  const cpbRoot = await tempRoot("cpb-orch-start-cleanup-root");
+  const orchestrator = new HubOrchestrator(hubRoot, cpbRoot, { executorRoot: process.cwd() });
+  let released = 0;
+  orchestrator.leaderLock = {
+    acquire: async () => ({ epoch: 1 }),
+    startRenewal: () => {},
+    release: async () => { released += 1; return true; },
+  } as any;
+  orchestrator.assignmentStore = {
+    init: async () => { throw new Error("assignment init failed"); },
+  } as any;
+
+  await assert.rejects(orchestrator.start(), /assignment init failed/);
+  assert.equal(released, 1);
+  assert.equal(orchestrator.running, false);
+});
+
 test("HubOrchestrator scheduler applies provider capacity per provider", async () => {
   const hubRoot = await tempRoot("cpb-orch-provider-capacity");
   const cpbRoot = await tempRoot("cpb-orch-provider-capacity-cpb");
@@ -615,4 +653,36 @@ test("HubOrchestrator.tick writes inbox then keeps queue, assignment, and worker
   const projectJson = path.join(hubRoot, "queue", "queue.json");
   const persisted = await readJson(projectJson);
   assert.equal(persisted.entries[0].status, "scheduled");
+});
+
+test("HubOrchestrator does not dispatch a stale candidate changed before reservation", async () => {
+  const hubRoot = await tempRoot("cpb-orch-dispatch-cas");
+  const cpbRoot = await tempRoot("cpb-orch-dispatch-cas-root");
+  const entry = await enqueue(hubRoot, {
+    projectId: "proj",
+    description: "cancel before reservation",
+  });
+  const orchestrator = new HubOrchestrator(hubRoot, cpbRoot, { executorRoot: process.cwd() });
+  await orchestrator.assignmentStore.init();
+  await orchestrator.workerStore.init();
+  orchestrator.running = true;
+  orchestrator.leaderLock = {
+    stillHeld: async () => true,
+    getEpoch: () => 43,
+    release: async () => {},
+  } as any;
+  orchestrator.scheduler = {
+    nextCandidates: async () => {
+      await updateEntry(hubRoot, entry.id, { status: "cancelled" });
+      return [entry];
+    },
+  } as any;
+  orchestrator.reconciler = { reconcileAssignments: async () => {} } as any;
+
+  const result = await orchestrator.tick();
+  const current = (await listQueue(hubRoot)).find((candidate) => candidate.id === entry.id);
+
+  assert.deepEqual(result, { idle: true });
+  assert.equal(current.status, "cancelled");
+  assert.equal(await orchestrator.assignmentStore.getAssignment(`a-${entry.id}`), null);
 });

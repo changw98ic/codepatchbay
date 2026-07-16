@@ -58,7 +58,7 @@ test("recordPhaseProviderUsage skips unavailable delegate paths without throwing
 });
 
 test("recordPhaseProviderUsage enqueues passed phase usage with provider metadata", async () => {
-  const writes: Array<{ hubRoot: string; payload: Record<string, any> }> = [];
+  const writes: Array<{ hubRoot: string; payload: Record<string, unknown> }> = [];
   const adapterLookups: Array<string | null> = [];
 
   await recordPhaseProviderUsage({
@@ -67,7 +67,7 @@ test("recordPhaseProviderUsage enqueues passed phase usage with provider metadat
         adapterLookups.push(providerKey);
         return { region: "us-east-1", providerKeyPattern: "claude:*" };
       },
-      async delegateEnqueueProviderUsage(hubRoot: string, payload: Record<string, any>) {
+      async delegateEnqueueProviderUsage(hubRoot: string, payload: Record<string, unknown>) {
         writes.push({ hubRoot, payload });
       },
     },
@@ -80,7 +80,10 @@ test("recordPhaseProviderUsage enqueues passed phase usage with provider metadat
     agent: "codex",
     phaseAgents: { executor: { agent: "claude", variant: "sonnet" } },
     project: "proj",
-    job: { issueNumber: 7 },
+    job: { issueNumber: 7, jobId: "job-7", retryCount: 2 },
+    jobId: "job-override",
+    attemptId: "attempt-id-2",
+    task: "Fix the broken backend queue worker",
     phaseSourceContext: {
       issueNumber: 42,
       source: "github_issue",
@@ -95,6 +98,7 @@ test("recordPhaseProviderUsage enqueues passed phase usage with provider metadat
         agent: "diag-agent",
         variant: "diag-variant",
         elapsedMs: 321,
+        phaseRetryCount: 1,
         usage: {
           inputTokens: 10,
           cachedInputTokens: 3,
@@ -117,9 +121,16 @@ test("recordPhaseProviderUsage enqueues passed phase usage with provider metadat
   assert.equal(writes[0].hubRoot, "/tmp/hub");
   assert.deepEqual(writes[0].payload, {
     project: "proj",
+    jobId: "job-override",
+    attemptId: "attempt-id-2",
+    taskCategory: "bugfix",
     issueNumber: 42,
     source: "github_issue",
     attempt: "attempt-2",
+    retryCount: 3,
+    jobRetryCount: 2,
+    phaseRetryCount: 1,
+    isRetry: true,
     phase: "execute",
     role: "executor",
     providerKey: "diag-provider",
@@ -129,6 +140,7 @@ test("recordPhaseProviderUsage enqueues passed phase usage with provider metadat
     providerAdapter: "claude:*",
     status: "ok",
     phaseStatus: "passed",
+    failureKind: null,
     durationMs: 321,
     quota: {
       status: null,
@@ -164,11 +176,11 @@ test("recordPhaseProviderUsage enqueues passed phase usage with provider metadat
 });
 
 test("recordPhaseProviderUsage records fallback and hard gate failure status", async () => {
-  const writes: Array<Record<string, any>> = [];
+  const writes: Array<Record<string, unknown>> = [];
 
   await recordPhaseProviderUsage({
     providerServices: {
-      async delegateEnqueueProviderUsage(_hubRoot: string, payload: Record<string, any>) {
+      async delegateEnqueueProviderUsage(_hubRoot: string, payload: Record<string, unknown>) {
         writes.push(payload);
       },
     },
@@ -227,7 +239,7 @@ test("recordPhaseProviderUsage records fallback and hard gate failure status", a
 
   await recordPhaseProviderUsage({
     providerServices: {
-      async delegateEnqueueProviderUsage(_hubRoot: string, payload: Record<string, any>) {
+      async delegateEnqueueProviderUsage(_hubRoot: string, payload: Record<string, unknown>) {
         writes.push(payload);
       },
     },

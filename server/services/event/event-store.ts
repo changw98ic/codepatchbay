@@ -1,7 +1,6 @@
 import { appendFile, mkdir, readFile, readdir, rm, stat, truncate, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { AnyRecord } from "../../../shared/types.js";
-import { deriveDagResumeState } from "../../../core/workflow/dag-executor.js";
+import { isRecord, recordValue, type LooseRecord } from "../../../core/contracts/types.js";
 import { resolveCachedProjectRuntimeRoot } from "../phase-locator.js";
 import {
   isSecretArtifact,
@@ -10,8 +9,86 @@ import {
   makeSecretBlockedEvent,
   redactSecrets,
 } from "../secret-policy.js";
+import {
+  materializeJob,
+  advanceMaterializedJob,
+  POST_TERMINAL_ALLOWED,
+  TERMINAL_STATUSES,
+  type MaterializedJobState,
+} from "./event-materializer.js";
+import type {
+  EventRecord,
+  EventStoreOptions,
+  EventWriteNotification,
+} from "./event-types.js";
+import { withTraceContext } from "../trace/trace-context.js";
+import { openPinnedHubRedisStateBackend } from "../../../shared/hub-state-redis.js";
+
+export { materializeJob, advanceMaterializedJob } from "./event-materializer.js";
 
 const EVENT_LOCK_TTL_MS = 30_000;
+
+function text(value: unknown) {
+  return typeof value === "string" ? value : "";
+}
+
+function isEventRecord(value: unknown): value is EventRecord {
+  return isRecord(value);
+}
+
+function redisJobField(project: string, jobId: string) {
+  validatePathComponent("project", project);
+  validatePathComponent("jobId", jobId);
+  const part = (value: string) => Buffer.from(value, "utf8").toString("base64url");
+  return `job:${part(project)}:${part(jobId)}`;
+}
+
+async function redisEventBackend() {
+  const hubRoot = process.env.CPB_HUB_ROOT;
+  if (!hubRoot) return null;
+  return await openPinnedHubRedisStateBackend({
+    configFile: process.env.CPB_HUB_STATE_REDIS_CONFIG_FILE,
+    hubRoot,
+  });
+}
+
+async function assertNoLocalEvent(cpbRoot: string, project: string, jobId: string, opts: EventStoreOptions) {
+  const dataRoot = opts.dataRoot || resolveCachedProjectRuntimeRoot(cpbRoot, project);
+  if (!dataRoot) return;
+  const file = eventFileFor(cpbRoot, project, jobId, { ...opts, dataRoot, legacyOnly: false });
+  try {
+    if ((await stat(file)).size > 0) {
+      throw Object.assign(new Error("local job events require an explicit Redis migration"), {
+        code: "HUB_JOB_MIGRATION_REQUIRED",
+      });
+    }
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return;
+    throw error;
+  }
+}
+
+function redisPersistableEvent(event: EventRecord, project: string, jobId: string): EventRecord {
+  const artifact = event.artifact;
+  const blocked = (reason: string) => {
+    const value = makeSecretBlockedEvent(artifact, reason);
+    value.jobId = event.jobId ?? jobId;
+    value.project = event.project ?? project;
+    return withTraceContext(value, { project, jobId }) as EventRecord;
+  };
+  if (artifact && isSecretPath(artifact)) return blocked("secret-like artifact path blocked");
+  if (typeof artifact === "string" && isSecretArtifact(artifact, artifact)) {
+    return blocked("secret-like artifact content blocked");
+  }
+  if (typeof artifact === "string") {
+    const payload = [event.content, event.output, event.stdout, event.stderr, event.body]
+      .filter((value) => value !== undefined && value !== null);
+    if (payload.some((value) => isSecretContent(typeof value === "string" ? value : JSON.stringify(value)))) {
+      return blocked("secret-like artifact content blocked");
+    }
+  }
+  return recordValue(redactSecrets(event)) as EventRecord;
+}
 
 async function withEventLock<T>(eventFile: string, callback: () => Promise<T>): Promise<T> {
   const lockDir = `${eventFile}.lock`;
@@ -45,14 +122,14 @@ async function withEventLock<T>(eventFile: string, callback: () => Promise<T>): 
 }
 
 export const JOBS_EVENTS_FORMAT_VERSION = 1;
-const eventWriteListeners = new Set<(payload: Record<string, any>) => void | Promise<void>>();
+const eventWriteListeners = new Set<(payload: EventWriteNotification) => void | Promise<void>>();
 
-export function onEventWritten(listener: (payload: Record<string, any>) => void | Promise<void>) {
+export function onEventWritten(listener: (payload: EventWriteNotification) => void | Promise<void>) {
   eventWriteListeners.add(listener);
   return () => eventWriteListeners.delete(listener);
 }
 
-async function notifyEventWritten(payload: Record<string, any>) {
+async function notifyEventWritten(payload: EventWriteNotification) {
   for (const listener of eventWriteListeners) {
     try {
       await listener(payload);
@@ -60,7 +137,7 @@ async function notifyEventWritten(payload: Record<string, any>) {
   }
 }
 
-function _base(cpbRoot: string, opts: Record<string, any>) {
+function _base(cpbRoot: string, opts: EventStoreOptions) {
   if (opts?.dataRoot) return opts.dataRoot;
   if (opts?.legacyOnly === true) return legacyRuntimeRoot(cpbRoot);
   throw new Error("dataRoot is required for project event store paths");
@@ -108,7 +185,7 @@ async function truncateCorruptJsonlTail(file: string, raw: string) {
   await truncate(file, Buffer.byteLength(validPrefix, "utf8"));
 }
 
-export function eventFileFor(cpbRoot: string, project: string, jobId: string, opts: Record<string, any> = {}) {
+export function eventFileFor(cpbRoot: string, project: string, jobId: string, opts: EventStoreOptions = {}) {
   validatePathComponent("project", project);
   validatePathComponent("jobId", jobId);
 
@@ -156,7 +233,7 @@ async function _scanEventsDir(eventsRoot: string) {
   return files;
 }
 
-export async function listEventFiles(cpbRoot: string, opts: Record<string, any> = {}) {
+export async function listEventFiles(cpbRoot: string, opts: EventStoreOptions = {}) {
   const includeLegacyFallback = opts.includeLegacyFallback === true || opts.legacyOnly === true;
   if (!opts.dataRoot && !includeLegacyFallback) {
     throw new Error("dataRoot is required for project event store paths");
@@ -184,7 +261,7 @@ export async function listEventFiles(cpbRoot: string, opts: Record<string, any> 
   return allFiles.sort((a, b) => a.file.localeCompare(b.file));
 }
 
-export async function recoverEventFile(cpbRoot: string, project: string, jobId: string, opts: Record<string, any> = {}) {
+export async function recoverEventFile(cpbRoot: string, project: string, jobId: string, opts: EventStoreOptions = {}) {
   const file = eventFileFor(cpbRoot, project, jobId, opts);
   try {
     const raw = await readFile(file, "utf8");
@@ -218,9 +295,41 @@ export async function recoverEventFile(cpbRoot: string, project: string, jobId: 
   }
 }
 
-export async function appendEvent(cpbRoot: string, project: string, jobId: string, event: Record<string, any>, opts: Record<string, any> = {}) {
+export async function appendEvent(cpbRoot: string, project: string, jobId: string, event: EventRecord, opts: EventStoreOptions = {}) {
+  const tracedEvent = withTraceContext(event, { project, jobId }) as EventRecord;
   // Validate event structure first (throws on invalid input)
-  serializeEvent(event);
+  serializeEvent(tracedEvent);
+
+  const redis = await redisEventBackend();
+  if (redis) {
+    await assertNoLocalEvent(cpbRoot, project, jobId, opts);
+    const field = redisJobField(project, jobId);
+    const persistable = redisPersistableEvent(tracedEvent, project, jobId);
+    const serialized = serializeEvent(persistable);
+    for (let retry = 0; retry < 64; retry += 1) {
+      const snapshot = await redis.readStateRecord(field);
+      const current = snapshot.data === null ? null : snapshot.data as MaterializedJobState;
+      if (current && (!isRecord(current) || current.jobId !== jobId || current.project !== project)) {
+        throw Object.assign(new Error(`invalid Redis job projection: ${project}/${jobId}`), { code: "HUB_STATE_RECORD_INVALID" });
+      }
+      const eventType = text(persistable.type);
+      if (current && TERMINAL_STATUSES.has(current.status) && !POST_TERMINAL_ALLOWED.has(eventType)) {
+        console.warn(`[event-store] skipped ${eventType || "unknown"} on terminal job ${jobId} (status: ${current.status})`);
+        return null;
+      }
+      const projection = current
+        ? advanceMaterializedJob(current, persistable)
+        : materializeJob([persistable]);
+      const committed = await redis.appendJobEvent(field, snapshot.revision, projection, serialized);
+      if (!committed.committed) continue;
+      await notifyEventWritten({
+        cpbRoot, project, jobId, file: `redis:${field}`,
+        dataRoot: opts.dataRoot ?? null, event: persistable,
+      });
+      return persistable;
+    }
+    throw Object.assign(new Error(`job events changed too frequently: ${project}/${jobId}`), { code: "HUB_STATE_RECORD_CONFLICT" });
+  }
 
   const file = eventFileFor(cpbRoot, project, jobId, opts);
 
@@ -229,48 +338,51 @@ export async function appendEvent(cpbRoot: string, project: string, jobId: strin
     const existing = await readEvents(cpbRoot, project, jobId, opts.dataRoot ? { ...opts, includeLegacyFallback: false } : opts);
     if (existing.length > 0) {
       const state = materializeJob(existing);
-      if (TERMINAL_STATUSES.has(state.status) && !POST_TERMINAL_ALLOWED.has(event.type)) {
-        console.warn(`[event-store] skipped ${event.type} on terminal job ${jobId} (status: ${state.status})`);
+      const eventType = text(tracedEvent.type);
+      if (TERMINAL_STATUSES.has(state.status) && !POST_TERMINAL_ALLOWED.has(eventType)) {
+        console.warn(`[event-store] skipped ${eventType || "unknown"} on terminal job ${jobId} (status: ${state.status})`);
         return null;
       }
     }
 
-    const writeBlocked = async (artifactName: string, reason: string) => {
-      const blocked: AnyRecord = makeSecretBlockedEvent(artifactName, reason);
-      blocked.jobId = event.jobId || jobId;
-      blocked.project = event.project || project;
-      const serialized = serializeEvent(blocked);
+    const writeBlocked = async (artifactName: unknown, reason: string): Promise<EventRecord> => {
+      const blocked: EventRecord = makeSecretBlockedEvent(artifactName, reason);
+      blocked.jobId = tracedEvent.jobId ?? jobId;
+      blocked.project = tracedEvent.project ?? project;
+      const tracedBlocked = withTraceContext(blocked, { project, jobId }) as EventRecord;
+      const serialized = serializeEvent(tracedBlocked);
       await mkdir(path.dirname(file), { recursive: true });
       await appendFile(file, `${serialized}\n`, "utf8");
-      return blocked;
+      return tracedBlocked;
     };
 
     // Block secret-like artifacts before persisting
-    if (event.artifact && isSecretPath(event.artifact)) {
-      return writeBlocked(event.artifact, "secret-like artifact path blocked");
+    const artifact = tracedEvent.artifact;
+    if (artifact && isSecretPath(artifact)) {
+      return writeBlocked(tracedEvent.artifact, "secret-like artifact path blocked");
     }
 
     // Block events with secret-like content in artifact fields
-    if (event.artifact && typeof event.artifact === "string" && isSecretArtifact(event.artifact, event.artifact)) {
-      return writeBlocked(event.artifact, "secret-like artifact content blocked");
+    if (typeof artifact === "string" && isSecretArtifact(artifact, artifact)) {
+      return writeBlocked(artifact, "secret-like artifact content blocked");
     }
 
-    if (event.artifact && typeof event.artifact === "string") {
+    if (typeof artifact === "string") {
       const artifactPayload = [
-        event.content,
-        event.output,
-        event.stdout,
-        event.stderr,
-        event.body,
+        tracedEvent.content,
+        tracedEvent.output,
+        tracedEvent.stdout,
+        tracedEvent.stderr,
+        tracedEvent.body,
       ].filter((value) => value !== undefined && value !== null);
       if (artifactPayload.some((value) => isSecretContent(typeof value === "string" ? value : JSON.stringify(value)))) {
-        return writeBlocked(event.artifact, "secret-like artifact content blocked");
+        return writeBlocked(artifact, "secret-like artifact content blocked");
       }
     }
 
     // Redact secrets from event payload before persisting
-    const redacted = redactSecrets(event);
-    const serialized = JSON.stringify(redacted);
+    const redacted = recordValue(redactSecrets(tracedEvent));
+    const serialized = serializeEvent(redacted);
     await mkdir(path.dirname(file), { recursive: true });
     await appendFile(file, `${serialized}\n`, "utf8");
     return redacted;
@@ -281,7 +393,7 @@ export async function appendEvent(cpbRoot: string, project: string, jobId: strin
   return written;
 }
 
-async function _parseEventFileReadOnly(file: string) {
+async function _parseEventFileReadOnly(file: string): Promise<EventRecord[] | null> {
   try {
     const raw = await readFile(file, "utf8");
     const lines = raw
@@ -289,15 +401,15 @@ async function _parseEventFileReadOnly(file: string) {
       .map((line, index) => ({ line, lineNumber: index + 1 }))
       .filter(({ line }) => line.trim().length > 0);
 
-    const events = [];
+    const events: EventRecord[] = [];
     for (const { line, lineNumber } of lines) {
-      let event;
+      let event: unknown;
       try {
         event = JSON.parse(line);
       } catch (err) {
         throw new Error(`malformed event JSON in ${file} at line ${lineNumber}: ${err.message}`);
       }
-      if (event === null || typeof event !== "object" || Array.isArray(event)) {
+      if (!isEventRecord(event)) {
         throw malformedEventError(file, lineNumber, "expected a non-null object");
       }
       events.push(event);
@@ -309,7 +421,7 @@ async function _parseEventFileReadOnly(file: string) {
   }
 }
 
-async function _parseEventFile(file: string) {
+async function _parseEventFile(file: string): Promise<EventRecord[] | null> {
   try {
     return await _parseEventFileReadOnly(file);
   } catch (err) {
@@ -324,7 +436,20 @@ async function _parseEventFile(file: string) {
   }
 }
 
-export async function readEvents(cpbRoot: string, project: string, jobId: string, opts: AnyRecord = {}) {
+export async function readEvents(cpbRoot: string, project: string, jobId: string, opts: EventStoreOptions = {}) {
+  const redis = await redisEventBackend();
+  if (redis) {
+    await assertNoLocalEvent(cpbRoot, project, jobId, opts);
+    return (await redis.readJobEvents(redisJobField(project, jobId))).map((serialized, index) => {
+      try {
+        const event = JSON.parse(serialized);
+        if (!isEventRecord(event)) throw new Error("expected object");
+        return event;
+      } catch (error) {
+        throw new Error(`Redis job event ${project}/${jobId} at index ${index}: malformed event: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    });
+  }
   const cachedDataRoot = opts.dataRoot || (opts.legacyOnly !== true ? resolveCachedProjectRuntimeRoot(cpbRoot, project) : null);
 
   // Try runtime root first when we have one and it differs from legacy.
@@ -345,7 +470,9 @@ export async function readEvents(cpbRoot: string, project: string, jobId: string
   return result ?? [];
 }
 
-export async function readEventsReadOnly(cpbRoot: string, project: string, jobId: string, opts: AnyRecord = {}) {
+export async function readEventsReadOnly(cpbRoot: string, project: string, jobId: string, opts: EventStoreOptions = {}) {
+  const redis = await redisEventBackend();
+  if (redis) return await readEvents(cpbRoot, project, jobId, opts);
   const cachedDataRoot = opts.dataRoot || (opts.legacyOnly !== true ? resolveCachedProjectRuntimeRoot(cpbRoot, project) : null);
 
   if (opts.legacyOnly !== true && cachedDataRoot && cachedDataRoot !== legacyRuntimeRoot(cpbRoot)) {
@@ -363,571 +490,17 @@ export async function readEventsReadOnly(cpbRoot: string, project: string, jobId
   return result ?? [];
 }
 
-const POST_TERMINAL_ALLOWED = new Set([
-  "job_redirect_consumed", "phase_activity",
-  "permission_denied",
-  "external_remediation_started", "external_remediation_completed", "external_remediation_failed",
-  "process_stop_skipped", "process_marked_orphan", "process_stop_requested", "process_stopped",
-  "finalizer_result",
-  "phase_hook_started", "phase_hook_completed", "phase_hook_failed", "phase_hook_diagnostic",
-  "merge_index_status",
-  "finalizer_route_guard",
-  "review_bundle_created",
-  "parallel_finalize_conflict",
-  "pr_opened",
-  "github_comment_posted", "github_comment_failed",
-  "slack_message_posted", "slack_message_failed",
-  "dag_node_started", "dag_node_completed", "dag_node_failed", "dag_node_blocked",
-  "dag_node_retrying", "dag_node_skipped", "dag_node_cancelled",
-  "approval_required", "job_approved", "approval_timed_out",
-  "job_superseded",
-  "review_bundle_accepted", "review_bundle_rejected",
-  "completion_gate_evaluated",
-  "audit_finalized",
-  "runtime_context_snapshot",
-  "runtime_failure_recorded",
-]);
-
-const NODE_STATE_DEFAULTS: AnyRecord = {
-  status: "pending",
-  phase: null,
-  attempt: null,
-  artifact: null,
-  reason: null,
-  error: null,
-  startedAt: null,
-  completedAt: null,
-  failedAt: null,
-  retryingAt: null,
-  skippedAt: null,
-  cancelledAt: null,
-  blockedAt: null,
-  durationMs: null,
-};
-
-function _updateNodeState(state: AnyRecord, nodeId: string | undefined | null, updates: AnyRecord) {
-  if (!nodeId) return;
-  const prev = state.nodeStates[nodeId] || { ...NODE_STATE_DEFAULTS };
-  const definedUpdates = Object.fromEntries(
-    Object.entries(updates).filter(([, value]) => value !== undefined),
-  );
-  const next = { ...prev, ...definedUpdates };
-  const terminalTs = definedUpdates.completedAt || definedUpdates.failedAt || definedUpdates.cancelledAt;
-  if (terminalTs && prev.startedAt) {
-    const ms = new Date(String(terminalTs)).getTime() - new Date(prev.startedAt).getTime();
-    next.durationMs = Number.isFinite(ms) ? ms : null;
-  }
-  state.nodeStates = { ...state.nodeStates, [nodeId]: next };
-}
-
-function _workflowNodes(state: AnyRecord): AnyRecord[] {
-  return Array.isArray(state.workflowDag?.nodes) ? state.workflowDag.nodes : [];
-}
-
-function _workflowNodeIds(state: AnyRecord) {
-  return new Set(_workflowNodes(state).map((node) => node?.id).filter(Boolean));
-}
-
-function _workflowHasNodeId(state: AnyRecord, nodeId: string | undefined | null): boolean {
-  return _workflowNodeIds(state).has(nodeId);
-}
-
-function _syncDagResume(state: AnyRecord) {
-  const phaseStates: AnyRecord = {};
-  for (const phase of state.completedPhases) phaseStates[phase] = "completed";
-  if (state.failurePhase) phaseStates[state.failurePhase] = state.status === "blocked" ? "blocked" : "failed";
-  state.dagResume = deriveDagResumeState({
-    workflowDag: state.workflowDag,
-    nodeStates: state.nodeStates,
-    phaseStates,
-  } as Record<string, unknown>);
-  state.completedNodes = state.dagResume.completedNodeIds;
-}
-
-export function materializeJob(events: AnyRecord[]): AnyRecord {
-  const state: AnyRecord = {
-    jobId: null,
-    project: null,
-    task: null,
-    status: null,
-    phase: null,
-    attempt: null,
-    workflow: null,
-    planMode: null,
-    planDecision: null,
-    executor: null,
-    artifacts: {},
-    completedPhases: [],
-    completedNodes: [],
-    runningNodes: [],
-    blockedNodes: [],
-    nodeStates: {},
-    leaseId: null,
-    worktree: null,
-    worktreeBranch: null,
-    worktreeBaseBranch: null,
-    createdAt: null,
-    updatedAt: null,
-    blockedReason: null,
-    failureCode: null,
-    failurePhase: null,
-    retryable: false,
-    retryCount: 0,
-    maxRetries: null,
-    failureCause: null,
-    cancelRequested: false,
-    cancelReason: null,
-    redirectContext: null,
-    redirectReason: null,
-    redirectEventId: null,
-    consumedRedirectIds: [],
-    lastActivityAt: null,
-    lastActivityMessage: null,
-    externalRemediationStatus: null,
-    externalRemediationArtifact: null,
-    externalRemediationAt: null,
-    externalRemediationError: null,
-    externalRepair: null,
-    lineage: null,
-    recoveryOf: null,
-    sourceContext: null,
-    queueEntryId: null,
-    pr: null,
-    permissionDenials: [],
-    infraStatus: null,
-    finalizer: null,
-    mergeIndexStatus: null,
-    mergeIndexBranch: null,
-    mergeIndexGitHead: null,
-    mergeIndexedFrom: null,
-    indexSnapshotId: null,
-    sourceFingerprint: null,
-    indexFreshness: null,
-    planCache: null,
-    workflowDag: null,
-    dagResume: null,
-    dynamicAgentPlan: null,
-    adversarialVerdict: null,
-    riskMap: null,
-    riskLevel: null,
-    riskMapGeneratedAt: null,
-    verificationDepth: null,
-    adversarialRequired: false,
-    routingFeedback: null,
-    phaseAgentSelections: [],
-    approval: null,
-    reviewLoop: {
-      rounds: [],
-      latest: null,
-    },
-    completionGate: null,
-    auditFinalized: null,
-    runtimeContext: null,
-    artifactsByKind: {},
-    artifactHistoryByKind: {},
-    runtimeFailures: [],
-  };
-
-  const ctx = { terminal: false };
-
-  for (const event of events) {
-    const isPostTerminal = ctx.terminal;
-    if (isPostTerminal && !POST_TERMINAL_ALLOWED.has(event.type)) continue;
-
-    if (event.jobId !== undefined) state.jobId = event.jobId;
-    if (event.project !== undefined) state.project = event.project;
-    if (!isPostTerminal && event.attempt !== undefined) state.attempt = event.attempt;
-    if (!isPostTerminal && event.workflow !== undefined) state.workflow = event.workflow;
-    if (!isPostTerminal && event.planMode !== undefined) state.planMode = event.planMode;
-    if (!isPostTerminal && event.ts !== undefined) state.updatedAt = event.ts;
-
-    if (!(isPostTerminal && event.type?.startsWith("dag_node_"))) {
-      EVENT_HANDLERS[event.type]?.(state, event, ctx);
-    }
-  }
-
-  _syncDagResume(state);
-  return state;
-}
-
-// ── Event handler lookup table ────────────────────────────
-// Each handler mutates state in-place. ctx.terminal controls the post-terminal gate.
-// Shared handlers use the same function reference for multiple event types.
-
-const _handlePlanCache = (state: AnyRecord, event: AnyRecord) => {
-  state.planCache = { ...(state.planCache || {}), ...event };
-};
-
-const _handleReviewBundle = (state: AnyRecord, event: AnyRecord) => {
-  const round = {
-    round: event.round ?? state.reviewLoop.rounds.length + 1,
-    verdict: event.verdict ?? (event.type === "review_bundle_accepted" ? "accepted" : "rejected"),
-    feedback: event.feedback ?? null,
-    retryQueueEntryId: event.retryQueueEntryId ?? null,
-    bundleId: event.bundleId ?? null,
-    actor: event.actor ?? null,
-    createdAt: event.ts ?? null,
-  };
-  state.reviewLoop = { rounds: [...state.reviewLoop.rounds, round], latest: round };
-};
-
-const EVENT_HANDLERS: Record<string, (state: AnyRecord, event: AnyRecord, ctx?: AnyRecord) => void> = {
-  job_created(state: AnyRecord, event: AnyRecord, ctx: AnyRecord) {
-    state.task = event.task ?? state.task;
-    state.executor = event.executor ?? state.executor;
-    state.executorSelection = event.executorSelection ?? state.executorSelection;
-    state.status = "running";
-    state.createdAt = event.ts ?? state.createdAt;
-    state.blockedReason = null;
-    state.queueEntryId = event.queueEntryId ?? state.queueEntryId;
-    if (event.sourceContext) state.sourceContext = event.sourceContext;
-    if (event.indexSnapshotId !== undefined) state.indexSnapshotId = event.indexSnapshotId;
-    if (event.sourceFingerprint !== undefined) state.sourceFingerprint = event.sourceFingerprint;
-    if (event.indexFreshness !== undefined) state.indexFreshness = event.indexFreshness;
-    if (event.planCache !== undefined) state.planCache = event.planCache;
-    ctx.terminal = false;
-  },
-  plan_decision(state: AnyRecord, event: AnyRecord) {
-    state.planMode = event.planMode ?? state.planMode;
-    state.planDecision = {
-      workflow: event.workflow ?? state.workflow,
-      planMode: event.planMode ?? null,
-      runPlan: event.runPlan ?? null,
-      reason: event.reason ?? null,
-      decidedAt: event.ts ?? null,
-      parentPlanCache: event.parentPlanCache ?? null,
-    };
-  },
-  plan_cache_decision: _handlePlanCache,
-  plan_cache_updated: _handlePlanCache,
-  riskmap_generated(state: AnyRecord, event: AnyRecord) {
-    state.riskMap = event.riskMap ?? {
-      riskLevel: event.riskLevel ?? null, domains: event.domains ?? [],
-      highRiskFiles: event.highRiskFiles ?? [], verificationDepth: event.verificationDepth ?? null,
-      adversarialRequired: Boolean(event.adversarialRequired), adversarialFocus: event.adversarialFocus ?? [],
-      confidence: event.confidence ?? null,
-    };
-    state.riskLevel = event.riskLevel ?? state.riskMap?.riskLevel ?? null;
-    state.verificationDepth = event.verificationDepth ?? state.riskMap?.verificationDepth ?? null;
-    state.adversarialRequired = event.adversarialRequired ?? state.riskMap?.adversarialRequired ?? false;
-    state.riskMapGeneratedAt = event.ts ?? state.riskMap?.generatedAt ?? state.riskMapGeneratedAt;
-  },
-  workflow_dag_materialized(state: AnyRecord, event: AnyRecord) {
-    state.workflow = event.workflow ?? state.workflow;
-    state.planMode = event.planMode ?? state.planMode;
-    state.workflowDag = event.workflowDag ?? { name: event.workflow ?? state.workflow, nodes: event.nodes ?? [], edges: event.edges ?? [] };
-    {
-      const nodeIds = new Set((Array.isArray(state.workflowDag?.nodes) ? state.workflowDag.nodes : []).map((n: AnyRecord) => n?.id).filter(Boolean));
-      state.completedNodes = state.completedNodes.filter((id: string) => nodeIds.has(id));
-      state.runningNodes = state.runningNodes.filter((id: string) => nodeIds.has(id));
-      state.blockedNodes = state.blockedNodes.filter((id: string) => nodeIds.has(id));
-    }
-    for (const node of Array.isArray(state.workflowDag?.nodes) ? state.workflowDag.nodes : []) {
-      if (node?.id && !state.nodeStates[node.id]) _updateNodeState(state, node.id, { status: "pending", phase: node.phase ?? node.id });
-    }
-  },
-  dynamic_agent_plan_generated(state: AnyRecord, event: AnyRecord) {
-    state.dynamicAgentPlan = event.dynamicAgentPlan ?? state.dynamicAgentPlan;
-    state.riskLevel = event.riskLevel ?? state.dynamicAgentPlan?.riskLevel ?? state.riskLevel;
-    state.adversarialRequired = event.adversarialRequired ?? state.dynamicAgentPlan?.adversarialRequired ?? state.adversarialRequired;
-  },
-  adversarial_verdict(state: AnyRecord, event: AnyRecord) {
-    state.adversarialVerdict = { verdict: event.verdict ?? null, artifact: event.artifact ?? null, status: event.status ?? event.verdict?.status ?? null, reason: event.reason ?? event.verdict?.reason ?? null, at: event.ts ?? null };
-  },
-  executor_routing_feedback(state: AnyRecord, event: AnyRecord) {
-    state.routingFeedback = { phase: event.phase ?? null, requested: event.requested ?? null, reason: event.reason ?? null, confidence: event.confidence ?? null, signals: event.signals ?? [], upgradedQueueEntryId: event.upgradedQueueEntryId ?? null, feedbackPath: event.feedbackPath ?? null, at: event.ts ?? null };
-  },
-  agent_routing_decision(state: AnyRecord, event: AnyRecord) {
-    const selection = event.executorSelection ?? { role: event.role ?? null, category: event.category ?? null, workflow: event.workflow ?? null, preferredAgent: event.preferredAgent ?? null, selectedAgent: event.selectedAgent ?? null, fallbackAgent: event.fallbackAgent ?? null, fallbackAllowed: event.fallbackAllowed ?? null, fallbackApplied: event.fallbackApplied ?? null, reason: event.reason ?? null };
-    if (event.phase) { state.phaseAgentSelections = [...state.phaseAgentSelections, { phase: event.phase, ...selection, ts: event.ts ?? null }]; return; }
-    state.executorSelection = selection;
-    if (event.selectedAgent !== undefined) state.executor = event.selectedAgent;
-  },
-  worktree_created(state: AnyRecord, event: AnyRecord) {
-    state.worktree = event.worktree ?? event.path ?? state.worktree;
-    state.worktreeBranch = event.branch ?? event.worktreeBranch ?? state.worktreeBranch;
-    state.worktreeBaseBranch = event.baseBranch ?? event.worktreeBaseBranch ?? state.worktreeBaseBranch;
-  },
-  phase_started(state: AnyRecord, event: AnyRecord) {
-    state.phase = event.phase ?? state.phase;
-    state.leaseId = event.leaseId ?? null;
-    state.status = "running";
-    state.blockedReason = null;
-    if (event.phase && !state.runningNodes.includes(event.phase)) state.runningNodes = [...state.runningNodes, event.phase];
-  },
-  phase_completed(state: AnyRecord, event: AnyRecord) {
-    state.phase = event.phase ?? state.phase;
-    state.leaseId = null;
-    state.status = "running";
-    if (event.phase !== undefined) {
-      state.runningNodes = state.runningNodes.filter((n: string) => n !== event.phase);
-      if (!state.completedPhases.includes(event.phase)) state.completedPhases = [...state.completedPhases, event.phase];
-      if (!state.workflowDag && !state.completedNodes.includes(event.phase)) {
-        state.completedNodes = [...state.completedNodes, event.phase];
-      } else if (_workflowHasNodeId(state, event.phase)) {
-        state.runningNodes = state.runningNodes.filter((n: string) => n !== event.phase);
-        if (!state.completedNodes.includes(event.phase)) state.completedNodes = [...state.completedNodes, event.phase];
-        _updateNodeState(state, event.phase, { status: "completed", phase: event.phase, artifact: event.artifact, completedAt: event.ts });
-      }
-    }
-    if (event.phase !== undefined && event.artifact !== undefined) state.artifacts[event.phase] = event.artifact;
-  },
-  dag_node_started(state: AnyRecord, event: AnyRecord) {
-    if (event.nodeId && !state.runningNodes.includes(event.nodeId)) state.runningNodes = [...state.runningNodes, event.nodeId];
-    state.blockedNodes = state.blockedNodes.filter((n: string) => n !== event.nodeId);
-    _updateNodeState(state, event.nodeId, { status: "running", phase: event.phase, attempt: event.attempt, startedAt: event.ts, completedAt: null, failedAt: null, skippedAt: null, cancelledAt: null, blockedAt: null, durationMs: null });
-  },
-  dag_node_completed(state: AnyRecord, event: AnyRecord) {
-    state.runningNodes = state.runningNodes.filter((n: string) => n !== event.nodeId);
-    if (event.nodeId && !state.completedNodes.includes(event.nodeId)) state.completedNodes = [...state.completedNodes, event.nodeId];
-    if (event.phase !== undefined && event.artifact !== undefined) state.artifacts[event.phase] = event.artifact;
-    if (event.phase !== undefined && !state.completedPhases.includes(event.phase)) state.completedPhases = [...state.completedPhases, event.phase];
-    _updateNodeState(state, event.nodeId, { status: "completed", phase: event.phase, artifact: event.artifact, completedAt: event.ts });
-  },
-  dag_node_failed(state: AnyRecord, event: AnyRecord) {
-    state.runningNodes = state.runningNodes.filter((n: string) => n !== event.nodeId);
-    state.failureCode = event.code ?? state.failureCode;
-    state.failurePhase = event.phase ?? state.failurePhase;
-    _updateNodeState(state, event.nodeId, { status: "failed", phase: event.phase, error: event.error ?? event.reason, reason: event.reason, failedAt: event.ts });
-  },
-  dag_node_blocked(state: AnyRecord, event: AnyRecord) {
-    state.runningNodes = state.runningNodes.filter((n: string) => n !== event.nodeId);
-    if (event.nodeId && !state.blockedNodes.includes(event.nodeId)) state.blockedNodes = [...state.blockedNodes, event.nodeId];
-    _updateNodeState(state, event.nodeId, { status: "blocked", reason: event.reason, blockedAt: event.ts });
-  },
-  dag_node_retrying(state: AnyRecord, event: AnyRecord) {
-    if (event.nodeId) { state.runningNodes = state.runningNodes.filter((n: string) => n !== event.nodeId); state.blockedNodes = state.blockedNodes.filter((n: string) => n !== event.nodeId); state.completedNodes = state.completedNodes.filter((n: string) => n !== event.nodeId); }
-    if (event.phase !== undefined) state.completedPhases = state.completedPhases.filter((p: string) => p !== event.phase);
-    _updateNodeState(state, event.nodeId, { status: "retrying", phase: event.phase, attempt: event.attempt, artifact: null, reason: event.reason, retryingAt: event.ts, completedAt: null, failedAt: null, skippedAt: null, cancelledAt: null, blockedAt: null, durationMs: null });
-  },
-  dag_node_skipped(state: AnyRecord, event: AnyRecord) {
-    if (event.nodeId) state.runningNodes = state.runningNodes.filter((n: string) => n !== event.nodeId);
-    if (event.nodeId && !state.completedNodes.includes(event.nodeId)) state.completedNodes = [...state.completedNodes, event.nodeId];
-    if (event.phase !== undefined && !state.completedPhases.includes(event.phase)) state.completedPhases = [...state.completedPhases, event.phase];
-    _updateNodeState(state, event.nodeId, { status: "skipped", phase: event.phase, reason: event.reason, skippedAt: event.ts });
-  },
-  dag_node_cancelled(state: AnyRecord, event: AnyRecord) {
-    if (event.nodeId) state.runningNodes = state.runningNodes.filter((n: string) => n !== event.nodeId);
-    _updateNodeState(state, event.nodeId, { status: "cancelled", phase: event.phase, reason: event.reason, cancelledAt: event.ts });
-  },
-  phase_failed(state: AnyRecord, event: AnyRecord, ctx: AnyRecord) {
-    state.phase = event.phase ?? state.phase;
-    state.leaseId = null;
-    state.status = "failed";
-    state.blockedReason = event.error ?? event.reason ?? null;
-    state.failureCode = event.code ?? state.failureCode;
-    state.failurePhase = event.phase ?? state.failurePhase;
-    state.retryable = event.retryable ?? state.retryable;
-    state.retryCount = event.retryCount ?? state.retryCount;
-    state.maxRetries = event.maxRetries ?? state.maxRetries;
-    state.failureCause = event.cause ?? state.failureCause;
-    if (event.phase !== undefined) state.runningNodes = state.runningNodes.filter((n: string) => n !== event.phase);
-    ctx.terminal = true;
-  },
-  budget_exceeded(state: AnyRecord, event: AnyRecord, ctx: AnyRecord) {
-    state.status = "blocked";
-    state.leaseId = null;
-    state.blockedReason = event.reason ?? "budget exceeded";
-    ctx.terminal = true;
-  },
-  job_blocked(state: AnyRecord, event: AnyRecord, ctx: AnyRecord) {
-    state.status = "blocked";
-    state.leaseId = null;
-    state.blockedReason = event.reason ?? event.blockedReason ?? null;
-    state.failureCode = event.code ?? event.kind ?? state.failureCode;
-    state.failureCause = event.cause ?? state.failureCause;
-    ctx.terminal = true;
-  },
-  job_failed(state: AnyRecord, event: AnyRecord, ctx: AnyRecord) {
-    state.status = "failed";
-    state.leaseId = null;
-    state.blockedReason = event.reason ?? event.error ?? state.blockedReason;
-    state.failureCode = event.code ?? state.failureCode;
-    state.failurePhase = event.phase ?? state.failurePhase;
-    state.retryable = event.retryable ?? state.retryable;
-    state.retryCount = event.retryCount ?? state.retryCount;
-    state.maxRetries = event.maxRetries ?? state.maxRetries;
-    state.failureCause = event.cause ?? state.failureCause;
-    ctx.terminal = true;
-  },
-  pool_exhausted(state: AnyRecord, event: AnyRecord, ctx: AnyRecord) {
-    state.status = "failed";
-    state.leaseId = null;
-    state.blockedReason = event.reason ?? "ACP pool exhausted";
-    state.failureCode = "pool_exhausted";
-    state.failurePhase = event.phase ?? state.phase;
-    state.retryable = true;
-    ctx.terminal = true;
-  },
-  job_superseded(state: AnyRecord, event: AnyRecord, ctx: AnyRecord) {
-    state.status = "superseded";
-    state.blockedReason = event.reason ?? "superseded by remediation lineage";
-    ctx.terminal = true;
-  },
-  approval_required(state: AnyRecord, event: AnyRecord) {
-    state.status = "waiting.approval";
-    state.phase = event.phase ?? state.phase;
-    state.blockedReason = event.reason ?? "approval required";
-    state.approval = { operation: event.operation ?? null, phase: event.phase ?? null, channels: Array.isArray(event.channels) ? event.channels : [], reason: event.reason ?? null, requestedAt: event.ts ?? null, timeoutAt: event.timeoutAt ?? null };
-    if (event.phase) { state.runningNodes = state.runningNodes.filter((n: string) => n !== event.phase); if (!state.blockedNodes.includes(event.phase)) state.blockedNodes = [...state.blockedNodes, event.phase]; }
-  },
-  job_approved(state: AnyRecord) {
-    state.status = state.approval?.operation === "PR" ? "completed" : "running";
-    state.blockedReason = null;
-    state.approval = null;
-    if (state.phase) state.blockedNodes = state.blockedNodes.filter((n: string) => n !== state.phase);
-  },
-  approval_timed_out(state: AnyRecord, event: AnyRecord, ctx: AnyRecord) {
-    state.status = "blocked";
-    state.leaseId = null;
-    state.blockedReason = event.reason ?? "approval timed out";
-    state.approval = state.approval ? { ...state.approval, timedOutAt: event.ts ?? null } : null;
-    ctx.terminal = true;
-  },
-  review_bundle_accepted: _handleReviewBundle,
-  review_bundle_rejected: _handleReviewBundle,
-  job_completed(state: AnyRecord, event: AnyRecord, ctx: AnyRecord) {
-    state.status = "completed";
-    state.phase = "completed";
-    state.leaseId = null;
-    state.blockedReason = null;
-    state.failureCode = null;
-    state.failurePhase = null;
-    state.retryable = false;
-    state.retryCount = 0;
-    state.failureCause = null;
-    ctx.terminal = true;
-  },
-  pr_opened(state: AnyRecord, event: AnyRecord) {
-    state.pr = { url: event.prUrl || event.pullRequestUrl || event.url || null, number: event.prNumber || event.number || null, artifact: event.artifact || null, openedAt: event.ts || null };
-    if (event.artifact) state.artifacts.pr = event.artifact;
-  },
-  job_cancel_requested(state: AnyRecord, event: AnyRecord) {
-    state.cancelRequested = true;
-    state.cancelReason = event.reason ?? null;
-  },
-  job_cancelled(state: AnyRecord, event: AnyRecord, ctx: AnyRecord) {
-    state.cancelRequested = true;
-    state.cancelReason = event.reason ?? state.cancelReason;
-    state.status = "cancelled";
-    state.leaseId = null;
-    ctx.terminal = true;
-  },
-  job_retried(state: AnyRecord, event: AnyRecord, ctx: AnyRecord) {
-    state.status = "running";
-    state.phase = event.fromPhase ?? state.phase;
-    state.leaseId = null;
-    state.blockedReason = null;
-    state.failureCode = null;
-    state.failurePhase = null;
-    state.retryable = false;
-    state.retryCount = event.retryCount ?? state.retryCount + 1;
-    state.maxRetries = event.maxRetries ?? state.maxRetries;
-    state.failureCause = null;
-    for (const p of event.clearArtifacts ?? []) delete state.artifacts[p];
-    ctx.terminal = false;
-  },
-  recovery_created(state: AnyRecord, event: AnyRecord) {
-    state.recoveryOf = event.recoveryOf ?? null;
-    state.retryCount = event.retryCount ?? state.retryCount;
-    state.maxRetries = event.maxRetries ?? state.maxRetries;
-    state.lineage = { parentJobId: event.lineage?.parentJobId ?? null, parentStatus: event.lineage?.parentStatus ?? null, parentFailureCode: event.lineage?.parentFailureCode ?? null, parentFailurePhase: event.lineage?.parentFailurePhase ?? null, parentBlockedReason: event.lineage?.parentBlockedReason ?? null, recoveryReason: event.recoveryReason ?? null, trigger: event.trigger ?? null, executorSelection: event.executorSelection ?? null, retryCount: event.retryCount ?? null, maxRetries: event.maxRetries ?? null };
-    if (event.sourceContext) state.sourceContext = event.sourceContext;
-  },
-  permission_denied(state: AnyRecord, event: AnyRecord) {
-    state.permissionDenials = [...state.permissionDenials, { category: event.category ?? "infra", phase: event.phase ?? null, role: event.role ?? null, action: event.action ?? null, deniedOperation: event.deniedOperation ?? event.action ?? null, targetPath: event.targetPath ?? "", reason: event.reason ?? "permission denied", allowedBoundary: event.allowedBoundary ?? "", recoveryGuidance: event.recoveryGuidance ?? "", ts: event.ts ?? null }];
-    state.infraStatus = "blocked";
-  },
-  external_repair_started(state: AnyRecord, event: AnyRecord) { state.externalRepair = { status: "started", reason: event.reason ?? null, ts: event.ts ?? null }; },
-  external_repair_completed(state: AnyRecord, event: AnyRecord) { state.externalRepair = { status: "completed", result: event.result ?? null, ts: event.ts ?? null }; },
-  external_repair_failed(state: AnyRecord, event: AnyRecord) { state.externalRepair = { status: "failed", error: event.error ?? null, ts: event.ts ?? null }; },
-  job_redirect_requested(state: AnyRecord, event: AnyRecord, ctx: AnyRecord) {
-    if (!ctx.terminal) { state.redirectContext = event.instructions ?? null; state.redirectReason = event.reason ?? null; state.redirectEventId = event.redirectEventId ?? null; }
-  },
-  job_redirect_consumed(state: AnyRecord, event: AnyRecord) {
-    if (event.redirectEventId !== undefined) state.consumedRedirectIds = [...state.consumedRedirectIds, event.redirectEventId];
-    if (state.redirectEventId === event.redirectEventId) { state.redirectContext = null; state.redirectReason = null; state.redirectEventId = null; }
-  },
-  workflow_selected(state: AnyRecord, event: AnyRecord) { state.workflow = event.workflow ?? state.workflow; },
-  phase_activity(state: AnyRecord, event: AnyRecord) { state.lastActivityAt = event.ts ?? state.lastActivityAt; state.lastActivityMessage = event.message ?? state.lastActivityMessage; },
-  external_remediation_started(state: AnyRecord, event: AnyRecord) { state.externalRemediationStatus = "STARTED"; state.externalRemediationArtifact = event.artifact ?? state.externalRemediationArtifact; state.externalRemediationAt = event.ts ?? state.externalRemediationAt; state.externalRemediationError = null; },
-  external_remediation_completed(state: AnyRecord, event: AnyRecord) { state.externalRemediationStatus = event.remediationStatus ?? "UNKNOWN"; state.externalRemediationArtifact = event.artifact ?? state.externalRemediationArtifact; state.externalRemediationAt = event.ts ?? state.externalRemediationAt; state.externalRemediationError = null; },
-  external_remediation_failed(state: AnyRecord, event: AnyRecord) { state.externalRemediationStatus = "FAILED"; state.externalRemediationArtifact = event.artifact ?? state.externalRemediationArtifact; state.externalRemediationAt = event.ts ?? state.externalRemediationAt; state.externalRemediationError = event.error ?? event.reason ?? null; },
-  finalizer_result(state: AnyRecord, event: AnyRecord) { state.finalizer = { ok: Boolean(event.result?.ok), status: event.result?.status ?? null, code: event.result?.code ?? null, commit: event.result?.commit ?? null, closed: event.result?.closed ?? null, mode: event.result?.mode ?? null, ts: event.ts ?? null }; },
-  merge_index_status(state: AnyRecord, event: AnyRecord) { state.mergeIndexStatus = event.indexState ?? event.mergeIndexStatus ?? state.mergeIndexStatus; state.mergeIndexBranch = event.branch ?? state.mergeIndexBranch; state.mergeIndexGitHead = event.gitHead ?? state.mergeIndexGitHead; state.mergeIndexedFrom = event.indexedFrom ?? state.mergeIndexedFrom; },
-  completion_gate_evaluated(state: AnyRecord, event: AnyRecord) { state.completionGate = { outcome: event.outcome ?? null, attemptId: event.attemptId ?? null, reason: event.reason ?? null, missingGates: Array.isArray(event.missingGates) ? event.missingGates : [], checklistOutcome: event.checklistOutcome ?? null, failedChecklistIds: Array.isArray(event.failedChecklistIds) ? event.failedChecklistIds : [], uncheckedChecklistIds: Array.isArray(event.uncheckedChecklistIds) ? event.uncheckedChecklistIds : [], missingEvidenceRefs: Array.isArray(event.missingEvidenceRefs) ? event.missingEvidenceRefs : [], mismatchedEvidenceRefs: Array.isArray(event.mismatchedEvidenceRefs) ? event.mismatchedEvidenceRefs : [], staleEvidenceRefs: Array.isArray(event.staleEvidenceRefs) ? event.staleEvidenceRefs : [], poisonedEvidenceRefs: Array.isArray(event.poisonedEvidenceRefs) ? event.poisonedEvidenceRefs : [], runtimeFailureRefs: Array.isArray(event.runtimeFailureRefs) ? event.runtimeFailureRefs : [], runtimeFailureCount: Number.isFinite(event.runtimeFailureCount) ? event.runtimeFailureCount : 0, unmappedChangedFiles: Array.isArray(event.unmappedChangedFiles) ? event.unmappedChangedFiles : [], unmappedChangedFileCount: Number.isFinite(event.unmappedChangedFileCount) ? event.unmappedChangedFileCount : 0, evaluatedAt: event.ts ?? null }; },
-  artifact_created(state: AnyRecord, event: AnyRecord) {
-    const kind = event.kind || event.artifactKind;
-    if (!kind || !event.artifact) return;
-    const entry = {
-      kind,
-      name: event.artifact,
-      id: event.artifactId || null,
-      attemptId: event.attemptId || event.jobId || null,
-      phase: event.phase || null,
-      sha256: event.sha256 || null,
-      ts: event.ts || null,
-      eventId: event.eventId || null,
-    };
-    state.artifactsByKind = {
-      ...(state.artifactsByKind || {}),
-      [kind]: entry,
-    };
-    state.artifactHistoryByKind = {
-      ...(state.artifactHistoryByKind || {}),
-      [kind]: [...(state.artifactHistoryByKind?.[kind] || []), entry],
-    };
-  },
-  audit_finalized(state: AnyRecord, event: AnyRecord) {
-    state.auditFinalized = {
-      attemptId: event.attemptId || null,
-      status: event.status || null,
-      reason: event.reason || null,
-      ts: event.ts || null,
-    };
-  },
-  runtime_context_snapshot(state: AnyRecord, event: AnyRecord) {
-    state.runtimeContext = {
-      attemptId: event.attemptId || null,
-      assignmentId: event.assignmentId || null,
-      workerId: event.workerId || null,
-      model: event.model || null,
-      runtime: event.runtime || null,
-      queueId: event.queueId || null,
-      queuePriority: event.queuePriority ?? null,
-      concurrencyKey: event.concurrencyKey || null,
-      rateLimitedUntil: event.rateLimitedUntil || null,
-      heartbeatAt: event.heartbeatAt || null,
-      progressKind: event.progressKind || null,
-      blocker: event.blocker || null,
-      ts: event.ts || null,
-    };
-  },
-  runtime_failure_recorded(state: AnyRecord, event: AnyRecord) {
-    state.runtimeFailures = [...state.runtimeFailures, {
-      type: event.failureType || null,
-      attemptId: event.attemptId || null,
-      phase: event.phase || null,
-      nodeId: event.nodeId || null,
-      reason: event.reason || null,
-      ts: event.ts || null,
-    }];
-  },
-};
-
-const TERMINAL_STATUSES = new Set(["completed", "failed", "blocked", "cancelled", "superseded"]);
-
-function checkpointFileFor(cpbRoot: string, project: string, jobId: string, opts: AnyRecord = {}) {
+function checkpointFileFor(cpbRoot: string, project: string, jobId: string, opts: EventStoreOptions = {}) {
   validatePathComponent("project", project);
   validatePathComponent("jobId", jobId);
   const checkpointsRoot = path.join(_base(cpbRoot, opts), "checkpoints");
   return path.resolve(checkpointsRoot, project, `${jobId}.json`);
 }
 
-export async function writeCheckpoint(cpbRoot: string, project: string, jobId: string, state: AnyRecord, opts: AnyRecord = {}) {
+export async function writeCheckpoint(cpbRoot: string, project: string, jobId: string, state: LooseRecord, opts: EventStoreOptions = {}) {
   const file = checkpointFileFor(cpbRoot, project, jobId, opts);
   await mkdir(path.dirname(file), { recursive: true });
-  const checkpoint: AnyRecord = {
+  const checkpoint: LooseRecord = {
     _meta: { version: JOBS_EVENTS_FORMAT_VERSION, writtenAt: new Date().toISOString(), eventCount: null },
     state,
   };
@@ -935,14 +508,14 @@ export async function writeCheckpoint(cpbRoot: string, project: string, jobId: s
   return file;
 }
 
-export async function readCheckpoint(cpbRoot: string, project: string, jobId: string, opts: AnyRecord = {}) {
+export async function readCheckpoint(cpbRoot: string, project: string, jobId: string, opts: EventStoreOptions = {}): Promise<MaterializedJobState | null> {
   // Try runtime root first
   if (opts.legacyOnly !== true && opts.dataRoot && opts.dataRoot !== legacyRuntimeRoot(cpbRoot)) {
     const rtFile = checkpointFileFor(cpbRoot, project, jobId, opts);
     try {
       const raw = await readFile(rtFile, "utf8");
-      const parsed = JSON.parse(raw);
-      return parsed.state ?? null;
+      const parsed = recordValue(JSON.parse(raw));
+      return isRecord(parsed.state) ? parsed.state as MaterializedJobState : null;
     } catch {}
   }
   const includeLegacyFallback = opts.includeLegacyFallback === true || opts.legacyOnly === true;
@@ -953,19 +526,19 @@ export async function readCheckpoint(cpbRoot: string, project: string, jobId: st
   const file = checkpointFileFor(cpbRoot, project, jobId, { legacyOnly: true });
   try {
     const raw = await readFile(file, "utf8");
-    const parsed = JSON.parse(raw);
-    return parsed.state ?? null;
+    const parsed = recordValue(JSON.parse(raw));
+    return isRecord(parsed.state) ? parsed.state as MaterializedJobState : null;
   } catch {
     return null;
   }
 }
 
-export async function deleteCheckpoint(cpbRoot: string, project: string, jobId: string, opts: AnyRecord = {}) {
+export async function deleteCheckpoint(cpbRoot: string, project: string, jobId: string, opts: EventStoreOptions = {}) {
   const file = checkpointFileFor(cpbRoot, project, jobId, opts);
   await rm(file, { force: true });
 }
 
-export async function checkpointJob(cpbRoot: string, project: string, jobId: string, opts: AnyRecord = {}) {
+export async function checkpointJob(cpbRoot: string, project: string, jobId: string, opts: EventStoreOptions = {}) {
   const events = await readEvents(cpbRoot, project, jobId, opts);
   if (events.length === 0) return null;
   const state = materializeJob(events);

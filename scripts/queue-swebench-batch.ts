@@ -14,7 +14,6 @@ import { writeJsonAtomic } from "../shared/fs-utils.js";
 import { AssignmentStore, type AssignmentRecord } from "../shared/orchestrator/assignment-store.js";
 import { recordValue, type LooseRecord } from "../shared/types.js";
 import {
-  buildSweBenchAcceptanceChecklist,
   buildTask,
   DEFAULT_PRODUCT_VALIDATION_AGENTS,
   deriveSweBenchDiagnosticCommands,
@@ -1588,21 +1587,12 @@ export function buildBatchAssignmentInput({
   const projectId = safeId(`swebench-${record.benchmarkInstanceId}`);
   const jobId = `job-${entryId}`;
   const task = buildTask(row, record);
-  const acceptanceChecklist = buildSweBenchAcceptanceChecklist(row, record, { jobId, projectId, task });
-  const verificationCommands = deriveSweBenchVerificationCommands(row, record);
-  const canonicalCommands = [
-    ...verificationCommands.failToPass,
-    ...verificationCommands.passToPass,
-  ];
-  const diagnosticCommands = deriveSweBenchDiagnosticCommands(row, record);
   const productValidation = {
     validationMode: "swe-bench-verified",
     benchmarkInstanceId: record.benchmarkInstanceId,
     datasetRowRef: record.datasetRowRef,
     planMode,
     agents,
-    canonicalCommands,
-    diagnosticCommands,
   };
   return {
     entryId,
@@ -1617,7 +1607,6 @@ export function buildBatchAssignmentInput({
       benchmarkRepository: record.representativeRepository,
       benchmarkBaseCommit: record.baseCommit,
       issueNumber: null,
-      acceptanceChecklist,
       productValidation,
     },
     metadata: {
@@ -1647,17 +1636,9 @@ export function buildManagedWorkerEnv({
     CPB_HUB_ROOT: hubRoot,
     CPB_EXECUTOR_ROOT: repoRoot,
     CPB_PROJECT_ROOTS: path.dirname(hubRoot),
-    CPB_CODEGRAPH_INDEX_ONLY_OK: "1",
     CPB_WORKER_DISPATCH_ENABLED: "0",
     CPB_ACP_USE_MANAGED_POOL: "0",
     CPB_ACP_PERSISTENT_PROCESS: "0",
-    CPB_ACP_DISABLE_WEB_TOOLS: process.env.CPB_ACP_DISABLE_WEB_TOOLS || "1",
-    CPB_CHECKLIST_DECOMPOSE: "1",
-    CPB_CHECKLIST_DECOMPOSE_RETRY_MAX: process.env.CPB_CHECKLIST_DECOMPOSE_RETRY_MAX || "2",
-    CPB_CHECKLIST_DECOMPOSE_RETRY_BASE_DELAY_MS: process.env.CPB_CHECKLIST_DECOMPOSE_RETRY_BASE_DELAY_MS || "1000",
-    CPB_PHASE_RETRY_MAX: process.env.CPB_PHASE_RETRY_MAX || "3",
-    CPB_PHASE_FEEDBACK_RETRY_MAX: process.env.CPB_PHASE_FEEDBACK_RETRY_MAX || "1",
-    CPB_PHASE_RETRY_BASE_DELAY_MS: process.env.CPB_PHASE_RETRY_BASE_DELAY_MS || "1000",
     CPB_DYNAMIC_VERIFIER_AGENT: phaseAgents.verifier,
     CPB_PRODUCT_VALIDATION_KEEP_WORKTREE: "1",
     CPB_WORKER_EXIT_ON_IDLE: "1",
@@ -1665,17 +1646,8 @@ export function buildManagedWorkerEnv({
     CPB_ACP_TIMEOUT_MS: String(timeoutMs),
     CPB_ACP_IDLE_TIMEOUT_MS: process.env.CPB_ACP_IDLE_TIMEOUT_MS || String(Math.min(timeoutMs, 600_000)),
     CPB_ACP_SESSION_UPDATE_IDLE_TIMEOUT_MS: process.env.CPB_ACP_SESSION_UPDATE_IDLE_TIMEOUT_MS || String(Math.min(timeoutMs, 600_000)),
-    CPB_ACP_SWEBENCH_EXECUTE_NO_EDIT_TOOL_LIMIT: process.env.CPB_ACP_SWEBENCH_EXECUTE_NO_EDIT_TOOL_LIMIT || "5",
     CPB_ACP_PHASE_TIMEOUT_MS: String(timeoutMs),
     CPB_ACP_POOL_TIMEOUT_MS: String(timeoutMs),
-    CPB_ACP_TOOL_CALL_BUDGET_PLAN: process.env.CPB_ACP_TOOL_CALL_BUDGET_PLAN || "40",
-    CPB_ACP_TOOL_CALL_BUDGET_EXECUTE: process.env.CPB_ACP_TOOL_CALL_BUDGET_EXECUTE || "40",
-    CPB_ACP_TOOL_CALL_BUDGET_VERIFY: process.env.CPB_ACP_TOOL_CALL_BUDGET_VERIFY || "80",
-    CPB_ACP_TOOL_CALL_BUDGET_ADVERSARIAL_VERIFY: process.env.CPB_ACP_TOOL_CALL_BUDGET_ADVERSARIAL_VERIFY || "80",
-    CPB_ACP_TOOL_EVENT_BUDGET_PLAN: process.env.CPB_ACP_TOOL_EVENT_BUDGET_PLAN || "160",
-    CPB_ACP_TOOL_EVENT_BUDGET_EXECUTE: process.env.CPB_ACP_TOOL_EVENT_BUDGET_EXECUTE || "120",
-    CPB_ACP_TOOL_EVENT_BUDGET_VERIFY: process.env.CPB_ACP_TOOL_EVENT_BUDGET_VERIFY || "240",
-    CPB_ACP_TOOL_EVENT_BUDGET_ADVERSARIAL_VERIFY: process.env.CPB_ACP_TOOL_EVENT_BUDGET_ADVERSARIAL_VERIFY || "240",
   };
 }
 

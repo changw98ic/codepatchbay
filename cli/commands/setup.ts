@@ -1,3 +1,4 @@
+import { recordValue, type LooseRecord } from "../../shared/types.js";
 function statusMark(installed) {
   return installed ? "OK" : "--";
 }
@@ -20,7 +21,7 @@ function recommendedInstallLines(snapshot, catalog) {
 
   return missingRecommended.map((agent) => {
     const [method, install] = pickPreferredInstall(agent, snapshot);
-    return `${agent.displayName}: cpb agents install ${agent.id} --method ${method}  # ${(install as Record<string, any>).command}`;
+    return `${agent.displayName}: cpb agents install ${agent.id} --method ${method}  # ${(install as LooseRecord).command}`;
   });
 }
 
@@ -142,7 +143,7 @@ async function detectQuickAgents() {
   return results;
 }
 
-async function runQuickstart(args: string[], { cpbRoot, executorRoot }: Record<string, any> = {}) {
+async function runQuickstart(args: string[], { cpbRoot, executorRoot }: LooseRecord = {}) {
   if (args.includes("--help") || args.includes("-h")) {
     console.log(`Usage:
   cpb quickstart [--agent <name>] [--project-path <path>] [--project-name <name>] [--demo]
@@ -204,10 +205,7 @@ async function runQuickstart(args: string[], { cpbRoot, executorRoot }: Record<s
       selectedAgent = "claude"; // Default to Claude if multiple available
       qOk(`Defaulting to: Claude Code`);
     } else {
-      qWarn("No agents detected. Install one:");
-      console.log("    claude:   curl -fsSL https://claude.ai/install.sh | bash");
-      console.log("    codex:    npm install -g @zed-industries/codex-acp");
-      console.log("    opencode: curl -fsSL https://opencode.ai/install | bash");
+      qWarn("No agents detected. Install a supported agent using its vendor's official documentation.");
       console.log("");
       console.log("  Then run: cpb quickstart --agent <name>");
       console.log("  Or try:   cpb quickstart --demo");
@@ -268,7 +266,7 @@ async function runQuickstart(args: string[], { cpbRoot, executorRoot }: Record<s
 
 // ─── Main entry ───
 
-export async function run(args = [], { cpbRoot, executorRoot }: Record<string, any> = {}) {
+export async function run(args = [], { cpbRoot, executorRoot }: LooseRecord = {}) {
   if (args.includes("--help") || args.includes("-h")) {
     console.log("Usage:");
     console.log("  cpb setup [--recommended|--interactive|--non-interactive --agents codex,claude] [--json] [--detect-only]");
@@ -293,14 +291,27 @@ export async function run(args = [], { cpbRoot, executorRoot }: Record<string, a
       || "";
     const { runSetupWizard, setupProfilePath } = await import("../../core/setup/wizard.js");
     const { runInstallPlanWithEvents } = await import("../../server/services/setup.js");
+    const runInstallPlanForWizard = async (plan: unknown, options: { cpbRoot: string; stdio: string }): Promise<{ [key: string]: unknown; code?: number }> => {
+      const planRecord = recordValue(plan);
+      const installPlan = {
+        ...planRecord,
+        agent: typeof recordValue(planRecord.agent).id === "string" ? recordValue(planRecord.agent).id : String(planRecord.agent || ""),
+      };
+      const output = await runInstallPlanWithEvents(installPlan, options);
+      const outputRecord = recordValue(output);
+      return {
+        ...outputRecord,
+        code: typeof outputRecord.code === "number" ? outputRecord.code : undefined,
+      };
+    };
     const result = await runSetupWizard({
       cpbRoot,
       mode: wizardMode(args),
       agents: parseAgents(agentsFlag),
-      runInstallPlanFn: runInstallPlanWithEvents,
+      runInstallPlanFn: runInstallPlanForWizard,
       execute: !json || args.includes("--recommended") || args.includes("--non-interactive") || Boolean(agentsFlag),
       stdio: json ? "ignore" : "inherit",
-    }) as Record<string, any>;
+    }) as LooseRecord;
     result.profilePath = setupProfilePath(cpbRoot);
     if (json) console.log(JSON.stringify(result, null, 2));
     else console.log(formatWizardHuman(result));

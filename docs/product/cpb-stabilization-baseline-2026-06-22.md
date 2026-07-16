@@ -2005,3 +2005,85 @@ Verified after the checkpoint:
 | `npm run verify:p0p1` | pass, 337 focused node checks, 2 demo integration checks, 9 managed-worker isolated checks, CLI smoke; live/full skipped by default |
 | `npm run verify:release-gate` | pass, 83 contract checks + 2 managed-worker E2Es |
 | `npm test` | pass, 990 unit checks, 8 isolated unit checks, 17 integration checks, 47 isolated integration checks, shell tests |
+
+## Remediation Checkpoint 35
+
+This checkpoint closes the strict-engine execution-kernel migration and upgrades
+the flagship release gate evidence:
+
+- `core/engine/run-job.ts` now delegates preparation, checklist DAG setup, DAG
+  execution, lifecycle/panic handling, provider preflight, and final phase-event
+  recording to strict-checked helpers.
+- `core/engine/run-job.ts` is included in `tsconfig.strict-engine.json`; there
+  are no remaining strict-engine legacy exclusions.
+- `scripts/type-debt-allowlist.json` is empty, and `npm run
+  typecheck:type-debt:engine` is now a zero-allowlist guard for broad type debt
+  in the strict execution-kernel scope.
+- `finalizeSuccessfulQueueEntry` records `finalizer_result` for dry-run,
+  blocked, rejected, skipped, opened, and finalized outcomes; job projection now
+  surfaces the finalizer result.
+- `finalizeSuccessfulQueueEntry` now fails closed with
+  `FINALIZER_AUDIT_RECORD_FAILED` when the finalizer result cannot be recorded,
+  so dry-run PR success cannot silently lose the audit/projection evidence.
+- DAG execution routes phases with the materialized dynamic agent plan produced
+  after checklist freeze, not a stale top-level context plan that was rejected or
+  rebuilt for missing checklist artifact binding.
+- `scripts/run-node-tests.ts` runs the `verify-p0p1-runner` self-test as an
+  isolated unit test so its nested short-timeout child process checks do not
+  compete with the parallel focused P0/P1 suite.
+- `npm run verify:product-gate` and `npm run report:release-readiness` now fail
+  closed when a local `evidenceBundleRef` points at a missing repo-local dry-run
+  evidence bundle; URL refs remain allowed for externally hosted audit bundles.
+- The flagship managed-worker E2E proves the default checklist decomposition,
+  evidence ledger, completion gate, dry-run draft PR preview, finalizer
+  projection, and isolated ACP HOME audit path in one release-gate scenario.
+- `scripts/verify-release-gate.ts` fails closed when
+  `CPB_CHECKLIST_DECOMPOSE=0` or `CPB_AGENT_ISOLATE_HOME=0`, so the authoritative
+  release gate cannot be downgraded by environment variables.
+- Product readiness remains intentionally blocked until the manual product gate
+  has three real unfamiliar maintainer/team dry-run validation records.
+
+Current stabilization metrics after this checkpoint:
+
+| Metric | Current |
+| --- | ---: |
+| strict-engine legacy exclusions | 0 |
+| `core/engine/run-job.ts` line count | 276 |
+| `core/engine/run-job-checklist-dag.ts` line count | 319 |
+| `core/engine/run-job-execute-dag.ts` line count | 508 |
+| `core/engine/run-job-prepare.ts` line count | 268 |
+| `core/engine/run-job-lifecycle.ts` line count | 159 |
+| `core/engine/run-job-shared.ts` line count | 117 |
+| type-debt allowlist entries | 0 |
+
+Remaining debt after this checkpoint:
+
+- DAG execution is still sequential despite the contract being DAG-shaped.
+- DAG projection still drops dependencies outside the filtered phase list and
+  does not yet normalize repeated phase IDs; this remains covered as current
+  behavior and should be revisited before enabling real parallel DAG execution.
+- live draft PR creation remains intentionally untested by default because it is
+  side-effectful and requires explicit opt-in.
+- legacy `local` and `remote` finalizers remain outside the flagship product
+  gate and must not be claimed as validated by it.
+- the flagship gate still uses fake ACP responses; a live provider or real ACP
+  release rehearsal remains outside default automated CI.
+- the stabilization cycle still needs the manual 3-maintainer/team product gate
+  before claiming product maturity for unfamiliar teams.
+
+Verified after the checkpoint:
+
+| Command | Result |
+| --- | --- |
+| `npm run build:node && npm run build:tests && node dist/scripts/run-node-tests.js tests/strict-engine-gate.test.js` before documentation update | failed as expected: latest baseline checkpoint was missing |
+| `npm run build:node && npm run build:tests && node dist/scripts/run-node-tests.js tests/strict-engine-gate.test.js` | pass, 2 checks |
+| `npm run build:node && npm run build:tests && node dist/scripts/run-node-tests.js tests/auto-finalizer.test.js tests/checklist-prepare-dag.test.js` | pass, 18 checks |
+| `npm run typecheck` | pass |
+| `npm run typecheck:strict:engine` | pass |
+| `git diff --check` | pass |
+| `npm run verify:release-gate` | pass, 85 contract checks + 1 managed-worker flagship E2E |
+| `npm run verify:stabilization` | expected fail: engineering gates pass through flagship release gate; manual product gate fails because `docs/product/cpb-flagship-product-validation.json` is missing |
+| `npm run report:release-readiness` | expected fail: `ready=false`, remaining gate is missing `docs/product/cpb-flagship-product-validation.json` |
+| `npm test` | pass, 1016 unit checks, 8 isolated unit checks, 17 integration checks, 49 isolated integration checks, shell smoke |
+| `npm run verify:p0p1` | pass, static diff check, 356 focused unit checks, 4 isolated runner self-checks, 2 demo integration checks, 10 managed-worker isolated checks, CLI smoke; live/full skipped by default |
+| `npm run build:node && npm run build:tests && node dist/scripts/run-node-tests.js tests/product-gate.test.js tests/release-readiness-report.test.js` | pass, 14 checks |

@@ -1,6 +1,6 @@
 import { readActiveChecklistArtifacts } from "../workflow/checklist-artifacts.js";
 
-type LooseRecord = Record<string, unknown>;
+import { recordValue, type LooseRecord } from "../contracts/types.js";
 
 type ArtifactIndex = {
   entries?: LooseRecord[];
@@ -74,11 +74,11 @@ export async function loadCompletionChecklistArtifacts({
       return { checklistArtifacts: {}, artifactInvalidReason: null };
     }
 
-    const checklistArtifacts = await readActiveChecklistArtifacts({
+    const checklistArtifacts = recordValue(await readActiveChecklistArtifacts({
       artifactIndex,
       attemptId,
       requiredKinds: REQUIRED_CHECKLIST_ARTIFACT_KINDS,
-    }) as CompletionChecklistArtifactMap;
+    })) as CompletionChecklistArtifactMap;
     return {
       checklistArtifacts,
       artifactInvalidReason: checklistArtifacts.ok === false

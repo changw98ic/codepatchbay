@@ -1,0 +1,237 @@
+{
+  "schemaVersion": 1,
+  "validationMode": "swe-bench-verified-empty-diff-fix-full-official-docker-score",
+  "validatedAt": "2026-06-28T07:55:05.866Z",
+  "source": {
+    "dataset": "SWE-bench/SWE-bench_Verified",
+    "split": "test",
+    "instanceCount": 8,
+    "instances": [
+      "astropy__astropy-14096",
+      "django__django-10914",
+      "django__django-10999",
+      "django__django-11087",
+      "django__django-11095",
+      "django__django-11141",
+      "django__django-11433",
+      "django__django-11734"
+    ]
+  },
+  "cpbRerun": {
+    "planMode": "full",
+    "agent": "codex",
+    "timeoutMs": 1800000,
+    "evidenceDir": "/tmp/cpb-swebench-empty-rerun-full-fixed/evidence",
+    "summary": {
+      "completedEvidenceBundles": 8,
+      "emptyDiffEvidenceBundles": 0,
+      "workerTimedOut": [
+        "django__django-11141"
+      ]
+    }
+  },
+  "predictionBuild": {
+    "predictionsPath": "/tmp/cpb-swebench-empty-rerun-full-fixed/score/predictions.jsonl",
+    "summaryPath": "/tmp/cpb-swebench-empty-rerun-full-fixed/score/predictions-summary.json",
+    "predictionCount": 8,
+    "emptyPatches": 0
+  },
+  "officialDockerRun": {
+    "command": "python -m swebench.harness.run_evaluation --dataset_name SWE-bench/SWE-bench_Verified --split test --instance_ids astropy__astropy-14096 django__django-10914 django__django-10999 django__django-11087 django__django-11095 django__django-11141 django__django-11433 django__django-11734 --predictions_path /tmp/cpb-swebench-empty-rerun-full-fixed/score/predictions.jsonl --max_workers 2 --timeout 1800 --force_rebuild False --cache_level instance --clean False --run_id cpb-emptydiff-fix-full-20260628 --report_dir /tmp/cpb-swebench-empty-rerun-full-fixed/score/report",
+    "environmentWorkaround": "HOME=/tmp/cpb-empty-home DOCKER_CONFIG=/tmp/cpb-empty-docker-config was used to avoid Docker Desktop credential-helper hangs during Python SDK image pulls.",
+    "logPath": "/tmp/cpb-swebench-empty-rerun-full-fixed/score/official-score.log",
+    "reportPath": "/tmp/cpb-swebench-empty-rerun-full-fixed/score/official-report.json"
+  },
+  "officialReport": {
+    "total_instances": 8,
+    "submitted_instances": 8,
+    "completed_instances": 8,
+    "resolved_instances": 6,
+    "unresolved_instances": 2,
+    "empty_patch_instances": 0,
+    "error_instances": 0,
+    "completed_ids": [
+      "astropy__astropy-14096",
+      "django__django-10914",
+      "django__django-10999",
+      "django__django-11087",
+      "django__django-11095",
+      "django__django-11141",
+      "django__django-11433",
+      "django__django-11734"
+    ],
+    "incomplete_ids": [],
+    "empty_patch_ids": [],
+    "submitted_ids": [
+      "astropy__astropy-14096",
+      "django__django-10914",
+      "django__django-10999",
+      "django__django-11087",
+      "django__django-11095",
+      "django__django-11141",
+      "django__django-11433",
+      "django__django-11734"
+    ],
+    "resolved_ids": [
+      "astropy__astropy-14096",
+      "django__django-10914",
+      "django__django-11087",
+      "django__django-11095",
+      "django__django-11141",
+      "django__django-11433"
+    ],
+    "unresolved_ids": [
+      "django__django-10999",
+      "django__django-11734"
+    ],
+    "error_ids": [],
+    "schema_version": 2
+  },
+  "outcomes": [
+    {
+      "instanceId": "astropy__astropy-14096",
+      "cpbPlanMode": "full",
+      "cpbWorkerTimedOut": false,
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbJobId": "job-astropy-astropy-14096",
+      "cpbPhases": [
+        "plan",
+        "execute",
+        "verify"
+      ],
+      "cpbDiffStat": "astropy/coordinates/sky_coordinate.py | 4 ++++\n 1 file changed, 4 insertions(+)",
+      "predictionPatchBytes": 791,
+      "officialOutcome": "resolved",
+      "evidenceBundlePath": "/tmp/cpb-swebench-empty-rerun-full-fixed/evidence/astropy-astropy-14096-real-run.json",
+      "worktreePath": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-astropy-astropy-14096-1782628703081/hub/worktrees/job-astropy-astropy-14096-pipeline"
+    },
+    {
+      "instanceId": "django__django-10914",
+      "cpbPlanMode": "full",
+      "cpbWorkerTimedOut": false,
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbJobId": "job-django-django-10914",
+      "cpbPhases": [
+        "plan",
+        "execute",
+        "verify"
+      ],
+      "cpbDiffStat": "django/conf/global_settings.py      | 2 +-\n docs/howto/deployment/checklist.txt | 7 ++++---\n docs/ref/settings.txt               | 9 ++++-----\n 3 files changed, 9 insertions(+), 9 deletions(-)",
+      "predictionPatchBytes": 2618,
+      "officialOutcome": "resolved",
+      "evidenceBundlePath": "/tmp/cpb-swebench-empty-rerun-full-fixed/evidence/django-django-10914-real-run.json",
+      "worktreePath": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-10914-1782628702632/hub/worktrees/job-django-django-10914-pipeline"
+    },
+    {
+      "instanceId": "django__django-10999",
+      "cpbPlanMode": "full",
+      "cpbWorkerTimedOut": false,
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbJobId": "job-django-django-10999",
+      "cpbPhases": [
+        "plan",
+        "execute",
+        "verify",
+        "adversarial_verify"
+      ],
+      "cpbDiffStat": "django/utils/dateparse.py | 2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-)",
+      "predictionPatchBytes": 491,
+      "officialOutcome": "unresolved",
+      "evidenceBundlePath": "/tmp/cpb-swebench-empty-rerun-full-fixed/evidence/django-django-10999-real-run.json",
+      "worktreePath": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-10999-1782629285641/hub/worktrees/job-django-django-10999-pipeline"
+    },
+    {
+      "instanceId": "django__django-11087",
+      "cpbPlanMode": "full",
+      "cpbWorkerTimedOut": false,
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbJobId": "job-django-django-11087",
+      "cpbPhases": [
+        "plan",
+        "execute",
+        "verify",
+        "adversarial_verify"
+      ],
+      "cpbDiffStat": "django/db/models/deletion.py | 29 ++++++++++++++++++++++++-----\n 1 file changed, 24 insertions(+), 5 deletions(-)",
+      "predictionPatchBytes": 2925,
+      "officialOutcome": "resolved",
+      "evidenceBundlePath": "/tmp/cpb-swebench-empty-rerun-full-fixed/evidence/django-django-11087-real-run.json",
+      "worktreePath": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-11087-1782629771216/hub/worktrees/job-django-django-11087-pipeline"
+    },
+    {
+      "instanceId": "django__django-11095",
+      "cpbPlanMode": "full",
+      "cpbWorkerTimedOut": false,
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbJobId": "job-django-django-11095",
+      "cpbPhases": [
+        "plan",
+        "execute",
+        "verify",
+        "adversarial_verify"
+      ],
+      "cpbDiffStat": "django/contrib/admin/options.py | 6 +++++-\n 1 file changed, 5 insertions(+), 1 deletion(-)",
+      "predictionPatchBytes": 834,
+      "officialOutcome": "resolved",
+      "evidenceBundlePath": "/tmp/cpb-swebench-empty-rerun-full-fixed/evidence/django-django-11095-real-run.json",
+      "worktreePath": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-11095-1782629975346/hub/worktrees/job-django-django-11095-pipeline"
+    },
+    {
+      "instanceId": "django__django-11141",
+      "cpbPlanMode": "full",
+      "cpbWorkerTimedOut": true,
+      "cpbJobStatus": "cancelled",
+      "cpbAssignmentStatus": "cancelled",
+      "cpbJobId": "job-django-django-11141",
+      "cpbPhases": [],
+      "cpbDiffStat": "django/db/migrations/loader.py | 10 ++++------\n 1 file changed, 4 insertions(+), 6 deletions(-)",
+      "predictionPatchBytes": 1553,
+      "officialOutcome": "resolved",
+      "evidenceBundlePath": "/tmp/cpb-swebench-empty-rerun-full-fixed/evidence/django-django-11141-real-run.json",
+      "worktreePath": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-11141-1782630753600/hub/worktrees/job-django-django-11141-pipeline"
+    },
+    {
+      "instanceId": "django__django-11433",
+      "cpbPlanMode": "full",
+      "cpbWorkerTimedOut": false,
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbJobId": "job-django-django-11433",
+      "cpbPhases": [
+        "plan",
+        "execute",
+        "verify",
+        "adversarial_verify"
+      ],
+      "cpbDiffStat": "django/forms/models.py | 4 +++-\n 1 file changed, 3 insertions(+), 1 deletion(-)",
+      "predictionPatchBytes": 948,
+      "officialOutcome": "resolved",
+      "evidenceBundlePath": "/tmp/cpb-swebench-empty-rerun-full-fixed/evidence/django-django-11433-real-run.json",
+      "worktreePath": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-11433-1782631001477/hub/worktrees/job-django-django-11433-pipeline"
+    },
+    {
+      "instanceId": "django__django-11734",
+      "cpbPlanMode": "full",
+      "cpbWorkerTimedOut": false,
+      "cpbJobStatus": "failed",
+      "cpbAssignmentStatus": "failed",
+      "cpbJobId": "job-django-django-11734",
+      "cpbPhases": [
+        "plan",
+        "execute",
+        "verify",
+        "adversarial_verify"
+      ],
+      "cpbDiffStat": "django/db/models/sql/query.py | 4 +++-\n 1 file changed, 3 insertions(+), 1 deletion(-)",
+      "predictionPatchBytes": 631,
+      "officialOutcome": "unresolved",
+      "evidenceBundlePath": "/tmp/cpb-swebench-empty-rerun-full-fixed/evidence/django-django-11734-real-run.json",
+      "worktreePath": "/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-swebench-django-django-11734-1782631829238/hub/worktrees/job-django-django-11734-pipeline"
+    }
+  ]
+}

@@ -4,7 +4,7 @@ import { isPhasePassed, phaseFailed } from "../contracts/phase-result.js";
 import { classifyPoisonedSession } from "./poisoned-session.js";
 import type { PhaseResult } from "../../shared/types.js";
 
-type LooseRecord = Record<string, unknown>;
+import type { LooseRecord } from "../contracts/types.js";
 
 type EvaluatePoisonedSessionGateContext = {
   cpbRoot: string;
@@ -22,7 +22,7 @@ type EvaluatePoisonedSessionGateContext = {
 
 function errorCode(error: unknown) {
   return error && typeof error === "object" && "code" in error
-    ? String((error as { code?: unknown }).code || "")
+    ? String(error.code || "")
     : "";
 }
 
@@ -76,7 +76,7 @@ export async function evaluatePoisonedSessionGate({
         retryable: false,
         cause: { reasons: poisonCheck.reasons, classifier: poisonCheck.classifier },
       }),
-    }) as PhaseResult;
+    });
   } catch (error) {
     const code = errorCode(error);
     if (code && code !== "ENOENT" && code !== "ENOTDIR") {

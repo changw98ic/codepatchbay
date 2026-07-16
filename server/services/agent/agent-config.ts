@@ -1,7 +1,86 @@
 // ── agent-config ──
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
-import { AnyRecord } from "../../../shared/types.js";
+import type { LooseRecord } from "../../../core/contracts/types.js";
+
+type AgentConfigRecord = LooseRecord & {
+  scheduler?: AgentConfigRecord;
+  mode?: string;
+  concurrency?: AgentConfigRecord;
+  acpPool?: AgentConfigRecord;
+  agents?: AgentConfigRecord;
+  agent?: string | null;
+  variant?: unknown;
+  default?: unknown;
+  phases?: LooseRecord;
+  variants?: LooseRecord;
+  phaseProfiles?: LooseRecord;
+  profile?: unknown;
+};
+
+type AgentJobRecord = LooseRecord & {
+  agent?: string;
+  executor?: string | AgentConfigRecord;
+  completedPhases?: string[];
+  phase?: string;
+  workflow?: string;
+  status?: string;
+  createdAt?: string | number;
+  updatedAt?: string | number;
+  retryCount?: number;
+  failurePhase?: string;
+  failureCode?: string;
+  blockedReason?: string;
+  error?: unknown;
+  jobId?: string;
+  project?: string;
+  task?: string;
+};
+
+type AgentMetricRecord = LooseRecord & {
+  name?: string;
+  displayName?: string;
+  stability?: string;
+  capabilities?: unknown[];
+  defaultRoles?: string[];
+  command?: string;
+  envPrefix?: string;
+  pool?: unknown;
+  jobs?: AgentConfigRecord;
+  performance?: AgentConfigRecord;
+  quality?: AgentConfigRecord;
+  score?: unknown;
+  avgDurationMs?: number | null;
+  totalRequests?: number;
+  pass?: number;
+  total?: number;
+  install?: Record<string, AgentMetricRecord>;
+  id?: string;
+  sourceUrl?: string;
+  label?: string;
+  notes?: unknown[];
+  generatedAt?: string;
+  tools?: Record<string, AgentConfigRecord>;
+  installed?: boolean;
+  status?: string;
+  version?: string;
+  error?: unknown;
+  vendor?: string;
+  binary?: string;
+  recommended?: boolean;
+  tier?: string | null;
+  roles?: string[];
+  auth?: AgentConfigRecord;
+  adapter?: unknown;
+  methods?: string[];
+  statusCommand?: string;
+  connectCommand?: string;
+};
+
+type AgentSetupOptions = {
+  setupSnapshot?: AgentMetricRecord;
+  catalog?: AgentMetricRecord[];
+};
 
 /**
  * Agent config service -- reads hub-level and project-level agent/variant config.
@@ -11,7 +90,7 @@ import { AnyRecord } from "../../../shared/types.js";
 
 const HUB_CONFIG_FILE = "config.json";
 
-async function readJson(filePath: string): Promise<AnyRecord> {
+async function readJson(filePath: string): Promise<AgentConfigRecord> {
   try {
     return JSON.parse(await readFile(filePath, "utf8"));
   } catch {
@@ -19,15 +98,15 @@ async function readJson(filePath: string): Promise<AnyRecord> {
   }
 }
 
-async function writeJson(filePath: string, data: AnyRecord) {
+async function writeJson(filePath: string, data: AgentConfigRecord) {
   await mkdir(path.dirname(filePath), { recursive: true });
   await writeFile(filePath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
 }
 
-function normalizeHubConfig(data: unknown): AnyRecord {
+function normalizeHubConfig(data: unknown): AgentConfigRecord {
   if (!data || typeof data !== "object" || Array.isArray(data)) return {};
   const removedHubTotalKey = ["maxActive", "Total"].join("");
-  const next: AnyRecord = { ...data };
+  const next: AgentConfigRecord = { ...data };
   if (next.concurrency && typeof next.concurrency === "object" && !Array.isArray(next.concurrency)) {
     next.concurrency = { ...next.concurrency };
     delete next.concurrency[removedHubTotalKey];
@@ -52,7 +131,7 @@ export function isValidSchedulerMode(mode: string) {
   return VALID_SCHEDULER_MODES.has(mode);
 }
 
-export function readSchedulerConfig(hubConfig: AnyRecord) {
+export function readSchedulerConfig(hubConfig: AgentConfigRecord) {
   const scheduler = hubConfig?.scheduler;
   if (!scheduler || typeof scheduler !== "object") return { mode: "default" };
   const mode = VALID_SCHEDULER_MODES.has(scheduler.mode) ? scheduler.mode : "default";
@@ -65,7 +144,7 @@ export async function readHubConfig(hubRoot: string) {
   return normalizeHubConfig(await readJson(path.join(hubRoot, HUB_CONFIG_FILE)));
 }
 
-export async function writeHubConfig(hubRoot: string, data: AnyRecord) {
+export async function writeHubConfig(hubRoot: string, data: AgentConfigRecord) {
   await writeJson(path.join(hubRoot, HUB_CONFIG_FILE), normalizeHubConfig(data));
 }
 
@@ -100,7 +179,7 @@ export async function readProjectJsonFromRoots(roots: (string | null | undefined
   return {};
 }
 
-export async function writeProjectJson(cpbRoot: string, project: string, data: AnyRecord) {
+export async function writeProjectJson(cpbRoot: string, project: string, data: AgentConfigRecord) {
   await writeJson(projectConfigPath(cpbRoot, project), data);
 }
 
@@ -117,7 +196,7 @@ export async function readProjectConfigFromRoots(roots: (string | null | undefin
   return null;
 }
 
-export async function writeProjectAgents(cpbRoot: string, project: string, agents: AnyRecord | null) {
+export async function writeProjectAgents(cpbRoot: string, project: string, agents: AgentConfigRecord | null) {
   const data = await readProjectJson(cpbRoot, project);
   if (agents && Object.keys(agents).length > 0) {
     data.agents = agents;
@@ -129,10 +208,35 @@ export async function writeProjectAgents(cpbRoot: string, project: string, agent
 
 // -- Merge: resolve effective agents config --
 
+function isStringRecord(value: unknown): value is LooseRecord {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isAgentConfigRecord(value: unknown): value is AgentConfigRecord {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function metricRecord(value: unknown): AgentMetricRecord {
+  const record: AgentMetricRecord = {};
+  if (isStringRecord(value)) Object.assign(record, value);
+  return record;
+}
+
+function numberValue(value: unknown, fallback = 0) {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function timestampMs(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value !== "string" || value.length === 0) return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 export function normalizeAgentSpec(raw: unknown) {
   if (!raw) return null;
-  if (typeof raw === "object" && raw !== null) {
-    const obj = raw as Record<string, unknown>;
+  if (isStringRecord(raw)) {
+    const obj = raw;
     if (obj.agent === null && obj.variant) {
       return { agent: null, variant: obj.variant };
     }
@@ -150,9 +254,9 @@ export function normalizeAgentSpec(raw: unknown) {
   return { agent: String(raw), variant: null };
 }
 
-function resolveFromConfig(config: AnyRecord | null | undefined): AnyRecord {
+function resolveFromConfig(config: AgentConfigRecord | null | undefined): AgentConfigRecord {
   if (!config) return {};
-  const result: AnyRecord = {};
+  const result: AgentConfigRecord = {};
   const defaultSpec = normalizeAgentSpec(config.default);
   if (defaultSpec) result.default = defaultSpec;
 
@@ -178,8 +282,9 @@ function resolveFromConfig(config: AnyRecord | null | undefined): AnyRecord {
 
   if (config.phaseProfiles) {
     for (const [phase, profile] of Object.entries(config.phaseProfiles)) {
-      if (result[phase] && profile) {
-        result[phase].profile = profile;
+      const spec = result[phase];
+      if (isAgentConfigRecord(spec) && profile) {
+        spec.profile = profile;
       }
     }
   }
@@ -200,21 +305,23 @@ const PHASE_TO_ROLE = {
  * Returns { planner, executor, verifier, reviewer } objects with { agent, variant }.
  * Later sources override earlier ones.
  */
-export function mergeAgentConfig(hubAgents: AnyRecord | null | undefined, projectAgents: AnyRecord | null | undefined, metadataAgents: AnyRecord | null | undefined) {
-  const merged: AnyRecord = {};
+export function mergeAgentConfig(hubAgents: AgentConfigRecord | null | undefined, projectAgents: AgentConfigRecord | null | undefined, metadataAgents: AgentConfigRecord | null | undefined) {
+  const merged: AgentConfigRecord = {};
 
-  function applyResolved(resolved: AnyRecord, overrideDefault: boolean) {
-    if (resolved.default) {
+  function applyResolved(resolved: AgentConfigRecord, overrideDefault: boolean) {
+    if (isAgentConfigRecord(resolved.default)) {
       for (const role of ["planner", "executor", "verifier", "reviewer"]) {
         if (overrideDefault || !merged[role]) merged[role] = { ...resolved.default };
       }
     }
     for (const [phase, rawSpec] of Object.entries(resolved)) {
       if (phase === "default") continue;
-      const spec = rawSpec as AnyRecord;
+      if (!isAgentConfigRecord(rawSpec)) continue;
+      const spec = rawSpec;
       const role = PHASE_TO_ROLE[phase] || phase;
-      if (spec.agent === null && merged[role]) {
-        merged[role] = { ...merged[role], variant: spec.variant };
+      const existing = merged[role];
+      if (spec.agent === null && isAgentConfigRecord(existing)) {
+        merged[role] = { ...existing, variant: spec.variant };
       } else {
         merged[role] = { ...spec };
       }
@@ -228,14 +335,15 @@ export function mergeAgentConfig(hubAgents: AnyRecord | null | undefined, projec
     if (typeof metadataAgents === "object" && !metadataAgents.agent) {
       for (const [key, raw] of Object.entries(metadataAgents)) {
         if (key === "default") continue;
-        const spec = normalizeAgentSpec(raw);
-        if (spec) {
-          const role = PHASE_TO_ROLE[key] || key;
-          if (spec.agent === null && merged[role]) {
-            merged[role] = { ...merged[role], variant: spec.variant };
-          } else {
-            merged[role] = spec;
-          }
+          const spec = normalizeAgentSpec(raw);
+          if (spec) {
+            const role = PHASE_TO_ROLE[key] || key;
+            const existing = merged[role];
+            if (spec.agent === null && isAgentConfigRecord(existing)) {
+              merged[role] = { ...existing, variant: spec.variant };
+            } else {
+              merged[role] = spec;
+            }
         }
       }
     } else {
@@ -255,8 +363,8 @@ export function mergeAgentConfig(hubAgents: AnyRecord | null | undefined, projec
  * Build the `agents` object for queue entry metadata from config.
  * Called at enqueue time.
  */
-export async function resolveAgentsForEntry(hubRoot: string, cpbRoot: string, project: string, metadata: AnyRecord = {}) {
-  const metadataRecord = metadata as AnyRecord;
+export async function resolveAgentsForEntry(hubRoot: string, cpbRoot: string, project: string, metadata: AgentConfigRecord = {}) {
+  const metadataRecord: AgentConfigRecord = metadata;
   const hubConfig = await readHubConfig(hubRoot);
   const projectAgents = await readProjectConfigFromRoots(
     [hubRoot, process.env.CPB_ROOT, cpbRoot],
@@ -287,7 +395,7 @@ import { getAgentPerformance, getAgentQuality } from "../observability/observabi
 
 const TERMINAL_STATES = new Set(["completed", "failed", "blocked", "cancelled"]);
 
-function resolveAgentForJob(j: AnyRecord) {
+function resolveAgentForJob(j: AgentJobRecord) {
   if (j.agent && typeof j.agent === "string") {
     return j.agent;
   }
@@ -309,7 +417,7 @@ function resolveAgentForJob(j: AnyRecord) {
   return "unknown";
 }
 
-function classifyJobsByAgent(allJobs: AnyRecord[]) {
+function classifyJobsByAgent(allJobs: AgentJobRecord[]) {
   const byAgent = new Map();
   for (const j of allJobs) {
     const agent = resolveAgentForJob(j);
@@ -319,14 +427,18 @@ function classifyJobsByAgent(allJobs: AnyRecord[]) {
   return byAgent;
 }
 
-function buildJobStats(jobs: AnyRecord[]) {
+function buildJobStats(jobs: AgentJobRecord[]) {
   const completed = jobs.filter((j) => j.status === "completed");
   const failed = jobs.filter((j) => j.status === "failed");
   const cancelled = jobs.filter((j) => j.status === "cancelled");
   const running = jobs.filter((j) => !TERMINAL_STATES.has(j.status));
   const durations = completed
-    .filter((j) => j.createdAt && j.updatedAt)
-    .map((j) => j.updatedAt - j.createdAt);
+    .map((j) => {
+      const createdAt = timestampMs(j.createdAt);
+      const updatedAt = timestampMs(j.updatedAt);
+      return createdAt !== null && updatedAt !== null ? Math.max(0, updatedAt - createdAt) : null;
+    })
+    .filter((duration): duration is number => duration !== null);
   const totalDurationMs = durations.reduce((s, d) => s + d, 0);
   const avgDurationMs = durations.length > 0
     ? Math.round(totalDurationMs / durations.length)
@@ -349,7 +461,7 @@ function buildJobStats(jobs: AnyRecord[]) {
     if (j.failureCode) failureCodes[j.failureCode] = (failureCodes[j.failureCode] || 0) + 1;
   }
 
-  const retryCount = jobs.reduce((sum: number, j: AnyRecord) => sum + Math.max(0, Number(j.retryCount) || 0), 0);
+  const retryCount = jobs.reduce((sum: number, j: AgentJobRecord) => sum + Math.max(0, Number(j.retryCount) || 0), 0);
   const timeoutCount = jobs.filter((j) => {
     const evidence = `${j.failureCode || ""} ${j.blockedReason || ""} ${j.error || ""}`.toLowerCase();
     return evidence.includes("timeout") || evidence.includes("timed out");
@@ -380,24 +492,26 @@ function buildJobStats(jobs: AnyRecord[]) {
   };
 }
 
-function buildScoreInput(stats: AnyRecord, performance: AnyRecord, quality: AnyRecord) {
-  const performanceDuration = performance.avgDurationMs && performance.totalRequests
-    ? performance.avgDurationMs * performance.totalRequests
+function buildScoreInput(stats: AgentConfigRecord, performance: AgentConfigRecord, quality: AgentConfigRecord) {
+  const avgDurationMs = numberValue(performance.avgDurationMs);
+  const totalRequests = numberValue(performance.totalRequests);
+  const performanceDuration = avgDurationMs && totalRequests
+    ? avgDurationMs * totalRequests
     : 0;
   return {
     totalJobs: stats.total,
     successes: stats.completed,
-    failures: stats.failed + stats.blocked + (stats.cancelled || 0),
-    totalDurationMs: stats.totalDurationMs || performanceDuration,
-    retries: stats.retryCount || 0,
-    verifierPasses: quality.pass || 0,
-    verifierRuns: quality.total || 0,
-    timeouts: stats.timeoutCount || 0,
-    userRejections: stats.userRejectionCount || 0,
+    failures: numberValue(stats.failed) + numberValue(stats.blocked) + numberValue(stats.cancelled),
+    totalDurationMs: numberValue(stats.totalDurationMs, performanceDuration),
+    retries: numberValue(stats.retryCount),
+    verifierPasses: numberValue(quality.pass),
+    verifierRuns: numberValue(quality.total),
+    timeouts: numberValue(stats.timeoutCount),
+    userRejections: numberValue(stats.userRejectionCount),
   };
 }
 
-export async function collectAgentMetrics(cpbRoot: string, _options: Record<string, any> = {}) {
+export async function collectAgentMetrics(cpbRoot: string, _options: AgentConfigRecord = {}) {
   let descriptors = [];
   try {
     await agentRegistry.loadRegistry(undefined);
@@ -406,7 +520,7 @@ export async function collectAgentMetrics(cpbRoot: string, _options: Record<stri
     return { agents: [], timestamp: new Date().toISOString() };
   }
 
-  const allJobs = await listJobs(cpbRoot).catch(() => []);
+  const allJobs: AgentJobRecord[] = await listJobs(cpbRoot).catch(() => []);
   const jobsByAgent = classifyJobsByAgent(allJobs);
 
   const allNames = new Set([
@@ -478,17 +592,17 @@ export async function collectAgentMetrics(cpbRoot: string, _options: Record<stri
 
 export async function getAgentDetail(cpbRoot: string, agentName: string) {
   const metrics = await collectAgentMetrics(cpbRoot);
-  return metrics.agents.find((a: AnyRecord) => a.name === agentName) || null;
+  return metrics.agents.find((a: AgentMetricRecord) => a.name === agentName) || null;
 }
 
-export async function getAgentJobs(cpbRoot: string, agentName: string, opts: Record<string, any> = {}) {
-  const limit = opts.limit ?? 50;
-  const allJobs = await listJobs(cpbRoot).catch(() => []);
+export async function getAgentJobs(cpbRoot: string, agentName: string, opts: AgentConfigRecord = {}) {
+  const limit = Math.max(0, numberValue(opts.limit, 50));
+  const allJobs: AgentJobRecord[] = await listJobs(cpbRoot).catch(() => []);
   return allJobs
-    .filter((j: AnyRecord) => resolveAgentForJob(j) === agentName)
-    .sort((a: AnyRecord, b: AnyRecord) => (b.createdAt || 0) - (a.createdAt || 0))
+    .filter((j: AgentJobRecord) => resolveAgentForJob(j) === agentName)
+    .sort((a: AgentJobRecord, b: AgentJobRecord) => (timestampMs(b.createdAt) || 0) - (timestampMs(a.createdAt) || 0))
     .slice(0, limit)
-    .map((j: AnyRecord) => ({
+    .map((j: AgentJobRecord) => ({
       jobId: j.jobId,
       project: j.project,
       task: j.task,
@@ -508,15 +622,17 @@ export async function getAgentJobs(cpbRoot: string, agentName: string, opts: Rec
 import { listSetupAgents } from "../../../core/setup/agent-catalog.js";
 import { detectSetupEnvironment } from "../../../core/setup/detect.js";
 
-function installMethods(agent: AnyRecord) {
+function installMethods(agent: AgentMetricRecord) {
   return Object.keys(agent.install || {});
 }
 
-function preferredMethod(agent: AnyRecord, setupSnapshot: AnyRecord = {}) {
-  const snapshot = setupSnapshot as Record<string, any>;
+function preferredMethod(agent: AgentMetricRecord, setupSnapshot: AgentMetricRecord = {}) {
+  const tools = metricRecord(setupSnapshot.tools);
+  const brew = metricRecord(tools.brew);
+  const npm = metricRecord(tools.npm);
   const methods = installMethods(agent);
-  if (methods.includes("brew") && snapshot.tools?.brew?.installed) return "brew";
-  if (methods.includes("npm") && snapshot.tools?.npm?.installed) return "npm";
+  if (methods.includes("brew") && brew.installed) return "brew";
+  if (methods.includes("npm") && npm.installed) return "npm";
   return methods[0] || "manual";
 }
 
@@ -525,13 +641,14 @@ function splitSimpleCommand(command: string) {
   return { command: parts[0] || "", args: parts.slice(1) };
 }
 
-function buildNonExecutingPlan(agent: AnyRecord, method: string) {
+function buildNonExecutingPlan(agent: AgentMetricRecord, method: string) {
   const install = agent.install?.[method] || null;
   if (!install) return null;
-  const shell = /[|&;<>()]/.test(install.command || "");
+  const installCommand = String(install.command || "");
+  const shell = /[|&;<>()]/.test(installCommand);
   const parsed = shell
-    ? { command: "sh", args: ["-lc", install.command] }
-    : splitSimpleCommand(install.command);
+    ? { command: "sh", args: ["-lc", installCommand] }
+    : splitSimpleCommand(installCommand);
 
   return {
     method,
@@ -539,7 +656,7 @@ function buildNonExecutingPlan(agent: AnyRecord, method: string) {
     safePlanCommand: `cpb agents install ${agent.id} --method ${method}`,
     command: parsed.command,
     args: parsed.args,
-    displayCommand: install.command,
+    displayCommand: installCommand,
     sourceUrl: install.sourceUrl || agent.sourceUrl || null,
     notes: install.notes || [],
     requiresExplicitConfirmation: true,
@@ -550,16 +667,20 @@ function buildNonExecutingPlan(agent: AnyRecord, method: string) {
 
 export function buildAgentSetupReadiness({
   setupSnapshot = {},
-  catalog = listSetupAgents(),
-}: Record<string, any> = {}) {
-  const agents = catalog.map((agent: AnyRecord) => {
-    const probe = setupSnapshot.agents?.[agent.id] || { installed: false, status: "missing" };
+  catalog,
+}: AgentSetupOptions = {}) {
+  const snapshot = metricRecord(setupSnapshot);
+  const setupAgents = metricRecord(snapshot.agents);
+  const agents = (catalog || listSetupAgents()).map((agentValue: unknown) => {
+    const agent = metricRecord(agentValue);
+    const agentId = String(agent.id || "");
+    const probe = metricRecord(setupAgents[agentId] || { installed: false, status: "missing" });
     const installed = Boolean(probe.installed);
-    const method = preferredMethod(agent, setupSnapshot);
+    const method = preferredMethod(agent, snapshot);
     const plan = installed ? null : buildNonExecutingPlan(agent, method);
 
     return {
-      id: agent.id,
+      id: agentId,
       displayName: agent.displayName,
       vendor: agent.vendor,
       binary: agent.binary,
@@ -585,14 +706,14 @@ export function buildAgentSetupReadiness({
 
   return {
     agents,
-    timestamp: setupSnapshot.generatedAt || new Date().toISOString(),
+    timestamp: snapshot.generatedAt || new Date().toISOString(),
   };
 }
 
 export async function collectAgentSetupReadiness({
   detect = detectSetupEnvironment,
-  catalog = listSetupAgents(),
-}: Record<string, any> = {}) {
-  const setupSnapshot = await detect();
+  catalog,
+}: { detect?: () => Promise<unknown>; catalog?: AgentMetricRecord[] } = {}) {
+  const setupSnapshot = metricRecord(await detect());
   return buildAgentSetupReadiness({ setupSnapshot, catalog });
 }

@@ -1,3 +1,4 @@
+import type { LooseRecord } from "../../shared/types.js";
 /**
  * Provider Quota — centralised provider availability state.
  *
@@ -118,9 +119,9 @@ export async function readProviderQuotas(hubRoot: string) {
 }
 
 // In-process write queue to prevent concurrent write corruption
-const _writeQueues = new Map<string, Promise<Record<string, unknown> | null>>();
+const _writeQueues = new Map<string, Promise<LooseRecord | null>>();
 
-export async function _internalWriteProviderQuota(hubRoot: string, providerKey: string, entry: Record<string, unknown>) {
+export async function _internalWriteProviderQuota(hubRoot: string, providerKey: string, entry: LooseRecord) {
   const filePath = quotasFilePath(hubRoot);
   const queueKey = filePath;
   const prev = _writeQueues.get(queueKey) || Promise.resolve();

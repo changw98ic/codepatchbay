@@ -16,9 +16,13 @@ test("P0/P1 focused node tests run through run-node-tests for deterministic fake
   ));
 
   assert.match(source, /scripts\/run-node-tests\.js/);
+  assert.match(source, /tests\/checklist-decompose-integration\.test\.js/);
+  assert.match(source, /tests\/phase-budget-policy\.test\.js/);
   assert.match(source, /tests\/phase-retry\.test\.js/);
   assert.match(source, /tests\/provider-handoff\.test\.js/);
   assert.match(source, /tests\/provider-quota-fallback\.test\.js/);
+  assert.match(source, /tests\/release-gate-runner\.test\.js/);
+  assert.match(source, /tests\/swebench-batch-queue\.test\.js/);
   assert.doesNotMatch(
     source,
     /focused P0\/P1 node tests"[\s\S]*process\.execPath,\s*\["--test",\s*\.{3}focusedTests\]/,
@@ -73,4 +77,13 @@ test("P0/P1 verifier stops before spawning checks when focused test files are mi
       return true;
     },
   );
+});
+
+test("P0/P1 runner self-test runs isolated from parallel focused tests", async () => {
+  const source = await readFile(path.join(repoRoot, "scripts", "run-node-tests.ts"), "utf8").catch(() => (
+    readFile(path.join(process.cwd(), "scripts", "run-node-tests.ts"), "utf8")
+  ));
+
+  assert.match(source, /const isolatedUnitFiles = new Set/);
+  assert.match(source, /"tests\/verify-p0p1-runner\.test\.js"/);
 });

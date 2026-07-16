@@ -1,4 +1,4 @@
-import { AnyRecord } from "../../shared/types.js";
+import { LooseRecord } from "../../shared/types.js";
 import { AssignmentStore } from "../../shared/orchestrator/assignment-store.js";
 import {
   DEFAULT_MAX_ACTIVE_PER_PROJECT,
@@ -19,11 +19,95 @@ import { checkCodeGraphReady } from "../services/infra.js";
 
 const CLAIM_TIMEOUT_MS = 120_000;
 
+type QueueEntryInputForScheduler = Parameters<typeof isMutatingEntry>[0];
+type QueueEntryForScheduler = Parameters<typeof recoverStaleInProgressAsync>[0][number];
+type QueueMetadataForScheduler = NonNullable<QueueEntryInputForScheduler["metadata"]>;
+
+type SchedulerAgentSpec = LooseRecord & {
+  agent?: string;
+};
+
+type SchedulerAgents = LooseRecord & {
+  executor?: SchedulerAgentSpec;
+  default?: SchedulerAgentSpec;
+};
+
+type RetryDecision = {
+  untilTs?: unknown;
+};
+
+type RetryEvidence = LooseRecord & {
+  retryStrategy?: unknown;
+  failureFingerprint?: unknown;
+  failureClass?: unknown;
+};
+
+type SchedulerMetadata = QueueMetadataForScheduler & {
+  agents?: SchedulerAgents;
+  dependsOn?: string[];
+  retryDecision?: RetryDecision;
+  sourceContext?: LooseRecord & { retry?: RetryEvidence };
+  lastFailureKind?: string;
+  failureCount?: number;
+};
+
+type SchedulerEntry = QueueEntryForScheduler & {
+  id: string;
+  projectId: string;
+  status?: string;
+  priority?: string;
+  createdAt: string;
+  claimedAt?: string | null;
+  updatedAt?: string;
+  reason?: string;
+  indexSnapshotId?: string | null;
+  metadata?: SchedulerMetadata;
+};
+
+type ProjectRecord = LooseRecord & {
+  sourcePath?: string;
+  projectRuntimeRoot?: string;
+  cpbRoot?: string;
+  metadata?: LooseRecord & { cpbRoot?: string };
+};
+
+type ProviderCapacity = {
+  available: number;
+  total: number;
+  providerKey?: string;
+};
+
+type ProviderCapacityFn = (agentKey: string, entry: SchedulerEntry) => Promise<ProviderCapacity | boolean>;
+
+type WorkerStoreLike = {
+  findIdleWorker(projectId?: string): Promise<LooseRecord | null>;
+};
+
+type SchedulerOptions = {
+  assignmentStore: AssignmentStore;
+  workerStore: WorkerStoreLike;
+  cpbRoot?: string | null;
+  maxActivePerProject?: number;
+  getProjectFn?: ((hubRoot: string, projectId: string) => Promise<ProjectRecord | null>) | null;
+  providerCapacityFn?: ProviderCapacityFn | null;
+};
+
+type SmartSelectContext = {
+  activeMutatingByProject: Record<string, number>;
+  projectLimits: Map<string, number>;
+  hubLimits: { maxActivePerProject: number };
+  allEntries: SchedulerEntry[];
+};
+
 function nowIso() {
   return new Date().toISOString();
 }
 
-function providerAgentForEntry(entry: AnyRecord) {
+function recordValue(value: unknown): LooseRecord {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as LooseRecord : {};
+}
+
+function providerAgentForEntry(entry: SchedulerEntry) {
   const agentSpec = entry.metadata?.agents?.executor || entry.metadata?.agents?.default || {};
   return agentSpec.agent || "claude";
 }
@@ -44,10 +128,10 @@ export class Scheduler {
   hubRoot: string;
   cpbRoot: string | null;
   assignments: AssignmentStore;
-  workers: Record<string, any>; // any: worker store interface varies
+  workers: WorkerStoreLike;
   maxActivePerProject: number;
-  getProjectFn: ((hubRoot: string, projectId: string) => Promise<AnyRecord | null>) | null;
-  providerCapacityFn: ((agentKey: string, entry: AnyRecord) => Promise<{ available: number; total: number; providerKey?: string } | boolean>) | null;
+  getProjectFn: ((hubRoot: string, projectId: string) => Promise<ProjectRecord | null>) | null;
+  providerCapacityFn: ProviderCapacityFn | null;
 
   /**
    * @param {string} hubRoot
@@ -67,7 +151,7 @@ export class Scheduler {
     maxActivePerProject = DEFAULT_MAX_ACTIVE_PER_PROJECT,
     getProjectFn = null,
     providerCapacityFn = null,
-  }: AnyRecord) {
+  }: SchedulerOptions) {
     this.hubRoot = hubRoot;
     this.cpbRoot = cpbRoot;
     this.assignments = assignmentStore;
@@ -88,28 +172,47 @@ export class Scheduler {
    */
   async _preparePendingPool() {
     const { listQueue, updateEntry } = await import("../services/hub/hub-queue.js");
-    const allEntries = await listQueue(this.hubRoot);
+    const allEntries = await listQueue(this.hubRoot) as SchedulerEntry[];
+    const recoveryGuards = new Map(allEntries.map((entry) => [entry.id, {
+      expectedStatus: entry.status,
+      expectedClaimedAt: entry.claimedAt ?? null,
+      expectedUpdatedAt: entry.updatedAt ?? null,
+    }]));
 
     const { recovered, refreshed } = await recoverStaleInProgressAsync(allEntries, {
       claimTimeoutMs: CLAIM_TIMEOUT_MS,
       assignmentStore: this.assignments,
     });
     for (const id of recovered) {
-      await updateEntry(this.hubRoot, id, { status: "pending", claimedBy: null, claimedAt: null });
+      await updateEntry(
+        this.hubRoot,
+        id,
+        { status: "pending", claimedBy: null, claimedAt: null },
+        recoveryGuards.get(id),
+      );
     }
     for (const id of refreshed) {
       const entry = allEntries.find((e) => e.id === id);
-      if (entry) await updateEntry(this.hubRoot, id, { claimedAt: entry.claimedAt });
+      if (entry) {
+        await updateEntry(
+          this.hubRoot,
+          id,
+          { claimedAt: entry.claimedAt },
+          recoveryGuards.get(id),
+        );
+      }
     }
 
-    return allEntries;
+    // Recovery mutates the in-memory snapshot. Re-read so a failed CAS cannot
+    // leak stale scheduler state into candidate selection.
+    return await listQueue(this.hubRoot) as SchedulerEntry[];
   }
 
   /**
    * Filter pending entries by DAG dependencies.
    * An entry is DAG-ready when all its declared dependencies are completed.
    */
-  _filterDagReady(pending: AnyRecord[], allEntries: AnyRecord[]) {
+  _filterDagReady(pending: SchedulerEntry[], allEntries: SchedulerEntry[]) {
     const completedIds = new Set(
       allEntries.filter(e => e.status === "completed").map(e => e.id),
     );
@@ -125,14 +228,12 @@ export class Scheduler {
    * Returns entries that fit within remaining provider slots.
    * When provider is full, returns empty — queue, don't fail.
    */
-  _filterByProviderCapacity(pending: AnyRecord[]) {
+  _filterByProviderCapacity(pending: SchedulerEntry[]) {
     return pending;
   }
 
-  /**
-   * Filter by per-project limits when NOT using provider-only capacity.
-   */
-  _filterByProjectCapacity(pending: AnyRecord[], activeMutatingByProject: Record<string, number>, projectLimits: Map<string, number>, hubLimits: AnyRecord) {
+  /** Filter entries whose project already has no remaining mutating capacity. */
+  _filterByProjectCapacity(pending: SchedulerEntry[], activeMutatingByProject: Record<string, number>, projectLimits: Map<string, number>, hubLimits: { maxActivePerProject: number }) {
     return pending.filter(e => {
       if (isMutatingEntry(e)) {
         const projectLimit = projectLimits.get(e.projectId) ?? hubLimits.maxActivePerProject;
@@ -144,7 +245,22 @@ export class Scheduler {
     });
   }
 
-  _filterByRetryDecisionDue(pending: AnyRecord[]) {
+  /** Reserve remaining project slots across the candidate batch. */
+  _reserveProjectCapacity(pending: SchedulerEntry[], activeMutatingByProject: Record<string, number>, projectLimits: Map<string, number>, hubLimits: { maxActivePerProject: number }) {
+    const reservedByProject: Record<string, number> = {};
+    return pending.filter((entry) => {
+      if (!isMutatingEntry(entry)) return true;
+      const projectLimit = projectLimits.get(entry.projectId) ?? hubLimits.maxActivePerProject;
+      if (projectLimit <= 0) return true;
+      const projected = (activeMutatingByProject[entry.projectId] || 0)
+        + (reservedByProject[entry.projectId] || 0);
+      if (projected >= projectLimit) return false;
+      reservedByProject[entry.projectId] = (reservedByProject[entry.projectId] || 0) + 1;
+      return true;
+    });
+  }
+
+  _filterByRetryDecisionDue(pending: SchedulerEntry[]) {
     const now = Date.now();
     return pending.filter((entry) => {
       const untilMs = parseRetryUntilMs(entry.metadata?.retryDecision?.untilTs);
@@ -164,8 +280,7 @@ export class Scheduler {
   /**
    * Find up to `batchSize` eligible pending queue entries.
    * DAG-ready: entries with unmet dependencies are excluded.
-   * Provider-only capacity: when providerCapacityFn is set, scheduling
-   * is gated by provider slots, not per-project caps.
+   * Provider capacity and per-project capacity are independent safety gates.
    */
   async nextCandidates(batchSize = Infinity) {
     const allEntries = await this._preparePendingPool();
@@ -181,37 +296,24 @@ export class Scheduler {
     pending = await this._applyProjectReadinessGate(pending);
     if (pending.length === 0) return [];
 
-    if (!this.providerCapacityFn) {
-      const hubLimits = await resolveHubConcurrencyLimits(this.hubRoot, {
-        maxActivePerProject: this.maxActivePerProject,
-      });
-      const activeMutatingByProject: Record<string, number> = {};
-      for (const entry of allEntries) {
-        if (isActiveEntry(entry) && isMutatingEntry(entry)) {
-          activeMutatingByProject[entry.projectId] = (activeMutatingByProject[entry.projectId] || 0) + 1;
-        }
+    const hubLimits = await resolveHubConcurrencyLimits(this.hubRoot, {
+      maxActivePerProject: this.maxActivePerProject,
+    });
+    const activeMutatingByProject: Record<string, number> = {};
+    for (const entry of allEntries) {
+      if (isActiveEntry(entry) && isMutatingEntry(entry)) {
+        activeMutatingByProject[entry.projectId] = (activeMutatingByProject[entry.projectId] || 0) + 1;
       }
-      const projectLimits = await this.#resolveProjectLimits(allEntries, hubLimits.maxActivePerProject);
-      pending = this._filterByProjectCapacity(pending, activeMutatingByProject, projectLimits, hubLimits);
     }
+    const projectLimits = await this.#resolveProjectLimits(allEntries, hubLimits.maxActivePerProject);
+    pending = this._filterByProjectCapacity(pending, activeMutatingByProject, projectLimits, hubLimits);
 
     if (pending.length === 0) return [];
 
     // Sort
     const mode = await this._readMode();
     if (mode === "smart") {
-      const hubLimits = await resolveHubConcurrencyLimits(this.hubRoot, {
-        maxActivePerProject: this.maxActivePerProject,
-      });
-      const activeMutatingByProject: Record<string, number> = {};
-      for (const entry of allEntries) {
-        if (isActiveEntry(entry) && isMutatingEntry(entry)) {
-          activeMutatingByProject[entry.projectId] = (activeMutatingByProject[entry.projectId] || 0) + 1;
-        }
-      }
-      const projectLimits = await this.#resolveProjectLimits(allEntries, hubLimits.maxActivePerProject);
-      const selected = await this._smartSelect(pending, { activeMutatingByProject, projectLimits, hubLimits, allEntries });
-      pending = selected ? [selected] : [];
+      pending = await this._smartRank(pending, { activeMutatingByProject, projectLimits, hubLimits, allEntries });
     } else {
       pending.sort((a, b) => {
         const pa = priorityScore(a.priority);
@@ -222,13 +324,24 @@ export class Scheduler {
     }
 
     if (this.providerCapacityFn) {
-      pending = await this._applyProviderCapacityGate(pending, allEntries, batchSize);
+      pending = await this._applyProviderCapacityGate(
+        pending,
+        allEntries,
+        Number.POSITIVE_INFINITY,
+      );
     }
+
+    pending = this._reserveProjectCapacity(
+      pending,
+      activeMutatingByProject,
+      projectLimits,
+      hubLimits,
+    );
 
     return pending.slice(0, batchSize);
   }
 
-  async _applyProjectReadinessGate(pending: AnyRecord[]) {
+  async _applyProjectReadinessGate(pending: SchedulerEntry[]) {
     if (!this.getProjectFn) return pending;
     const eligible = [];
     for (const entry of pending) {
@@ -242,11 +355,15 @@ export class Scheduler {
             reason: "project_not_found",
           },
         };
-        await updateEntry(this.hubRoot, entry.id, {
+        const updated = await updateEntry(this.hubRoot, entry.id, {
           status: "blocked",
           reason: `Project '${entry.projectId}' not found`,
           metadata,
+        }, {
+          expectedStatus: "pending",
+          expectedUpdatedAt: entry.updatedAt ?? null,
         });
+        if (!updated) continue;
         entry.status = "blocked";
         entry.reason = `Project '${entry.projectId}' not found`;
         entry.metadata = metadata;
@@ -288,12 +405,14 @@ export class Scheduler {
           sourcePath: project.sourcePath,
         });
       } catch (err) {
-        const reason = err?.details?.reason || err?.code || "codegraph_unavailable";
+        const errorInfo = recordValue(err);
+        const details = recordValue(errorInfo.details);
+        const reason = String(details.reason || errorInfo.code || "codegraph_unavailable");
         await this._markCodegraphUnavailable(entry, {
           codegraphReadiness: {
             available: false,
             reason,
-            details: err?.details || null,
+            details: Object.keys(details).length > 0 ? details : null,
           },
           indexFreshness: {
             available: false,
@@ -340,25 +459,35 @@ export class Scheduler {
         },
       };
       const { updateEntry } = await import("../services/hub/hub-queue.js");
-      await updateEntry(this.hubRoot, entry.id, { metadata: nextMetadata });
+      const updated = await updateEntry(this.hubRoot, entry.id, { metadata: nextMetadata }, {
+        expectedStatus: "pending",
+        expectedUpdatedAt: entry.updatedAt ?? null,
+      });
+      if (!updated) continue;
       entry.metadata = nextMetadata;
       entry.indexSnapshotId = fresh.indexSnapshotId;
+      entry.updatedAt = typeof updated.updatedAt === "string" ? updated.updatedAt : entry.updatedAt;
       eligible.push(entry);
     }
     return eligible;
   }
 
-  async _markCodegraphUnavailable(entry: AnyRecord, metadataPatch: AnyRecord) {
+  async _markCodegraphUnavailable(entry: SchedulerEntry, metadataPatch: SchedulerMetadata) {
     const metadata = { ...(entry.metadata || {}), ...metadataPatch };
     const { updateEntry } = await import("../services/hub/hub-queue.js");
-    await updateEntry(this.hubRoot, entry.id, {
+    const updated = await updateEntry(this.hubRoot, entry.id, {
       status: "codegraph_unavailable",
       updatedAt: nowIso(),
       metadata,
+    }, {
+      expectedStatus: "pending",
+      expectedUpdatedAt: entry.updatedAt ?? null,
     });
+    if (!updated) return false;
     entry.status = "codegraph_unavailable";
     entry.updatedAt = nowIso();
     entry.metadata = metadata;
+    return true;
   }
 
   /**
@@ -366,9 +495,9 @@ export class Scheduler {
    * Supports the aggregate capacity contract and a per-entry boolean contract.
    * Returns up to `batchSize` eligible entries across all providers.
    */
-  async _applyProviderCapacityGate(pending: AnyRecord[], allEntries: AnyRecord[], batchSize: number) {
+  async _applyProviderCapacityGate(pending: SchedulerEntry[], allEntries: SchedulerEntry[], batchSize: number) {
     const first = pending[0];
-    if (!first) return [];
+    if (!first || !this.providerCapacityFn) return [];
 
     const capacity = await this.providerCapacityFn(providerAgentForEntry(first), first);
     if (typeof capacity === "boolean") {
@@ -383,9 +512,9 @@ export class Scheduler {
       return eligible.slice(0, batchSize);
     }
 
-    const eligible: AnyRecord[] = [];
+    const eligible: SchedulerEntry[] = [];
     const projectedByProvider = new Map<string, number>();
-    const fits = async (entry: AnyRecord, prechecked: { available: number; total: number; providerKey?: string } | null = null) => {
+    const fits = async (entry: SchedulerEntry, prechecked: ProviderCapacity | null = null) => {
       const provider = providerAgentForEntry(entry);
       const cap = prechecked || await this.providerCapacityFn(provider, entry);
       if (!cap || typeof cap !== "object") return false;
@@ -412,11 +541,11 @@ export class Scheduler {
    * Considers priority, queue age/starvation, project pressure, failure metadata,
    * and provider quota state.
    */
-  async _smartSelect(pending: AnyRecord[], ctx: AnyRecord) {
+  async _smartRank(pending: SchedulerEntry[], ctx: SmartSelectContext) {
     const now = Date.now();
 
     // Gather provider quota state
-    let providerQuotas: AnyRecord = {};
+    let providerQuotas: LooseRecord = {};
     try {
       const { readProviderQuotas } = await import("../services/provider-quota.js");
       providerQuotas = await readProviderQuotas(this.hubRoot);
@@ -431,7 +560,7 @@ export class Scheduler {
     }
 
     const scored = pending.map(entry => {
-      const reasons = [];
+      const reasons: string[] = [];
       let score = 0;
 
       // 1. Priority (lower = more urgent)
@@ -457,6 +586,7 @@ export class Scheduler {
 
       // 4. Recent retry / failure metadata
       const meta = entry.metadata || {};
+      const retryEvidence = meta.sourceContext?.retry || {};
       const lastFailure = meta.lastFailureKind || "";
       if (lastFailure === "verification_failed") {
         score += 5;
@@ -476,14 +606,36 @@ export class Scheduler {
         reasons.push(`failures:${failureCount}`);
       }
 
+      // A fresh attempt is useful only when it carries a concrete strategy
+      // change and a stable failure fingerprint. This prevents blind retries
+      // from outranking first attempts while still prioritizing actionable
+      // near-complete work.
+      const retryStrategy = typeof retryEvidence.retryStrategy === "string"
+        ? retryEvidence.retryStrategy
+        : null;
+      const failureFingerprint = typeof retryEvidence.failureFingerprint === "string"
+        ? retryEvidence.failureFingerprint
+        : null;
+      if ((retryStrategy?.startsWith("fresh_session") || retryStrategy === "fresh_attempt") && failureFingerprint) {
+        score += 4;
+        reasons.push(retryStrategy === "fresh_attempt" ? "evidence-backed-fresh-attempt" : "evidence-backed-fresh-session");
+      } else if (retryStrategy && failureFingerprint) {
+        score += 2;
+        reasons.push(`evidence-backed-retry:${retryStrategy}`);
+      } else if (retryStrategy || failureFingerprint) {
+        score -= 3;
+        reasons.push("incomplete-retry-evidence");
+      }
+
       // 5. Provider quota/rate-limit state
       const agentSpec = meta.agents?.executor || meta.agents?.default || {};
       const providerKey = agentSpec.agent || "claude";
-      const quota = providerQuotas[providerKey];
+      const quota = recordValue(providerQuotas[providerKey]);
       if (quota && quota.status !== "available") {
-        if (quota.nextEligibleAt && quota.nextEligibleAt > now) {
+        const nextEligibleAt = parseRetryUntilMs(quota.nextEligibleAt);
+        if (nextEligibleAt !== null && nextEligibleAt > now) {
           score -= 10;
-          reasons.push(`provider:${quota.status}`);
+          reasons.push(`provider:${String(quota.status)}`);
         }
       }
 
@@ -501,28 +653,31 @@ export class Scheduler {
       return a.entry.createdAt.localeCompare(b.entry.createdAt);
     });
 
-    const winner = scored[0];
-    if (!winner) return null;
-
-    // Attach scheduler decision metadata
-    winner.entry.metadata = {
-      ...(winner.entry.metadata || {}),
-      schedulerDecision: {
-        mode: "smart",
-        selectedAt: new Date().toISOString(),
-        score: winner.score,
-        reasons: winner.reasons,
-      },
-    };
-
-    return winner.entry;
+    const selectedAt = new Date().toISOString();
+    return scored.map(({ entry, score, reasons }, index) => {
+      const retryEvidence = entry.metadata?.sourceContext?.retry || {};
+      entry.metadata = {
+        ...(entry.metadata || {}),
+        schedulerDecision: {
+          mode: "smart",
+          selectedAt,
+          rank: index + 1,
+          score,
+          reasons,
+          retryStrategy: typeof retryEvidence.retryStrategy === "string" ? retryEvidence.retryStrategy : null,
+          failureFingerprint: typeof retryEvidence.failureFingerprint === "string" ? retryEvidence.failureFingerprint : null,
+          failureClass: typeof retryEvidence.failureClass === "string" ? retryEvidence.failureClass : null,
+        },
+      };
+      return entry;
+    });
   }
 
   async findIdleWorker(projectId: string) {
     return this.workers.findIdleWorker(projectId);
   }
 
-  async #resolveProjectLimits(entries: AnyRecord[], maxActivePerProject: number) {
+  async #resolveProjectLimits(entries: SchedulerEntry[], maxActivePerProject: number) {
     const projectIds = [...new Set(entries.map((entry) => entry.projectId).filter(Boolean))];
     return resolveProjectConcurrencyLimits(this.hubRoot, projectIds, {
       maxActivePerProject,

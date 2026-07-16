@@ -99,3 +99,67 @@ test("resolveProviderKey and resolveRawAgent preserve legacy selection semantics
   assert.equal(resolveProviderKey(null, { agent: "claude", variant: "sonnet" }, null), "claude:sonnet");
   assert.equal(resolveProviderKey(null, null, "codex"), "codex");
 });
+
+test("preflightProvider never selects a fallback from the excluded executor provider family", async () => {
+  const checkedProviders: string[] = [];
+  const result = await preflightProvider({
+    providerServices: {
+      async assertProviderAvailable(_hubRoot: string, payload: { providerKey: string }) {
+        checkedProviders.push(payload.providerKey);
+      },
+    },
+    hubRoot: "/tmp/cpb-hub",
+    pool: {
+      providerKey(agent: string) {
+        return agent;
+      },
+      fallbackCandidates() {
+        return [
+          { providerKey: "codex:gpt-5", agent: "codex", variant: "gpt-5" },
+          { providerKey: "claude:sonnet", agent: "claude", variant: "sonnet" },
+        ];
+      },
+    },
+    phase: "verify",
+    role: "verifier",
+    agents: { verifier: "codex" },
+    agent: "codex",
+    excludeProviderFamily: "codex",
+  });
+
+  assert.deepEqual(checkedProviders, ["claude:sonnet"]);
+  assert.equal(result?.selectedProviderKey, "claude:sonnet");
+  assert.deepEqual(result?.selectedAgent, { agent: "claude", variant: "sonnet" });
+});
+
+test("preflightProvider never checks or selects agents outside the allowed universe", async () => {
+  const checkedProviders: string[] = [];
+  const result = await preflightProvider({
+    providerServices: {
+      async assertProviderAvailable(_hubRoot: string, payload: { providerKey: string }) {
+        checkedProviders.push(payload.providerKey);
+      },
+    },
+    hubRoot: "/tmp/cpb-hub",
+    pool: {
+      providerKey(agent: string) {
+        return agent;
+      },
+      fallbackCandidates() {
+        return [
+          { providerKey: "claude:sonnet", agent: "claude", variant: "sonnet" },
+          { providerKey: "claude:glm", agent: "claude-glm", variant: null },
+        ];
+      },
+    },
+    phase: "verify",
+    role: "verifier",
+    agents: { verifier: "claude" },
+    agent: "claude",
+    allowedAgents: ["codex", "claude-glm"],
+  });
+
+  assert.deepEqual(checkedProviders, ["claude:glm"]);
+  assert.equal(result?.selectedProviderKey, "claude:glm");
+  assert.equal(result?.selectedAgent, "claude-glm");
+});

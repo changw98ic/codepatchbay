@@ -39,7 +39,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { AnyRecord } from "../shared/types.js";
+import { LooseRecord } from "../shared/types.js";
 
 import {
   validateAcceptanceChecklist,
@@ -50,7 +50,7 @@ import { evaluateCompletionGate } from "../core/engine/completion-gate.js";
 
 // ─── Shared fixtures ──────────────────────────────────────────────────────
 
-function baseChecklist(assumptions: AnyRecord[] = []) {
+function baseChecklist(assumptions: LooseRecord[] = []) {
   return {
     schemaVersion: 1,
     jobId: "job-r9",
@@ -96,7 +96,7 @@ function validEvidence(evidenceId = "EV-001") {
   };
 }
 
-function passingLedger(evidence: AnyRecord[] = [validEvidence()]) {
+function passingLedger(evidence: LooseRecord[] = [validEvidence()]) {
   return {
     schemaVersion: 1,
     ledgerId: "evidence-ledger-r9",

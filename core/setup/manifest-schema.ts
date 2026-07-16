@@ -1,3 +1,4 @@
+import { recordValue, type LooseRecord } from "../../shared/types.js";
 function isNonEmptyString(value: unknown) {
   return typeof value === "string" && value.trim().length > 0;
 }
@@ -6,64 +7,65 @@ function isStringArray(value: unknown) {
   return Array.isArray(value) && value.length > 0 && value.every(isNonEmptyString);
 }
 
-function pushStringError(errors: string[], manifest: Record<string, any>, key: string) {
+function pushStringError(errors: string[], manifest: LooseRecord, key: string) {
   if (!isNonEmptyString(manifest?.[key])) {
     errors.push(`${key} must be a non-empty string`);
   }
 }
 
-function validateMethodEntry(errors: string[], prefix: string, config: Record<string, any>) {
+function validateMethodEntry(errors: string[], prefix: string, config: unknown) {
   if (!config || typeof config !== "object" || Array.isArray(config)) {
     errors.push(`${prefix} must be an object`);
     return;
   }
-  if (!isNonEmptyString(config.label)) {
+  const entry = recordValue(config);
+  if (!isNonEmptyString(entry.label)) {
     errors.push(`${prefix}.label must be a non-empty string`);
   }
-  if (!isNonEmptyString(config.command)) {
+  if (!isNonEmptyString(entry.command)) {
     errors.push(`${prefix}.command must be a non-empty string`);
   }
-  if (config.sourceUrl !== undefined && !isNonEmptyString(config.sourceUrl)) {
+  if (entry.sourceUrl !== undefined && !isNonEmptyString(entry.sourceUrl)) {
     errors.push(`${prefix}.sourceUrl must be a non-empty string when present`);
   }
-  if (config.notes !== undefined && !isStringArray(config.notes)) {
+  if (entry.notes !== undefined && !isStringArray(entry.notes)) {
     errors.push(`${prefix}.notes must be a non-empty string array when present`);
   }
 }
 
-function validateInstall(errors: string[], install: Record<string, any>) {
+function validateInstall(errors: string[], install: unknown) {
   if (!install || typeof install !== "object" || Array.isArray(install)) {
     errors.push("install must be an object with at least one method");
     return;
   }
 
-  const entries = Object.entries(install);
+  const entries = Object.entries(recordValue(install));
   if (entries.length === 0) {
     errors.push("install must define at least one method");
     return;
   }
 
   for (const [method, config] of entries) {
+    const entry = recordValue(config);
     validateMethodEntry(errors, `install.${method}`, config);
-    const methodConfig = config as Record<string, any>;
-    if (methodConfig.pinnedCommandTemplate !== undefined && !isNonEmptyString(methodConfig.pinnedCommandTemplate)) {
+    if (entry.pinnedCommandTemplate !== undefined && !isNonEmptyString(entry.pinnedCommandTemplate)) {
       errors.push(`install.${method}.pinnedCommandTemplate must be a non-empty string when present`);
     }
   }
 }
 
-function validateUpgrade(errors: string[], upgrade: Record<string, any>) {
+function validateUpgrade(errors: string[], upgrade: unknown) {
   if (upgrade === undefined) return;
   if (!upgrade || typeof upgrade !== "object" || Array.isArray(upgrade)) {
     errors.push("upgrade must be an object when present");
     return;
   }
-  for (const [method, config] of Object.entries(upgrade)) {
+  for (const [method, config] of Object.entries(recordValue(upgrade))) {
     validateMethodEntry(errors, `upgrade.${method}`, config);
   }
 }
 
-export function validateSetupAgentManifest(manifest: Record<string, any>) {
+export function validateSetupAgentManifest(manifest: LooseRecord) {
   const errors: string[] = [];
   if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
     return { valid: false, errors: ["manifest must be an object"] };
@@ -86,17 +88,18 @@ export function validateSetupAgentManifest(manifest: Record<string, any>) {
     if (!manifest.adapter || typeof manifest.adapter !== "object" || Array.isArray(manifest.adapter)) {
       errors.push("adapter must be an object when present");
     } else {
+      const adapter = recordValue(manifest.adapter);
       const validProtocols = new Set(["acp", "cli", "unknown"]);
-      if (!validProtocols.has(manifest.adapter.protocol)) {
+      if (!validProtocols.has(String(adapter.protocol))) {
         errors.push("adapter.protocol must be one of: acp, cli, unknown");
       }
-      if (typeof manifest.adapter.command !== "string" || !manifest.adapter.command.trim()) {
+      if (typeof adapter.command !== "string" || !adapter.command.trim()) {
         errors.push("adapter.command must be a non-empty string");
       }
-      if (manifest.adapter.npxPkg !== undefined && typeof manifest.adapter.npxPkg !== "string") {
+      if (adapter.npxPkg !== undefined && typeof adapter.npxPkg !== "string") {
         errors.push("adapter.npxPkg must be a string when present");
       }
-      if (manifest.adapter.args !== undefined && !Array.isArray(manifest.adapter.args)) {
+      if (adapter.args !== undefined && !Array.isArray(adapter.args)) {
         errors.push("adapter.args must be an array when present");
       }
     }
@@ -105,7 +108,7 @@ export function validateSetupAgentManifest(manifest: Record<string, any>) {
   return { valid: errors.length === 0, errors };
 }
 
-export function assertValidSetupAgentManifest(manifest: Record<string, any>) {
+export function assertValidSetupAgentManifest(manifest: LooseRecord) {
   const result = validateSetupAgentManifest(manifest);
   if (!result.valid) {
     const id = manifest?.id || "<unknown>";
@@ -114,7 +117,7 @@ export function assertValidSetupAgentManifest(manifest: Record<string, any>) {
   return manifest;
 }
 
-export function assertValidSetupAgentCatalog(agents: Record<string, any>[]) {
+export function assertValidSetupAgentCatalog(agents: LooseRecord[]) {
   if (!Array.isArray(agents)) {
     throw new Error("Setup agent catalog must be an array");
   }

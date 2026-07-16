@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test, describe } from "node:test";
 import { tempRoot, writeJson } from "./helpers.js";
@@ -51,7 +51,7 @@ async function setupJobsIndex(root, jobs) {
       createdAt: ts,
       updatedAt: ts,
     };
-    const events: Record<string, any>[] = [
+    const events: Record<string, unknown>[] = [
       {
         type: "job_created",
         jobId: job.jobId,
@@ -286,6 +286,52 @@ describe("worktree-retention: dry-run lists exact paths and reasons", () => {
 });
 
 describe("worktree-retention: actual cleanup executes", () => {
+  test("delete policy preserves a projected worktree outside managed roots", async () => {
+    const root = await tempRoot("cpb-wt-ret");
+    const outside = path.join(root, "outside", "must-preserve");
+    await mkdir(outside, { recursive: true });
+    await writeFile(path.join(outside, "marker.txt"), "preserve", "utf8");
+    const { hubRoot } = await setupJobsIndex(root, [
+      { project: "test", jobId: "job-outside-001", status: "completed", worktree: outside },
+    ]);
+
+    const result = await cleanupWorktrees(root, {
+      policy: { completed: "delete" },
+      dryRun: false,
+      hubRoot,
+    });
+    const entry = result.entries.find((item) => item.jobId === "job-outside-001");
+    assert.equal(entry.action, "preserve");
+    assert.equal(entry.result, "preserved");
+    assert.match(entry.reason, /outside managed worktree roots/);
+    assert.equal(await readFile(path.join(outside, "marker.txt"), "utf8"), "preserve");
+  });
+
+  test("delete policy preserves a symlink inside a managed root", async () => {
+    if (process.platform === "win32") return;
+    const root = await tempRoot("cpb-wt-ret");
+    const outside = path.join(root, "outside", "symlink-target");
+    const link = path.join(root, "worktrees", "linked-worktree");
+    await mkdir(outside, { recursive: true });
+    await mkdir(path.dirname(link), { recursive: true });
+    await writeFile(path.join(outside, "marker.txt"), "preserve", "utf8");
+    await symlink(outside, link, "dir");
+    const { hubRoot } = await setupJobsIndex(root, [
+      { project: "test", jobId: "job-symlink-001", status: "completed", worktree: link },
+    ]);
+
+    const result = await cleanupWorktrees(root, {
+      policy: { completed: "delete" },
+      dryRun: false,
+      hubRoot,
+    });
+    const entry = result.entries.find((item) => item.jobId === "job-symlink-001");
+    assert.equal(entry.action, "preserve");
+    assert.equal(entry.result, "preserved");
+    assert.match(entry.reason, /unsafe managed worktree path/);
+    assert.equal(await readFile(path.join(outside, "marker.txt"), "utf8"), "preserve");
+  });
+
   test("delete action removes worktree directory", async () => {
     const root = await tempRoot("cpb-wt-ret");
     const wtPath = path.join(root, "worktrees", "wt-del");

@@ -27,17 +27,36 @@
 
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
+import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { promisify } from "node:util";
-import { AnyRecord } from "../../shared/types.js";
+import { LooseRecord } from "../../shared/types.js";
+import {
+  parseTrustedProbePolicy,
+  TRUSTED_PROBE_POLICY_PATH,
+  type TrustedProbeSpec,
+} from "./trusted-probe-policy.js";
 
 const execFileAsync = promisify(execFile);
 
 
 /** Command probe wall-clock timeout. Treats timeout as an honest fail. */
 const COMMAND_PROBE_TIMEOUT_MS = 30_000;
+const COMMAND_PROBE_MAX_RETRIES = 1;
+const COMMAND_PROBE_TAIL_CHARS = 2000;
 
 function text(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
+}
+
+/**
+ * Narrow an unknown caught value to an object whose properties may be safely
+ * read. Used only for defensive reads on the shape Node attaches to a failed
+ * execFileAsync (an external/dynamic runtime object), never to fabricate types.
+ */
+function isRecordLike(value: unknown): value is LooseRecord {
+  return typeof value === "object" && value !== null;
 }
 
 /**
@@ -47,8 +66,12 @@ function text(value: unknown): string {
 async function changedFiles(cwd: string, base: string | null): Promise<string[]> {
   const rev = base || "HEAD";
   try {
-    const result = await execFileAsync("git", ["diff", "--name-only", rev], { cwd, maxBuffer: 8 * 1024 * 1024 });
-    return result.stdout.split("\n").map((s) => s.trim()).filter(Boolean);
+    const diff = await execFileAsync("git", ["diff", "--name-only", rev], { cwd, maxBuffer: 8 * 1024 * 1024 });
+    const untracked = await execFileAsync("git", ["ls-files", "--others", "--exclude-standard"], { cwd, maxBuffer: 8 * 1024 * 1024 });
+    return uniqueStrings([
+      ...diff.stdout.split("\n").map((s) => s.trim()).filter(Boolean),
+      ...untracked.stdout.split("\n").map((s) => s.trim()).filter(Boolean),
+    ]);
   } catch {
     // No usable base ref (e.g. empty repo). No diff means no objective
     // scope evidence — probes will honestly report matchCount=0.
@@ -60,6 +83,10 @@ function posixify(p: string): string {
   return p.split("\\").join("/");
 }
 
+function uniqueStrings(values: string[]) {
+  return [...new Set(values)];
+}
+
 /**
  * Count diff hunks within a set of files. Each file with at least one
  * changed hunk contributes 1 to matchCount — a coarse but objective
@@ -67,16 +94,360 @@ function posixify(p: string): string {
  */
 function scopeMatches(changed: string[], allowedFiles: string[]): number {
   if (!Array.isArray(allowedFiles) || allowedFiles.length === 0) return 0;
-  const changedSet = new Set(changed.map(posixify));
   let count = 0;
   for (const f of allowedFiles) {
-    if (changedSet.has(posixify(text(f)))) count += 1;
+    if (changed.some((changedFile) => scopePathMatches(changedFile, text(f)))) count += 1;
   }
   return count;
 }
 
+function scopePathMatches(changedFile: string, allowedFile: string): boolean {
+  const changed = posixify(changedFile);
+  const allowed = posixify(allowedFile);
+  if (!allowed) return false;
+  if (allowed.startsWith("**/")) {
+    const suffix = allowed.slice(3);
+    return changed.startsWith(suffix) || changed.includes(`/${suffix}`);
+  }
+  if (allowed.endsWith("/")) return changed.startsWith(allowed);
+  return changed === allowed || changed.startsWith(`${allowed}/`);
+}
+
+const ORACLE_PROTECTED_ORIGINS = new Set([
+  "benchmark_required",
+  "user_required",
+  "external_oracle",
+  "user_acceptance",
+  "user_provided",
+  "ci_required",
+  "ci_owned",
+  "ci",
+]);
+
+const ORACLE_PATH_FIELDS = [
+  "oracleFiles",
+  "protectedFiles",
+  "acceptanceFiles",
+  "externalOracleFiles",
+  "userAcceptanceFiles",
+  "ciFiles",
+  "commandFiles",
+];
+
+type FileBackup = {
+  file: string;
+  existed: boolean;
+  content?: Buffer;
+  mode?: number;
+};
+
+function stringList(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map(text).filter(Boolean);
+  const single = text(value);
+  return single ? [single] : [];
+}
+
+async function loadTrustedProbePolicy(cwd: string): Promise<Map<string, TrustedProbeSpec>> {
+  try {
+    // HEAD is the trust boundary: an agent may edit the worktree, but cannot
+    // make a newly generated command executable merely by editing this file.
+    const result = await execFileAsync("git", ["show", `HEAD:${TRUSTED_PROBE_POLICY_PATH}`], {
+      cwd,
+      maxBuffer: 1024 * 1024,
+    });
+    const parsed: unknown = JSON.parse(result.stdout);
+    return parseTrustedProbePolicy(parsed);
+  } catch {
+    return new Map();
+  }
+}
+
+function renderProbeCommand(spec: TrustedProbeSpec) {
+  return [spec.executable, ...spec.args].map((part) => JSON.stringify(part)).join(" ");
+}
+
+function isRepoRelativePosixPath(value: unknown) {
+  const file = text(value);
+  return Boolean(file) && !file.startsWith("/") && !file.includes("\\") && !file.split("/").includes("..");
+}
+
+function cleanPathToken(value: unknown) {
+  let candidate = text(value)
+    .replace(/^['"`]+|['"`]+$/g, "")
+    .replace(/^[([{]+|[)\]},;]+$/g, "");
+  if (!candidate) return "";
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(candidate)) return "";
+  if (/^[A-Za-z_][\w.-]*:\d+$/.test(candidate) && !candidate.includes("/")) return "";
+  if (candidate.includes("=")) candidate = candidate.slice(candidate.lastIndexOf("=") + 1);
+  candidate = candidate.replace(/^\.\/+/, "");
+  candidate = candidate.replace(/:\d+(?::\d+)?$/, "");
+  if (!candidate || !isRepoRelativePosixPath(candidate)) return "";
+  return candidate;
+}
+
+function collectPathField(value: unknown, paths: Set<string>) {
+  if (Array.isArray(value)) {
+    for (const entry of value) collectPathField(entry, paths);
+    return;
+  }
+  const file = cleanPathToken(value);
+  if (file) paths.add(file);
+}
+
+function collectPathTokens(value: unknown, paths: Set<string>) {
+  const raw = text(value);
+  if (!raw) return;
+  for (const token of raw.split(/[\s'"`]+/)) {
+    const file = cleanPathToken(token);
+    if (!file) continue;
+    if (file.includes("/") || /\.[A-Za-z0-9]+$/.test(file)) paths.add(file);
+  }
+}
+
+function collectSourceRefPaths(value: unknown, paths: Set<string>) {
+  if (!Array.isArray(value)) return;
+  for (const ref of value.filter(isRecordLike)) {
+    const kind = text(ref.kind);
+    const locator = text(ref.locator);
+    if (kind === "task_text" || locator.startsWith("task:")) continue;
+    collectPathField(ref.path || ref.file || ref.locator, paths);
+  }
+}
+
+function oracleProtectedPaths(item: LooseRecord, declaredCommand: string) {
+  const paths = new Set<string>();
+  for (const field of ORACLE_PATH_FIELDS) collectPathField(item[field], paths);
+  collectSourceRefPaths(item.sourceRefs, paths);
+  collectPathTokens(item.expectedEvidence, paths);
+  collectPathTokens(item.probeCommand, paths);
+  collectPathTokens(declaredCommand, paths);
+  return [...paths].sort();
+}
+
+function requiresCleanOracleProvenance(item: LooseRecord) {
+  const origins = [
+    ...stringList(item.requiredEvidenceOrigin),
+    text(item.evidenceOrigin),
+  ].filter(Boolean);
+  return origins.some((origin) => ORACLE_PROTECTED_ORIGINS.has(origin));
+}
+
+function changedOracleFiles(item: LooseRecord, declaredCommand: string, changed: string[]) {
+  if (!requiresCleanOracleProvenance(item)) return [];
+  const protectedPaths = oracleProtectedPaths(item, declaredCommand);
+  if (protectedPaths.length === 0 || changed.length === 0) return [];
+  return changed
+    .filter((file) => protectedPaths.some((scope) => scopePathMatches(file, scope)))
+    .sort();
+}
+
+async function gitPathExistsAtHead(cwd: string, file: string) {
+  try {
+    await execFileAsync("git", ["cat-file", "-e", `HEAD:${file}`], { cwd });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function backupFiles(cwd: string, files: string[]): Promise<FileBackup[]> {
+  const backups: FileBackup[] = [];
+  for (const file of files) {
+    const absolute = path.join(cwd, file);
+    try {
+      const content = await readFile(absolute);
+      const stats = await stat(absolute);
+      backups.push({ file, existed: true, content, mode: stats.mode });
+    } catch (err) {
+      if (isRecordLike(err) && err.code === "ENOENT") {
+        backups.push({ file, existed: false });
+        continue;
+      }
+      throw err;
+    }
+  }
+  return backups;
+}
+
+async function restoreBackups(cwd: string, backups: FileBackup[]) {
+  for (const backup of backups) {
+    const absolute = path.join(cwd, backup.file);
+    if (!backup.existed) {
+      await rm(absolute, { force: true });
+      continue;
+    }
+    await mkdir(path.dirname(absolute), { recursive: true });
+    await writeFile(absolute, backup.content || Buffer.alloc(0));
+    if (typeof backup.mode === "number") await chmod(absolute, backup.mode);
+  }
+}
+
+async function checkoutHeadFiles(cwd: string, files: string[]) {
+  for (const file of files) {
+    if (!isRepoRelativePosixPath(file)) return { ok: false, reason: `unsafe oracle path: ${file}` };
+    if (!await gitPathExistsAtHead(cwd, file)) return { ok: false, reason: `oracle path is not present at HEAD: ${file}` };
+  }
+  await execFileAsync("git", ["checkout", "HEAD", "--", ...files], { cwd, maxBuffer: 8 * 1024 * 1024 });
+  return { ok: true, reason: "" };
+}
+
+async function runActiveRestoreCleanOracleReplay(command: TrustedProbeSpec, cwd: string, files: string[]) {
+  const backups = await backupFiles(cwd, files);
+  try {
+    const checkout = await checkoutHeadFiles(cwd, files);
+    if (!checkout.ok) {
+      return {
+        cleanOracleReplayPassed: false,
+        cleanOracleReplayFiles: files,
+        cleanOracleReplayMode: "active_restore",
+        cleanOracleReplayReason: checkout.reason,
+      };
+    }
+    const replay = await runDeclaredCommand(command, cwd);
+    return {
+      cleanOracleReplayPassed: replay.exitCode === 0,
+      cleanOracleReplayFiles: files,
+      cleanOracleReplayMode: "active_restore",
+      cleanOracleReplayExitCode: replay.exitCode,
+      cleanOracleReplayStdoutSha256: replay.stdoutSha256,
+      cleanOracleReplayStderrSha256: replay.stderrSha256,
+      cleanOracleReplayStdoutTail: replay.stdoutTail,
+      cleanOracleReplayStderrTail: replay.stderrTail,
+      cleanOracleReplayRetryCount: replay.retryCount,
+      cleanOracleReplayProbeAttempts: replay.probeAttempts,
+      ...(replay.note ? { cleanOracleReplayReason: replay.note } : {}),
+    };
+  } finally {
+    await restoreBackups(cwd, backups);
+  }
+}
+
+async function validateHeadOracleFiles(cwd: string, files: string[]) {
+  for (const file of files) {
+    if (!isRepoRelativePosixPath(file)) return { ok: false, reason: `unsafe oracle path: ${file}` };
+    if (!await gitPathExistsAtHead(cwd, file)) return { ok: false, reason: `oracle path is not present at HEAD: ${file}` };
+  }
+  return { ok: true, reason: "" };
+}
+
+function pathMatchesAnyScope(file: string, scopes: string[]) {
+  return scopes.some((scope) => scopePathMatches(file, scope));
+}
+
+async function copyWorktreeOverlayFile(sourceCwd: string, replayCwd: string, file: string) {
+  if (!isRepoRelativePosixPath(file)) return { ok: false, file, action: "skip", reason: `unsafe overlay path: ${file}` };
+  const source = path.join(sourceCwd, file);
+  const dest = path.join(replayCwd, file);
+  try {
+    const stats = await stat(source);
+    if (!stats.isFile()) return { ok: true, file, action: "skip", reason: "overlay path is not a file" };
+    await mkdir(path.dirname(dest), { recursive: true });
+    await copyFile(source, dest);
+    await chmod(dest, stats.mode);
+    return { ok: true, file, action: "copy" };
+  } catch (err) {
+    if (isRecordLike(err) && err.code === "ENOENT") {
+      await rm(dest, { force: true });
+      return { ok: true, file, action: "delete" };
+    }
+    throw err;
+  }
+}
+
+async function overlayCurrentNonOracleChanges(sourceCwd: string, replayCwd: string, changed: string[], oracleFiles: string[]) {
+  const overlayFiles = changed
+    .filter((file) => !pathMatchesAnyScope(file, oracleFiles))
+    .sort();
+  const results: LooseRecord[] = [];
+  for (const file of overlayFiles) {
+    results.push(await copyWorktreeOverlayFile(sourceCwd, replayCwd, file));
+  }
+  return results;
+}
+
+async function cleanupReplayWorktree(cwd: string, replayPath: string, root: string) {
+  try {
+    await execFileAsync("git", ["worktree", "remove", "--force", replayPath], { cwd, maxBuffer: 8 * 1024 * 1024 });
+  } catch {
+    await rm(replayPath, { recursive: true, force: true });
+  }
+  await rm(root, { recursive: true, force: true });
+}
+
+async function runIsolatedCleanOracleReplay(command: TrustedProbeSpec, cwd: string, files: string[], changed: string[]) {
+  const validation = await validateHeadOracleFiles(cwd, files);
+  if (!validation.ok) {
+    return {
+      cleanOracleReplayPassed: false,
+      cleanOracleReplayFiles: files,
+      cleanOracleReplayMode: "isolated_worktree",
+      cleanOracleReplayReason: validation.reason,
+    };
+  }
+
+  const root = await mkdtemp(path.join(tmpdir(), "cpb-clean-oracle-replay-"));
+  const replayPath = path.join(root, "worktree");
+  try {
+    await execFileAsync("git", ["worktree", "add", "--detach", replayPath, "HEAD"], { cwd, maxBuffer: 8 * 1024 * 1024 });
+    const overlay = await overlayCurrentNonOracleChanges(cwd, replayPath, changed, files);
+    const replay = await runDeclaredCommand(command, replayPath);
+    return {
+      cleanOracleReplayPassed: replay.exitCode === 0,
+      cleanOracleReplayFiles: files,
+      cleanOracleReplayMode: "isolated_worktree",
+      cleanOracleReplayIsolated: true,
+      cleanOracleReplayOverlayFiles: overlay,
+      cleanOracleReplayExitCode: replay.exitCode,
+      cleanOracleReplayStdoutSha256: replay.stdoutSha256,
+      cleanOracleReplayStderrSha256: replay.stderrSha256,
+      cleanOracleReplayStdoutTail: replay.stdoutTail,
+      cleanOracleReplayStderrTail: replay.stderrTail,
+      cleanOracleReplayRetryCount: replay.retryCount,
+      cleanOracleReplayProbeAttempts: replay.probeAttempts,
+      ...(replay.note ? { cleanOracleReplayReason: replay.note } : {}),
+    };
+  } catch (err) {
+    const message = isRecordLike(err) && typeof err.message === "string" ? err.message : String(err || "unknown error");
+    return {
+      cleanOracleReplayPassed: false,
+      cleanOracleReplayFiles: files,
+      cleanOracleReplayMode: "isolated_worktree",
+      cleanOracleReplayIsolated: true,
+      cleanOracleReplayReason: `isolated clean oracle replay failed: ${message}`,
+    };
+  } finally {
+    await cleanupReplayWorktree(cwd, replayPath, root);
+  }
+}
+
+async function runCleanOracleReplay(command: TrustedProbeSpec, cwd: string, files: string[], changed: string[]) {
+  const isolated = await runIsolatedCleanOracleReplay(command, cwd, files, changed);
+  if (isolated.cleanOracleReplayPassed || process.env.CPB_CLEAN_ORACLE_REPLAY_ACTIVE_FALLBACK !== "1") return isolated;
+  const active = await runActiveRestoreCleanOracleReplay(command, cwd, files);
+  return {
+    ...active,
+    cleanOracleReplayFallbackFrom: isolated.cleanOracleReplayMode,
+    cleanOracleReplayFallbackReason: isolated.cleanOracleReplayReason,
+  };
+}
+
 function sha256Hex(input: string): string {
   return "sha256:" + createHash("sha256").update(input, "utf8").digest("hex");
+}
+
+function outputTail(input: string): string {
+  return input.length > COMMAND_PROBE_TAIL_CHARS ? input.slice(-COMMAND_PROBE_TAIL_CHARS) : input;
+}
+
+function commandProbeEnv(cwd: string): NodeJS.ProcessEnv {
+  // Never expose Hub/Redis/provider credentials to a verification child.
+  // Keep only process-discovery and locale values needed by common toolchains.
+  const allowed = ["PATH", "HOME", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL", "USER", "LOGNAME", "SYSTEMROOT", "COMSPEC", "PATHEXT"];
+  const env: NodeJS.ProcessEnv = { CI: "1", PYTHONPATH: cwd };
+  for (const key of allowed) {
+    if (process.env[key]) env[key] = process.env[key];
+  }
+  return env;
 }
 
 // Verification methods the runner knows about. Anything outside this set is
@@ -110,18 +481,11 @@ const EVENT_BASED_METHODS = new Set([
 ]);
 
 /**
- * Resolve the command a command/test checklist item declares it should be
- * verified by. Codebase convention (core/workflow/checklist-decomposer.ts):
- * the LLM places the shell command in `expectedEvidence`. We also accept an
- * explicit `probeCommand` field as an override. SECURITY: only a command the
- * checklist explicitly declares is ever run — the runner never runs free
- * text it invented.
+ * Resolve a command/test probe exclusively from the maintainer-owned policy
+ * committed at HEAD. Checklist prose is evidence description, never code.
  */
-function resolveDeclaredCommand(item: AnyRecord): string {
-  const explicit = text(item?.probeCommand);
-  if (explicit) return explicit;
-  const fromEvidence = text(item?.expectedEvidence);
-  return fromEvidence;
+function resolveDeclaredCommand(item: LooseRecord, policy: Map<string, TrustedProbeSpec>): TrustedProbeSpec | null {
+  return policy.get(text(item.predicateId)) || null;
 }
 
 /**
@@ -130,17 +494,90 @@ function resolveDeclaredCommand(item: AnyRecord): string {
  * as honest fails (exitCode recorded as -1 with a note), never thrown.
  */
 async function runDeclaredCommand(
-  command: string,
+  command: TrustedProbeSpec,
   cwd: string,
-): Promise<{ exitCode: number; stdoutSha256: string; stderrSha256: string; note?: string }> {
+): Promise<{
+  exitCode: number;
+  stdoutSha256: string;
+  stderrSha256: string;
+  stdoutTail: string;
+  stderrTail: string;
+  note?: string;
+  retryCount: number;
+  probeAttempts: LooseRecord[];
+}> {
+  const attempts: LooseRecord[] = [];
+  let last: {
+    exitCode: number;
+    stdoutSha256: string;
+    stderrSha256: string;
+    stdoutTail: string;
+    stderrTail: string;
+    note?: string;
+    retryable: boolean;
+  } | null = null;
+
+  for (let attempt = 1; attempt <= COMMAND_PROBE_MAX_RETRIES + 1; attempt += 1) {
+    last = await runDeclaredCommandOnce(command, cwd);
+    attempts.push({
+      attempt,
+      exitCode: last.exitCode,
+      stdoutSha256: last.stdoutSha256,
+      stderrSha256: last.stderrSha256,
+      ...(last.stdoutTail ? { stdoutTail: last.stdoutTail } : {}),
+      ...(last.stderrTail ? { stderrTail: last.stderrTail } : {}),
+      ...(last.note ? { note: last.note } : {}),
+    });
+
+    if (last.exitCode === 0 || !last.retryable || attempt > COMMAND_PROBE_MAX_RETRIES) break;
+  }
+
+  if (!last) {
+    return {
+      exitCode: -1,
+      stdoutSha256: "",
+      stderrSha256: "",
+      stdoutTail: "",
+      stderrTail: "",
+      note: "command probe did not run",
+      retryCount: 0,
+      probeAttempts: attempts,
+    };
+  }
+
+  const retryCount = attempts.length - 1;
+  const note = last.note || (retryCount > 0 && last.exitCode === 0
+    ? `command probe passed after ${retryCount} retry${retryCount === 1 ? "" : "ies"}`
+    : undefined);
+  return {
+    exitCode: last.exitCode,
+    stdoutSha256: last.stdoutSha256,
+    stderrSha256: last.stderrSha256,
+    stdoutTail: last.stdoutTail,
+    stderrTail: last.stderrTail,
+    ...(note ? { note } : {}),
+    retryCount,
+    probeAttempts: attempts,
+  };
+}
+
+async function runDeclaredCommandOnce(
+  command: TrustedProbeSpec,
+  cwd: string,
+): Promise<{
+  exitCode: number;
+  stdoutSha256: string;
+  stderrSha256: string;
+  stdoutTail: string;
+  stderrTail: string;
+  note?: string;
+  retryable: boolean;
+}> {
   try {
-    // shell: true so a free-form command string ("npm test", "tsc --noEmit")
-    // parses the way the checklist author intended. SECURITY: `command` comes
-    // ONLY from the frozen checklist item's declared expectedEvidence /
-    // probeCommand — never from untrusted verifier free text.
-    const result = await execFileAsync(command, [], {
+    const result = await execFileAsync(command.executable, command.args, {
       cwd,
-      shell: true,
+      env: commandProbeEnv(cwd),
+      shell: false,
       timeout: COMMAND_PROBE_TIMEOUT_MS,
       maxBuffer: 8 * 1024 * 1024,
     });
@@ -148,6 +585,9 @@ async function runDeclaredCommand(
       exitCode: 0,
       stdoutSha256: sha256Hex(result.stdout ?? ""),
       stderrSha256: sha256Hex(result.stderr ?? ""),
+      stdoutTail: outputTail(result.stdout ?? ""),
+      stderrTail: outputTail(result.stderr ?? ""),
+      retryable: false,
       // Note: digests are always emitted, even for empty output, so the
       // observation clears validateCommandObservation's record-gate (which
       // requires a non-empty digest) for both pass and fail paths.
@@ -158,7 +598,7 @@ async function runDeclaredCommand(
     // ALWAYS produced (even for empty output) — an empty stdout is itself an
     // objective, recordable result, and validateCommandObservation requires a
     // non-empty digest for the record-gate.
-    const e = err as Record<string, unknown> | null;
+    const e = isRecordLike(err) ? err : null;
     if (typeof e?.code === "number") {
       const stdout = typeof e.stdout === "string" ? e.stdout : "";
       const stderr = typeof e.stderr === "string" ? e.stderr : "";
@@ -166,13 +606,16 @@ async function runDeclaredCommand(
         exitCode: e.code,
         stdoutSha256: sha256Hex(stdout),
         stderrSha256: sha256Hex(stderr),
+        stdoutTail: outputTail(stdout),
+        stderrTail: outputTail(stderr),
+        retryable: true,
       };
     }
     // Timeout or ENOENT (binary not found) — honest fail, no fabricated code.
     const reason = e?.signal === "SIGTERM" || /TIMEDOUT/i.test(String(e?.message || ""))
       ? `command probe timed out after ${COMMAND_PROBE_TIMEOUT_MS}ms`
       : `command probe failed to execute: ${text(e?.code) || text(e?.message) || "unknown error"}`;
-    return { exitCode: -1, stdoutSha256: "", stderrSha256: "", note: reason };
+    return { exitCode: -1, stdoutSha256: "", stderrSha256: "", stdoutTail: "", stderrTail: "", note: reason, retryable: false };
   }
 }
 
@@ -187,14 +630,14 @@ async function runDeclaredCommand(
  * so the ledger records the item rather than silently dropping it.
  */
 export async function runChecklistProbes(
-  acceptanceChecklist: AnyRecord | null,
+  acceptanceChecklist: LooseRecord | null,
   cwd: string,
-  { base = null, finalWorktree = null, attemptId = null }: { base?: string | null; finalWorktree?: AnyRecord | null; attemptId?: string | null } = {},
-): Promise<AnyRecord[]> {
+  { base = null, finalWorktree = null, attemptId = null }: { base?: string | null; finalWorktree?: LooseRecord | null; attemptId?: string | null } = {},
+): Promise<LooseRecord[]> {
   if (!acceptanceChecklist || !Array.isArray(acceptanceChecklist.items)) return [];
 
   const candidateItems = acceptanceChecklist.items.filter(
-    (item: AnyRecord) => text(item?.id) && text(item?.predicateId),
+    (item: LooseRecord) => text(item?.id) && text(item?.predicateId),
   );
   if (candidateItems.length === 0) return [];
 
@@ -203,8 +646,9 @@ export async function runChecklistProbes(
   const attempt = text(attemptId) || null;
 
   const changed = await changedFiles(cwd, base);
+  const trustedProbePolicy = await loadTrustedProbePolicy(cwd);
 
-  const checks: AnyRecord[] = [];
+  const checks: LooseRecord[] = [];
   for (const item of candidateItems) {
     const checklistId = text(item.id);
     const predicateId = text(item.predicateId);
@@ -227,7 +671,7 @@ export async function runChecklistProbes(
           queryId: `static-diff-scope:${checklistId}`,
           matchCount,
           allowedFiles,
-          changedFilesInScope: changed.filter((f) => allowedFiles.map(posixify).includes(posixify(f))),
+          changedFilesInScope: changed.filter((f) => allowedFiles.some((allowedFile) => scopePathMatches(f, allowedFile))),
           ...(worktreeHead ? { worktreeHead } : {}),
           ...(diffHash ? { diffHash } : {}),
           ...(attempt ? { attemptId: attempt } : {}),
@@ -240,10 +684,10 @@ export async function runChecklistProbes(
     }
 
     if (method === "command" || method === "test") {
-      const declaredCommand = resolveDeclaredCommand(item);
+      const declaredCommand = resolveDeclaredCommand(item, trustedProbePolicy);
       if (!declaredCommand) {
-        // command/test item with no runnable command declared — honest fail,
-        // not a silent skip. The item must declare what proves it.
+        // Model/free-text commands are never executable. A command/test item
+        // must match a maintainer-owned structured probe committed at HEAD.
         checks.push({
           checklistId,
           predicateId,
@@ -253,7 +697,9 @@ export async function runChecklistProbes(
             predicateId,
             probeId,
             verificationMethod: method,
-            note: `${method} checklist item declares no runnable command (probeCommand / expectedEvidence empty); no deterministic probe possible`,
+            failureClass: "verification_evidence_unavailable",
+            infrastructureFailure: true,
+            note: `${method} checklist item has no trusted structured probe in ${TRUSTED_PROBE_POLICY_PATH} at HEAD; free-text evidence was not executed`,
             ...(worktreeHead ? { worktreeHead } : {}),
             ...(attempt ? { attemptId: attempt } : {}),
           },
@@ -262,7 +708,12 @@ export async function runChecklistProbes(
         continue;
       }
 
+      const renderedCommand = renderProbeCommand(declaredCommand);
       const run = await runDeclaredCommand(declaredCommand, cwd);
+      const oracleFiles = run.exitCode === 0 ? changedOracleFiles(item, renderedCommand, changed) : [];
+      const cleanReplay = oracleFiles.length > 0
+        ? await runCleanOracleReplay(declaredCommand, cwd, oracleFiles, changed)
+        : null;
       checks.push({
         checklistId,
         predicateId,
@@ -272,12 +723,21 @@ export async function runChecklistProbes(
           predicateId,
           probeId,
           verificationMethod: method,
-          command: declaredCommand,
+          command: renderedCommand,
           cwd,
           exitCode: run.exitCode,
           stdoutSha256: run.stdoutSha256,
           stderrSha256: run.stderrSha256,
+          stdoutTail: run.stdoutTail,
+          stderrTail: run.stderrTail,
+          retryCount: run.retryCount,
+          probeAttempts: run.probeAttempts,
+          ...(cleanReplay || {}),
           ...(run.note ? { note: run.note } : {}),
+          ...(run.exitCode === -1 ? {
+            failureClass: "verification_environment_unavailable",
+            infrastructureFailure: true,
+          } : {}),
           ...(worktreeHead ? { worktreeHead } : {}),
           ...(diffHash ? { diffHash } : {}),
           ...(attempt ? { attemptId: attempt } : {}),

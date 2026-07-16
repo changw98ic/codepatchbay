@@ -1,6 +1,6 @@
 import { readFile, writeFile, readdir, mkdir } from "node:fs/promises";
 import path from "node:path";
-import { AnyRecord } from "../../shared/types.js";
+import type { LooseRecord } from "../../shared/types.js";
 
 
 const FIX_SIGNALS = /\b(fix|bug|workaround|race|regression|remediation|prevented|patch|hotfix|broken|crash|deadlock|leak|orphan|zombie|stale)\b/i;
@@ -28,11 +28,23 @@ function today() {
   return new Date().toISOString().slice(0, 10);
 }
 
+function recordValue(value: unknown): LooseRecord {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as LooseRecord : {};
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter(Boolean).map(String) : [];
+}
+
+function recordArray(value: unknown): LooseRecord[] {
+  return Array.isArray(value) ? value.map(recordValue) : [];
+}
+
 /**
  * Categorize a parsed verdict envelope into experience category.
  * Returns { category, severity } or null to skip.
  */
-export function categorizeVerdictEnvelope(envelope: Record<string, any>) {
+export function categorizeVerdictEnvelope(envelope: LooseRecord) {
   const status = String(envelope?.status || "").toLowerCase();
 
   if (status === "fail") {
@@ -59,31 +71,34 @@ export function categorizeVerdictEnvelope(envelope: Record<string, any>) {
 /**
  * Extract tags from verdict envelope content.
  */
-function extractTags(envelope: Record<string, any>, content = "") {
-  const tags = new Set();
+function extractTags(envelope: LooseRecord, content = "") {
+  const tags = new Set<string>();
 
   // From fix_scope
-  if (Array.isArray(envelope?.fix_scope)) {
-    for (const f of envelope.fix_scope) {
+  const fixScope = stringArray(envelope.fix_scope);
+  if (fixScope.length > 0) {
+    for (const f of fixScope) {
       const clean = path.basename(String(f), path.extname(String(f)));
       if (clean && clean.length < 40) tags.add(clean);
     }
   }
 
   // From blocking entries
-  if (Array.isArray(envelope?.blocking)) {
+  if (Array.isArray(envelope.blocking)) {
     for (const entry of envelope.blocking) {
-      if (typeof entry === "object" && entry?.file) {
-        const clean = path.basename(String(entry.file), path.extname(String(entry.file)));
+      const entryRecord = recordValue(entry);
+      if (entryRecord.file) {
+        const clean = path.basename(String(entryRecord.file), path.extname(String(entryRecord.file)));
         if (clean && clean.length < 40) tags.add(clean);
       }
     }
   }
 
   // From failed layers
-  if (envelope?.layers && typeof envelope.layers === "object") {
-    for (const [name, layer] of Object.entries(envelope.layers as AnyRecord)) {
-      if (String(layer?.status || "").toLowerCase() === "fail") {
+  const layers = recordValue(envelope.layers);
+  if (Object.keys(layers).length > 0) {
+    for (const [name, layer] of Object.entries(layers)) {
+      if (String(recordValue(layer).status || "").toLowerCase() === "fail") {
         tags.add(name);
       }
     }
@@ -103,7 +118,7 @@ function extractTags(envelope: Record<string, any>, content = "") {
 /**
  * Build experience object from verdict envelope.
  */
-function buildExperienceFromVerdict(project: string, jobId: string, artifactId: string, artifactPath: string, envelope: Record<string, any>) {
+function buildExperienceFromVerdict(project: string, jobId: string, artifactId: string, artifactPath: string, envelope: LooseRecord) {
   const cat = categorizeVerdictEnvelope(envelope);
   if (!cat) return null;
 
@@ -131,57 +146,64 @@ function buildExperienceFromVerdict(project: string, jobId: string, artifactId: 
   };
 }
 
-function buildTitle(category: string, envelope: Record<string, any>) {
+function buildTitle(category: string, envelope: LooseRecord) {
   const reason = String(envelope?.reason || "").slice(0, 120);
   const prefix = category === "failure" ? "FAIL" : category === "pattern" ? "FIX" : "GOTCHA";
   return `[${prefix}] ${reason || "unknown"}`;
 }
 
-function buildDetails(envelope: Record<string, any>) {
-  const parts = [];
+function buildDetails(envelope: LooseRecord) {
+  const parts: string[] = [];
   if (envelope?._legacyDetails) {
-    parts.push(envelope._legacyDetails);
+    parts.push(String(envelope._legacyDetails));
   }
   if (Array.isArray(envelope?.blocking) && envelope.blocking.length > 0) {
     parts.push(`Blocking: ${envelope.blocking.length} item(s)`);
   }
-  if (Array.isArray(envelope?.fix_scope) && envelope.fix_scope.length > 0) {
-    parts.push(`Fix scope: ${envelope.fix_scope.join(", ")}`);
+  const fixScope = stringArray(envelope.fix_scope);
+  if (fixScope.length > 0) {
+    parts.push(`Fix scope: ${fixScope.join(", ")}`);
   }
-  if (envelope?.layers && typeof envelope.layers === "object") {
-    const failed = Object.entries(envelope.layers as AnyRecord)
-      .filter(([, l]) => String(l?.status || "").toLowerCase() === "fail")
+  const layers = recordValue(envelope.layers);
+  if (Object.keys(layers).length > 0) {
+    const failed = Object.entries(layers)
+      .filter(([, l]) => String(recordValue(l).status || "").toLowerCase() === "fail")
       .map(([name]) => name);
     if (failed.length > 0) parts.push(`Failed layers: ${failed.join(", ")}`);
   }
   return parts.join("\n");
 }
 
-function buildFix(envelope: Record<string, any>) {
-  const parts = [];
-  if (Array.isArray(envelope?.fix_scope) && envelope.fix_scope.length > 0) {
-    parts.push(`修复范围: ${envelope.fix_scope.join(", ")}`);
+function buildFix(envelope: LooseRecord) {
+  const parts: string[] = [];
+  const fixScope = stringArray(envelope.fix_scope);
+  if (fixScope.length > 0) {
+    parts.push(`修复范围: ${fixScope.join(", ")}`);
   }
-  if (Array.isArray(envelope?.blocking) && envelope.blocking.length > 0) {
+  if (Array.isArray(envelope.blocking) && envelope.blocking.length > 0) {
     for (const entry of envelope.blocking) {
       if (typeof entry === "string") parts.push(entry);
-      else if (typeof entry === "object" && entry?.criterion) parts.push(entry.criterion);
+      else {
+        const criterion = recordValue(entry).criterion;
+        if (criterion) parts.push(String(criterion));
+      }
     }
   }
   return parts.length > 0 ? parts.join("\n") : "待补充";
 }
 
-function buildPrevention(envelope: Record<string, any>) {
-  const parts = [];
-  if (envelope?.layers && typeof envelope.layers === "object") {
-    const failed = Object.entries(envelope.layers as AnyRecord)
-      .filter(([, l]) => String(l?.status || "").toLowerCase() === "fail")
+function buildPrevention(envelope: LooseRecord) {
+  const parts: string[] = [];
+  const layers = recordValue(envelope.layers);
+  if (Object.keys(layers).length > 0) {
+    const failed = Object.entries(layers)
+      .filter(([, l]) => String(recordValue(l).status || "").toLowerCase() === "fail")
       .map(([name]) => name);
     if (failed.length > 0) parts.push(`下次提交前检查: ${failed.join(", ")} 层`);
   }
-  if (Array.isArray(envelope?.blocking) && envelope.blocking.length > 0) {
+  if (Array.isArray(envelope.blocking) && envelope.blocking.length > 0) {
     const criteria = envelope.blocking
-      .map((e: unknown) => typeof e === "string" ? e : (e as Record<string, any>)?.criterion)
+      .map((e: unknown) => typeof e === "string" ? e : recordValue(e).criterion)
       .filter(Boolean);
     if (criteria.length > 0) parts.push(`验收标准: ${criteria.join("; ")}`);
   }
@@ -192,7 +214,7 @@ function buildPrevention(envelope: Record<string, any>) {
  * Extract ## Status / ## Reason / ## Details / ## Confidence from legacy Markdown verdict.
  */
 function extractLegacyMarkdownSections(content: unknown) {
-  const result: AnyRecord = {};
+  const result: LooseRecord = {};
   const text = typeof content === "string" ? content : String(content ?? "");
   const sections = text.split(/^## /m);
   for (const section of sections) {
@@ -219,19 +241,19 @@ function extractLegacyMarkdownSections(content: unknown) {
 /**
  * Build experience object from terminal job state (no verdict).
  */
-function buildExperienceFromTerminalState(project: string, jobId: string, state: Record<string, any>, eventType: string) {
+function buildExperienceFromTerminalState(project: string, jobId: string, state: LooseRecord, eventType: string) {
   // job_failed / phase_failed without verdict → failure; others → gotcha
   const category = (eventType === "job_failed" || eventType === "phase_failed") ? "failure" : "gotcha";
   const key = stableKey(project, jobId, eventType, category);
   const severity = category === "failure" ? "high" : (eventType === "pool_exhausted" || eventType === "approval_timed_out") ? "high" : "medium";
 
-  const reason = state?.blockedReason || state?.failureCode || eventType;
-  const tags = [];
-  if (state?.failureCode) tags.push(state.failureCode);
-  if (state?.failurePhase) tags.push(state.failurePhase);
+  const reason = String(state?.blockedReason || state?.failureCode || eventType);
+  const tags: string[] = [];
+  if (state?.failureCode) tags.push(String(state.failureCode));
+  if (state?.failurePhase) tags.push(String(state.failurePhase));
   if (eventType) tags.push(eventType);
 
-  const fixParts = [];
+  const fixParts: string[] = [];
   if (state?.failureCode) fixParts.push(`failureCode: ${state.failureCode}`);
   if (state?.failurePhase) fixParts.push(`failurePhase: ${state.failurePhase}`);
   const preventionMap = {
@@ -268,7 +290,7 @@ function buildExperienceFromTerminalState(project: string, jobId: string, state:
  * Write experience file if it doesn't exist (idempotent).
  * Returns true if written, false if skipped.
  */
-export async function writeExperience(cpbRoot: string, experience: Record<string, any>, { force = false, skipIndexRebuild = false }: { force?: boolean; skipIndexRebuild?: boolean } = {}) {
+export async function writeExperience(cpbRoot: string, experience: LooseRecord, { force = false, skipIndexRebuild = false }: { force?: boolean; skipIndexRebuild?: boolean } = {}) {
   const dir = path.join(cpbRoot, "wiki", "experience", `${experience.category}s`);
   await mkdir(dir, { recursive: true });
 
@@ -290,7 +312,8 @@ export async function writeExperience(cpbRoot: string, experience: Record<string
   return true;
 }
 
-function formatExperienceFile(exp: Record<string, any>) {
+function formatExperienceFile(exp: LooseRecord) {
+  const tags = stringArray(exp.tags);
   const frontmatter = [
     "---",
     `source: ${exp.source}`,
@@ -300,7 +323,7 @@ function formatExperienceFile(exp: Record<string, any>) {
     `project: ${exp.project}`,
     `date: ${exp.date}`,
     `category: ${exp.category}`,
-    `tags: [${exp.tags.join(", ")}]`,
+    `tags: [${tags.join(", ")}]`,
     `severity: ${exp.severity}`,
     exp.confidence != null ? `confidence: ${exp.confidence}` : null,
     "---",
@@ -339,7 +362,7 @@ export async function extractExperienceFromVerdict(cpbRoot: string, project: str
     return null; // artifact not readable — skip silently
   }
 
-  let envelope = parseVerdictEnvelope(content) as AnyRecord;
+  let envelope = recordValue(parseVerdictEnvelope(content));
 
   // Enrich legacy Markdown verdicts that parseVerdictEnvelope returns as legacy/inconclusive
   // by extracting ## Status / ## Reason / ## Details / ## Confidence sections
@@ -370,7 +393,7 @@ export async function extractExperienceFromVerdict(cpbRoot: string, project: str
 /**
  * Extract experience from a terminal job state (cancel/budget/pool_exhausted/etc).
  */
-export async function extractExperienceFromTerminalState(cpbRoot: string, project: string, jobId: string, state: Record<string, any>, eventType: string, { force = false, skipIndexRebuild = false } = {}) {
+export async function extractExperienceFromTerminalState(cpbRoot: string, project: string, jobId: string, state: LooseRecord, eventType: string, { force = false, skipIndexRebuild = false } = {}) {
   if (!TERMINAL_GOTCHA_EVENTS.has(eventType) && eventType !== "job_failed" && eventType !== "phase_failed") return null;
 
   const experience = buildExperienceFromTerminalState(project, jobId, state, eventType);
@@ -385,11 +408,11 @@ export async function extractExperienceForJob(
   cpbRoot: string,
   project: string,
   jobId: string,
-  { dataRoot, force = false, skipIndexRebuild = false }: AnyRecord = {},
+  { dataRoot, force = false, skipIndexRebuild = false }: { dataRoot?: string; force?: boolean; skipIndexRebuild?: boolean } = {},
 ) {
   const { getJob } = await import("./job/job-store.js");
 
-  const state = await getJob(cpbRoot, project, jobId, { dataRoot });
+  const state = recordValue(await getJob(cpbRoot, project, jobId, { dataRoot }));
   if (!state?.jobId) return null;
 
   // Try verdict artifact via artifact index (authoritative path resolution)
@@ -411,30 +434,33 @@ export async function extractExperienceForJob(
  * Find verdict artifact path using artifact index (authoritative),
  * falling back to job state artifacts + standard wiki path.
  */
-async function findVerdictArtifactPath(cpbRoot: string, project: string, jobId: string, state: Record<string, any>, { dataRoot }: AnyRecord = {}) {
+async function findVerdictArtifactPath(cpbRoot: string, project: string, jobId: string, state: LooseRecord, { dataRoot }: LooseRecord = {}) {
   // Primary: use artifact index for authoritative path resolution
   try {
     const { buildArtifactIndex } = await import("./job/job-projection.js");
     const index = await buildArtifactIndex(cpbRoot, project, jobId, { dataRoot });
-    const verdictEntry = [...index.entries].reverse().find((e) => e.kind === "verdict" && !e.broken);
-    if (verdictEntry?.path) return verdictEntry.path;
+    const entries = Array.isArray(index.entries) ? index.entries.map(recordValue) : [];
+    const verdictEntry = [...entries].reverse().find((e) => e.kind === "verdict" && !e.broken);
+    if (verdictEntry?.path) return String(verdictEntry.path);
   } catch { /* index not available — fall through */ }
 
   // Fallback: job state artifacts + standard wiki path
   if (!state?.artifacts) return null;
-  for (const [phase, artifact] of Object.entries(state.artifacts as AnyRecord)) {
+  for (const [phase, artifact] of Object.entries(recordValue(state.artifacts))) {
     if (phase === "verify" || phase.includes("verdict") || (typeof artifact === "string" && artifact.includes("verdict"))) {
-      if (path.isAbsolute(artifact)) return artifact;
-      return path.join(cpbRoot, "wiki", "projects", project, "outputs", artifact);
+      const artifactName = String(artifact);
+      if (path.isAbsolute(artifactName)) return artifactName;
+      return path.join(cpbRoot, "wiki", "projects", project, "outputs", artifactName);
     }
   }
   return null;
 }
 
-function inferTerminalEventType(state: Record<string, any>) {
+function inferTerminalEventType(state: LooseRecord) {
   if (state.failureCode === "pool_exhausted") return "pool_exhausted";
-  if (state.blockedReason?.includes("budget")) return "budget_exceeded";
-  if (state.blockedReason?.includes("approval") || state.blockedReason?.includes("timed out")) return "approval_timed_out";
+  const blockedReason = String(state.blockedReason || "");
+  if (blockedReason.includes("budget")) return "budget_exceeded";
+  if (blockedReason.includes("approval") || blockedReason.includes("timed out")) return "approval_timed_out";
   if (state.status === "cancelled") return "job_cancelled";
   if (state.status === "failed") return "job_failed";
   return "unknown_terminal";
@@ -460,10 +486,10 @@ export async function rebuildExperienceIndex(cpbRoot: string) {
           sections[category].push({
             file,
             title: extractTitle(content),
-            project: meta.project || "?",
-            date: meta.date || "?",
-            severity: meta.severity || "?",
-            tags: meta.tags || [],
+            project: String(meta.project || "?"),
+            date: String(meta.date || "?"),
+            severity: String(meta.severity || "?"),
+            tags: stringArray(meta.tags),
           });
         } catch { /* skip unreadable files */ }
       }
@@ -499,7 +525,7 @@ export async function rebuildExperienceIndex(cpbRoot: string) {
 function parseFrontmatter(content: string) {
   const match = content.match(/^---\n([\s\S]*?)\n---/);
   if (!match) return {};
-  const meta: AnyRecord = {};
+  const meta: LooseRecord = {};
   for (const line of match[1].split("\n")) {
     const kv = line.match(/^(\w+):\s*(.+)/);
     if (kv) {

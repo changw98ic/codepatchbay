@@ -18,7 +18,7 @@ test("type debt guard allows baseline counts and reports new broad casts", async
   await mkdir(engineDir, { recursive: true });
   await writeFile(path.join(engineDir, "sample.ts"), [
     "type Local = AnyRecord;",
-    "const safe: Record<string, any> = {};",
+    "const unsafeRecord: Record<string, any> = {};",
     "const added = value as any;",
     "",
   ].join("\n"), "utf8");

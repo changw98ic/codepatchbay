@@ -1,6 +1,6 @@
 import type { PhaseResult } from "../../shared/types.js";
 
-type LooseRecord = Record<string, unknown>;
+import { recordValue, type LooseRecord } from "../contracts/types.js";
 
 type EmitAdversarialVerdictEventInput = {
   cpbRoot: string;
@@ -11,10 +11,6 @@ type EmitAdversarialVerdictEventInput = {
   appendEvent: (cpbRoot: string, project: string, jobId: string, event: LooseRecord) => Promise<unknown> | unknown;
   now?: () => string;
 };
-
-function recordValue(value: unknown): LooseRecord {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as LooseRecord : {};
-}
 
 export async function emitAdversarialVerdictEvent({
   cpbRoot,

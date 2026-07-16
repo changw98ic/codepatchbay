@@ -1,7 +1,8 @@
 import { emitDagNodeSkippedEvent } from "./dag-node-lifecycle-events.js";
 import { extractPhaseArtifactId } from "./phase-artifact-tracker.js";
 
-type LooseRecord = Record<string, unknown>;
+import { isRecord, type LooseRecord } from "../contracts/types.js";
+import type { PhaseArtifact } from "../../shared/types.js";
 
 type HandleResumeCompletedDagNodeInput = {
   cpbRoot: string;
@@ -11,7 +12,7 @@ type HandleResumeCompletedDagNodeInput = {
   phase: string;
   role: string;
   dagNode?: unknown;
-  artifact?: LooseRecord | null;
+  artifact?: PhaseArtifact | null;
   verdict?: unknown;
   resumeTarget?: unknown;
   state: LooseRecord;
@@ -44,18 +45,20 @@ export async function handleResumeCompletedDagNode({
     if (phase === "execute") state.deliverableId = artifactId;
   }
 
+  const normalizedVerdict = typeof verdict === "string" || isRecord(verdict) ? verdict : null;
+  const normalizedResumeTarget = typeof resumeTarget === "string" || isRecord(resumeTarget) ? resumeTarget : null;
   phaseResults.push({
     schemaVersion: 1,
     phase,
     status: "passed",
     artifact,
-    verdict,
+    verdict: normalizedVerdict,
     failure: null,
     diagnostics: {
       skipped: true,
       reason: "resume_completed_node",
       nodeId,
-      resumeTarget,
+      resumeTarget: normalizedResumeTarget,
     },
     createdAt: now(),
   });
@@ -68,7 +71,7 @@ export async function handleResumeCompletedDagNode({
     phase,
     role,
     dagNode,
-    resumeTarget,
+    resumeTarget: normalizedResumeTarget,
     appendEvent,
     onProgress,
     now,

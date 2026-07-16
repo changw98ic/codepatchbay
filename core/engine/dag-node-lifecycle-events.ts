@@ -1,4 +1,4 @@
-type LooseRecord = Record<string, unknown>;
+import { recordValue, type LooseRecord } from "../contracts/types.js";
 
 type AppendEvent = (cpbRoot: string, project: string, jobId: string, event: LooseRecord) => Promise<unknown> | unknown;
 type ProgressSink = ((event: LooseRecord) => Promise<unknown> | unknown) | null;
@@ -26,13 +26,23 @@ type EmitDagNodeCompletedEventInput = DagNodeLifecycleInput & {
   artifactName?: unknown;
 };
 
-function recordValue(value: unknown): LooseRecord {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as LooseRecord : {};
-}
-
 function checklistIds(dagNode: unknown) {
   const node = recordValue(dagNode);
   return Array.isArray(node.checklistIds) ? node.checklistIds : [];
+}
+
+function recordOrNull(value: unknown): LooseRecord | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? recordValue(value) : null;
+}
+
+function artifactPayload(value: unknown): string | LooseRecord | null {
+  if (typeof value === "string") return value;
+  return recordOrNull(value);
+}
+
+function resumeTargetPayload(value: unknown): string | LooseRecord | null {
+  if (typeof value === "string") return value;
+  return recordOrNull(value);
 }
 
 async function reportProgress(
@@ -70,7 +80,7 @@ export async function emitDagNodeSkippedEvent({
     phase,
     role,
     reason,
-    resumeTarget,
+    resumeTarget: resumeTargetPayload(resumeTarget),
     checklistIds: checklistIds(dagNode),
     ts: now(),
   });
@@ -106,7 +116,7 @@ export async function emitDagNodeCompletedEvent({
     phase,
     role,
     attemptId,
-    artifact: artifactName || null,
+    artifact: artifactPayload(artifactName),
     checklistIds: checklistIds(dagNode),
     ts: now(),
   });

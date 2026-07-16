@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "tasks": [
+    {
+      "id": "ordinary-defect",
+      "repository": "/path/to/repository",
+      "base": "HEAD",
+      "task": "Fix the defect while preserving the public API.",
+      "model": "gpt-5.5",
+      "reasoningEffort": "high",
+      "timeoutMs": 300000,
+      "checks": [
+        {
+          "id": "independent-check",
+          "command": "node",
+          "args": ["/path/to/post-terminal-check.mjs"],
+          "timeoutMs": 120000
+        }
+      ]
+    }
+  ]
+}

@@ -14,7 +14,7 @@ Before every Codegraph-backed lookup, run the currently available Codegraph sync
 - `cd web && npm test -- --run`: run Vitest web tests.
 - `npm run build:web`: build the Vite UI; this also runs before packing.
 - `cd server && npm run dev`: start the Fastify hub with `node --watch`.
-- `node scripts/ci-smoke.mjs`: run the local setup/demo smoke path.
+- `npm run build:node && node dist/scripts/ci-smoke.js`: run the local setup/demo smoke path.
 - `npx playwright install --with-deps chromium`: install browser dependencies for Playwright checks.
 
 ## Coding Style & Naming Conventions

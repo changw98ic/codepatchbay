@@ -3,13 +3,14 @@ import { execFile } from "node:child_process";
 import { mkdir, writeFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
-import { AnyRecord } from "../shared/types.js";
+import { LooseRecord } from "../shared/types.js";
 
 import { runChecklistProbes } from "../core/workflow/probe-runner.js";
+import { parseTrustedProbePolicy } from "../core/workflow/trusted-probe-policy.js";
 import { buildAcceptanceChecklist } from "../core/workflow/acceptance-checklist.js";
 
 
-const exec = (cmd: string, args: string[], opts: AnyRecord = {}) =>
+const exec = (cmd: string, args: string[], opts: LooseRecord = {}) =>
   new Promise<void>((resolve, reject) => {
     execFile(cmd, args, opts, (err) => (err ? reject(err) : resolve()));
   });
@@ -26,7 +27,7 @@ async function makeGitRepo() {
   return dir;
 }
 
-function staticItem(overrides: AnyRecord = {}) {
+function staticItem(overrides: LooseRecord = {}) {
   return {
     id: "AC-001",
     requirement: "update README",
@@ -44,7 +45,27 @@ function staticItem(overrides: AnyRecord = {}) {
   };
 }
 
-function checklist(items: AnyRecord[]) {
+test("trusted probe policy parsing is shared and fails closed for unsafe or duplicate entries", () => {
+  const valid = parseTrustedProbePolicy({
+    schemaVersion: 1,
+    probes: [{ predicateId: "focused-tests", executable: "python", args: ["-m", "pytest", "tests/focused.py"] }],
+  });
+  assert.deepEqual([...valid.keys()], ["focused-tests"]);
+
+  assert.equal(parseTrustedProbePolicy({
+    schemaVersion: 1,
+    probes: [
+      { predicateId: "duplicate", executable: "node", args: ["test.mjs"] },
+      { predicateId: "duplicate", executable: "node", args: ["other.mjs"] },
+    ],
+  }).size, 0);
+  assert.equal(parseTrustedProbePolicy({
+    schemaVersion: 1,
+    probes: [{ predicateId: "inline-shell", executable: "sh", args: ["-c", "npm test"] }],
+  }).size, 0);
+});
+
+function checklist(items: LooseRecord[]) {
   return { schemaVersion: 1, jobId: "job-1", project: "p", status: "frozen", items, assumptions: [] };
 }
 
@@ -79,6 +100,30 @@ test("static item with allowedFiles NOT in diff yields matchCount === 0 (honest 
   }
 });
 
+test("static item with directory allowedFiles matches descendants with or without a trailing slash", async () => {
+  const dir = await makeGitRepo();
+  try {
+    await mkdir(path.join(dir, "tests"), { recursive: true });
+    await writeFile(path.join(dir, "tests", "test_regression.py"), "def test_regression():\n    assert True\n", "utf8");
+
+    for (const allowedFile of ["tests", "tests/"]) {
+      const checks = await runChecklistProbes(checklist([
+        staticItem({
+          requirement: "add a real regression test",
+          predicateId: "regression-test",
+          allowedFiles: [allowedFile],
+        }),
+      ]), dir, {});
+
+      const obs = checks[0].observation;
+      assert.equal(obs.matchCount, 1, allowedFile);
+      assert.deepEqual(obs.changedFilesInScope, ["tests/test_regression.py"], allowedFile);
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("static item with empty allowedFiles yields matchCount === 0 (no scope to prove against)", async () => {
   const dir = await makeGitRepo();
   try {
@@ -97,8 +142,10 @@ test("non-static command items without a declared command produce an honest fail
     assert.equal(checks.length, 1);
     const obs = checks[0].observation;
     assert.equal(obs.verificationMethod, "command");
+    assert.equal(obs.failureClass, "verification_evidence_unavailable");
+    assert.equal(obs.infrastructureFailure, true);
     assert.equal(checks[0].emitFailedClaim, true);
-    assert.match(String(obs.note), /declares no runnable command/);
+    assert.match(String(obs.note), /no trusted structured probe/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

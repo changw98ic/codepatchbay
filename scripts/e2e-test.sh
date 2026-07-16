@@ -26,6 +26,19 @@ fail()  { echo -e "${RED}[FAIL]${NC} $1"; exit 1; }
 
 # ── Pre-flight ──────────────────────────────────────────────────────────
 step "Pre-flight checks"
+if [ "${CPB_E2E_ALLOW_DESTRUCTIVE:-}" != "1" ]; then
+  fail "Set CPB_E2E_ALLOW_DESTRUCTIVE=1 only for a dedicated disposable Hub root"
+fi
+if [ -z "${CPB_HUB_ROOT:-}" ] || [ ! -d "$CPB_HUB_ROOT" ]; then
+  fail "CPB_HUB_ROOT must name an existing dedicated disposable directory"
+fi
+HUB_ROOT="$(cd "$CPB_HUB_ROOT" && pwd -P)"
+if [ "$HUB_ROOT" = "/" ] || [ "$HUB_ROOT" = "$HOME" ] || [ "$HUB_ROOT" = "$HOME/.cpb" ]; then
+  fail "Refusing destructive E2E cleanup of protected Hub root: $HUB_ROOT"
+fi
+if [ ! -f "$HUB_ROOT/.cpb-e2e-root" ]; then
+  fail "Dedicated Hub root must contain the marker file .cpb-e2e-root"
+fi
 command -v gh >/dev/null 2>&1 || fail "gh CLI required"
 command -v node >/dev/null 2>&1 || fail "node required"
 gh auth status >/dev/null 2>&1 || fail "gh auth required"
@@ -57,7 +70,6 @@ cpb hub stop 2>/dev/null || true
 sleep 1
 
 step "   Cleaning runtime state (worktrees, queue, workers, assignments, logs)..."
-HUB_ROOT="${CPB_HUB_ROOT:-$HOME/.cpb}"
 rm -rf "$HUB_ROOT/worktrees"   2>/dev/null || true
 rm -rf "$HUB_ROOT/queue"       2>/dev/null || true
 rm -rf "$HUB_ROOT/workers"     2>/dev/null || true

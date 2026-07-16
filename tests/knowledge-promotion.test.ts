@@ -36,7 +36,7 @@ test("writePromotionCandidate writes candidates under explicit project runtime r
 
   const expected = path.join(dataRoot, "sessions", "sess-001", "promotion-candidates", "useful-insight.md");
   assert.equal(result.filePath, expected);
-  assert.equal((result as Record<string, any>).dataRoot, path.resolve(dataRoot));
+  assert.equal((result as Record<string, unknown>).dataRoot, path.resolve(dataRoot));
   assert.equal(await pathExists(expected), true);
   assert.equal(await pathExists(path.join(sourcePath, "cpb-task")), false);
 });

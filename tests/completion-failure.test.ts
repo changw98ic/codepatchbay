@@ -47,6 +47,9 @@ test("handleArtifactInvalidCompletionFailure records gate event, progress, failJ
     mismatchedEvidenceRefs: [],
     staleEvidenceRefs: [],
     poisonedEvidenceRefs: [],
+    pollutedEvidenceRefs: [],
+    pollutedOracleFiles: [],
+    pollutedOracleFileCount: 0,
     runtimeFailureRefs: [],
     runtimeFailureCount: 0,
     unmappedChangedFiles: [],
@@ -180,9 +183,87 @@ test("handleCompletionGateFailure records checklist routing metadata and failed 
   });
 });
 
+test("handleCompletionGateFailure routes mismatched evidence back to execute by checklist id", async () => {
+  const failures: Record<string, unknown>[] = [];
+  const checklistVerdict = {
+    schemaVersion: 1,
+    status: "pass",
+    items: [
+      {
+        checklistId: "AC-001",
+        result: "pass",
+        evidenceRefs: [{ ledgerId: "ledger-1", evidenceId: "EV-001" }],
+        reason: "ok",
+        fixScope: [],
+      },
+      {
+        checklistId: "AC-002",
+        result: "pass",
+        evidenceRefs: [{ ledgerId: "ledger-1", evidenceId: "EV-002" }],
+        reason: "claimed ok",
+        fixScope: [],
+      },
+    ],
+    blocking: [],
+    fixScope: [],
+    reason: "claimed pass",
+  };
+  const gateResult = {
+    outcome: "evidence_mismatch",
+    reason: "pass verdict references evidence that does not prove the checklist item",
+    missingGates: ["checklist"],
+    details: {
+      checklist: {
+        failedChecklistIds: [],
+        uncheckedChecklistIds: [],
+        failedFixScope: [],
+        mismatchedEvidenceRefs: [{ ledgerId: "ledger-1", evidenceId: "EV-002" }],
+      },
+    },
+  };
+
+  const result = await handleCompletionGateFailure({
+    cpbRoot: "/tmp/cpb",
+    project: "proj",
+    jobId: "job-evidence-mismatch",
+    gateResult,
+    phaseResults: [{ phase: "execute", status: "passed" }, { phase: "verify", status: "passed" }],
+    riskMap: null,
+    checklistVerdict,
+    failJob: async (_cpbRoot: string, _project: string, _jobId: string, failure: Record<string, unknown>) => {
+      failures.push(failure);
+    },
+    onProgress: null,
+  });
+
+  const cause = result.failure.cause as {
+    routingAction?: unknown;
+    routingRetryPhase?: unknown;
+    targetChecklistIds?: unknown;
+    fixScope?: unknown;
+  };
+  assert.equal(result.failure.kind, "verification_failed");
+  assert.equal(result.failure.retryable, true);
+  assert.equal(cause.routingAction, "retry_same_worker");
+  assert.equal(cause.routingRetryPhase, "execute");
+  assert.deepEqual(cause.targetChecklistIds, ["AC-002"]);
+  assert.deepEqual(cause.fixScope, []);
+  assert.equal(failures[0].code, "verification_failed");
+});
+
 test("handleCompletionGateFailure preserves adversarial retry context", async () => {
   const failures: Record<string, unknown>[] = [];
   const phaseResults = [
+    {
+      phase: "adversarial_verify",
+      status: "failed",
+      failure: {
+        cause: {
+          focus: ["src/stale-focus.ts"],
+          verdict: { reason: "stale failure", details: { file: "src/stale-focus.ts" } },
+        },
+      },
+    },
     {
       phase: "execute",
       status: "passed",

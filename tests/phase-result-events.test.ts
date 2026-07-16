@@ -94,3 +94,26 @@ test("emitPhaseResultEvent ignores progress callback failures after writing the 
   assert.equal(events[0].type, "phase_result");
   assert.equal(events[0].status, "passed");
 });
+
+test("emitPhaseResultEvent correlates phase audit with attempt and candidate identity", async () => {
+  const events: Record<string, unknown>[] = [];
+  await emitPhaseResultEvent({
+    cpbRoot: "/tmp/cpb",
+    project: "proj",
+    jobId: "job-candidate",
+    phase: "execute",
+    agentName: "codex",
+    attemptId: "attempt-2",
+    phaseResult: {
+      status: "passed",
+      diagnostics: {
+        acpAuditFile: "execute-audit.jsonl",
+        candidateArtifact: { identityHash: `sha256:${"a".repeat(64)}` },
+      },
+    },
+    appendEvent: async (_cpbRoot, _project, _jobId, event) => { events.push(event); },
+  });
+
+  assert.equal(events[0].attemptId, "attempt-2");
+  assert.equal(events[0].candidateId, `sha256:${"a".repeat(64)}`);
+});

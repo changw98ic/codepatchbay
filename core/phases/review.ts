@@ -1,8 +1,10 @@
+import type { LooseRecord } from "../../shared/types.js";
 import { phasePassed, phaseFailed } from "../contracts/phase-result.js";
 import { FailureKind, failure } from "../contracts/failure.js";
 import { runAgent } from "../agents/agent-runner.js";
 import { writeArtifact } from "../artifacts/artifact-store.js";
 import { parseAgentJson } from "../agents/response-parser.js";
+import { buildPhaseAcpEnv } from "./phase-env.js";
 
 const JSON_INSTRUCTION = `
 
@@ -27,15 +29,28 @@ Rules:
 - verdict MUST be exactly "approved", "changes_requested", or "needs_discussion"
 - Do NOT write any artifact files yourself. The system will persist the review.`;
 
-export async function runReview(ctx: Record<string, any>) {
+function recordValue(value: unknown): LooseRecord {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as LooseRecord : {};
+}
+
+function recordArray(value: unknown): LooseRecord[] {
+  return Array.isArray(value) ? value.map(recordValue) : [];
+}
+
+function stringValue(value: unknown, fallback = ""): string {
+  return typeof value === "string" && value ? value : fallback;
+}
+
+export async function runReview(ctx: LooseRecord) {
   const { project, cpbRoot, pool, sourcePath, jobId } = ctx;
   const { dataRoot } = ctx;
-  const role = ctx.role || "reviewer";
-  const deliverableArtifact = getRequiredArtifact(ctx.previousResults, "deliverable");
+  const role = stringValue(ctx.role, "reviewer");
+  const deliverableArtifact = getRequiredArtifact(recordArray(ctx.previousResults), "deliverable");
 
   const prompt = await buildReviewPrompt(ctx, deliverableArtifact) + JSON_INSTRUCTION;
 
   const agentResult = await runAgent({
+    phase: "review",
     role,
     ...resolveAgent(ctx, "codex"),
     project,
@@ -44,28 +59,30 @@ export async function runReview(ctx: Record<string, any>) {
     cwd: sourcePath || cpbRoot,
     pool,
     scope: ctx.scope || null,
-    env: ctx.env || {},
-    timeoutMs: ctx.timeouts?.review ?? 0,
+    env: buildPhaseAcpEnv(ctx, "review"),
+    timeoutMs: typeof recordValue(ctx.timeouts).review === "number" ? recordValue(ctx.timeouts).review : 0,
     dataRoot,
+    onProgress: ctx.onProgress,
   });
 
   if (!agentResult.ok) {
-    const failed = agentResult as Record<string, any>;
+    const failed = recordValue(agentResult);
+    const failureKind = typeof failed.kind === "string" ? failed.kind : FailureKind.UNKNOWN;
     return phaseFailed({
       phase: "review",
       failure: failure({
-        kind: failed.kind,
+        kind: failureKind,
         phase: "review",
         reason: failed.reason,
-        retryable: failed.retryable,
-        cause: failed.cause || {},
+        retryable: failed.retryable === true,
+        cause: recordValue(failed.cause),
       }),
-      diagnostics: failed.diagnostics,
+      diagnostics: recordValue(failed.diagnostics),
     });
   }
 
-  const success = agentResult as Record<string, any>;
-  const parsed = parseAgentJson(success.output);
+  const success = recordValue(agentResult);
+  const parsed = recordValue(parseAgentJson(success.output));
   if (!parsed.ok) {
     return phaseFailed({
       phase: "review",
@@ -75,35 +92,37 @@ export async function runReview(ctx: Record<string, any>) {
         reason: parsed.reason,
         retryable: true,
       }),
-      diagnostics: success.diagnostics,
+      diagnostics: recordValue(success.diagnostics),
     });
   }
 
-  const content = renderReviewMarkdown(parsed.data);
+  const parsedData = recordValue(parsed.data);
+  const content = renderReviewMarkdown(parsedData);
   const artifact = await writeArtifact(cpbRoot, {
     project,
     jobId,
     kind: "review",
     content,
     dataRoot,
-    metadata: parsed.data,
+    metadata: parsedData,
   });
 
   return phasePassed({
     phase: "review",
     artifact,
-    diagnostics: success.diagnostics,
+    diagnostics: recordValue(success.diagnostics),
   });
 }
 
-function getRequiredArtifact(previousResults: Record<string, any>[], kind: string) {
+function getRequiredArtifact(previousResults: LooseRecord[], kind: string) {
   for (let i = previousResults.length - 1; i >= 0; i--) {
-    if (previousResults[i].artifact?.kind === kind) return previousResults[i].artifact;
+    const artifact = recordValue(previousResults[i].artifact);
+    if (artifact.kind === kind) return artifact;
   }
   return null;
 }
 
-function renderReviewMarkdown(data: Record<string, any>) {
+function renderReviewMarkdown(data: LooseRecord) {
   return `# Review
 
 ## Verdict
@@ -113,24 +132,51 @@ ${data.verdict || "N/A"}
 ${data.summary || "N/A"}
 
 ## Comments
-${(data.comments || []).map((c: Record<string, any>) => `- **${c.file}${c.line ? `:${c.line}` : ""}**: ${c.comment}`).join("\n") || "- None"}
+${recordArray(data.comments).map((c) => `- **${stringValue(c.file)}${c.line ? `:${c.line}` : ""}**: ${stringValue(c.comment)}`).join("\n") || "- None"}
 `;
 }
 
-async function buildReviewPrompt(ctx: Record<string, any>, deliverableArtifact: Record<string, any> | null) {
+function buildRetrySection(sourceContext: LooseRecord) {
+  const retry = recordValue(sourceContext.retry);
+  if (Object.keys(retry).length === 0) return "";
+  return `
+
+## Previous Attempt Failed
+Your previous review pass was rejected. Rerun this same phase with the corrected behavior below.
+
+Error type: ${stringValue(retry.failureKind)}
+Error: ${stringValue(retry.failureReason)}
+Failure class: ${stringValue(retry.failureClass, "unknown")}
+Failure fingerprint: ${stringValue(retry.failureFingerprint, "unavailable")}
+Recovery strategy: ${stringValue(retry.retryStrategy, "unavailable")}
+Strategy changed: ${retry.strategyChanged === true ? "yes" : "no"}
+${retry.retryClass ? `Repair class: ${retry.retryClass}` : ""}
+${Array.isArray(retry.fixScope) && retry.fixScope.length > 0 ? `Fix scope: ${retry.fixScope.join(", ")}` : ""}
+${retry.failureEvidence ? `Failure evidence:\n\`\`\`json\n${JSON.stringify(retry.failureEvidence, null, 2)}\n\`\`\`` : ""}
+${retry.instruction ? `Repair instruction: ${retry.instruction}` : ""}
+${retry.previousOutput ? `\nPrevious output for reference:\n\`\`\`\n${retry.previousOutput}\n\`\`\`` : ""}`;
+}
+
+async function buildReviewPrompt(ctx: LooseRecord, deliverableArtifact: LooseRecord | null) {
+  const retrySection = buildRetrySection(recordValue(ctx.sourceContext));
   if (typeof ctx.buildPrompt === "function") {
-    return ctx.buildPrompt("review", ctx, { deliverableArtifact });
+    return await ctx.buildPrompt("review", ctx, { deliverableArtifact }) + retrySection;
   }
   return `You are a code review agent. Review the following deliverable:
 
 Task: ${ctx.task}
 Project: ${ctx.project}
-${deliverableArtifact ? `\nDeliverable: ${deliverableArtifact.name}\n` : ""}`;
+${deliverableArtifact ? `\nDeliverable: ${deliverableArtifact.name}\n` : ""}
+${retrySection}`;
 }
 
-function resolveAgent(ctx: Record<string, any>, fallback: string) {
-  const role = ctx.role || "reviewer";
-  const raw = ctx.agents?.[role] || ctx.agents?.reviewer || ctx.agent || fallback;
-  if (typeof raw === "object" && raw !== null) return { agent: raw.agent || fallback, variant: raw.variant || null };
-  return { agent: raw, variant: null };
+function resolveAgent(ctx: LooseRecord, fallback: string) {
+  const role = stringValue(ctx.role, "reviewer");
+  const agents = recordValue(ctx.agents);
+  const raw = agents[role] || agents.reviewer || ctx.agent || fallback;
+  if (raw !== null && typeof raw === "object" && !Array.isArray(raw)) {
+    const record = recordValue(raw);
+    return { agent: stringValue(record.agent, fallback), variant: stringValue(record.variant) || null };
+  }
+  return { agent: stringValue(raw, fallback), variant: null };
 }

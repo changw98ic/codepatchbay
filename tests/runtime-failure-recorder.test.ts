@@ -65,7 +65,7 @@ test("collectRuntimeFailures extracts poisoned sessions, panics, and diagnostic 
 });
 
 test("recordRuntimeFailureEvents emits runtime_failure_recorded events with fallback attempt id", async () => {
-  const events: Record<string, any>[] = [];
+  const events: Record<string, unknown>[] = [];
 
   await recordRuntimeFailureEvents({
     cpbRoot: "/tmp/cpb",
@@ -85,7 +85,7 @@ test("recordRuntimeFailureEvents emits runtime_failure_recorded events with fall
       nodeId: null,
       reason: "panic: boom",
     }],
-    appendEvent: async (_cpbRoot: string, _project: string, _jobId: string, event: Record<string, any>) => {
+    appendEvent: async (_cpbRoot: string, _project: string, _jobId: string, event: Record<string, unknown>) => {
       events.push(event);
     },
     now: () => "2026-06-22T00:00:00.000Z",

@@ -1,6 +1,6 @@
 import type { PhaseResult, PhaseFailure } from "../../shared/types.js";
 
-type LooseRecord = Record<string, unknown>;
+import { recordValue, type LooseRecord } from "../contracts/types.js";
 
 type EmitPhaseResultEventInput = {
   cpbRoot: string;
@@ -9,23 +9,24 @@ type EmitPhaseResultEventInput = {
   phase: string;
   agentName: unknown;
   phaseResult: PhaseResult;
+  attemptId?: string | null;
   appendEvent: (cpbRoot: string, project: string, jobId: string, event: LooseRecord) => Promise<unknown> | unknown;
   onProgress?: ((event: LooseRecord) => Promise<unknown> | unknown) | null;
   now?: () => string;
 };
 
-function recordValue(value: unknown): LooseRecord {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as LooseRecord : {};
-}
-
 function failurePayload(failure: unknown): LooseRecord | null {
-  const fail = recordValue(failure) as PhaseFailure;
+  const fail: PhaseFailure = recordValue(failure);
   if (!fail.kind && !fail.reason && !("cause" in fail)) return null;
   return {
     kind: fail.kind,
     reason: fail.reason,
     cause: fail.cause || null,
   };
+}
+
+function stringOrNull(value: unknown): string | null {
+  return value === undefined || value === null ? null : String(value);
 }
 
 async function reportProgress(
@@ -48,12 +49,16 @@ export async function emitPhaseResultEvent({
   phase,
   agentName,
   phaseResult,
+  attemptId = null,
   appendEvent,
   onProgress = null,
   now = () => new Date().toISOString(),
 }: EmitPhaseResultEventInput): Promise<void> {
+  const agent = stringOrNull(agentName);
   const diagnostics = recordValue(phaseResult.diagnostics);
   const promptArtifact = recordValue(diagnostics.promptArtifact);
+  const candidateArtifact = recordValue(diagnostics.candidateArtifact);
+  const candidateId = stringOrNull(candidateArtifact.identityHash || diagnostics.validatedCandidateIdentityHash);
   const failure = failurePayload(phaseResult.failure);
   const artifactName = phaseResult.artifact?.name || null;
   const progressPayload = {
@@ -61,7 +66,7 @@ export async function emitPhaseResultEvent({
     jobId,
     project,
     phase,
-    agent: agentName,
+    agent,
     status: phaseResult.status,
     artifact: artifactName,
     failure,
@@ -72,6 +77,8 @@ export async function emitPhaseResultEvent({
     promptArtifact: promptArtifact.name || null,
     acpAuditFile: diagnostics.acpAuditFile || null,
     usage: diagnostics.usage || null,
+    ...(attemptId ? { attemptId } : {}),
+    ...(candidateId ? { candidateId } : {}),
     ts: now(),
   });
   await reportProgress(onProgress, progressPayload, now);

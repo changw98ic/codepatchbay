@@ -6,6 +6,361 @@
  *   server/services/inbox-mail.ts
  */
 
+import type { LooseRecord } from "../../../core/contracts/types.js";
+import { assertHubWritable } from "../../../shared/hub-maintenance.js";
+import {
+  openPinnedHubRedisStateBackend,
+  type RedisLeaderFence,
+} from "../../../shared/hub-state-redis.js";
+import { processLeaderFence } from "../../../shared/hub-leader-fence.js";
+
+type MetadataArtifacts = Array<LooseRecord & {
+  kind?: string;
+  reason?: string;
+  artifacts?: unknown[];
+}>;
+
+type ArtifactMap = LooseRecord;
+
+type QueueRetryContext = LooseRecord & {
+  failureKind?: string;
+  verification?: LooseRecord & {
+    verdict?: LooseRecord & { status?: string };
+    retryScope?: unknown;
+  };
+  previousOutput?: string;
+  previousJobId?: string;
+  artifacts?: ArtifactMap;
+};
+
+type QueueSourceContext = LooseRecord & {
+  issueNumber?: string | number;
+  retry?: QueueRetryContext;
+  repair?: LooseRecord & {
+    repairArtifact?: string;
+    artifacts?: ArtifactMap;
+  };
+  previousFailure?: LooseRecord & {
+    kind?: unknown;
+    reason?: unknown;
+    artifacts?: ArtifactMap;
+  };
+};
+
+type QueueMetadata = LooseRecord & {
+  mutating?: boolean;
+  queueDedupeKey?: string;
+  originJobId?: string;
+  acpProfile?: string;
+  uiLane?: boolean;
+  uiLaneReason?: string;
+  issueNumber?: number | string;
+  issueUrl?: string;
+  retryJobId?: string;
+  repo?: string;
+  repository?: string;
+  finalDisposition?: string;
+  sourceContext?: LooseRecord | string | null;
+  action?: string;
+  failureKind?: string;
+  verification?: LooseRecord & {
+    kind?: string;
+    reason?: string;
+    artifacts?: unknown[];
+  };
+  previousOutput?: string | (LooseRecord & {
+    kind?: string;
+    reason?: string;
+    artifacts?: unknown[];
+  });
+  previousJobId?: string;
+  failureReason?: string;
+  cancelReason?: string;
+  repairArtifact?: string;
+  remediationArtifact?: string;
+  artifacts?: MetadataArtifacts | LooseRecord;
+  riskLevel?: string;
+  agentConfig?: LooseRecord;
+  dynamicAgentPlan?: LooseRecord & {
+    riskLevel?: string;
+    agentConfig?: Record<string, LooseRecord & {
+      required?: boolean;
+      independent?: boolean;
+    }>;
+  };
+  dispatchFailure?: {
+    retryable?: boolean;
+    timestamp?: string;
+    error?: string;
+  };
+  workflow?: string;
+  planMode?: string;
+  lastFailureKind?: unknown;
+  failureCount?: number;
+  supervisorDecision?: LooseRecord;
+  agentsOverride?: LooseRecord;
+  retryDecision?: {
+    action?: string;
+    reason?: string;
+    retryable?: boolean | null;
+    timestamp?: string;
+    error?: string;
+    retryAt?: string;
+    untilTs?: unknown;
+    failureClass?: unknown;
+    failureFingerprint?: unknown;
+    retryStrategy?: unknown;
+    strategyChanged?: boolean;
+    forceFreshSession?: boolean;
+  };
+  schedulerDecision?: {
+    mode?: string;
+    selectedAt?: string;
+    rank?: number;
+    score?: number;
+    reasons?: string[];
+    retryStrategy?: string | null;
+    failureFingerprint?: string | null;
+    failureClass?: string | null;
+  };
+  indexFreshness?: {
+    available?: boolean;
+    indexDirty?: boolean;
+    indexStale?: boolean;
+    worktreeDirty?: boolean;
+    dirtyReasons?: string[];
+  };
+  capabilityMap?: {
+    available?: boolean;
+    reason?: string;
+  };
+  codegraphReadiness?: {
+    available?: boolean;
+    reason?: string;
+    details?: LooseRecord | null;
+    sourcePath?: string;
+    indexFile?: string;
+  };
+  indexSnapshot?: LooseRecord;
+};
+
+type QueueResult = LooseRecord & {
+  ok?: boolean;
+  backlogIssueId?: string | null;
+  error?: unknown;
+};
+
+type QueueEntry = LooseRecord & {
+  id?: string;
+  projectId?: string;
+  description?: string;
+  status?: string;
+  priority?: string;
+  type?: string;
+  metadata?: QueueMetadata;
+  createdAt?: string;
+  updatedAt?: string;
+  sourcePath?: string | null;
+  sessionId?: string | null;
+  workerId?: string | null;
+  cwd?: string | null;
+  executionBoundary?: string;
+  claimedBy?: string | null;
+  claimedAt?: string | null;
+  completedAt?: string;
+  reason?: string;
+  result?: QueueResult;
+  indexSnapshotId?: string;
+};
+
+type QueueEntryInput = LooseRecord & Partial<QueueEntry> & {
+  metadata?: QueueMetadata;
+  result?: QueueResult;
+};
+
+type QueueUpdateGuard = {
+  expectedStatus?: string | string[];
+  expectedClaimedAt?: string | null;
+  expectedUpdatedAt?: string | null;
+};
+
+type QueueState = { version: number; entries: QueueEntry[] };
+
+type AssignmentRecord = { status?: string };
+type AssignmentStoreLike = {
+  getAssignmentSync?: (assignmentId: string) => AssignmentRecord | null | undefined;
+  getAssignment?: (assignmentId: string) => Promise<AssignmentRecord | null | undefined>;
+};
+
+type QueueProjectRecord = LooseRecord & {
+  sourcePath?: string;
+  projectRuntimeRoot?: string;
+  cpbRoot?: string;
+  metadata?: LooseRecord & { cpbRoot?: string };
+};
+
+type QueueRecoveryOptions = {
+  claimTimeoutMs?: number;
+  assignmentStore?: AssignmentStoreLike | null;
+  nowMs?: number;
+};
+
+type QueueClaimOptions = QueueEntryInput & {
+  workerId?: string;
+  maxActivePerProject?: number;
+  claimTimeoutMs?: number;
+  providerSlotsAvailable?: boolean;
+  requireIssueLink?: boolean;
+  getProjectFn?: ((hubRoot: string, projectId: string) => Promise<QueueProjectRecord | null | undefined>) | null;
+  cpbRoot?: string | null;
+  indexUnavailableRetryMs?: number;
+  assignmentStore?: AssignmentStoreLike | null;
+  leaderFence?: RedisLeaderFence | null;
+};
+
+type ProjectQueueStatus = {
+  pending: number;
+  scheduled: number;
+  inProgress: number;
+  completed: number;
+  failed: number;
+  blocked: number;
+  cancelled: number;
+  indexUnavailable: number;
+  codegraphUnavailable: number;
+  activeMutating: number;
+  busy: boolean;
+  busyReason: string | null;
+  maxActivePerProject: number;
+  claimedBy: string | null;
+  claimedAt: string | null;
+  workerId: string | null;
+  activeEntryIds: string[];
+  eligiblePending: number;
+  eligibleEntryIds: string[];
+  failedEntries?: number;
+  failedTargets?: number;
+  retryingFailedTargets?: number;
+  retriedFailedTargets?: number;
+  unretriedFailedTargets?: number;
+};
+
+type QueueStatusSummary = {
+  total: number;
+  pending: number;
+  scheduled: number;
+  inProgress: number;
+  completed: number;
+  failed: number;
+  blocked: number;
+  cancelled: number;
+  needsIssueLink: number;
+  indexUnavailable: number;
+  codegraphUnavailable: number;
+  failedEntries: number;
+  failedTargets: number;
+  retryingFailedTargets: number;
+  retriedFailedTargets: number;
+  unretriedFailedTargets: number;
+  activeMutatingTotal: number;
+  projects: Record<string, ProjectQueueStatus>;
+  activeProjects: Array<ProjectQueueStatus & { projectId: string }>;
+  eligibleQueued: number;
+  eligibleProjects: string[];
+};
+
+type ProjectLimitMap = Map<string, unknown> | LooseRecord;
+
+type AutomationRule = LooseRecord & {
+  name?: string;
+  match?: {
+    labels?: string[];
+    titlePattern?: string;
+  };
+  action?: LooseRecord & {
+    workflow?: string;
+  };
+};
+
+type AutomationIssue = LooseRecord & {
+  number?: number;
+  title?: string;
+  body?: string;
+  url?: string;
+  labels?: string[];
+  state?: string;
+  repository?: string | null;
+  repo?: string | null;
+  repositoryFullName?: string | null;
+  projectId?: string;
+};
+
+type AutomationProject = LooseRecord & {
+  id?: string;
+  sourcePath?: string;
+  github?: {
+    fullName?: string;
+    automation?: {
+      enabled?: boolean;
+      exclude?: AutomationExclude;
+      rules?: AutomationRule[];
+    };
+  };
+};
+
+type AutomationExclude = {
+  labels?: string[];
+};
+
+type InboxMessageInput = LooseRecord & {
+  type?: string;
+  jobId?: string;
+  phase?: string;
+  from?: string;
+  to?: string;
+  locator?: LooseRecord;
+  content?: string;
+};
+
+type InboxMessageFilters = LooseRecord & {
+  type?: string;
+  status?: string;
+  to?: string;
+  owner?: string;
+  jobId?: string;
+};
+
+type InboxAckOptions = {
+  owner?: string;
+};
+
+function isRecord(value: unknown): value is LooseRecord {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isQueueEntry(value: unknown): value is QueueEntry {
+  return isRecord(value);
+}
+
+function toQueueEntries(value: unknown): QueueEntry[] {
+  return Array.isArray(value) ? value.filter(isQueueEntry) : [];
+}
+
+function errnoCode(err: unknown) {
+  return isRecord(err) && typeof err.code === "string" ? err.code : null;
+}
+
+function errorDetails(err: unknown) {
+  const record = isRecord(err) ? err : {};
+  const details = isRecord(record.details) ? record.details : null;
+  const reason = String(details?.reason || record.code || "codegraph_unavailable");
+  return { reason, details };
+}
+
+function stringOrNull(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
 // ─── queue-rules.ts ─────────────────────────────────────────────────────────
 
 /**
@@ -20,22 +375,22 @@ export function priorityScore(priority: string) {
   return 3;
 }
 
-export function isMutatingEntry(entry: Record<string, any>) {
+export function isMutatingEntry(entry: QueueEntryInput) {
   return entry.metadata?.mutating !== false;
 }
 
-export function isActiveEntry(entry: Record<string, any>) {
+export function isActiveEntry(entry: QueueEntryInput) {
   return entry.status === "in_progress" || entry.status === "scheduled";
 }
 
-export function clearClaim(entry: Record<string, any>) {
+export function clearClaim(entry: QueueEntryInput) {
   entry.claimedBy = null;
   entry.claimedAt = null;
   entry.workerId = null;
 }
 
-function nowIso() {
-  return new Date().toISOString();
+function nowIso(nowMs = Date.now()) {
+  return new Date(nowMs).toISOString();
 }
 
 export function isCodegraphUnavailableStatus(status: string) {
@@ -55,12 +410,12 @@ export function isCodegraphUnavailableStatus(status: string) {
  * @param {import("../../shared/orchestrator/assignment-store.js").AssignmentStore} opts.assignmentStore
  * @returns {{ recovered: string[], refreshed: string[] }}
  */
-export function recoverStaleInProgress(entries: Record<string, any>[], opts: Record<string, any>) {
-  const { claimTimeoutMs, assignmentStore } = opts;
+export function recoverStaleInProgress(entries: QueueEntry[], opts: QueueRecoveryOptions) {
+  const { claimTimeoutMs, assignmentStore, nowMs = Date.now() } = opts;
   if (!claimTimeoutMs || claimTimeoutMs <= 0) return { recovered: [], refreshed: [] };
   if (!assignmentStore) throw new Error("recoverStaleInProgress requires assignmentStore");
 
-  const now = Date.now();
+  const now = nowMs;
   const recovered = [];
   const refreshed = [];
 
@@ -74,8 +429,8 @@ export function recoverStaleInProgress(entries: Record<string, any>[], opts: Rec
       ? assignmentStore.getAssignmentSync(assignmentId)
       : null;
     if (assignment && (assignment.status === "running" || assignment.status === "assigned")) {
-      e.claimedAt = nowIso();
-      e.updatedAt = nowIso();
+      e.claimedAt = nowIso(now);
+      e.updatedAt = nowIso(now);
       refreshed.push(e.id);
       continue;
     }
@@ -83,7 +438,7 @@ export function recoverStaleInProgress(entries: Record<string, any>[], opts: Rec
     // No active assignment — safe to reset
     e.status = "pending";
     clearClaim(e);
-    e.updatedAt = nowIso();
+    e.updatedAt = nowIso(now);
     recovered.push(e.id);
   }
   return { recovered, refreshed };
@@ -93,12 +448,12 @@ export function recoverStaleInProgress(entries: Record<string, any>[], opts: Rec
  * Async variant for callers that have an AssignmentStore with async getAssignment().
  * Used by Scheduler and claimEligible.  assignmentStore is required.
  */
-export async function recoverStaleInProgressAsync(entries: Record<string, any>[], opts: Record<string, any>) {
-  const { claimTimeoutMs, assignmentStore } = opts;
+export async function recoverStaleInProgressAsync(entries: QueueEntry[], opts: QueueRecoveryOptions) {
+  const { claimTimeoutMs, assignmentStore, nowMs = Date.now() } = opts;
   if (!claimTimeoutMs || claimTimeoutMs <= 0) return { recovered: [], refreshed: [] };
   if (!assignmentStore) throw new Error("recoverStaleInProgressAsync requires assignmentStore");
 
-  const now = Date.now();
+  const now = nowMs;
   const recovered = [];
   const refreshed = [];
 
@@ -107,11 +462,11 @@ export async function recoverStaleInProgressAsync(entries: Record<string, any>[]
     const claimedAt = e.claimedAt ? new Date(e.claimedAt).getTime() : 0;
     if (!Number.isFinite(claimedAt) || now - claimedAt < claimTimeoutMs) continue;
 
-    const assignment = await assignmentStore.getAssignment(`a-${e.id}`);
+    const assignment = await assignmentStore.getAssignment?.(`a-${e.id}`);
     if (assignment && (assignment.status === "running" || assignment.status === "assigned")) {
       // Active assignment — refresh claimedAt so next tick doesn't re-trigger
-      e.claimedAt = nowIso();
-      e.updatedAt = nowIso();
+      e.claimedAt = nowIso(now);
+      e.updatedAt = nowIso(now);
       refreshed.push(e.id);
       continue;
     }
@@ -119,7 +474,7 @@ export async function recoverStaleInProgressAsync(entries: Record<string, any>[]
     // No active assignment — safe to reset
     e.status = "pending";
     clearClaim(e);
-    e.updatedAt = nowIso();
+    e.updatedAt = nowIso(now);
     recovered.push(e.id);
   }
   return { recovered, refreshed };
@@ -128,16 +483,16 @@ export async function recoverStaleInProgressAsync(entries: Record<string, any>[]
 /**
  * Recover codegraph_unavailable entries whose retry window has elapsed.
  */
-export function recoverCodegraphUnavailable(entries: Record<string, any>[], retryMs: number) {
+export function recoverCodegraphUnavailable(entries: QueueEntry[], retryMs: number, nowMs = Date.now()) {
   if (!retryMs || retryMs <= 0) return { recovered: [] };
-  const now = Date.now();
+  const now = nowMs;
   const recovered = [];
   for (const e of entries) {
     if (!isCodegraphUnavailableStatus(e.status)) continue;
     const updatedAt = e.updatedAt ? new Date(e.updatedAt).getTime() : 0;
     if (!Number.isFinite(updatedAt) || now - updatedAt < retryMs) continue;
     e.status = "pending";
-    e.updatedAt = nowIso();
+    e.updatedAt = nowIso(now);
     if (e.metadata) delete e.metadata.indexFreshness;
     recovered.push(e.id);
   }
@@ -176,17 +531,16 @@ function defaultQueue(): QueueState {
 
 function normalizeQueue(raw: unknown): QueueState {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return defaultQueue();
-  const obj = raw as Record<string, any>;
+  const obj = raw as LooseRecord;
   return {
-    version: obj.version || QUEUE_VERSION,
-    entries: Array.isArray(obj.entries) ? obj.entries : [],
+    version: typeof obj.version === "number" ? obj.version : QUEUE_VERSION,
+    entries: toQueueEntries(obj.entries),
   };
 }
 
-type QueueEntry = Record<string, any>;
-type QueueState = { version: number; entries: QueueEntry[] };
-
 const QUEUE_LOCK_TTL_MS = 120_000;
+const QUEUE_MAX_BYTES = 16 * 1024 * 1024;
+const QUEUE_CAS_MAX_ATTEMPTS = 64;
 
 async function queueLockIsStale(lockDir: string) {
   const now = Date.now();
@@ -215,7 +569,8 @@ async function queueLockOwnerPid(lockDir: string) {
   }
 }
 
-async function withQueueLock<T>(hubRoot: string, callback: () => Promise<T>): Promise<T> {
+async function withQueueLock<T>(hubRoot: string, callback: (queue: QueueState) => Promise<T>): Promise<T> {
+  await assertHubWritable(hubRoot);
   const file = queuePath(hubRoot);
   const lockDir = `${file}.lock`;
   const ownerPid = process.pid;
@@ -233,7 +588,7 @@ async function withQueueLock<T>(hubRoot: string, callback: () => Promise<T>): Pr
       acquired = true;
       break;
     } catch (err) {
-      if (!err || (err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+      if (errnoCode(err) !== "EEXIST") throw err;
       if (await queueLockIsStale(lockDir)) {
         await rm(lockDir, { recursive: true, force: true });
         continue;
@@ -248,7 +603,12 @@ async function withQueueLock<T>(hubRoot: string, callback: () => Promise<T>): Pr
 
   const acquiredAt = nowIso();
   try {
-    return await callback();
+    const queue = await loadLocalQueue(hubRoot);
+    const before = serializeQueue(queue);
+    const result = await callback(queue);
+    const after = serializeQueue(queue);
+    if (after !== before) await saveLocalQueue(hubRoot, queue);
+    return result;
   } finally {
     // Check both PID and timestamp window to guard against PID reuse
     const currentOwner = await queueLockOwnerPid(lockDir);
@@ -258,20 +618,110 @@ async function withQueueLock<T>(hubRoot: string, callback: () => Promise<T>): Pr
   }
 }
 
-export async function loadQueue(hubRoot: string) {
+async function loadLocalQueue(hubRoot: string) {
   try {
     const raw = await readFile(queuePath(hubRoot), "utf8");
     return normalizeQueue(JSON.parse(raw));
   } catch (err) {
-    if (err && (err as NodeJS.ErrnoException).code === "ENOENT") return defaultQueue();
+    if (errnoCode(err) === "ENOENT") return defaultQueue();
     throw err;
   }
 }
 
-async function saveQueue(hubRoot: string, queue: Record<string, any>) {
+function serializeQueue(queue: QueueState) {
+  const serialized = JSON.stringify({ version: QUEUE_VERSION, entries: queue.entries });
+  if (Buffer.byteLength(serialized, "utf8") > QUEUE_MAX_BYTES) {
+    throw Object.assign(new Error(`queue exceeds ${QUEUE_MAX_BYTES} bytes`), { code: "HUB_QUEUE_TOO_LARGE" });
+  }
+  return serialized;
+}
+
+function parseRedisQueue(serialized: string | null) {
+  if (serialized === null) return defaultQueue();
+  if (Buffer.byteLength(serialized, "utf8") > QUEUE_MAX_BYTES) {
+    throw Object.assign(new Error(`queue exceeds ${QUEUE_MAX_BYTES} bytes`), { code: "HUB_QUEUE_TOO_LARGE" });
+  }
+  try {
+    const parsed = JSON.parse(serialized);
+    if (
+      !isRecord(parsed)
+      || parsed.version !== QUEUE_VERSION
+      || !Array.isArray(parsed.entries)
+      || !parsed.entries.every(isQueueEntry)
+    ) {
+      throw new Error("invalid queue envelope");
+    }
+    return { version: QUEUE_VERSION, entries: parsed.entries };
+  } catch {
+    throw Object.assign(new Error("Redis queue state is not valid JSON"), { code: "HUB_QUEUE_INVALID" });
+  }
+}
+
+async function redisQueueSnapshot(hubRoot: string, serialized: string | null) {
+  const local = await loadLocalQueue(hubRoot);
+  if (local.entries.length > 0) {
+    throw Object.assign(
+      new Error("local queue contains entries and cannot be selected automatically during Redis cutover"),
+      { code: "HUB_QUEUE_MIGRATION_REQUIRED" },
+    );
+  }
+  return parseRedisQueue(serialized);
+}
+
+async function saveLocalQueue(hubRoot: string, queue: QueueState) {
+  await assertHubWritable(hubRoot);
   const normalized = { version: QUEUE_VERSION, entries: queue.entries };
   await writeAtomic(queuePath(hubRoot), `${JSON.stringify(normalized, null, 2)}\n`);
   return normalized;
+}
+
+async function redisQueueBackend(hubRoot: string) {
+  return await openPinnedHubRedisStateBackend({
+    configFile: process.env.CPB_HUB_STATE_REDIS_CONFIG_FILE,
+    hubRoot,
+  });
+}
+
+async function withQueueMutation<T>(
+  hubRoot: string,
+  callback: (queue: QueueState, authorityNowMs: number) => Promise<T>,
+  {
+    leaderFence,
+    maxAttempts = QUEUE_CAS_MAX_ATTEMPTS,
+  }: { leaderFence?: RedisLeaderFence | null; maxAttempts?: number } = {},
+) {
+  await assertHubWritable(hubRoot);
+  const backend = await redisQueueBackend(hubRoot);
+  if (!backend) return await withQueueLock(hubRoot, (queue) => callback(queue, Date.now()));
+  const effectiveFence = leaderFence === undefined
+    ? processLeaderFence(backend.identityFingerprint)
+    : leaderFence;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const snapshot = await backend.readQueue();
+    const queue = await redisQueueSnapshot(hubRoot, snapshot.serialized);
+    const before = serializeQueue(queue);
+    const result = await callback(queue, await backend.serverTimeMs());
+    const after = serializeQueue(queue);
+    if (after === before) return result;
+    const committed = await backend.compareAndSwapQueue(
+      snapshot.revision,
+      snapshot.revision + 1,
+      after,
+      effectiveFence,
+    );
+    if (committed.fenced) {
+      throw Object.assign(new Error("leader lease no longer authorizes this queue write"), { code: "HUB_LEADER_FENCED" });
+    }
+    if (committed.committed) return result;
+  }
+  throw Object.assign(new Error("queue changed too frequently to commit"), { code: "HUB_QUEUE_CONFLICT" });
+}
+
+export async function loadQueue(hubRoot: string) {
+  const backend = await redisQueueBackend(hubRoot);
+  if (!backend) return await loadLocalQueue(hubRoot);
+  return await redisQueueSnapshot(hubRoot, (await backend.readQueue()).serialized);
 }
 
 async function writeAtomic(filePath: string, content: string) {
@@ -285,29 +735,37 @@ function generateId() {
   return `q-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 }
 
-function hasIssueLink(metadata: Record<string, any> | null | undefined) {
+function hasIssueLink(metadata: QueueMetadata | null | undefined) {
   if (!metadata || typeof metadata !== "object") return false;
   return Boolean(metadata.issueNumber || metadata.issueUrl);
 }
 
-export function validateIssueLink(entry: Record<string, any>) {
+export function validateIssueLink(entry: QueueEntryInput | null | undefined) {
   if (!entry) return { linked: false, reason: "no entry" };
   if (entry.status === "needs_issue_link") return { linked: false, reason: "awaiting issue link" };
   if (entry.status === "archived") return { linked: false, reason: "archived" };
   return { linked: hasIssueLink(entry.metadata), reason: null };
 }
 
-function entryKey(entry: QueueEntry) {
+function entryKey(entry: QueueEntryInput) {
   const lineage = entry.metadata?.queueDedupeKey || entry.metadata?.originJobId || "";
   return `${entry.projectId}::${entry.description}::${lineage}`;
 }
 
-export async function enqueue(hubRoot: string, input: QueueEntry = {}) {
+export async function enqueue(hubRoot: string, input: QueueEntryInput = {}) {
   if (!input.projectId) throw new Error("projectId is required");
+  const projectId = input.projectId;
 
-  const meta = buildMeta(input);
-  const normalizedInput: QueueEntry = {
+  const rawMeta = buildMeta(input);
+  const meta = {
+    sourcePath: stringOrNull(rawMeta.sourcePath),
+    sessionId: stringOrNull(rawMeta.sessionId),
+    workerId: stringOrNull(rawMeta.workerId),
+    cwd: stringOrNull(rawMeta.cwd),
+  };
+  const normalizedInput: QueueEntryInput = {
     ...input,
+    projectId,
     sourcePath: meta.sourcePath,
     sessionId: meta.sessionId,
     workerId: meta.workerId,
@@ -324,13 +782,13 @@ export async function enqueue(hubRoot: string, input: QueueEntry = {}) {
 
   // Resolve agent config from hub + project + metadata overrides
   const cpbRoot = normalizedInput.cwd || process.cwd();
-  const resolvedMeta = await resolveAgentsForEntry(hubRoot, cpbRoot, normalizedInput.projectId, normalizedInput.metadata);
-  normalizedInput.metadata = resolvedMeta;
+  const resolvedMeta = await resolveAgentsForEntry(hubRoot, cpbRoot, projectId, normalizedInput.metadata);
+  normalizedInput.metadata = resolvedMeta as QueueMetadata;
 
   // Resolve sourcePath from hub registry when not provided
-  if (!meta.sourcePath && normalizedInput.projectId) {
+  if (!meta.sourcePath) {
     try {
-      const project = await getProject(hubRoot, normalizedInput.projectId);
+      const project = await getProject(hubRoot, projectId);
       if (project?.sourcePath) {
         meta.sourcePath = project.sourcePath;
         normalizedInput.sourcePath = project.sourcePath;
@@ -339,15 +797,14 @@ export async function enqueue(hubRoot: string, input: QueueEntry = {}) {
     } catch { /* project not found in registry — keep null */ }
   }
 
-  return withQueueLock(hubRoot, async () => {
-    const queue = await loadQueue(hubRoot);
+  return withQueueMutation(hubRoot, async (queue, authorityNowMs) => {
     const key = entryKey(normalizedInput);
     const existing = queue.entries.find((e) => entryKey(e) === key && e.status === "pending");
     if (existing) return existing;
 
     const entry: QueueEntry = {
       id: generateId(),
-      projectId: normalizedInput.projectId,
+      projectId,
       sourcePath: meta.sourcePath,
       sessionId: meta.sessionId,
       workerId: meta.workerId,
@@ -360,12 +817,11 @@ export async function enqueue(hubRoot: string, input: QueueEntry = {}) {
       metadata: normalizedInput.metadata || {},
       claimedBy: null,
       claimedAt: null,
-      createdAt: nowIso(),
-      updatedAt: nowIso(),
+      createdAt: nowIso(authorityNowMs),
+      updatedAt: nowIso(authorityNowMs),
     };
 
     queue.entries.push(entry);
-    await saveQueue(hubRoot, queue);
     return entry;
   });
 }
@@ -379,11 +835,31 @@ export async function peekQueue(hubRoot: string) {
   return pending[0];
 }
 
-export async function updateEntry(hubRoot: string, entryId: string, patch: QueueEntry = {}) {
-  return withQueueLock(hubRoot, async () => {
-    const queue = await loadQueue(hubRoot);
+export async function updateEntry(
+  hubRoot: string,
+  entryId: string,
+  patch: QueueEntryInput = {},
+  guard: QueueUpdateGuard = {},
+  options: { leaderFence?: RedisLeaderFence | null } = {},
+) {
+  return withQueueMutation(hubRoot, async (queue, authorityNowMs) => {
     const entry = queue.entries.find((e) => e.id === entryId);
     if (!entry) return null;
+
+    const expectedStatuses = Array.isArray(guard.expectedStatus)
+      ? guard.expectedStatus
+      : guard.expectedStatus === undefined
+        ? null
+        : [guard.expectedStatus];
+    if (expectedStatuses && !expectedStatuses.includes(String(entry.status || ""))) return null;
+    if (
+      Object.prototype.hasOwnProperty.call(guard, "expectedClaimedAt")
+      && (entry.claimedAt ?? null) !== guard.expectedClaimedAt
+    ) return null;
+    if (
+      Object.prototype.hasOwnProperty.call(guard, "expectedUpdatedAt")
+      && (entry.updatedAt ?? null) !== guard.expectedUpdatedAt
+    ) return null;
 
     if (patch.status !== undefined) entry.status = patch.status;
     if (patch.metadata) entry.metadata = { ...entry.metadata, ...patch.metadata };
@@ -393,14 +869,13 @@ export async function updateEntry(hubRoot: string, entryId: string, patch: Queue
     if (patch.reason !== undefined) entry.reason = patch.reason;
     if (patch.completedAt !== undefined) entry.completedAt = patch.completedAt;
     if (entry.status === "pending") clearClaim(entry);
-    entry.updatedAt = patch.updatedAt !== undefined ? patch.updatedAt : nowIso();
+    entry.updatedAt = patch.updatedAt !== undefined ? patch.updatedAt : nowIso(authorityNowMs);
 
-    await saveQueue(hubRoot, queue);
     return entry;
-  });
+  }, options);
 }
 
-export async function listQueue(hubRoot: string, { status, projectId }: QueueEntry = {}) {
+export async function listQueue(hubRoot: string, { status, projectId }: QueueEntryInput = {}) {
   const queue = await loadQueue(hubRoot);
   return queue.entries.filter((e) => {
     if (status && e.status !== status) return false;
@@ -409,12 +884,12 @@ export async function listQueue(hubRoot: string, { status, projectId }: QueueEnt
   });
 }
 
-export async function syncBacklogResult(hubRoot: string, { projectId, description, result }: QueueEntry = {}) {
+export async function syncBacklogResult(hubRoot: string, { projectId, description, result }: QueueEntryInput = {}) {
   if (!projectId || !description) return { synced: 0, entries: [] };
+  const backlogResult = result || {};
 
-  return withQueueLock(hubRoot, async () => {
-    const queue = await loadQueue(hubRoot);
-    const targetStatus = result.ok ? "completed" : "failed";
+  return withQueueMutation(hubRoot, async (queue) => {
+    const targetStatus = backlogResult.ok ? "completed" : "failed";
     const key = entryKey({ projectId, description, metadata: {} });
 
     const matches = queue.entries.filter(
@@ -423,12 +898,12 @@ export async function syncBacklogResult(hubRoot: string, { projectId, descriptio
 
     if (matches.length === 0) return { synced: 0, entries: [] };
 
-    const metadata: QueueEntry = {
+    const metadata: QueueMetadata = {
       syncedFrom: "backlog",
-      backlogIssueId: result.backlogIssueId || null,
-      syncReason: result.ok ? "backlog_completed" : "backlog_failed",
+      backlogIssueId: backlogResult.backlogIssueId || null,
+      syncReason: backlogResult.ok ? "backlog_completed" : "backlog_failed",
     };
-    if (result.error) metadata.error = result.error;
+    if (backlogResult.error) metadata.error = backlogResult.error;
 
     for (const entry of matches) {
       entry.status = targetStatus;
@@ -436,7 +911,6 @@ export async function syncBacklogResult(hubRoot: string, { projectId, descriptio
       entry.updatedAt = nowIso();
     }
 
-    await saveQueue(hubRoot, queue);
     return { synced: matches.length, entries: matches };
   });
 }
@@ -444,7 +918,7 @@ export async function syncBacklogResult(hubRoot: string, { projectId, descriptio
 export async function queueStatus(hubRoot: string) {
   const queue = await loadQueue(hubRoot);
   const failedTargetStatus = summarizeFailedTargets(queue.entries);
-  const counts: Record<string, any> = {
+  const counts: QueueStatusSummary = {
     total: queue.entries.length,
     pending: 0,
     scheduled: 0,
@@ -457,6 +931,11 @@ export async function queueStatus(hubRoot: string) {
     indexUnavailable: 0,
     codegraphUnavailable: 0,
     ...failedTargetStatus,
+    activeMutatingTotal: 0,
+    projects: {},
+    activeProjects: [],
+    eligibleQueued: 0,
+    eligibleProjects: [],
   };
   for (const e of queue.entries) {
     if (e.status === "pending") counts.pending++;
@@ -485,12 +964,13 @@ export async function queueStatus(hubRoot: string) {
     maxActivePerProject: hubLimits.maxActivePerProject,
     projectLimits,
   });
-  counts.activeProjects = (Object.entries(counts.projects) as Array<[string, Record<string, any>]>)
+  const projects = counts.projects;
+  counts.activeProjects = Object.entries(projects)
     .filter(([, ps]) => ps.activeMutating > 0)
     .map(([projectId, ps]) => ({ projectId, ...ps }));
   counts.eligibleQueued = 0;
   counts.eligibleProjects = [];
-  for (const [pid, ps] of Object.entries(counts.projects) as Array<[string, Record<string, any>]>) {
+  for (const [pid, ps] of Object.entries(projects)) {
     counts.eligibleQueued += ps.eligiblePending;
     if (ps.eligiblePending > 0) counts.eligibleProjects.push(pid);
   }
@@ -499,7 +979,7 @@ export async function queueStatus(hubRoot: string) {
 
 const ACTIVE_RETRY_STATUSES = new Set(["pending", "scheduled", "in_progress"]);
 
-function failedTargetKey(entry: Record<string, any>) {
+function failedTargetKey(entry: QueueEntry) {
   const targetJobId = entry.type === "cli_retry"
     ? entry.metadata?.retryJobId
     : `job-${entry.id}`;
@@ -507,21 +987,21 @@ function failedTargetKey(entry: Record<string, any>) {
   return `${entry.projectId}\t${targetJobId}`;
 }
 
-function activeRetryTargetKey(entry: Record<string, any>) {
+function activeRetryTargetKey(entry: QueueEntry) {
   if (entry.type !== "cli_retry" || !ACTIVE_RETRY_STATUSES.has(entry.status)) return null;
   const targetJobId = entry.metadata?.retryJobId;
   if (!entry.projectId || !targetJobId) return null;
   return `${entry.projectId}\t${targetJobId}`;
 }
 
-function completedRetryTargetKey(entry: Record<string, any>) {
+function completedRetryTargetKey(entry: QueueEntry) {
   if (entry.type !== "cli_retry" || entry.status !== "completed") return null;
   const targetJobId = entry.metadata?.retryJobId;
   if (!entry.projectId || !targetJobId) return null;
   return `${entry.projectId}\t${targetJobId}`;
 }
 
-export function summarizeFailedTargets(entries: Record<string, any>[] = []) {
+export function summarizeFailedTargets(entries: QueueEntry[] = []) {
   const failedTargets = new Set();
   const activeRetryTargets = new Set();
   const completedRetryTargets = new Set();
@@ -546,7 +1026,7 @@ export function summarizeFailedTargets(entries: Record<string, any>[] = []) {
     }
   }
   return {
-    failedEntries: entries.filter((entry: Record<string, any>) => entry.status === "failed").length,
+    failedEntries: entries.filter((entry) => entry.status === "failed").length,
     failedTargets: failedTargets.size,
     retryingFailedTargets,
     retriedFailedTargets,
@@ -554,7 +1034,7 @@ export function summarizeFailedTargets(entries: Record<string, any>[] = []) {
   };
 }
 
-function limitForProject(projectLimits: Record<string, any> | null | undefined, projectId: string, fallback: number) {
+function limitForProject(projectLimits: ProjectLimitMap | null | undefined, projectId: string, fallback: number) {
   if (projectLimits instanceof Map) {
     return positiveInt(projectLimits.get(projectId), fallback);
   }
@@ -564,8 +1044,8 @@ function limitForProject(projectLimits: Record<string, any> | null | undefined, 
 export function buildProjectQueueStatus(entries: QueueEntry[], {
   maxActivePerProject = DEFAULT_MAX_ACTIVE_PER_PROJECT,
   projectLimits = new Map(),
-}: Record<string, any> = {}) {
-  const byProject: Record<string, any> = {};
+}: { maxActivePerProject?: number; projectLimits?: ProjectLimitMap } = {}) {
+  const byProject: Record<string, ProjectQueueStatus> = {};
   for (const e of entries) {
     if (!byProject[e.projectId]) {
       const limit = limitForProject(projectLimits, e.projectId, maxActivePerProject);
@@ -626,7 +1106,7 @@ export function buildProjectQueueStatus(entries: QueueEntry[], {
   return byProject;
 }
 
-export async function claimEligible(hubRoot: string, opts: QueueEntry = {}) {
+export async function claimEligible(hubRoot: string, opts: QueueClaimOptions = {}) {
   const {
     workerId = `worker-${process.pid}`,
     projectId = null,
@@ -638,28 +1118,29 @@ export async function claimEligible(hubRoot: string, opts: QueueEntry = {}) {
     cpbRoot = null,
     indexUnavailableRetryMs = 300_000,
     assignmentStore = null,
+    leaderFence,
   } = opts;
 
   if (!providerSlotsAvailable) {
     return { entry: null, reason: "provider-slots-exhausted", recovered: [], activeProjects: [], skippedBusy: [] };
   }
 
-  return withQueueLock(hubRoot, async () => {
-    const queue = await loadQueue(hubRoot);
-    const { recovered, refreshed } = await recoverStaleInProgressAsync(queue.entries, { claimTimeoutMs, assignmentStore });
-    const { recovered: recoveredIdx } = recoverCodegraphUnavailable(queue.entries, indexUnavailableRetryMs);
+  return withQueueMutation(hubRoot, async (queue, authorityNowMs) => {
+    const { recovered, refreshed } = await recoverStaleInProgressAsync(queue.entries, {
+      claimTimeoutMs,
+      assignmentStore,
+      nowMs: authorityNowMs,
+    });
+    const { recovered: recoveredIdx } = recoverCodegraphUnavailable(queue.entries, indexUnavailableRetryMs, authorityNowMs);
     if (recoveredIdx.length > 0) {
       recovered.push(...recoveredIdx);
-    }
-    if (recovered.length > 0 || refreshed.length > 0) {
-      await saveQueue(hubRoot, queue);
     }
 
     const hubLimits = await resolveHubConcurrencyLimits(hubRoot, {
       maxActivePerProject,
     });
 
-    const activeMutatingByProject = {};
+    const activeMutatingByProject: Record<string, number> = {};
     for (const e of queue.entries) {
       if (isActiveEntry(e) && isMutatingEntry(e)) {
         activeMutatingByProject[e.projectId] = (activeMutatingByProject[e.projectId] || 0) + 1;
@@ -686,10 +1167,10 @@ export async function claimEligible(hubRoot: string, opts: QueueEntry = {}) {
       { maxActivePerProject: hubLimits.maxActivePerProject, getProjectFn },
     );
 
-    let chosen = null;
-    let reason = null;
-    const skippedBusy = [];
-    const indexUnavailableIds = [];
+    let chosen: QueueEntry | null = null;
+    let reason: string | null = null;
+    const skippedBusy: string[] = [];
+    const indexUnavailableIds: string[] = [];
 
     for (const candidate of pending) {
       if (isMutatingEntry(candidate)) {
@@ -747,7 +1228,7 @@ export async function claimEligible(hubRoot: string, opts: QueueEntry = {}) {
               sourcePath: project.sourcePath,
             });
           } catch (err) {
-            const reason = err?.details?.reason || err?.code || "codegraph_unavailable";
+            const { reason, details } = errorDetails(err);
             candidate.status = "codegraph_unavailable";
             candidate.updatedAt = nowIso();
             candidate.metadata = {
@@ -755,7 +1236,7 @@ export async function claimEligible(hubRoot: string, opts: QueueEntry = {}) {
               codegraphReadiness: {
                 available: false,
                 reason,
-                details: err?.details || null,
+                details,
               },
               indexFreshness: {
                 available: false,
@@ -813,10 +1294,6 @@ export async function claimEligible(hubRoot: string, opts: QueueEntry = {}) {
       break;
     }
 
-    if (indexUnavailableIds.length > 0) {
-      await saveQueue(hubRoot, queue);
-    }
-
     if (!chosen) {
       const projectStatus = buildProjectQueueStatus(queue.entries, {
         maxActivePerProject: hubLimits.maxActivePerProject,
@@ -835,14 +1312,12 @@ export async function claimEligible(hubRoot: string, opts: QueueEntry = {}) {
       return { entry: null, reason, recovered, activeProjects, skippedBusy };
     }
 
-    const now = nowIso();
+    const now = nowIso(authorityNowMs);
     chosen.status = "in_progress";
     chosen.claimedBy = workerId;
     chosen.workerId = workerId;
     chosen.claimedAt = now;
     chosen.updatedAt = now;
-
-    await saveQueue(hubRoot, queue);
 
     const projectStatus = buildProjectQueueStatus(queue.entries, {
       maxActivePerProject: hubLimits.maxActivePerProject,
@@ -853,14 +1328,17 @@ export async function claimEligible(hubRoot: string, opts: QueueEntry = {}) {
       .map(([pid, ps]) => ({ projectId: pid, ...ps }));
 
     return { entry: chosen, reason: null, recovered, activeProjects, skippedBusy };
-  });
+  // Readiness preparation can refresh CodeGraph manifests. Do not replay that
+  // external work after a queue CAS loss; the caller will retry on its next
+  // poll with a fresh queue snapshot.
+  }, { leaderFence, maxAttempts: 1 });
 }
 
 // ─── auto-enqueue.ts ────────────────────────────────────────────────────────
 
 import { readGithubIssues } from "../github/github-issues.js";
 
-export function matchAutomationRule(issue: Record<string, any>, rules: Record<string, any>[]) {
+export function matchAutomationRule(issue: AutomationIssue, rules: AutomationRule[]) {
   if (!Array.isArray(rules) || rules.length === 0) return null;
   for (const rule of rules) {
     const m = rule.match || {};
@@ -881,7 +1359,7 @@ export function matchAutomationRule(issue: Record<string, any>, rules: Record<st
   return null;
 }
 
-export function isExcluded(issue: Record<string, any>, exclude: Record<string, any>) {
+export function isExcluded(issue: AutomationIssue, exclude: AutomationExclude | null | undefined) {
   if (!exclude) return false;
   if (exclude.labels && Array.isArray(exclude.labels)) {
     const issueLabels = new Set(issue.labels || []);
@@ -890,7 +1368,7 @@ export function isExcluded(issue: Record<string, any>, exclude: Record<string, a
   return false;
 }
 
-export function issueToNormalizedEvent(issue: Record<string, any>, project: Record<string, any>) {
+export function issueToNormalizedEvent(issue: AutomationIssue, project: AutomationProject) {
   return {
     status: "ok",
     type: "github_issue",
@@ -908,14 +1386,14 @@ export function issueToNormalizedEvent(issue: Record<string, any>, project: Reco
   };
 }
 
-function issueMatchesProject(issue: Record<string, any>, project: Record<string, any>) {
+function issueMatchesProject(issue: AutomationIssue, project: AutomationProject) {
   if (issue.projectId === project.id) return true;
   if (issue.projectId && issue.projectId !== "flow") return false;
   const repo = project.github?.fullName;
   return Boolean(repo && (issue.repository || issue.repo || issue.repositoryFullName) === repo);
 }
 
-function issueQueueKey(repo: string, number: number) {
+function issueQueueKey(repo: string | null | undefined, number: string | number | null | undefined) {
   return `${repo || ""}#${Number(number)}`;
 }
 
@@ -926,7 +1404,7 @@ export async function autoEnqueueSyncedIssues(hubRoot: string, cpbRoot: string, 
   const automation = project.github?.automation;
   if (!automation?.enabled) return { enqueued: 0, skipped: 0, duplicates: 0, total: 0, reason: "automation not enabled" };
 
-  const issues = await readGithubIssues(hubRoot);
+  const issues: AutomationIssue[] = await readGithubIssues(hubRoot);
   const projectIssues = issues.filter((i) => i.state === "OPEN" && issueMatchesProject(i, project));
 
   const queue = await loadQueue(hubRoot);
@@ -942,7 +1420,8 @@ export async function autoEnqueueSyncedIssues(hubRoot: string, cpbRoot: string, 
   const matched = [];
 
   for (const issue of projectIssues) {
-    const key = issueQueueKey(issue.repository || (issue as Record<string, any>).repo || project.github?.fullName, issue.number);
+    // issue comes from normalizeGithubIssue() which emits `repository`, never `repo` — drop dead fallback
+    const key = issueQueueKey(issue.repository || project.github?.fullName, issue.number);
     if (queuedIssueKeys.has(key)) { duplicates++; continue; }
     if (isExcluded(issue, automation.exclude)) { skipped++; continue; }
 
@@ -964,7 +1443,8 @@ export async function autoEnqueueSyncedIssues(hubRoot: string, cpbRoot: string, 
       }
       enqueued++;
     } catch (err) {
-      if (err.message?.includes("duplicate")) { duplicates++; }
+      const message = isRecord(err) && typeof err.message === "string" ? err.message : "";
+      if (message.includes("duplicate")) { duplicates++; }
       else { skipped++; }
     }
   }
@@ -975,11 +1455,10 @@ export async function autoEnqueueSyncedIssues(hubRoot: string, cpbRoot: string, 
 // ─── inbox-mail.ts ──────────────────────────────────────────────────────────
 
 import { readdir } from "node:fs/promises";
-import { AnyRecord } from "../../../shared/types.js";
 
 const SCHEMA = "cpb.inbox-mail.v1";
 const VALID_STATUSES = new Set(["pending", "acknowledged", "completed"]);
-const VALID_TRANSITIONS = {
+const VALID_TRANSITIONS: Record<string, string> = {
   pending: "acknowledged",
   acknowledged: "completed",
 };
@@ -1015,7 +1494,7 @@ function generateMessageId() {
   return `msg-${y}${m}${d}-${seq}-${_pidHex}`;
 }
 
-function serializeFrontmatter(meta: Record<string, any>) {
+function serializeFrontmatter(meta: LooseRecord) {
   const lines = ["---"];
   for (const [key, value] of Object.entries(meta)) {
     if (value === undefined || value === null) {
@@ -1037,7 +1516,7 @@ function parseFrontmatter(raw: string) {
 
   const fmText = raw.slice(3, end).trim();
   const content = raw.slice(end + 3).trimStart();
-  const meta: AnyRecord = {};
+  const meta: LooseRecord = {};
 
   for (const line of fmText.split("\n")) {
     const trimmed = line.trim();
@@ -1109,17 +1588,17 @@ interface InboxMessageOutput {
   to: string;
   status: string;
   owner: string;
-  locator: Record<string, unknown>;
+  locator: LooseRecord;
   createdAt: string;
   updatedAt: string;
   [key: string]: unknown;
 }
 
-function messageToOutput(meta: Record<string, any>): InboxMessageOutput {
+function messageToOutput(meta: LooseRecord): InboxMessageOutput {
   return { ...meta } as InboxMessageOutput;
 }
 
-export async function writeInboxMessage(cpbRoot: string, project: string, input: Record<string, any>) {
+export async function writeInboxMessage(cpbRoot: string, project: string, input: InboxMessageInput) {
   const id = generateMessageId();
   const ts = nowIso();
 
@@ -1150,7 +1629,7 @@ export async function writeInboxMessage(cpbRoot: string, project: string, input:
   return messageToOutput(meta);
 }
 
-export async function listInboxMessages(cpbRoot: string, project: string, filters: AnyRecord = {}) {
+export async function listInboxMessages(cpbRoot: string, project: string, filters: InboxMessageFilters = {}) {
   const dir = inboxDir(cpbRoot, project);
   let files;
   try {
@@ -1200,7 +1679,7 @@ export async function readInboxMessage(cpbRoot: string, project: string, id: str
   }
 }
 
-export async function ackInboxMessage(cpbRoot: string, project: string, id: string, { owner }: AnyRecord = {}) {
+export async function ackInboxMessage(cpbRoot: string, project: string, id: string, { owner }: InboxAckOptions = {}) {
   if (!safeId(id)) return null;
   return withInboxLock(cpbRoot, project, async () => {
     const filePath = safeMessagePath(cpbRoot, project, id);
@@ -1214,7 +1693,7 @@ export async function ackInboxMessage(cpbRoot: string, project: string, id: stri
     const parsed = parseFrontmatter(raw);
     if (!parsed) return null;
 
-    const currentStatus = parsed.meta.status;
+    const currentStatus = String(parsed.meta.status || "");
     const expected = VALID_TRANSITIONS[currentStatus];
     if (expected !== "acknowledged") {
       throw new Error(`invalid transition: ${currentStatus} -> acknowledged`);
@@ -1245,7 +1724,7 @@ export async function completeInboxMessage(cpbRoot: string, project: string, id:
     const parsed = parseFrontmatter(raw);
     if (!parsed) return null;
 
-    const currentStatus = parsed.meta.status;
+    const currentStatus = String(parsed.meta.status || "");
     const expected = VALID_TRANSITIONS[currentStatus];
     if (expected !== "completed") {
       throw new Error(`invalid transition: ${currentStatus} -> completed`);

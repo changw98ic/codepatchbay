@@ -1,17 +1,28 @@
 import assert from "node:assert/strict";
+import { createHmac } from "node:crypto";
 import { existsSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import path from "node:path";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 
 import { normalizeGithubWebhookEvent } from "../server/services/github/github-adapter.js";
 import { matchGithubTrigger } from "../server/services/github/github-adapter.js";
+import { saveGithubAppConfig } from "../server/services/github/github-api.js";
+import { handleGithubWebhook } from "../server/services/github/webhook-handler.js";
 import { createGithubIssueQueueJob } from "../server/services/event/event-source.js";
 import { createJob, getJobByQueueEntryId } from "../server/services/job/job-store.js";
-import { enqueue } from "../server/services/hub/hub-queue.js";
-import { registerProject } from "../server/services/hub/hub-registry.js";
+import { enqueue, loadQueue } from "../server/services/hub/hub-queue.js";
+import { bindProjectGithub, registerProject } from "../server/services/hub/hub-registry.js";
 import { tempRoot } from "./helpers.js";
 
-function makeIssuePayload(overrides: Record<string, any> = {}) {
+type NormalizedGithubEvent = Parameters<typeof createGithubIssueQueueJob>[1];
+
+type GithubPayloadOverrides = Record<string, unknown> & {
+  issue?: Record<string, unknown>;
+  comment?: Record<string, unknown>;
+};
+
+function makeIssuePayload(overrides: GithubPayloadOverrides = {}) {
   return {
     action: "labeled",
     issue: {
@@ -20,6 +31,7 @@ function makeIssuePayload(overrides: Record<string, any> = {}) {
       body: "Users cannot log in when password contains special chars",
       html_url: "https://github.com/acme/app/issues/42",
       state: "open",
+      author_association: "MEMBER",
       labels: [{ name: "cpb" }, { name: "bug" }],
       ...overrides.issue,
     },
@@ -30,7 +42,7 @@ function makeIssuePayload(overrides: Record<string, any> = {}) {
   };
 }
 
-function makeCommentPayload(overrides: Record<string, any> = {}) {
+function makeCommentPayload(overrides: GithubPayloadOverrides = {}) {
   return {
     action: "created",
     issue: {
@@ -53,13 +65,13 @@ function makeCommentPayload(overrides: Record<string, any> = {}) {
   };
 }
 
-function makeNormalizedEvent(payload: Record<string, any>, projectId = "test-project") {
+function makeNormalizedEvent(payload: Record<string, unknown>, projectId = "test-project"): NormalizedGithubEvent {
   return normalizeGithubWebhookEvent({
     event: payload.action === "created" && payload.comment ? "issue_comment" : "issues",
     delivery: `del-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
     payload,
     projectId,
-  });
+  }) as NormalizedGithubEvent;
 }
 
 async function makeTestRoots() {
@@ -75,6 +87,48 @@ async function registerTestProject(hubRoot: string, projectId = "flow") {
     sourcePath,
     skipCodeGraphGate: true,
   });
+}
+
+function webhookSignature(rawBody: Buffer, secret: string) {
+  return `sha256=${createHmac("sha256", secret).update(rawBody).digest("hex")}`;
+}
+
+async function makeWebhookHarness(t: TestContext) {
+  const { cpbRoot, hubRoot } = await makeTestRoots();
+  const project = await registerTestProject(hubRoot, "flow");
+  await bindProjectGithub(hubRoot, "flow", "acme/app");
+
+  const secret = `webhook-secret-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const secretEnv = `CPB_TEST_WEBHOOK_${Date.now()}_${Math.random().toString(36).slice(2)}`.toUpperCase();
+  process.env[secretEnv] = secret;
+  await saveGithubAppConfig(hubRoot, {
+    appId: "12345",
+    webhookSecretRef: `env:${secretEnv}`,
+  });
+
+  t.after(async () => {
+    delete process.env[secretEnv];
+    await rm(cpbRoot, { recursive: true, force: true });
+    await rm(hubRoot, { recursive: true, force: true });
+    await rm(project.sourcePath, { recursive: true, force: true });
+  });
+
+  const deliver = async (event: "issues" | "issue_comment", payload: Record<string, unknown>) => {
+    const rawBody = Buffer.from(JSON.stringify(payload));
+    return handleGithubWebhook({
+      rawBody,
+      hubRoot,
+      cpbRoot,
+      headers: {
+        "x-github-event": event,
+        "x-github-delivery": `delivery-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        "x-hub-signature-256": webhookSignature(rawBody, secret),
+      },
+      opts: { githubDryRun: true },
+    });
+  };
+
+  return { cpbRoot, hubRoot, deliver };
 }
 
 // Acceptance 1: Queue entry preserves issue number, repo, title, body, source URL, actor, and workflow.
@@ -221,6 +275,39 @@ test("issue comment /cpb run creates queue entry and job", async (t) => {
   assert.equal(meta.commandText, "/cpb run");
   assert.ok(result.job, "job created for comment trigger");
   assert.equal(result.job.queueEntryId, result.queueEntry.id);
+});
+
+test("GitHub webhook rejects untrusted /cpb run comments before queue creation", async (t) => {
+  const { hubRoot, deliver } = await makeWebhookHarness(t);
+  const response = await deliver("issue_comment", makeCommentPayload({
+    comment: { body: "/cpb run", author_association: "NONE" },
+  }));
+
+  assert.equal(response.statusCode, 403);
+  assert.equal(response.body.code, "GITHUB_ACTOR_FORBIDDEN");
+  assert.equal((await loadQueue(hubRoot)).entries.length, 0);
+});
+
+test("GitHub webhook does not mistake an external issue author for the actor applying a label", async (t) => {
+  const { hubRoot, deliver } = await makeWebhookHarness(t);
+  const response = await deliver("issues", makeIssuePayload({
+    issue: { author_association: "NONE" },
+  }));
+
+  assert.equal(response.statusCode, 202);
+  assert.equal((await loadQueue(hubRoot)).entries.length, 1);
+});
+
+test("GitHub webhook allows trusted execution triggers after HMAC verification", async (t) => {
+  const { hubRoot, deliver } = await makeWebhookHarness(t);
+
+  const commentResponse = await deliver("issue_comment", makeCommentPayload());
+  assert.equal(commentResponse.statusCode, 202);
+
+  const issueResponse = await deliver("issues", makeIssuePayload());
+  assert.equal(issueResponse.statusCode, 202);
+
+  assert.equal((await loadQueue(hubRoot)).entries.length, 2);
 });
 
 // Validation error tests

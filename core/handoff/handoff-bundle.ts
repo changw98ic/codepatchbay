@@ -50,8 +50,8 @@ function redactSecrets(text: unknown) {
  * @returns {Promise<string>} markdown handoff document
  */
 type HandoffPreviousResult = {
-  phase?: string;
-  artifact?: { name?: string } | string;
+  phase?: string | null;
+  artifact?: { name?: string | null } | string | Record<string, unknown> | null;
 };
 
 type HandoffBundleInput = {

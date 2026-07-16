@@ -62,6 +62,32 @@ test("runPhase loads an adapter, returns its result, and releases worktree resou
   }]);
 });
 
+test("runPhase preserves attempt-scoped conversations until job cleanup", async () => {
+  const phase = await writePhaseAdapter(`
+    return {
+      schemaVersion: 1,
+      phase: ctx.phase,
+      status: "passed",
+      artifact: null,
+      failure: null,
+      diagnostics: {},
+    };
+  `);
+  const releases: string[] = [];
+
+  const result = await runPhase({
+    phase,
+    sourcePath: "/tmp/cpb-attempt-worktree",
+    conversationKey: "cpb:project:job:attempt:executor",
+    pool: {
+      releaseWorktree: async (cwd: string) => { releases.push(cwd); },
+    },
+  });
+
+  assert.equal(result.status, "passed");
+  assert.deepEqual(releases, []);
+});
+
 test("runPhase converts adapter errors to failed phase results and still releases resources", async () => {
   const phase = await writePhaseAdapter('throw new Error("adapter exploded");');
   const releases: string[] = [];

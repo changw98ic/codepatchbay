@@ -5,6 +5,7 @@ import { test } from "node:test";
 
 import { appendEvent } from "../server/services/event/event-store.js";
 import { buildJobAuditExport } from "../server/services/readiness-checks.js";
+import { recordValue } from "../shared/types.js";
 import { tempRoot } from "./helpers.js";
 
 test("audit export includes checklist artifacts from artifact index", async () => {
@@ -45,11 +46,20 @@ test("audit export includes checklist artifacts from artifact index", async () =
     classifier: "poisoned-session-v1",
     ts: "2026-06-12T00:00:01Z",
   }, { dataRoot });
-  const audit: Record<string, any> = await buildJobAuditExport(cpbRoot, "proj", "job-audit-checklist", { dataRoot }) as Record<string, any>;
-  assert.equal(audit.checklist.items[0].id, "AC-001");
-  assert.deepEqual(audit.executionMap.changedFiles, ["README.md"]);
-  assert.equal(audit.evidenceLedger.finalWorktree.diffHash, "sha256:one");
-  assert.deepEqual(audit.checklistVerdict.items[0].evidenceRefs, [{ ledgerId: "evidence-ledger-001", evidenceId: "EV-001" }]);
-  assert.equal(audit.runtimeFailures[0].type, "phase_poisoned_session");
-  assert.equal(audit.completionGate?.checklistOutcome ?? null, null);
+  const audit = recordValue(await buildJobAuditExport(cpbRoot, "proj", "job-audit-checklist", { dataRoot }));
+  const checklist = recordValue(audit.checklist);
+  const executionMap = recordValue(audit.executionMap);
+  const evidenceLedger = recordValue(audit.evidenceLedger);
+  const finalWorktree = recordValue(evidenceLedger.finalWorktree);
+  const checklistVerdict = recordValue(audit.checklistVerdict);
+  const checklistItems = Array.isArray(checklist.items) ? checklist.items.map(recordValue) : [];
+  const verdictItems = Array.isArray(checklistVerdict.items) ? checklistVerdict.items.map(recordValue) : [];
+  const runtimeFailures = Array.isArray(audit.runtimeFailures) ? audit.runtimeFailures.map(recordValue) : [];
+
+  assert.equal(checklistItems[0].id, "AC-001");
+  assert.deepEqual(executionMap.changedFiles, ["README.md"]);
+  assert.equal(finalWorktree.diffHash, "sha256:one");
+  assert.deepEqual(verdictItems[0].evidenceRefs, [{ ledgerId: "evidence-ledger-001", evidenceId: "EV-001" }]);
+  assert.equal(runtimeFailures[0].type, "phase_poisoned_session");
+  assert.equal(recordValue(audit.completionGate).checklistOutcome ?? null, null);
 });

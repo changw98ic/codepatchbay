@@ -1,3 +1,4 @@
+import type { LooseRecord } from "../../shared/types.js";
 export const BOUNDARY_VERSION = "1.0.0";
 
 export const REQUIRED_ADAPTER_METHODS = Object.freeze([
@@ -26,7 +27,7 @@ export function isValidPlatform(platform: string) {
   return SUPPORTED_PLATFORMS.includes(platform);
 }
 
-export function validateGitPlatformAdapter(adapter: Record<string, any>) {
+export function validateGitPlatformAdapter(adapter: LooseRecord) {
   if (!adapter || typeof adapter !== "object") {
     throw new Error("git-platform adapter: must be a non-null object");
   }
@@ -43,7 +44,7 @@ export function validateGitPlatformAdapter(adapter: Record<string, any>) {
   return adapter;
 }
 
-export function validateTransportResult(transport: Record<string, any>) {
+export function validateTransportResult(transport: LooseRecord) {
   if (!transport || typeof transport !== "object") {
     throw new Error("git-platform transport: must be a non-null object");
   }

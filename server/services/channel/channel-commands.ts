@@ -1,7 +1,7 @@
 import { detectSecretInput, redactSecrets } from "../secret-policy.js";
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import { AnyRecord } from "../../../shared/types.js";
+import { recordValue, type LooseRecord } from "../../../shared/types.js";
 import { runtimeDataRoot } from "../runtime.js";
 import { resolveHubRoot } from "../hub/hub-registry.js";
 
@@ -22,7 +22,18 @@ export const CHANNEL_COMMAND_HELP = [
 
 const SAFE_PROJECT = /^[A-Za-z0-9][A-Za-z0-9-]*$/;
 
-function baseFields(extra: Record<string, any> = {}): Record<string, any> {
+type RoutingOptions = {
+  positional: string[];
+  workflow: string | null;
+  planMode: string | null;
+  triage: string | null;
+  workflowRequested: boolean;
+  planModeRequested: boolean;
+  triageRequested: boolean;
+  error: string | null;
+};
+
+function baseFields(extra: LooseRecord = {}): LooseRecord {
   return {
     project: null,
     job: null,
@@ -35,7 +46,7 @@ function baseFields(extra: Record<string, any> = {}): Record<string, any> {
   };
 }
 
-function errorResult(code: string, message: string, extra: Record<string, any> = {}) {
+function errorResult(code: string, message: string, extra: LooseRecord = {}) {
   return {
     ok: false,
     type: "error",
@@ -99,21 +110,31 @@ function stripInvocation(tokens: string[]) {
   return null;
 }
 
-function extractRoutingOptions(tokens: string[]): Record<string, any> {
-  const positional = [];
-  let workflow = null;
-  let planMode = null;
-  let triage = null;
+function extractRoutingOptions(tokens: string[]): RoutingOptions {
+  const positional: string[] = [];
+  let workflow: string | null = null;
+  let planMode: string | null = null;
+  let triage: string | null = null;
   let workflowRequested = false;
   let planModeRequested = false;
   let triageRequested = false;
+  const invalid = (error: string): RoutingOptions => ({
+    positional,
+    workflow,
+    planMode,
+    triage,
+    workflowRequested,
+    planModeRequested,
+    triageRequested,
+    error,
+  });
 
   for (let i = 0; i < tokens.length; i += 1) {
     const token = tokens[i];
     if (token === "--workflow" || token === "-w") {
       const value = tokens[i + 1];
       if (!value) {
-        return { error: "missing workflow value", positional, workflow, planMode, triage };
+        return invalid("missing workflow value");
       }
       workflow = value;
       workflowRequested = true;
@@ -123,7 +144,7 @@ function extractRoutingOptions(tokens: string[]): Record<string, any> {
     if (token.startsWith("--workflow=")) {
       const value = token.slice("--workflow=".length);
       if (!value) {
-        return { error: "missing workflow value", positional, workflow, planMode, triage };
+        return invalid("missing workflow value");
       }
       workflow = value;
       workflowRequested = true;
@@ -132,7 +153,7 @@ function extractRoutingOptions(tokens: string[]): Record<string, any> {
     if (token === "--plan-mode") {
       const value = tokens[i + 1];
       if (!value) {
-        return { error: "missing plan-mode value", positional, workflow, planMode, triage };
+        return invalid("missing plan-mode value");
       }
       planMode = value;
       planModeRequested = true;
@@ -142,7 +163,7 @@ function extractRoutingOptions(tokens: string[]): Record<string, any> {
     if (token.startsWith("--plan-mode=")) {
       const value = token.slice("--plan-mode=".length);
       if (!value) {
-        return { error: "missing plan-mode value", positional, workflow, planMode, triage };
+        return invalid("missing plan-mode value");
       }
       planMode = value;
       planModeRequested = true;
@@ -162,7 +183,7 @@ function extractRoutingOptions(tokens: string[]): Record<string, any> {
     if (token.startsWith("--triage=")) {
       const value = token.slice("--triage=".length);
       if (!value) {
-        return { error: "missing triage value", positional, workflow, planMode, triage };
+        return invalid("missing triage value");
       }
       triage = value;
       triageRequested = true;
@@ -198,7 +219,7 @@ function parsePositiveInteger(value: unknown): number | null {
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
 }
 
-function okResult(type: string, fields: Record<string, any>) {
+function okResult(type: string, fields: LooseRecord) {
   return {
     ok: true,
     type,
@@ -281,7 +302,7 @@ export function parseChannelCommand(input: string) {
   const detection = detectSecretInput(input);
   if (detection.matched) {
     return {
-      ...errorResult("SECRET_INPUT_REJECTED", detection.guidance),
+      ...errorResult("SECRET_INPUT_REJECTED", String(detection.guidance || "")),
       guidance: detection.guidance,
       detection,
     };
@@ -310,13 +331,13 @@ export function parseChannelCommand(input: string) {
 // ============================================================
 
 
-function channelPolicyRoot(cpbRoot: string, options: Record<string, any> = {}) {
+function channelPolicyRoot(cpbRoot: string, options: LooseRecord = {}) {
   if (options.controlRoot) return path.resolve(options.controlRoot);
   if (options.hubRoot) return path.resolve(options.hubRoot);
   return process.env.CPB_HUB_ROOT ? resolveHubRoot(cpbRoot) : runtimeDataRoot(cpbRoot);
 }
 
-function channelPolicyEventsPath(cpbRoot: string, options: Record<string, any> = {}) {
+function channelPolicyEventsPath(cpbRoot: string, options: LooseRecord = {}) {
   return path.join(channelPolicyRoot(cpbRoot, options), "channel-policy-events.jsonl");
 }
 
@@ -331,7 +352,7 @@ function matchesField(ruleValue: unknown, requestValue: unknown) {
   return values.some((value) => value === "*" || String(value) === String(requestValue ?? ""));
 }
 
-function ruleMatches(rule: AnyRecord, request: AnyRecord) {
+function ruleMatches(rule: LooseRecord, request: LooseRecord) {
   return (
     matchesField(rule.channel, request.channel) &&
     matchesField(rule.project, request.project) &&
@@ -341,12 +362,12 @@ function ruleMatches(rule: AnyRecord, request: AnyRecord) {
   );
 }
 
-function normalizedRules(policy: AnyRecord = {}) {
+function normalizedRules(policy: LooseRecord = {}) {
   return [
     ...asList(policy.rules),
-    ...asList(policy.allow).map((rule) => ({ ...rule, effect: "allow" })),
-    ...asList(policy.deny).map((rule) => ({ ...rule, effect: "deny" })),
-  ].filter((rule) => rule && typeof rule === "object");
+    ...asList(policy.allow).map((rule) => ({ ...recordValue(rule), effect: "allow" })),
+    ...asList(policy.deny).map((rule) => ({ ...recordValue(rule), effect: "deny" })),
+  ].map((rule) => recordValue(rule)).filter((rule) => Object.keys(rule).length > 0);
 }
 
 export function channelPolicyRequest({
@@ -356,18 +377,19 @@ export function channelPolicyRequest({
   job = null,
   actor = {},
   channelId = null,
-}: AnyRecord = {}) {
+}: LooseRecord = {}) {
+  const actorRecord = recordValue(actor);
   return {
     channel: channel || null,
     action: action || null,
     project,
     job,
-    userId: actor.userId || actor.id || null,
-    channelId: channelId || actor.channelId || null,
+    userId: actorRecord.userId || actorRecord.id || null,
+    channelId: channelId || actorRecord.channelId || null,
   };
 }
 
-export function evaluateChannelPolicy(policy: AnyRecord | null | undefined, request: AnyRecord) {
+export function evaluateChannelPolicy(policy: LooseRecord | null | undefined, request: LooseRecord) {
   if (!policy || policy.enabled === false) {
     return { allowed: true, reason: "channel policy not configured", matchedRule: null };
   }
@@ -394,7 +416,7 @@ export function evaluateChannelPolicy(policy: AnyRecord | null | undefined, requ
   return { allowed: true, reason: "default allow", matchedRule: null };
 }
 
-export async function recordChannelPolicyDecision(cpbRoot: string, decision: AnyRecord, request: AnyRecord, options: Record<string, any> = {}) {
+export async function recordChannelPolicyDecision(cpbRoot: string, decision: LooseRecord, request: LooseRecord, options: LooseRecord = {}) {
   const event = {
     type: "channel_policy_decision",
     allowed: Boolean(decision.allowed),
@@ -408,13 +430,13 @@ export async function recordChannelPolicyDecision(cpbRoot: string, decision: Any
   return event;
 }
 
-export async function enforceChannelPolicy(cpbRoot: string, policy: AnyRecord | null | undefined, request: AnyRecord, _options: Record<string, any> = {}) {
+export async function enforceChannelPolicy(cpbRoot: string, policy: LooseRecord | null | undefined, request: LooseRecord, _options: LooseRecord = {}) {
   const decision = evaluateChannelPolicy(policy, request);
   await recordChannelPolicyDecision(cpbRoot, decision, request, _options);
   return decision;
 }
 
-export async function readChannelPolicyEvents(cpbRoot: string, options: Record<string, any> = {}) {
+export async function readChannelPolicyEvents(cpbRoot: string, options: LooseRecord = {}) {
   let raw;
   try {
     raw = await readFile(channelPolicyEventsPath(cpbRoot, options), "utf8");

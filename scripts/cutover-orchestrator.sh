@@ -1,53 +1,22 @@
 #!/usr/bin/env bash
-# Cutover script: migrate from legacy worker to Hub Orchestrator v1
 set -euo pipefail
 
-HUB_ROOT="${1:-$HOME/.cpb}"
-BACKUP_TS=$(date +%s)
+cat >&2 <<'EOF'
+ERROR: scripts/cutover-orchestrator.sh is retired and did not modify Hub state.
 
-echo "=== CPB Hub Orchestrator v1 Cutover ==="
-echo ""
+The legacy script moved live queue, worker, and assignment directories without
+a maintenance lease or a recoverable transaction. Use the supported offline
+workflow instead:
 
-# 1. Stop legacy workers
-echo "[1/5] Stopping legacy workers..."
-node "${CPB_ROOT:-$(dirname "$0")/..}/scripts/stop-legacy-workers.js" 2>/dev/null || true
+  cpb hub backup --output /secure/backups/cpb-hub
+  CPB_HUB_STATE_REDIS_CONFIG_FILE=/secure/redis-state.json \
+    cpb hub migrate-to-redis --output /secure/migrations/cpb-cutover
+  CPB_HUB_STATE_REDIS_CONFIG_FILE=/secure/redis-state.json \
+    cpb hub migrate-to-redis --output /secure/migrations/cpb-cutover --yes
 
-# 2. Stop hub if running
-echo "[2/5] Stopping hub..."
-npx codepatchbay hub stop 2>/dev/null || true
+After verification, start the orchestrator with:
 
-# 3. Backup old state
-echo "[3/5] Backing up old state..."
-for dir in queue workers assignments; do
-  if [ -d "${HUB_ROOT}/${dir}" ]; then
-    echo "  backing up ${dir} → ${dir}.legacy.${BACKUP_TS}"
-    mv "${HUB_ROOT}/${dir}" "${HUB_ROOT}/${dir}.legacy.${BACKUP_TS}"
-  fi
-done
+  cpb hub orch start
+EOF
 
-# 4. Create new runtime structure
-echo "[4/5] Initializing new runtime..."
-mkdir -p "${HUB_ROOT}/orchestrator"
-mkdir -p "${HUB_ROOT}/assignments"
-mkdir -p "${HUB_ROOT}/workers/registry"
-mkdir -p "${HUB_ROOT}/workers/inbox"
-mkdir -p "${HUB_ROOT}/workers/desired"
-mkdir -p "${HUB_ROOT}/supervisor/decisions"
-
-echo "  Runtime initialized at ${HUB_ROOT}"
-
-# 5. Verify
-echo "[5/5] Verifying..."
-if [ -d "${HUB_ROOT}/orchestrator" ] && [ -d "${HUB_ROOT}/assignments" ]; then
-  echo ""
-  echo "=== Cutover complete ==="
-  echo "Start the orchestrator with: cpb hub-orch start"
-  echo ""
-  echo "Legacy backups:"
-  for dir in "${HUB_ROOT}"/*.legacy.*; do
-    [ -d "$dir" ] && echo "  $(basename "$dir")"
-  done
-else
-  echo "ERROR: Runtime initialization failed" >&2
-  exit 1
-fi
+exit 2

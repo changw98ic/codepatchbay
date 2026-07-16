@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "records": [
+    {
+      "validationMode": "swe-bench-verified",
+      "benchmarkDataset": "SWE-bench/SWE-bench_Verified",
+      "benchmarkSplit": "test",
+      "benchmarkInstanceId": "django__django-13128",
+      "representativeRepository": "django/django",
+      "baseCommit": "2d67222472f80f251607ae1b720527afceba06ad",
+      "datasetRowRef": "https://datasets-server.huggingface.co/rows?dataset=SWE-bench%2FSWE-bench_Verified&config=default&split=test&offset=100&length=1",
+      "problemStatementSha256": "d05584e584d668d3bc05dac8dc889140cbec5336c30912ddf99cb5fc0f8f9716",
+      "failToPassTests": 480,
+      "passToPassTests": 9438,
+      "officialBenchmarkHumanValidated": true,
+      "benchmarkIssuePullRequestPair": true,
+      "validatedAt": "2026-06-24T13:14:23.000Z",
+      "evidenceBundleRef": "docs/product/evidence/swe-bench-verified-django-13128-dry-run.json",
+      "dryRunFinalizerStatus": "dry-run",
+      "draftPrPreview": true,
+      "noLiveSideEffects": true,
+      "prBodyRequiredManualReconstruction": false
+    },
+    {
+      "validationMode": "swe-bench-verified",
+      "benchmarkDataset": "SWE-bench/SWE-bench_Verified",
+      "benchmarkSplit": "test",
+      "benchmarkInstanceId": "matplotlib__matplotlib-13989",
+      "representativeRepository": "matplotlib/matplotlib",
+      "baseCommit": "a3e2897bfaf9eaac1d6649da535c4e721c89fa69",
+      "datasetRowRef": "https://datasets-server.huggingface.co/rows?dataset=SWE-bench%2FSWE-bench_Verified&config=default&split=test&offset=253&length=1",
+      "problemStatementSha256": "13d52a70d283b3677d5258aadda203f99ac501d0073989215713092077f6e3ff",
+      "failToPassTests": 66,
+      "passToPassTests": 28835,
+      "officialBenchmarkHumanValidated": true,
+      "benchmarkIssuePullRequestPair": true,
+      "validatedAt": "2026-06-24T13:14:23.000Z",
+      "evidenceBundleRef": "docs/product/evidence/swe-bench-verified-matplotlib-13989-dry-run.json",
+      "dryRunFinalizerStatus": "dry-run",
+      "draftPrPreview": true,
+      "noLiveSideEffects": true,
+      "prBodyRequiredManualReconstruction": false
+    },
+    {
+      "validationMode": "swe-bench-verified",
+      "benchmarkDataset": "SWE-bench/SWE-bench_Verified",
+      "benchmarkSplit": "test",
+      "benchmarkInstanceId": "pallets__flask-5014",
+      "representativeRepository": "pallets/flask",
+      "baseCommit": "7ee9ceb71e868944a46e1ff00b506772a53a4f1d",
+      "datasetRowRef": "https://datasets-server.huggingface.co/rows?dataset=SWE-bench%2FSWE-bench_Verified&config=default&split=test&offset=289&length=1",
+      "problemStatementSha256": "f77d8eab7dd608172aa78b3b50dfa7e0e9b3a6a1c52d14a1cb02417eb5a0ab00",
+      "failToPassTests": 57,
+      "passToPassTests": 3767,
+      "officialBenchmarkHumanValidated": true,
+      "benchmarkIssuePullRequestPair": true,
+      "validatedAt": "2026-06-24T13:14:23.000Z",
+      "evidenceBundleRef": "docs/product/evidence/swe-bench-verified-flask-5014-dry-run.json",
+      "dryRunFinalizerStatus": "dry-run",
+      "draftPrPreview": true,
+      "noLiveSideEffects": true,
+      "prBodyRequiredManualReconstruction": false
+    }
+  ],
+  "supplementalOfficialScoreBundles": [
+    {
+      "validationMode": "swe-bench-verified-official-score-bundle",
+      "evidenceBundleRef": "docs/product/evidence/swe-bench-real-runs/verified-5-codex-runtime-official-score.json",
+      "notes": "Codex-only 5-job runtime batch scored by the official SWE-bench harness. Kept supplemental because representative records above intentionally require distinct repositories."
+    }
+  ]
+}

@@ -1,5 +1,5 @@
 import path from "node:path";
-import { AnyRecord } from "../../shared/types.js";
+import { recordValue, type LooseRecord } from "../../shared/types.js";
 import {
   dispatchForPhase as coreDispatchForPhase,
   getWorkflow as getCoreWorkflow,
@@ -10,7 +10,7 @@ import {
 } from "../../core/workflow/definition.js";
 
 type CoreWorkflow = ReturnType<typeof getCoreWorkflow>;
-type ServerWorkflow = CoreWorkflow & AnyRecord;
+type ServerWorkflow = CoreWorkflow & LooseRecord;
 
 // --- Helpers migrated from deleted supervisor.ts ---
 
@@ -20,8 +20,9 @@ function hasArtifact(value: unknown) {
   return typeof value === "string" && value.trim().length > 0;
 }
 
-function hasCompletedPhase(state: AnyRecord, phase: string) {
-  return state.completedPhases?.includes(phase) || hasArtifact(state.artifacts?.[phase]);
+function hasCompletedPhase(state: LooseRecord, phase: string) {
+  const completedPhases = Array.isArray(state.completedPhases) ? state.completedPhases : [];
+  return completedPhases.includes(phase) || hasArtifact(recordValue(state.artifacts)[phase]);
 }
 
 function artifactId(value: unknown, prefix: string) {
@@ -33,7 +34,7 @@ function artifactId(value: unknown, prefix: string) {
 
 // --- Job-level convenience functions ---
 
-export function nextPhaseFor(state: AnyRecord) {
+export function nextPhaseFor(state: LooseRecord) {
   if (!state || TERMINAL_STATUSES.has(state.status)) return "";
   if (state.cancelRequested) return "";
 
@@ -47,7 +48,7 @@ export function nextPhaseFor(state: AnyRecord) {
   return "complete";
 }
 
-export function bridgeForPhaseJob(phase: string, project: string, job: AnyRecord) {
+export function bridgeForPhaseJob(phase: string, project: string, job: LooseRecord) {
   const bridgesDir = "bridges";
   switch (phase) {
     case "plan":

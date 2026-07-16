@@ -6,7 +6,9 @@ import { promisify } from "node:util";
 import { test } from "node:test";
 
 import { finalizeSuccessfulQueueEntry } from "../server/services/auto-finalizer.js";
-import { appendEvent } from "../server/services/event/event-store.js";
+import { appendEvent, readEvents } from "../server/services/event/event-store.js";
+import { getJob } from "../server/services/job/job-store.js";
+import { recordValue, type LooseRecord } from "../shared/types.js";
 import { tempRoot } from "./helpers.js";
 
 const execFileAsync = promisify(execFile);
@@ -69,6 +71,17 @@ async function setupProtectedDiffFixture() {
   return fixture;
 }
 
+type SeedJobEventsOptions = {
+  cpbRoot: string;
+  dataRoot: string;
+  project?: string;
+  jobId?: string;
+  worktreePath: string;
+  worktreeBranch?: string;
+  verdictStatus?: string;
+  completionGate?: boolean;
+};
+
 async function seedJobEvents({
   cpbRoot,
   dataRoot,
@@ -78,7 +91,7 @@ async function seedJobEvents({
   worktreeBranch = "cpb/job-finalizer",
   verdictStatus = "pass",
   completionGate = true,
-}: Record<string, any>) {
+}: SeedJobEventsOptions) {
   const verdictPath = await writePassVerdict(cpbRoot, verdictStatus);
   const eventOptions = { dataRoot };
   await appendEvent(cpbRoot, project, jobId, {
@@ -133,7 +146,9 @@ async function seedJobEvents({
   }, eventOptions);
 }
 
-function issueEntry(overrides: Record<string, any> = {}) {
+type EntryOverrides = Record<string, unknown> & { metadata?: Record<string, unknown> };
+
+function issueEntry(overrides: EntryOverrides = {}) {
   const { metadata: metadataOverrides = {}, ...rest } = overrides;
   return {
     id: "entry-finalizer",
@@ -150,7 +165,7 @@ function issueEntry(overrides: Record<string, any> = {}) {
   };
 }
 
-function completedJob(worktreePath: string, overrides: Record<string, any> = {}) {
+function completedJob(worktreePath: string, overrides: Record<string, unknown> = {}) {
   return {
     status: "completed",
     jobId: "job-finalizer",
@@ -184,7 +199,7 @@ test("finalizeSuccessfulQueueEntry dry-run builds draft PR request from material
     job: completedJob(fixture.worktreePath),
     sourcePath: fixture.sourcePath,
     mode: "dry-run",
-    runCommand: async (command: string, args: string[], opts: Record<string, any>) => {
+    runCommand: async (command: string, args: string[], opts: Record<string, unknown>) => {
       gitCalls.push([command, ...args]);
       return execFileAsync(command, args, opts);
     },
@@ -207,6 +222,68 @@ test("finalizeSuccessfulQueueEntry dry-run builds draft PR request from material
   assert.equal(gitCalls.some((call) => call[0] === "git" && ["add", "commit", "push"].includes(call[1])), false);
 });
 
+test("finalizeSuccessfulQueueEntry records dry-run PR finalizer result for audit projections", async () => {
+  const fixture = await setupGitFixture();
+  await seedJobEvents({ ...fixture });
+
+  const result: any = await finalizeSuccessfulQueueEntry({
+    cpbRoot: fixture.cpbRoot,
+    hubRoot: fixture.hubRoot,
+    dataRoot: fixture.dataRoot,
+    project: "proj",
+    entry: issueEntry(),
+    job: completedJob(fixture.worktreePath),
+    sourcePath: fixture.sourcePath,
+    mode: "dry-run",
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.status, "dry-run");
+
+  const events = await readEvents(fixture.cpbRoot, "proj", "job-finalizer", { dataRoot: fixture.dataRoot });
+  const finalizerEvents = events.filter((event) => event.type === "finalizer_result");
+  const finalizerResult = recordValue(finalizerEvents[0].result);
+  const finalizerPr = recordValue(finalizerResult.pr);
+
+  assert.equal(finalizerEvents.length, 1);
+  assert.equal(finalizerResult.ok, true);
+  assert.equal(finalizerResult.status, "dry-run");
+  assert.equal(finalizerResult.mode, "dry-run");
+  assert.equal(finalizerPr.status, "dry-run");
+
+  const projected = await getJob(fixture.cpbRoot, "proj", "job-finalizer", { dataRoot: fixture.dataRoot });
+  assert.equal(projected?.finalizer?.ok, true);
+  assert.equal(projected?.finalizer?.status, "dry-run");
+  assert.equal(projected?.finalizer?.mode, "dry-run");
+});
+
+test("finalizeSuccessfulQueueEntry blocks dry-run PR when finalizer audit recording fails", async () => {
+  const fixture = await setupGitFixture();
+  await seedJobEvents({ ...fixture });
+
+  const result: any = await finalizeSuccessfulQueueEntry({
+    cpbRoot: fixture.cpbRoot,
+    hubRoot: fixture.hubRoot,
+    dataRoot: fixture.dataRoot,
+    project: "proj",
+    entry: issueEntry(),
+    job: completedJob(fixture.worktreePath),
+    sourcePath: fixture.sourcePath,
+    mode: "dry-run",
+    recordFinalizerResult: async () => {
+      throw new Error("event store unavailable");
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.status, "blocked");
+  assert.equal(result.code, "FINALIZER_AUDIT_RECORD_FAILED");
+  assert.match(result.error || "", /event store unavailable/);
+  assert.equal(result.finalizerResult?.ok, true);
+  assert.equal(result.finalizerResult?.status, "dry-run");
+  assert.equal(result.finalizerResult?.mode, "dry-run");
+});
+
 test("finalizeSuccessfulQueueEntry defaults to dry-run without live merge or PR side effects", async () => {
   const fixture = await setupGitFixture();
   await seedJobEvents({ ...fixture });
@@ -221,7 +298,7 @@ test("finalizeSuccessfulQueueEntry defaults to dry-run without live merge or PR 
     entry: issueEntry(),
     job: completedJob(fixture.worktreePath),
     sourcePath: fixture.sourcePath,
-    runCommand: async (command: string, args: string[], opts: Record<string, any>) => {
+    runCommand: async (command: string, args: string[], opts: Record<string, unknown>) => {
       gitCalls.push([command, ...args]);
       return execFileAsync(command, args, opts);
     },
@@ -303,7 +380,7 @@ test("finalizeSuccessfulQueueEntry dry-run rejects dirty source without git stas
     job: completedJob(fixture.worktreePath),
     sourcePath: fixture.sourcePath,
     mode: "dry-run",
-    runCommand: async (command: string, args: string[], opts: Record<string, any>) => {
+    runCommand: async (command: string, args: string[], opts: Record<string, unknown>) => {
       gitCalls.push([command, ...args]);
       return execFileAsync(command, args, opts);
     },
@@ -334,7 +411,7 @@ test("finalizeSuccessfulQueueEntry live PR rejects dirty source without git stas
     sourcePath: fixture.sourcePath,
     mode: "pr",
     allowLiveFinalize: true,
-    runCommand: async (command: string, args: string[], opts: Record<string, any>) => {
+    runCommand: async (command: string, args: string[], opts: Record<string, unknown>) => {
       gitCalls.push([command, ...args]);
       return execFileAsync(command, args, opts);
     },
@@ -370,7 +447,7 @@ test("finalizeSuccessfulQueueEntry live PR rejects uncommitted worktree changes 
     sourcePath: fixture.sourcePath,
     mode: "pr",
     allowLiveFinalize: true,
-    runCommand: async (command: string, args: string[], opts: Record<string, any>) => {
+    runCommand: async (command: string, args: string[], opts: Record<string, unknown>) => {
       gitCalls.push([command, ...args]);
       return execFileAsync(command, args, opts);
     },

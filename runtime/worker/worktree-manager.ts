@@ -9,6 +9,7 @@ import { execFile as _execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { realpath, rm } from "node:fs/promises";
 import path from "node:path";
+import type { LooseRecord } from "../../core/contracts/types.js";
 import { createWorktree } from "../git/worktree.js";
 
 const execFileAsync = promisify(_execFile);
@@ -35,7 +36,44 @@ async function canonicalPath(candidate: string) {
   }
 }
 
-async function assertIsolatedWorktree({ sourcePath, worktreesRoot, worktreeInfo }: { sourcePath: string; worktreesRoot: string; worktreeInfo: Record<string, any> }) {
+type WorktreeInfo = LooseRecord & {
+  path?: string;
+  branch?: string;
+};
+
+type WorktreeLog = {
+  debug?: (message: string) => void;
+  warn?: (message: string) => void;
+  info?: (message: string) => void;
+};
+
+type GitRunner = (command: string, args: string[], opts: { cwd?: string; maxBuffer?: number }) => Promise<unknown>;
+
+const defaultRunGit: GitRunner = (command, args, opts) => execFileAsync(command, args, opts);
+
+type CleanupFailedWorktreeCreateOptions = {
+  sourcePath: string;
+  worktreePath: string;
+  branch: string;
+  runGit?: GitRunner;
+  removePath?: typeof rm;
+  log?: WorktreeLog | null;
+};
+
+type CreateIsolatedWorktreeOptions = {
+  hubRoot?: string;
+  sourcePath?: string;
+  entryId?: string;
+  slug?: string;
+  create?: typeof createWorktree;
+  runGit?: GitRunner;
+  removePath?: typeof rm;
+  maxAttempts?: number;
+  retryDelayMs?: number;
+  log?: WorktreeLog | null;
+};
+
+async function assertIsolatedWorktree({ sourcePath, worktreesRoot, worktreeInfo }: { sourcePath: string; worktreesRoot: string; worktreeInfo: WorktreeInfo }) {
   if (!worktreeInfo?.path) {
     throw new Error("worktree creation returned no path");
   }
@@ -55,10 +93,10 @@ export async function cleanupFailedWorktreeCreate({
   sourcePath,
   worktreePath,
   branch,
-  runGit = execFileAsync,
+  runGit = defaultRunGit,
   removePath = rm,
   log = null,
-}: Record<string, any>) {
+}: CleanupFailedWorktreeCreateOptions) {
   const gitOpts = { cwd: sourcePath, maxBuffer: 10 * 1024 * 1024 };
   try {
     await runGit("git", ["worktree", "remove", "--force", worktreePath], gitOpts);
@@ -88,12 +126,12 @@ export async function createIsolatedWorktreeWithRetry({
   entryId,
   slug = WORKTREE_SLUG,
   create = createWorktree,
-  runGit = execFileAsync,
+  runGit = defaultRunGit,
   removePath = rm,
   maxAttempts = WORKTREE_CREATE_MAX_ATTEMPTS,
   retryDelayMs = WORKTREE_CREATE_RETRY_DELAY_MS,
   log = null,
-}: Record<string, any> = {}) {
+}: CreateIsolatedWorktreeOptions = {}) {
   if (!hubRoot) throw new Error("hubRoot is required for worktree isolation");
   if (!sourcePath) throw new Error("sourcePath is required for worktree isolation");
   if (!entryId) throw new Error("entryId is required for worktree isolation");

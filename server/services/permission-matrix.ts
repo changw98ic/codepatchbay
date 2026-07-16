@@ -1,3 +1,5 @@
+import type { EventRecord } from "./event/event-types.js";
+import type { LooseRecord } from "../../shared/types.js";
 import path from "node:path";
 import os from "node:os";
 import { REQUIRED_EXECUTION_BOUNDARY } from "../../core/job/meta.js";
@@ -11,6 +13,34 @@ export const INFRA_FAILURE = "INFRA_FAILURE";
 type ScopeResolver = (cpbRoot: string, project: string, sourcePath: string | null, dataRoot: string | null, legacyOnly: boolean) => string | null;
 type RoleScopeMap = Record<string, { allowed: ScopeResolver[]; denied: ScopeResolver[] }>;
 type RoleResolverMap = Record<string, ScopeResolver[]>;
+type ScopeOptions = LooseRecord & {
+  sourcePath?: string | null;
+  dataRoot?: string | null;
+  legacyOnly?: boolean;
+};
+type PhasePolicyOptions = ScopeOptions & {
+  profileConfig?: LooseRecord | null;
+};
+type PhasePolicy = LooseRecord & {
+  role: string;
+  readScope: string;
+  readAllowed: string[];
+  writeAllowed: string[];
+  writeDenied: string[];
+  observablePaths: string[];
+  executionBoundary: typeof REQUIRED_EXECUTION_BOUNDARY;
+  profileConfigured?: boolean;
+  denyTools?: unknown[];
+  denyCommands?: unknown[];
+};
+type PermissionCheckOptions = ScopeOptions & {
+  jobId?: string | null;
+};
+type DeleteRiskOptions = LooseRecord & {
+  cwd?: string;
+  repoRoot?: string | null;
+  bulkThreshold?: number;
+};
 
 const WRITE_SCOPES: RoleScopeMap = {
   planner: {
@@ -135,15 +165,19 @@ function matchesPath(targetPath: string, boundaryPath: string) {
 function resolveScopeMatches(resolvers: Array<(cpbRoot: string, project: string, sourcePath: string | null, dataRoot: string | null, legacyOnly: boolean) => string | null>, targetPath: string, cpbRoot: string, project: string, sourcePath: string | null, dataRoot: string | null, legacyOnly: boolean, effect: string) {
   return resolvers
     .map((resolver) => resolver(cpbRoot, project, sourcePath, dataRoot, legacyOnly))
-    .filter(Boolean)
+    .filter(presentPath)
     .map((boundaryPath) => {
       const match = matchesPath(targetPath, boundaryPath);
       return match ? { ...match, effect } : null;
     })
-    .filter(Boolean);
+    .filter((match): match is { path: string; specificity: number; effect: string } => Boolean(match));
 }
 
-export function canWrite(role: string, targetPath: string, cpbRoot: string, project: string, sourcePath: string | null = null, { dataRoot = null, legacyOnly = false }: Record<string, any> = {}) {
+function presentPath(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+export function canWrite(role: string, targetPath: string, cpbRoot: string, project: string, sourcePath: string | null = null, { dataRoot = null, legacyOnly = false }: ScopeOptions = {}) {
   const canonicalRole = validateRole(role);
   const scope = WRITE_SCOPES[canonicalRole];
   if (!scope) return { allowed: false, reason: `unknown role: ${role}` };
@@ -165,7 +199,7 @@ export function canWrite(role: string, targetPath: string, cpbRoot: string, proj
 
   const allowedDirs = scope.allowed
     .map((r) => r(cpbRoot, project, sourcePath, dataRoot, legacyOnly))
-    .filter(Boolean)
+    .filter(presentPath)
     .map((d) => path.resolve(d));
 
   if (winner?.effect === "deny") {
@@ -448,7 +482,7 @@ export function canExecute(role: string, commandLine: string, _cpbRoot: string, 
   };
 }
 
-export function checkPermission(role: string, action: string, targetPath: string, cpbRoot: string, project: string, { sourcePath, jobId, dataRoot, legacyOnly = false }: Record<string, any> = {}) {
+export function checkPermission(role: string, action: string, targetPath: string, cpbRoot: string, project: string, { sourcePath = null, jobId = null, dataRoot = null, legacyOnly = false }: PermissionCheckOptions = {}) {
   const canonicalRole = validateRole(role);
 
   if (action === "read") {
@@ -481,13 +515,13 @@ export async function recordPermissionDenial(
     tool,
     dataRoot,
     legacyOnly = false,
-  }: Record<string, any>
+  }: LooseRecord
 ) {
   if (!dataRoot && !legacyOnly) {
     throw new Error("project runtime root required to record permission denial");
   }
   const eventRole = role ? validateRole(role) : null;
-  const event: Record<string, any> = {
+  const event: EventRecord = {
     type: "permission_denied",
     category: "infra",
     jobId,
@@ -506,30 +540,30 @@ export async function recordPermissionDenial(
   await appendEvent(cpbRoot, project, jobId, event, dataRoot ? { dataRoot, includeLegacyFallback: false } : { includeLegacyFallback: true });
 }
 
-export function getObservablePaths(role: string, cpbRoot: string, project: string, { sourcePath = null, dataRoot = null, legacyOnly = false }: Record<string, any> = {}) {
+export function getObservablePaths(role: string, cpbRoot: string, project: string, { sourcePath = null, dataRoot = null, legacyOnly = false }: ScopeOptions = {}) {
   const canonicalRole = validateRole(role);
   const resolvers = OBSERVATION_PATHS[canonicalRole];
   if (!resolvers) return [];
   return resolvers
     .map((r) => r(cpbRoot, project, sourcePath, dataRoot, legacyOnly))
-    .filter(Boolean);
+    .filter(presentPath);
 }
 
-export function isInfraDenial(event: Record<string, any>) {
+export function isInfraDenial(event: LooseRecord) {
   return event?.type === "permission_denied" && event?.category === "infra";
 }
 
-export function getPhasePolicy(role: string, cpbRoot: string, project: string, { sourcePath = null, profileConfig = null, dataRoot = null, legacyOnly = false }: Record<string, any> = {}) {
+export function getPhasePolicy(role: string, cpbRoot: string, project: string, { sourcePath = null, profileConfig = null, dataRoot = null, legacyOnly = false }: PhasePolicyOptions = {}): PhasePolicy {
   const canonicalRole = validateRole(role);
   const scope = WRITE_SCOPES[canonicalRole];
   const observable = getObservablePaths(canonicalRole, cpbRoot, project, { sourcePath, dataRoot, legacyOnly });
 
-  const basePolicy = {
+  const basePolicy: PhasePolicy = {
     role: canonicalRole,
     readScope: "unrestricted",
     readAllowed: getReadAllowedPaths(canonicalRole),
-    writeAllowed: scope.allowed.map((r) => r(cpbRoot, project, sourcePath, dataRoot, legacyOnly)).filter(Boolean),
-    writeDenied: scope.denied.map((r) => r(cpbRoot, project, sourcePath, dataRoot, legacyOnly)).filter(Boolean),
+    writeAllowed: scope.allowed.map((r) => r(cpbRoot, project, sourcePath, dataRoot, legacyOnly)).filter(presentPath),
+    writeDenied: scope.denied.map((r) => r(cpbRoot, project, sourcePath, dataRoot, legacyOnly)).filter(presentPath),
     observablePaths: observable,
     executionBoundary: REQUIRED_EXECUTION_BOUNDARY,
   };
@@ -540,7 +574,7 @@ export function getPhasePolicy(role: string, cpbRoot: string, project: string, {
   return basePolicy;
 }
 
-export function mergeProfilePolicy(basePolicy: Record<string, any>, profileConfig: Record<string, any>) {
+export function mergeProfilePolicy(basePolicy: PhasePolicy, profileConfig: LooseRecord): PhasePolicy {
   if (!profileConfig || typeof profileConfig !== "object") return basePolicy;
 
   const merged = { ...basePolicy };
@@ -556,7 +590,8 @@ export function mergeProfilePolicy(basePolicy: Record<string, any>, profileConfi
     const paths = process.env.CPB_DANGEROUS === "1"
       ? profileConfig.write_paths
       : profileConfig.write_paths.filter((p) => p !== "**/*");
-    merged.writeAllowed = [...merged.writeAllowed, ...paths];
+    const writeAllowed = Array.isArray(merged.writeAllowed) ? merged.writeAllowed : [];
+    merged.writeAllowed = [...writeAllowed, ...paths];
   }
   merged.executionBoundary = REQUIRED_EXECUTION_BOUNDARY;
 
@@ -585,7 +620,7 @@ function isSecretPath(targetPath: string) {
   return SECRET_PATH_PATTERNS.some((pattern) => pattern.test(resolved));
 }
 
-export function evaluatePermissionDecision(role: string, phase: string, action: string, targetPath: string, cpbRoot: string, project: string, { sourcePath = null, dataRoot = null, legacyOnly = false }: Record<string, any> = {}) {
+export function evaluatePermissionDecision(role: string, phase: string, action: string, targetPath: string, cpbRoot: string, project: string, { sourcePath = null, dataRoot = null, legacyOnly = false }: ScopeOptions = {}) {
   // Action validation
   if (!["read", "write", "execute"].includes(action)) {
     return {
@@ -764,7 +799,7 @@ function parseRmFlags(args: string[]) {
   return { recursive, force, paths };
 }
 
-function deleteBlock(reason: string, details: Record<string, any> = {}) {
+function deleteBlock(reason: string, details: LooseRecord = {}) {
   return { allowed: false, reason, messageKey: "delete_blocked", details };
 }
 
@@ -878,8 +913,10 @@ function checkShellString(cmdStr: string) {
   return { allowed: true };
 }
 
-export function classifyDeleteRisk(command: string, args: string[], { cwd, repoRoot, bulkThreshold }: Record<string, any> = {}) {
+export function classifyDeleteRisk(command: string, args: string[], { cwd, repoRoot, bulkThreshold }: DeleteRiskOptions = {}) {
   const threshold = bulkThreshold ?? DEFAULT_BULK_THRESHOLD;
+  const workingDir = cwd || process.cwd();
+  const root = repoRoot || null;
   const base = path.basename(command);
 
   if (SHELL_COMMANDS.has(base)) {
@@ -891,13 +928,13 @@ export function classifyDeleteRisk(command: string, args: string[], { cwd, repoR
     return { allowed: true };
   }
 
-  if (base === "rm") return checkRm(args, cwd, threshold, repoRoot);
+  if (base === "rm") return checkRm(args, workingDir, threshold, root);
   if (base === "git") return checkGitDelete(args);
 
   return { allowed: true };
 }
 
-export function formatDeleteBlockedMessage(result: Record<string, any>) {
+export function formatDeleteBlockedMessage(result: LooseRecord) {
   const messages: Record<string, string> = {
     git_dir_delete: "CPB blocked deletion of .git directory.",
     external_recursive_delete: "CPB blocked recursive deletion outside the worktree.",
@@ -911,7 +948,7 @@ export function formatDeleteBlockedMessage(result: Record<string, any>) {
   return `${messages[result.reason] || "CPB blocked a destructive delete operation."} (reason: ${result.reason})`;
 }
 
-export function logDeleteBlock(command: string, args: string[], cwd: string, result: Record<string, any>, sink: ((msg: string) => void) | null) {
+export function logDeleteBlock(command: string, args: string[], cwd: string, result: LooseRecord, sink: ((msg: string) => void) | null) {
   const write = sink || ((msg) => process.stderr.write(msg));
   write(`[delete-blocked] ${JSON.stringify({
     type: "delete_blocked",

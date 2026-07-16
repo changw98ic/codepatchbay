@@ -11,7 +11,7 @@ test("CodeGraph index-only flag is allowed through child env policy", () => {
   const env = buildChildEnv({
     CPB_CODEGRAPH_INDEX_ONLY_OK: "1",
     NOT_ALLOWED_FLAG: "1",
-  }) as Record<string, any>;
+  }) as Record<string, unknown>;
   assert.equal(env.CPB_CODEGRAPH_INDEX_ONLY_OK, "1");
   assert.equal(env.NOT_ALLOWED_FLAG, undefined);
 });
@@ -19,12 +19,12 @@ test("CodeGraph index-only flag is allowed through child env policy", () => {
 test("project runtime root is only passed to child env through explicit overrides", () => {
   const fromParent = buildChildEnv({
     CPB_PROJECT_RUNTIME_ROOT: "/tmp/poisoned-runtime-root",
-  }) as Record<string, any>;
+  }) as Record<string, unknown>;
   assert.equal(fromParent.CPB_PROJECT_RUNTIME_ROOT, undefined);
 
   const explicit = buildChildEnv({}, {
     CPB_PROJECT_RUNTIME_ROOT: "/tmp/verified-runtime-root",
-  }) as Record<string, any>;
+  }) as Record<string, unknown>;
   assert.equal(explicit.CPB_PROJECT_RUNTIME_ROOT, "/tmp/verified-runtime-root");
 });
 
@@ -33,16 +33,18 @@ test("CodeGraph readiness can explicitly accept a static index without daemon st
   const cgDir = path.join(sourcePath, ".codegraph");
   await mkdir(cgDir, { recursive: true });
   await writeFile(path.join(cgDir, "codegraph.db"), Buffer.alloc(2048, 1));
-  await writeFile(path.join(cgDir, "daemon.pid"), JSON.stringify({
-    pid: process.pid,
-    version: "test",
-    codebaseRoot: sourcePath,
-    socketPath: path.join(cgDir, "daemon.sock"),
-  }) + "\n", "utf8");
 
-  const readiness = await checkCodeGraphReady({ sourcePath });
-  assert.equal(readiness.available, true);
-  assert.match(readiness.indexFile, /codegraph\.db$/);
+  const previous = process.env.CPB_CODEGRAPH_INDEX_ONLY_OK;
+  process.env.CPB_CODEGRAPH_INDEX_ONLY_OK = "1";
+  try {
+    const readiness = await checkCodeGraphReady({ sourcePath });
+    assert.equal(readiness.available, true);
+    assert.match(readiness.indexFile, /codegraph\.db$/);
+    assert.equal(readiness.state.source, "index_only");
+  } finally {
+    if (previous === undefined) delete process.env.CPB_CODEGRAPH_INDEX_ONLY_OK;
+    else process.env.CPB_CODEGRAPH_INDEX_ONLY_OK = previous;
+  }
 });
 
 test("CodeGraph index-only mode ignores mismatched CPB root daemon state", async () => {

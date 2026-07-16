@@ -1,3 +1,4 @@
+import type { LooseRecord } from "../../shared/types.js";
 import { access } from "node:fs/promises";
 import { constants } from "node:fs";
 import path from "node:path";
@@ -49,8 +50,8 @@ async function whichBinary(name: string): Promise<string | null> {
  * Returns an array of agent descriptors with source: "auto-discovered".
  * These are meant to supplement (not replace) manually registered descriptors.
  */
-export async function autoDiscoverAgents(): Promise<Record<string, any>[]> {
-  const discovered: Record<string, any>[] = [];
+export async function autoDiscoverAgents(): Promise<LooseRecord[]> {
+  const discovered: LooseRecord[] = [];
 
   const checks = KNOWN_AGENTS.map(async (ka) => {
     const fullPath = await whichBinary(ka.command);

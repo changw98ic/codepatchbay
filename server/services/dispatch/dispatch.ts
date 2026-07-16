@@ -4,7 +4,140 @@ import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { buildMeta } from "../../../core/job/meta.js";
 import { listJobs } from "../job/job-store.js";
+import { recordValue, type LooseRecord } from "../../../core/contracts/types.js";
 
+type DispatchEvent = LooseRecord & {
+  type: string;
+  dispatchId?: string;
+  projectId?: string | null;
+  sourcePath?: string | null;
+  sessionId?: string | null;
+  workerId?: string | null;
+  cwd?: string | null;
+  queueEntryId?: string | null;
+  ts?: string;
+};
+
+type DispatchState = LooseRecord & {
+  dispatchId: string | null;
+  projectId: string | null;
+  sourcePath: string | null;
+  sessionId: string | null;
+  workerId: string | null;
+  cwd: string | null;
+  queueEntryId: string | null;
+  status: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+};
+
+type DispatchCreateOptions = LooseRecord & {
+  projectId?: string;
+  sourcePath?: string | null;
+  sessionId?: string | null;
+  workerId?: string | null;
+  queueEntryId?: string | null;
+  ts?: string;
+};
+
+type DispatchWorkerOptions = LooseRecord & {
+  workerId?: string;
+  ts?: string;
+};
+
+type DispatchTimestampOptions = LooseRecord & {
+  ts?: string;
+};
+
+type DispatchListOptions = LooseRecord & {
+  projectId?: string;
+  status?: string;
+};
+
+type MetadataRecord = LooseRecord & {
+  issueNumber?: string | number | null;
+  issueUrl?: string | null;
+  issueTitle?: string | null;
+  repo?: string | null;
+  repository?: string | null;
+  repositoryFullName?: string | null;
+  finalDisposition?: string | null;
+  cleanupReason?: string | null;
+  syncReason?: string | null;
+  error?: string | null;
+  supersedesQueueEntryId?: string | null;
+  supersededByIssues?: unknown[];
+  originQueueEntryId?: string | null;
+  originJobId?: string | null;
+  source?: string | null;
+  releaseSnapshot?: unknown;
+  indexSnapshot?: unknown;
+  acpProfile?: string | null;
+  uiLane?: boolean;
+  uiLaneReason?: string | null;
+};
+
+type TaskRecord = LooseRecord & {
+  id?: string;
+  title?: string;
+  body?: string;
+  description?: string;
+  status?: string;
+  state?: string;
+  projectId?: string;
+  project?: string;
+  priority?: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  metadata?: MetadataRecord;
+  repository?: string | null;
+  repo?: string | null;
+  repositoryFullName?: string | null;
+  number?: string | number;
+  url?: string | null;
+  labels?: unknown[];
+  task?: string;
+  jobId?: string;
+  workflow?: string;
+  executor?: unknown;
+  phase?: string | null;
+  failurePhase?: string | null;
+  failureCode?: string | null;
+  failureCause?: unknown;
+  blockedReason?: unknown;
+  cancelReason?: unknown;
+  lineage?: LooseRecord;
+  dispatchId?: string;
+  queueEntryId?: string | null;
+  workerId?: string | null;
+  sourcePath?: string | null;
+  sessionId?: string | null;
+  cwd?: string | null;
+  executionBoundary?: string | null;
+  source?: unknown;
+  kind?: string;
+};
+
+function taskRecord(value: unknown): TaskRecord {
+  return recordValue(value) as TaskRecord;
+}
+
+type BuildLedgerOptions = LooseRecord & {
+  cpbRoot?: string;
+  hubRoot?: string;
+  limit?: number;
+  projectId?: string;
+  includeQueueOnly?: boolean;
+  includeArchived?: boolean;
+};
+
+type BuildHistoryOptions = LooseRecord & {
+  cpbRoot?: string;
+  hubRoot?: string;
+  limit?: number;
+  projectId?: string;
+  kinds?: string[];
+};
 
 function nowIso() {
   return new Date().toISOString();
@@ -44,7 +177,7 @@ async function withDispatchFileLock(hubRoot: string, dispatchId: string, fn: () 
       acquired = true;
       break;
     } catch (err) {
-      if (!err || (err as AnyRecord).code !== "EEXIST") throw err;
+      if (!err || err.code !== "EEXIST") throw err;
       try {
         const info = await stat(lockDir);
         if (Date.now() - info.mtimeMs >= DISPATCH_LOCK_TTL_MS) {
@@ -81,7 +214,7 @@ function serialized(hubRoot: string, dispatchId: string, fn: () => Promise<unkno
 
 const TERMINAL_STATUSES = new Set(["completed", "failed"]);
 
-const LEGAL_TRANSITIONS = {
+const LEGAL_TRANSITIONS: Record<string, string[]> = {
   created:   ["pending", "assigned", "running"],
   pending:   ["assigned", "running"],
   assigned:  ["running"],
@@ -120,13 +253,13 @@ function validateTransition(currentStatus: string | null, eventType: string) {
     throw new Error(`invalid transition: dispatch is ${currentStatus} (terminal)`);
   }
 
-  const allowed = (LEGAL_TRANSITIONS as AnyRecord)[currentStatus];
+  const allowed = LEGAL_TRANSITIONS[currentStatus];
   if (!allowed || !allowed.includes(targetStatus)) {
     throw new Error(`invalid transition: ${currentStatus} -> ${targetStatus} (via ${eventType})`);
   }
 }
 
-async function appendDispatchEvent(hubRoot: string, dispatchId: string, event: AnyRecord) {
+async function appendDispatchEvent(hubRoot: string, dispatchId: string, event: DispatchEvent) {
   return serialized(hubRoot, dispatchId, () => withDispatchFileLock(hubRoot, dispatchId, async () => {
     const file = dispatchFile(hubRoot, dispatchId);
     const existing = await readDispatchEvents(hubRoot, dispatchId);
@@ -141,19 +274,19 @@ async function appendDispatchEvent(hubRoot: string, dispatchId: string, event: A
   }));
 }
 
-async function readDispatchEvents(hubRoot: string, dispatchId: string): Promise<AnyRecord[]> {
+async function readDispatchEvents(hubRoot: string, dispatchId: string): Promise<DispatchEvent[]> {
   const file = dispatchFile(hubRoot, dispatchId);
   try {
     const raw = await readFile(file, "utf8");
     return raw.split("\n").filter((l) => l.trim()).map((l) => JSON.parse(l));
   } catch (err) {
-    if ((err as AnyRecord).code === "ENOENT") return [];
+    if (err?.code === "ENOENT") return [];
     throw err;
   }
 }
 
-export function materializeDispatch(events: AnyRecord[]) {
-  const state: AnyRecord = {
+export function materializeDispatch(events: DispatchEvent[]): DispatchState {
+  const state: DispatchState = {
     dispatchId: null,
     projectId: null,
     sourcePath: null,
@@ -206,7 +339,7 @@ export function materializeDispatch(events: AnyRecord[]) {
   return state;
 }
 
-export async function createDispatch(hubRoot: string, { projectId, sourcePath, sessionId, workerId, queueEntryId, ts = nowIso() }: AnyRecord = {}) {
+export async function createDispatch(hubRoot: string, { projectId, sourcePath, sessionId, workerId, queueEntryId, ts = nowIso() }: DispatchCreateOptions = {}) {
   if (!projectId) throw new Error("projectId is required");
   const meta = buildMeta({ projectId, sourcePath, sessionId, workerId });
   const dispatchId = makeDispatchId(ts);
@@ -217,7 +350,7 @@ export async function createDispatch(hubRoot: string, { projectId, sourcePath, s
     sourcePath: meta.sourcePath,
     sessionId: meta.sessionId,
     workerId: meta.workerId,
-    cwd: meta.cwd,
+    cwd: typeof meta.cwd === "string" ? meta.cwd : null,
     queueEntryId: queueEntryId || null,
     ts,
   });
@@ -230,7 +363,7 @@ export async function getDispatch(hubRoot: string, dispatchId: string) {
   return materializeDispatch(events);
 }
 
-export async function assignWorker(hubRoot: string, dispatchId: string, { workerId, ts = nowIso() }: AnyRecord = {}) {
+export async function assignWorker(hubRoot: string, dispatchId: string, { workerId, ts = nowIso() }: DispatchWorkerOptions = {}) {
   if (!workerId) throw new Error("workerId is required");
   await appendDispatchEvent(hubRoot, dispatchId, {
     type: "dispatch_worker_assigned",
@@ -241,7 +374,7 @@ export async function assignWorker(hubRoot: string, dispatchId: string, { worker
   return getDispatch(hubRoot, dispatchId);
 }
 
-export async function startDispatch(hubRoot: string, dispatchId: string, { ts = nowIso() }: AnyRecord = {}) {
+export async function startDispatch(hubRoot: string, dispatchId: string, { ts = nowIso() }: DispatchTimestampOptions = {}) {
   await appendDispatchEvent(hubRoot, dispatchId, {
     type: "dispatch_started",
     dispatchId,
@@ -250,7 +383,7 @@ export async function startDispatch(hubRoot: string, dispatchId: string, { ts = 
   return getDispatch(hubRoot, dispatchId);
 }
 
-export async function completeDispatch(hubRoot: string, dispatchId: string, { ts = nowIso() }: AnyRecord = {}) {
+export async function completeDispatch(hubRoot: string, dispatchId: string, { ts = nowIso() }: DispatchTimestampOptions = {}) {
   await appendDispatchEvent(hubRoot, dispatchId, {
     type: "dispatch_completed",
     dispatchId,
@@ -259,7 +392,7 @@ export async function completeDispatch(hubRoot: string, dispatchId: string, { ts
   return getDispatch(hubRoot, dispatchId);
 }
 
-export async function failDispatch(hubRoot: string, dispatchId: string, { ts = nowIso() }: AnyRecord = {}) {
+export async function failDispatch(hubRoot: string, dispatchId: string, { ts = nowIso() }: DispatchTimestampOptions = {}) {
   await appendDispatchEvent(hubRoot, dispatchId, {
     type: "dispatch_failed",
     dispatchId,
@@ -268,13 +401,13 @@ export async function failDispatch(hubRoot: string, dispatchId: string, { ts = n
   return getDispatch(hubRoot, dispatchId);
 }
 
-export async function listDispatches(hubRoot: string, { projectId, status }: AnyRecord = {}) {
+export async function listDispatches(hubRoot: string, { projectId, status }: DispatchListOptions = {}) {
   const dir = dispatchDir(hubRoot);
   let entries;
   try {
     entries = await readdir(dir, { withFileTypes: true });
   } catch (err) {
-    if ((err as AnyRecord).code === "ENOENT") return [];
+    if (err?.code === "ENOENT") return [];
     throw err;
   }
 
@@ -301,7 +434,6 @@ export async function deleteDispatchFile(hubRoot: string, dispatchId: string) {
 
 // ── worker-dispatch ──
 import { realpath } from "node:fs/promises";
-import { AnyRecord } from "../../../shared/types.js";
 import { getProject } from "../hub/hub-registry.js";
 
 function dispatchEnabled() {
@@ -328,7 +460,7 @@ export async function guardSourcePath(hubRoot: string, projectId: string, source
   }
 }
 
-export async function recordDispatch(hubRoot: string, { projectId, sourcePath, sessionId, workerId, queueEntryId }: Record<string, any> = {}) {
+export async function recordDispatch(hubRoot: string, { projectId, sourcePath, sessionId, workerId, queueEntryId }: DispatchCreateOptions = {}) {
   if (!dispatchEnabled()) return null;
   return createDispatch(hubRoot, { projectId, sourcePath, sessionId, workerId, queueEntryId });
 }
@@ -369,7 +501,7 @@ function clampLimit(limit: unknown) {
   return Math.min(parsed, MAX_LIMIT);
 }
 
-function timestampOf(task: Record<string, any>) {
+function timestampOf(task: TaskRecord) {
   return task.updatedAt || task.createdAt || "";
 }
 
@@ -412,38 +544,38 @@ function normalizeLabels(labels: unknown) {
     .filter(Boolean);
 }
 
-function issueKeyFn(issue: Record<string, any>) {
+function issueKeyFn(issue: TaskRecord) {
   const repo = issue.repository || issue.repo || issue.repositoryFullName || "github";
   return `github:${repo}#${issue.number}`;
 }
 
-function queueIssueKey(entry: Record<string, any>) {
+function queueIssueKey(entry: TaskRecord) {
   const metadata = entry.metadata || {};
   if (!metadata.issueNumber) return null;
   const repo = metadata.repo || metadata.repository || metadata.repositoryFullName || "github";
   return `github:${repo}#${metadata.issueNumber}`;
 }
 
-function isClosedIssue(issue: Record<string, any>) {
+function isClosedIssue(issue: TaskRecord) {
   return String(issue?.state || "").toUpperCase() === "CLOSED";
 }
 
-function isTerminalQueueEntry(entry: Record<string, any>) {
+function isTerminalQueueEntry(entry: TaskRecord) {
   return ["completed", "failed", "cancelled"].includes(entry?.status);
 }
 
-function isArchivedQueueEntry(entry: Record<string, any>) {
+function isArchivedQueueEntry(entry: TaskRecord) {
   return Boolean(entry?.metadata?.finalDisposition?.startsWith("superseded"));
 }
 
-function queueActivityRank(entry: Record<string, any>) {
+function queueActivityRank(entry: TaskRecord) {
   if (entry?.status === "in_progress") return 0;
   if (entry?.status === "pending") return 1;
   if (entry?.status === "needs_issue_link") return 2;
   return 3;
 }
 
-function selectQueueEntry(entries: Record<string, any>[] = []) {
+function selectQueueEntry(entries: TaskRecord[] = []) {
   return [...entries].sort(
     (a, b) =>
       queueActivityRank(a) - queueActivityRank(b)
@@ -451,12 +583,12 @@ function selectQueueEntry(entries: Record<string, any>[] = []) {
   )[0] || null;
 }
 
-function queueTitle(entry: Record<string, any>) {
+function queueTitle(entry: TaskRecord) {
   const metadata = entry.metadata || {};
   return firstLine(metadata.issueTitle || entry.description, entry.id);
 }
 
-function queueSource(entry: Record<string, any>) {
+function queueSource(entry: TaskRecord) {
   const metadata = entry.metadata || {};
   if (metadata.issueNumber || metadata.issueUrl) {
     return {
@@ -475,7 +607,7 @@ function queueSource(entry: Record<string, any>) {
   };
 }
 
-function issueSource(issue: Record<string, any>) {
+function issueSource(issue: TaskRecord) {
   return {
     kind: "github",
     label: `GitHub issue #${issue.number}`,
@@ -491,7 +623,7 @@ function bodySummary(body: unknown, fallback: string) {
   return truncate(firstLine(content, fallback), 220);
 }
 
-function progressFor({ queueEntry, issue }: Record<string, any> = {}) {
+function progressFor({ queueEntry, issue }: { queueEntry?: TaskRecord | null; issue?: TaskRecord | null } = {}) {
   const finalDisposition = queueEntry?.metadata?.finalDisposition || null;
   if (finalDisposition?.startsWith("superseded")) {
     return {
@@ -528,7 +660,7 @@ function progressFor({ queueEntry, issue }: Record<string, any> = {}) {
   return { stage: "open", label: "Open, not queued", detail: "Known from source ledger only", percent: 0 };
 }
 
-function humanNextAction(progress: Record<string, any>, queueEntry: Record<string, any>) {
+function humanNextAction(progress: TaskRecord, queueEntry: TaskRecord | null | undefined) {
   if (progress.stage === "ready") return "Start a CPB worker or let the queue dispatcher pick it up.";
   if (progress.label === "Needs issue link") return "Link a GitHub issue to this task before it can be claimed for execution.";
   if (progress.stage === "open") return "Import or queue this issue before expecting CPB to execute it.";
@@ -573,26 +705,26 @@ function evidenceFor({ queueEntry, jobs = [], dispatches = [] }) {
   return evidence;
 }
 
-function matchingJobs(queueEntries: Record<string, any> | Record<string, any>[], jobs: Record<string, any>[]) {
+function matchingJobs(queueEntries: TaskRecord | TaskRecord[], jobs: TaskRecord[]) {
   const entries = Array.isArray(queueEntries) ? queueEntries : [queueEntries].filter(Boolean);
   if (entries.length === 0) return [];
   const descriptions = new Set(entries.map((entry) => entry.description || ""));
   const projects = new Set(entries.map((entry) => entry.projectId));
   return jobs
-    .filter((job: Record<string, any>) => projects.has(job.project) && descriptions.has(job.task))
-    .sort((a: Record<string, any>, b: Record<string, any>) => timestampOf(b).localeCompare(timestampOf(a)));
+    .filter((job: TaskRecord) => projects.has(job.project) && descriptions.has(job.task))
+    .sort((a: TaskRecord, b: TaskRecord) => timestampOf(b).localeCompare(timestampOf(a)));
 }
 
-function matchingDispatches(queueEntries: Record<string, any> | Record<string, any>[], dispatches: Record<string, any>[]) {
+function matchingDispatches(queueEntries: TaskRecord | TaskRecord[], dispatches: TaskRecord[]) {
   const entries = Array.isArray(queueEntries) ? queueEntries : [queueEntries].filter(Boolean);
   if (entries.length === 0) return [];
   const entryIds = new Set(entries.map((entry) => entry.id));
   return dispatches
-    .filter((dispatch: Record<string, any>) => entryIds.has(dispatch.queueEntryId))
-    .sort((a: Record<string, any>, b: Record<string, any>) => timestampOf(b).localeCompare(timestampOf(a)));
+    .filter((dispatch: TaskRecord) => entryIds.has(dispatch.queueEntryId))
+    .sort((a: TaskRecord, b: TaskRecord) => timestampOf(b).localeCompare(timestampOf(a)));
 }
 
-function issueTask(issue: Record<string, any>, { queueEntry, queueEntries = [], jobs, dispatches }: { queueEntry: Record<string, any>; queueEntries?: Record<string, any>[]; jobs: Record<string, any>[]; dispatches: Record<string, any>[] }) {
+function issueTask(issue: TaskRecord, { queueEntry, queueEntries = [], jobs, dispatches }: { queueEntry: TaskRecord | null; queueEntries?: TaskRecord[]; jobs: TaskRecord[]; dispatches: TaskRecord[] }) {
   const labels = normalizeLabels(issue.labels);
   const progress = progressFor({ queueEntry, issue });
   const source = issueSource(issue);
@@ -663,7 +795,7 @@ function issueTask(issue: Record<string, any>, { queueEntry, queueEntries = [], 
   };
 }
 
-function queueTask(entry: Record<string, any>, { jobs, dispatches }: { jobs: Record<string, any>[]; dispatches: Record<string, any>[] }) {
+function queueTask(entry: TaskRecord, { jobs, dispatches }: { jobs: TaskRecord[]; dispatches: TaskRecord[] }) {
   const progress = progressFor({ queueEntry: entry });
   const source = queueSource(entry);
   const title = queueTitle(entry);
@@ -725,7 +857,7 @@ function queueTask(entry: Record<string, any>, { jobs, dispatches }: { jobs: Rec
   };
 }
 
-function summarize(tasks: Record<string, any>[]) {
+function summarize(tasks: TaskRecord[]) {
   const summary = {
     total: tasks.length,
     ready: 0,
@@ -740,7 +872,7 @@ function summarize(tasks: Record<string, any>[]) {
   for (const task of tasks) {
     if (summary[task.status] !== undefined) summary[task.status] += 1;
     else summary[task.status] = 1;
-    const sourceKind = task.source?.kind || "unknown";
+    const sourceKind = typeof task.source === "string" ? task.source : task.source?.kind || "unknown";
     summary.bySource[sourceKind] = (summary.bySource[sourceKind] || 0) + 1;
   }
   return summary;
@@ -753,13 +885,17 @@ export async function buildTaskLedger({
   projectId,
   includeQueueOnly = false,
   includeArchived = false,
-}: Record<string, any> = {}) {
-  const [queueEntries, githubIssues, jobs, dispatches] = await Promise.all([
+}: BuildLedgerOptions = {}) {
+  const [rawQueueEntries, rawGithubIssues, rawJobs, rawDispatches] = await Promise.all([
     listQueue(hubRoot),
     readGithubIssues(hubRoot),
     listJobs(cpbRoot),
     listDispatches(hubRoot),
   ]);
+  const queueEntries = rawQueueEntries.map(taskRecord);
+  const githubIssues = rawGithubIssues.map(taskRecord);
+  const jobs = rawJobs.map(taskRecord);
+  const dispatches = rawDispatches.map(taskRecord);
 
   const visibleGithubIssues = githubIssues.filter((issue) => !isClosedIssue(issue));
   const issueKeys = new Set(visibleGithubIssues.map(issueKeyFn));
@@ -815,15 +951,15 @@ export async function buildTaskLedger({
 // ── task-history ──
 import { listQueue, queueStatus } from "../hub/hub-queue.js";
 
-function countByStatus(items: AnyRecord[]) {
-  return items.reduce((acc, item) => {
+function countByStatus(items: TaskRecord[]) {
+  return items.reduce<Record<string, number>>((acc, item) => {
     const status = item.status || "unknown";
     acc[status] = (acc[status] || 0) + 1;
     return acc;
-  }, {} as Record<string, number>);
+  }, {});
 }
 
-function githubIssueLink(metadata: AnyRecord = {}) {
+function githubIssueLink(metadata: MetadataRecord = {}) {
   if (!metadata.issueNumber && !metadata.issueUrl) return null;
   return {
     kind: "github-issue",
@@ -833,7 +969,7 @@ function githubIssueLink(metadata: AnyRecord = {}) {
   };
 }
 
-function queueItem(entry: AnyRecord) {
+function queueItem(entry: TaskRecord) {
   const metadata = entry.metadata || {};
   const links = [githubIssueLink(metadata)].filter(Boolean);
   const supersededByIssues = Array.isArray(metadata.supersededByIssues)
@@ -865,7 +1001,7 @@ function queueItem(entry: AnyRecord) {
   };
 }
 
-function dispatchItem(dispatch: AnyRecord) {
+function dispatchItem(dispatch: TaskRecord) {
   return {
     id: `dispatch:${dispatch.dispatchId}`,
     kind: "dispatch",
@@ -887,7 +1023,7 @@ function dispatchItem(dispatch: AnyRecord) {
   };
 }
 
-function jobItem(job: AnyRecord) {
+function jobItem(job: TaskRecord) {
   return {
     id: `job:${job.jobId}`,
     kind: "job",
@@ -914,7 +1050,7 @@ function jobItem(job: AnyRecord) {
   };
 }
 
-function applyFilters(items: AnyRecord[], { projectId, kinds }: AnyRecord = {}) {
+function applyFilters(items: TaskRecord[], { projectId, kinds }: BuildHistoryOptions = {}) {
   const kindSet = kinds?.length ? new Set(kinds) : null;
   return items.filter((item) => {
     if (projectId && item.projectId !== projectId) return false;
@@ -923,20 +1059,23 @@ function applyFilters(items: AnyRecord[], { projectId, kinds }: AnyRecord = {}) 
   });
 }
 
-export async function buildTaskHistory({ cpbRoot, hubRoot, limit = DEFAULT_LIMIT, projectId, kinds }: AnyRecord = {}) {
-  const [queueEntries, dispatches, jobs, qStatus] = await Promise.all([
+export async function buildTaskHistory({ cpbRoot, hubRoot, limit = DEFAULT_LIMIT, projectId, kinds }: BuildHistoryOptions = {}) {
+  const [rawQueueEntries, rawDispatches, rawJobs, qStatus] = await Promise.all([
     listQueue(hubRoot),
     listDispatches(hubRoot),
     listJobs(cpbRoot),
     queueStatus(hubRoot),
   ]);
+  const queueEntries = rawQueueEntries.map(taskRecord);
+  const dispatches = rawDispatches.map(taskRecord);
+  const jobs = rawJobs.map(taskRecord);
 
   const allItems = [
     ...queueEntries.map(queueItem),
     ...dispatches.map(dispatchItem),
     ...jobs.map(jobItem),
   ];
-  const filtered = applyFilters(allItems, { projectId, kinds });
+  const filtered = applyFilters(allItems.map(taskRecord), { projectId, kinds });
   const sorted = filtered.sort((a, b) => timestampOf(b).localeCompare(timestampOf(a)));
   const itemLimit = clampLimit(limit);
 

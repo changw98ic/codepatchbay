@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { runCommandTree } from "../core/runtime/process-tree.js";
 import path from "node:path";
-import { AnyRecord } from "../shared/types.js";
+import type { LooseRecord } from "../core/contracts/types.js";
 import { appendEvent } from "../server/services/event/event-store.js";
 import {
   acquireLease,
@@ -21,12 +21,39 @@ import {
   addChildPid,
 } from "../server/services/infra.js";
 import { pinSessionToJob } from "../core/engine/session-pin.js";
+import { buildChildEnv } from "../core/policy/child-env.js";
 
-type GuardedError = Error & { guardResult?: AnyRecord };
+type GuardedError = Error & { guardResult?: LooseRecord };
 type ChildResult = {
   exitCode: number;
   signal?: NodeJS.Signals | string | null;
   error?: GuardedError;
+};
+
+type ParsedArgs = {
+  cpbRoot: string;
+  project: string;
+  jobId: string;
+  phase: string;
+  script: string;
+  dataRoot: string | null;
+  scriptArgs: string[];
+};
+
+type RuntimeOpts = {
+  dataRoot: string;
+  includeLegacyFallback: boolean;
+};
+
+type PhaseFailureDetails = LooseRecord & {
+  reason?: string;
+  error?: string;
+  code?: string;
+};
+
+type LeaseRecord = LooseRecord & {
+  leaseId?: string;
+  ownerToken?: string;
 };
 
 const rawArgs = process.argv.slice(2);
@@ -40,11 +67,11 @@ function usage() {
   ].join("\n");
 }
 
-function parseArgs(args: string[]) {
+function parseArgs(args: string[]): ParsedArgs {
   const separator = args.indexOf("--");
   const optionArgs = separator === -1 ? args : args.slice(0, separator);
   const scriptArgs = separator === -1 ? [] : args.slice(separator + 1);
-  const options = new Map();
+  const options = new Map<string, string>();
 
   for (let index = 0; index < optionArgs.length; index += 1) {
     const name = optionArgs[index];
@@ -78,7 +105,7 @@ function parseArgs(args: string[]) {
   };
 }
 
-function resolveDataRoot(parsed: Record<string, any>) {
+function resolveDataRoot(parsed: ParsedArgs) {
   const fromEnv = process.env.CPB_PROJECT_RUNTIME_ROOT
     ? path.resolve(process.env.CPB_PROJECT_RUNTIME_ROOT)
     : null;
@@ -98,7 +125,7 @@ function eventTimestamp() {
   return new Date().toISOString();
 }
 
-async function appendPhaseFailed(cpbRoot: string, project: string, jobId: string, phase: string, details: Record<string, any>, runtimeOpts: Record<string, any>) {
+async function appendPhaseFailed(cpbRoot: string, project: string, jobId: string, phase: string, details: PhaseFailureDetails, runtimeOpts: RuntimeOpts) {
   await appendEvent(cpbRoot, project, jobId, {
     type: "phase_failed",
     jobId,
@@ -111,7 +138,7 @@ async function appendPhaseFailed(cpbRoot: string, project: string, jobId: string
 const ACTIVITY_THROTTLE_MS = 30_000;
 const ACTIVITY_MAX_MESSAGE = 200;
 
-function createActivityTracker(cpbRoot: string, project: string, jobId: string, runtimeOpts: Record<string, any>) {
+function createActivityTracker(cpbRoot: string, project: string, jobId: string, runtimeOpts: RuntimeOpts) {
   let lastActivityAt = 0;
 
   async function track(message: string) {
@@ -151,7 +178,7 @@ function runChild(
   if (!guardResult.allowed) {
     const message = formatDeleteBlockedMessage(guardResult);
     logDeleteBlock(command, args, cwd, guardResult, console.error);
-    const error = new Error(message) as GuardedError;
+    const error: GuardedError = new Error(message);
     error.guardResult = guardResult;
     return Promise.resolve({ exitCode: 1, error });
   }
@@ -170,6 +197,9 @@ function runChild(
   }).then((r): ChildResult => {
     const out: ChildResult = { exitCode: r.exitCode };
     if (r.signal) out.signal = r.signal;
+    // retain: dynamic child_process boundary — r.error is a plain Error from
+    // runCommandTree; we widen it to GuardedError so ChildResult.error carries a
+    // uniform optional guardResult slot (line 346 already guards its absence).
     if (r.error) out.error = r.error as GuardedError;
     return out;
   });
@@ -204,7 +234,7 @@ async function main() {
     Math.max(5_000, Math.floor(ttlMs / 3))
   );
 
-  let lease: Record<string, any> | null = null;
+  let lease: LeaseRecord | null = null;
   let heartbeat: NodeJS.Timeout | null = null;
   let leaseLostError: Error | null = null;
   const abortController = new AbortController();
@@ -284,15 +314,14 @@ async function main() {
     }, renewEveryMs);
     heartbeat.unref?.();
 
-    const childEnv = {
-      ...process.env,
+    const childEnv = buildChildEnv(process.env, {
       CPB_JOB_ID: jobId,
       CPB_ACP_JOB_ID: jobId,
       CPB_ACP_PHASE: phase,
       CPB_ACP_PROJECT: project,
       CPB_ACP_CPB_ROOT: cpbRoot,
       CPB_PROJECT_RUNTIME_ROOT: dataRoot,
-    };
+    });
     const activity = createActivityTracker(cpbRoot, project, jobId, runtimeOpts);
     childResult = await runChild(script, [phase, ...scriptArgs], cpbRoot, (output: string | Buffer) => {
       const line = String(output).trim();

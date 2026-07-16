@@ -1,6 +1,6 @@
 import type { PhaseResult, PhaseArtifact } from "../../shared/types.js";
 
-type LooseRecord = Record<string, unknown>;
+import type { LooseRecord } from "../contracts/types.js";
 
 type TrackPassedPhaseArtifactInput = {
   cpbRoot: string;

@@ -10,9 +10,87 @@ import { createInstallPlan, executeInstallPlan } from "./install-plan.js";
 import { checkSetupAgentHealth } from "./health-check.js";
 import { getAuthConnectInstructions } from "../auth/connect.js";
 import { cpbHome } from "../paths.js";
-import { AnyRecord } from "../../shared/types.js";
+import type { LooseRecord } from "../../shared/types.js";
 
 const SCHEMA_VERSION = 1;
+
+type JsonRecord = {
+  [key: string]: unknown;
+};
+
+type QuestionFn = (question: string) => Promise<string>;
+
+type SetupAgent = LooseRecord & {
+  id: string;
+  displayName: string;
+  recommended?: boolean;
+  vendor?: string;
+  binary?: string;
+};
+
+type DetectedAgent = JsonRecord & {
+  installed?: boolean;
+};
+
+type SetupSnapshot = JsonRecord & {
+  agents?: Record<string, DetectedAgent>;
+};
+
+type InstallPlan = JsonRecord & {
+  agent: SetupAgent;
+  method: string;
+  command: string;
+  args: string[];
+  displayCommand: string;
+  requiresExplicitConfirmation?: boolean;
+};
+
+type InstallResult = JsonRecord & {
+  code?: number;
+};
+
+type HealthResult = JsonRecord & {
+  status?: string;
+};
+
+type NativeAuthCommand = {
+  command: string;
+  args: string[];
+};
+
+type AuthResult = JsonRecord & {
+  error?: unknown;
+  providerNativeCommand?: string | null;
+  providerNative?: NativeAuthCommand | null;
+};
+
+type WizardResult = JsonRecord & {
+  mode: string;
+  detected: SetupSnapshot;
+  selectedAgents: SetupAgent[];
+  plans: Record<string, InstallPlan>;
+  installations: Record<string, LooseRecord>;
+  health: Record<string, HealthResult>;
+  auth: Record<string, AuthResult>;
+  runAuthCheck: boolean;
+  executed: boolean;
+  profile: LooseRecord | null;
+};
+
+type SetupWizardOptions = {
+  cpbRoot?: string;
+  mode?: string;
+  agents?: string[];
+  detectFn?: () => Promise<SetupSnapshot>;
+  catalog?: SetupAgent[];
+  runInstallPlanFn?: (plan: InstallPlan, options: { cpbRoot: string; stdio: string }) => Promise<InstallResult>;
+  healthCheckFn?: (agentId: string) => Promise<HealthResult>;
+  authConnectFn?: (agentId: string) => AuthResult;
+  confirmFn?: (plan: InstallPlan) => Promise<boolean>;
+  questionFn?: QuestionFn | null;
+  execute?: boolean;
+  stdio?: string;
+};
 
 export function setupProfilePath(cpbRoot: string): string {
   const hubRoot = process.env.CPB_HUB_ROOT || cpbHome();
@@ -30,24 +108,137 @@ export async function readSetupProfile(cpbRoot: string) {
   try {
     return JSON.parse(await readFile(setupProfilePath(cpbRoot), "utf8"));
   } catch (error) {
-    if ((error as Record<string, any>).code === "ENOENT") return null;
+    if (isErrorRecord(error) && error.code === "ENOENT") return null;
     throw error;
   }
 }
 
-function byAgentId(catalog: AnyRecord[]) {
+function isErrorRecord(value: unknown): value is LooseRecord {
+  return value !== null && typeof value === "object";
+}
+
+function errorRecord(value: unknown): LooseRecord | null {
+  return isErrorRecord(value) ? value : null;
+}
+
+function errorMessage(error: unknown): string {
+  const record = errorRecord(error);
+  return String(record?.message || error || "unknown error");
+}
+
+function setupSnapshot(value: unknown): SetupSnapshot {
+  const record = isErrorRecord(value) ? value : {};
+  const snapshot: SetupSnapshot = {};
+  for (const [key, item] of Object.entries(record)) {
+    if (key !== "agents") snapshot[key] = item;
+  }
+  const agentsRecord = isErrorRecord(record.agents) ? record.agents : null;
+  const agents = agentsRecord
+    ? Object.fromEntries(
+      Object.entries(agentsRecord).map(([id, agent]) => [
+        id,
+        {
+          ...(isErrorRecord(agent) ? agent : {}),
+          installed: isErrorRecord(agent) && agent.installed === true,
+        },
+      ]),
+    )
+    : undefined;
+  if (agents) snapshot.agents = agents;
+  return snapshot;
+}
+
+function setupAgent(value: unknown): SetupAgent {
+  const record = isErrorRecord(value) ? value : {};
+  const id = String(record.id || "");
+  return {
+    ...record,
+    id,
+    displayName: String(record.displayName || id),
+  };
+}
+
+function setupCatalog(): SetupAgent[] {
+  return listSetupAgents().map(setupAgent);
+}
+
+async function defaultDetectFn(): Promise<SetupSnapshot> {
+  return setupSnapshot(await detectSetupEnvironment());
+}
+
+function installResult(value: unknown): InstallResult {
+  const record = isErrorRecord(value) ? value : {};
+  const result: InstallResult = {};
+  for (const [key, item] of Object.entries(record)) {
+    if (key !== "code") result[key] = item;
+  }
+  if (typeof record.code === "number") result.code = record.code;
+  return result;
+}
+
+async function defaultRunInstallPlan(plan: InstallPlan, { stdio }: { cpbRoot: string; stdio: string }): Promise<InstallResult> {
+  return installResult(await executeInstallPlan({
+    command: plan.command,
+    args: plan.args,
+    requiresExplicitConfirmation: plan.requiresExplicitConfirmation,
+  }, { stdio }));
+}
+
+function healthResult(value: unknown): HealthResult {
+  return isErrorRecord(value) ? value : {};
+}
+
+async function defaultHealthCheck(agentId: string): Promise<HealthResult> {
+  return healthResult(await checkSetupAgentHealth(agentId));
+}
+
+function authResult(value: unknown): AuthResult {
+  const record = isErrorRecord(value) ? value : {};
+  const nativeRecord = isErrorRecord(record.providerNative) ? record.providerNative : null;
+  return {
+    ...record,
+    providerNativeCommand: typeof record.providerNativeCommand === "string" ? record.providerNativeCommand : null,
+    providerNative: nativeRecord && typeof nativeRecord.command === "string"
+      ? {
+        command: nativeRecord.command,
+        args: Array.isArray(nativeRecord.args) ? nativeRecord.args.map(String) : [],
+      }
+      : null,
+  };
+}
+
+function defaultAuthConnect(agentId: string): AuthResult {
+  return authResult(getAuthConnectInstructions(agentId));
+}
+
+function installPlan(value: unknown): InstallPlan {
+  const record = isErrorRecord(value) ? value : {};
+  const args = Array.isArray(record.args) ? record.args.map(String) : [];
+  const command = String(record.command || "");
+  return {
+    ...record,
+    agent: setupAgent(record.agent),
+    method: String(record.method || ""),
+    command,
+    args,
+    displayCommand: String(record.displayCommand || command),
+    requiresExplicitConfirmation: record.requiresExplicitConfirmation === true,
+  };
+}
+
+function byAgentId(catalog: SetupAgent[]) {
   return new Map(catalog.map((agent) => [agent.id, agent]));
 }
 
-function missing(snapshot: AnyRecord, agent: AnyRecord): boolean {
+function missing(snapshot: SetupSnapshot, agent: SetupAgent): boolean {
   return snapshot.agents?.[agent.id]?.installed !== true;
 }
 
-function selectRecommended(catalog: AnyRecord[], snapshot: AnyRecord): AnyRecord[] {
+function selectRecommended(catalog: SetupAgent[], snapshot: SetupSnapshot): SetupAgent[] {
   return catalog.filter((agent) => agent.recommended && missing(snapshot, agent));
 }
 
-function selectNamed(catalog: AnyRecord[], names: string[] = []): AnyRecord[] {
+function selectNamed(catalog: SetupAgent[], names: string[] = []): SetupAgent[] {
   const index = byAgentId(catalog);
   return names.map((name) => {
     const agent = index.get(name);
@@ -56,7 +247,7 @@ function selectNamed(catalog: AnyRecord[], names: string[] = []): AnyRecord[] {
   });
 }
 
-function setupPromptLabel(agent: AnyRecord): string {
+function setupPromptLabel(agent: SetupAgent): string {
   if (agent.id === "codex") return "Codex";
   if (agent.id === "claude") return "Claude Code";
   if (agent.id === "opencode") return "OpenCode";
@@ -67,7 +258,7 @@ function yes(answer: unknown): boolean {
   return /^y(es)?$/i.test(String(answer || "").trim());
 }
 
-async function askQuestion(question: string, questionFn: ((q: string) => Promise<string>) | null) {
+async function askQuestion(question: string, questionFn: QuestionFn | null) {
   if (typeof questionFn === "function") return questionFn(question);
   if (!input.isTTY) return "";
   const rl = createInterface({ input, output });
@@ -78,13 +269,13 @@ async function askQuestion(question: string, questionFn: ((q: string) => Promise
   }
 }
 
-async function askForAgents(catalog: AnyRecord[], snapshot: AnyRecord, { questionFn }: Record<string, any> = {}): Promise<AnyRecord[]> {
+async function askForAgents(catalog: SetupAgent[], snapshot: SetupSnapshot, { questionFn }: { questionFn?: QuestionFn | null } = {}): Promise<SetupAgent[]> {
   const recommended = selectRecommended(catalog, snapshot);
   if (!input.isTTY && typeof questionFn !== "function") return recommended;
 
   const installPromptIds = ["codex", "claude", "opencode"];
   const index = byAgentId(catalog);
-  const selected = [];
+  const selected: SetupAgent[] = [];
   for (const id of installPromptIds) {
     const agent = index.get(id);
     if (!agent || !missing(snapshot, agent)) continue;
@@ -94,7 +285,7 @@ async function askForAgents(catalog: AnyRecord[], snapshot: AnyRecord, { questio
   return selected;
 }
 
-async function confirmPlan(plan: AnyRecord): Promise<boolean> {
+async function confirmPlan(plan: InstallPlan): Promise<boolean> {
   if (!input.isTTY) return false;
   const rl = createInterface({ input, output });
   try {
@@ -105,25 +296,27 @@ async function confirmPlan(plan: AnyRecord): Promise<boolean> {
   }
 }
 
-async function askRunAuthCheck({ mode, questionFn }: Record<string, any> = {}) {
+async function askRunAuthCheck({ mode, questionFn }: { mode?: string; questionFn?: QuestionFn | null } = {}) {
   if (mode !== "interactive") return true;
   if (!input.isTTY && typeof questionFn !== "function") return true;
   return yes(await askQuestion("Run auth check? y/N ", questionFn));
 }
 
-function installationRecord(plan: AnyRecord, result: AnyRecord | null, error: unknown = null): AnyRecord {
-  const err = error as Record<string, unknown> | null;
+function installationRecord(plan: InstallPlan, result: InstallResult | null, error: unknown = null): LooseRecord {
+  // error is either null (default) or an Error object thrown by runInstallPlanFn;
+  // errorRecord narrows to the record shape for safe property access.
+  const err = errorRecord(error);
   return {
     agentId: plan.agent.id,
     method: plan.method,
     status: err ? "failed" : "succeeded",
     exitCode: err ? (Number.isInteger(err.code) ? err.code : null) : result?.code ?? 0,
-    error: err ? { message: err.message, code: err.code || null } : null,
+    error: err ? { message: String(err.message || "unknown error"), code: err.code || null } : null,
   };
 }
 
-function profileFromResult(result: AnyRecord): AnyRecord {
-  const agents: AnyRecord = {};
+function profileFromResult(result: WizardResult): LooseRecord {
+  const agents: LooseRecord = {};
   for (const agent of result.selectedAgents) {
     const install = result.installations[agent.id] || null;
     const health = result.health[agent.id] || null;
@@ -144,7 +337,7 @@ function profileFromResult(result: AnyRecord): AnyRecord {
   return {
     schemaVersion: SCHEMA_VERSION,
     generatedAt: new Date().toISOString(),
-    selectedAgents: result.selectedAgents.map((agent: AnyRecord) => agent.id),
+    selectedAgents: result.selectedAgents.map((agent) => agent.id),
     mode: result.mode,
     agents,
   };
@@ -154,24 +347,24 @@ export async function runSetupWizard({
   cpbRoot = process.env.CPB_ROOT || process.cwd(),
   mode = "interactive",
   agents = [],
-  detectFn = detectSetupEnvironment,
-  catalog = listSetupAgents(),
-  runInstallPlanFn = executeInstallPlan,
-  healthCheckFn = checkSetupAgentHealth,
-  authConnectFn = getAuthConnectInstructions,
+  detectFn = defaultDetectFn,
+  catalog = setupCatalog(),
+  runInstallPlanFn = defaultRunInstallPlan,
+  healthCheckFn = defaultHealthCheck,
+  authConnectFn = defaultAuthConnect,
   confirmFn = confirmPlan,
   questionFn = null,
   execute = true,
   stdio = "inherit",
-}: AnyRecord = {}) {
+}: SetupWizardOptions = {}) {
   const detected = await detectFn();
-  let selectedAgents: AnyRecord[];
+  let selectedAgents: SetupAgent[];
   if (agents.length > 0) selectedAgents = selectNamed(catalog, agents);
   else if (mode === "recommended" || mode === "non-interactive") selectedAgents = selectRecommended(catalog, detected);
   else selectedAgents = await askForAgents(catalog, detected, { questionFn });
   const runAuthCheck = await askRunAuthCheck({ mode, questionFn });
 
-  const result: AnyRecord = {
+  const result: WizardResult = {
     schemaVersion: SCHEMA_VERSION,
     mode,
     detected,
@@ -191,7 +384,7 @@ export async function runSetupWizard({
       continue;
     }
 
-    const plan = createInstallPlan({ agentId: agent.id, detected });
+    const plan = installPlan(createInstallPlan({ agentId: agent.id, detected }));
     result.plans[agent.id] = plan;
     const approved = execute && (mode === "interactive" ? await confirmFn(plan) : true);
     if (!approved) {
@@ -203,7 +396,7 @@ export async function runSetupWizard({
       continue;
     }
     try {
-      const install = await runInstallPlanFn(plan, { cpbRoot, stdio } as Record<string, any>);
+      const install = await runInstallPlanFn(plan, { cpbRoot, stdio });
       result.installations[agent.id] = installationRecord(plan, install);
       result.executed = true;
     } catch (error) {
@@ -229,12 +422,12 @@ export async function runSetupWizard({
     try {
       result.health[agent.id] = await healthCheckFn(agent.id);
     } catch (error) {
-      result.health[agent.id] = { agent: { id: agent.id }, status: "error", error: { message: error.message } };
+      result.health[agent.id] = { agent: { id: agent.id }, status: "error", error: { message: errorMessage(error) } };
     }
     try {
       result.auth[agent.id] = authConnectFn(agent.id);
     } catch (error) {
-      result.auth[agent.id] = { provider: { id: agent.id }, error: error.message };
+      result.auth[agent.id] = { provider: { id: agent.id }, error: errorMessage(error) };
     }
   }
 
@@ -267,7 +460,7 @@ export async function runSetupWizard({
         const auth = result.auth[agent.id];
         const native = auth?.providerNative;
         if (native?.command) {
-          const { command: cmd, args } = native;
+          const { command: cmd, args = [] } = native;
           if (stdio === "inherit") {
             console.log(`\n[setup] Running: ${cmd} ${args.join(" ")}\n`);
           }
@@ -294,12 +487,12 @@ export async function runSetupWizard({
         try {
           result.health[agent.id] = await healthCheckFn(agent.id);
         } catch (error) {
-          result.health[agent.id] = { agent: { id: agent.id }, status: "error", error: { message: error.message } };
+          result.health[agent.id] = { agent: { id: agent.id }, status: "error", error: { message: errorMessage(error) } };
         }
         try {
           result.auth[agent.id] = authConnectFn(agent.id);
         } catch (error) {
-          result.auth[agent.id] = { provider: { id: agent.id }, error: error.message };
+          result.auth[agent.id] = { provider: { id: agent.id }, error: errorMessage(error) };
         }
       }
     }

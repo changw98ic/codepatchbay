@@ -7,6 +7,8 @@ import {
   type ProviderAgents,
 } from "./provider-handoff.js";
 import type { PhaseResult, PhaseFailure } from "../../shared/types.js";
+import { recordValue } from "../contracts/types.js";
+import { classifyRoutingTaskCategory } from "../agents/outcome-routing.js";
 
 type ProviderPool = Parameters<typeof resolveProviderKey>[0];
 
@@ -42,6 +44,9 @@ type RecordPhaseProviderUsageInput = {
   phaseAgents?: ProviderAgents | null;
   project?: unknown;
   job?: unknown;
+  jobId?: string | null;
+  attemptId?: string | null;
+  task?: unknown;
   phaseSourceContext?: unknown;
   phase: string;
   role: string;
@@ -50,16 +55,16 @@ type RecordPhaseProviderUsageInput = {
   providerAttempts?: unknown[] | null;
 };
 
-function recordValue(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
-}
-
 function truthyOrNull(value: unknown) {
   return value || null;
 }
 
 function nullishOrNull(value: unknown) {
   return value ?? null;
+}
+
+function stringOrNull(value: unknown): string | null {
+  return value === undefined || value === null ? null : String(value);
 }
 
 function handoffCount(state: ProviderHandoffState | null | undefined) {
@@ -123,6 +128,9 @@ export async function recordPhaseProviderUsage({
   phaseAgents,
   project,
   job,
+  jobId = null,
+  attemptId = null,
+  task = "",
   phaseSourceContext,
   phase,
   role,
@@ -147,12 +155,25 @@ export async function recordPhaseProviderUsage({
     const hardGateFailed = failCause.hardGate === true;
     const count = handoffCount(handoffState);
     const handoffUsed = count > 0;
+    const sourceContext = recordValue(phaseSourceContext);
+    const jobRecord = recordValue(job);
+    const retryContext = recordValue(sourceContext.retry);
+    const jobRetryCount = typeof jobRecord.retryCount === "number" ? jobRecord.retryCount : 0;
+    const phaseRetryCount = typeof diag.phaseRetryCount === "number" ? diag.phaseRetryCount : 0;
+    const retryCount = jobRetryCount + phaseRetryCount;
 
     await providerServices.delegateEnqueueProviderUsage(hubRoot, {
-      project: nullishOrNull(project),
+      project: stringOrNull(project),
+      jobId: stringOrNull(jobId || jobRecord.jobId),
+      attemptId: stringOrNull(attemptId),
+      taskCategory: classifyRoutingTaskCategory(task, sourceContext),
       issueNumber: issueNumberFor(phaseSourceContext, job),
-      source: truthyOrNull(recordValue(phaseSourceContext).source),
-      attempt: nullishOrNull(recordValue(phaseSourceContext).attempt),
+      source: stringOrNull(sourceContext.source),
+      attempt: nullishOrNull(sourceContext.attempt),
+      retryCount,
+      jobRetryCount,
+      phaseRetryCount,
+      isRetry: retryCount > 0 || Object.keys(retryContext).length > 0,
       phase,
       role,
       providerKey: diag.providerKey || providerKey,
@@ -162,6 +183,7 @@ export async function recordPhaseProviderUsage({
       providerAdapter: truthyOrNull(adapter.providerKeyPattern),
       status: usageStatusFor(result, hardGateFailed, handoffUsed),
       phaseStatus: isPhasePassed(result) ? "passed" : "failed",
+      failureKind: stringOrNull(result.failure?.kind),
       durationMs: nullishOrNull(diag.elapsedMs),
       quota: {
         status: truthyOrNull(failCause.status),

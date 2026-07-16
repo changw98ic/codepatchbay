@@ -1,6 +1,5 @@
 import { readFile, writeFile, mkdir, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
-import { AnyRecord } from "../../shared/types.js";
 import { enqueue as enqueueHubQueue, updateEntry as updateHubQueueEntry } from "./hub/hub-queue.js";
 import { getProject } from "./hub/hub-registry.js";
 import { createJob as createJobStore } from "./job/job-store.js";
@@ -10,6 +9,255 @@ import {
   triageGithubIssue,
   triageGithubIssueWithAcp,
 } from "./project/project-loader.js";
+import type { LooseRecord } from "../../core/contracts/types.js";
+
+type EventSourceStorageOptions = LooseRecord & {
+  hubRoot?: string;
+  controlRoot?: string;
+};
+
+type CandidateEvent = LooseRecord & {
+  source?: string;
+  externalId?: unknown;
+  projectId?: string | null;
+  priority?: string;
+  payload?: LooseRecord;
+  receivedAt?: string;
+};
+
+type CandidateEntry = LooseRecord & {
+  id: string;
+  source: string;
+  externalId: string;
+  projectId: string | null;
+  priority: string;
+  dedupeKey: string;
+  payload: LooseRecord;
+  receivedAt: string;
+  status: string;
+  statusReason?: string;
+  updatedAt?: string;
+};
+
+type CandidateListOptions = EventSourceStorageOptions & {
+  status?: string;
+  source?: string;
+};
+
+type CandidateUpdateOptions = EventSourceStorageOptions & {
+  status?: string;
+  reason?: string;
+};
+
+type RouteDetails = LooseRecord & {
+  workflow?: string;
+  planMode?: string;
+  category?: string;
+};
+
+type ProtectedScope = LooseRecord & {
+  scope?: string;
+};
+
+type AcpTriager = LooseRecord & {
+  agent?: string;
+  error?: string | null;
+  raw?: unknown;
+};
+
+type TriageRoute = LooseRecord & {
+  triageMode?: string;
+  effectiveRoute?: RouteDetails;
+  effective?: RouteDetails;
+  requestedRoute?: RouteDetails | null;
+  requested?: RouteDetails | null;
+  ruleRoute?: RouteDetails | null;
+  acpRoute?: RouteDetails | null;
+  acpTriager?: AcpTriager | null;
+  triageStrategy?: LooseRecord | null;
+  protectedUpgrade?: boolean;
+  protectedKeywords?: string[];
+  protectedScopes?: ProtectedScope[];
+  actualDiffRisk?: (LooseRecord & { protected?: boolean }) | null;
+  actorTrust?: unknown;
+  downgradeAllowed?: boolean | null;
+  reasons?: unknown[];
+};
+
+type TriageStrategy = LooseRecord & {
+  useAcp?: boolean;
+  usedAcp?: boolean;
+  reason?: string | null;
+};
+
+type RouteOptions = EventSourceStorageOptions & {
+  triageMode?: unknown;
+  acpPool?: unknown;
+  triageAgent?: string;
+  triageTimeoutMs?: number;
+  triageCwd?: string;
+};
+
+type GithubEvent = CandidateEvent & {
+  status?: string;
+  delivery?: string;
+  event?: string;
+  repo?: string;
+  issueNumber?: number | string;
+  action?: string;
+  commandText?: string;
+  label?: string;
+  labels?: string[];
+  title?: string;
+  body?: string;
+  url?: string;
+  actor?: string;
+  projectId?: string;
+};
+
+type GithubMatch = LooseRecord & {
+  matched?: boolean;
+  workflow?: string;
+  planMode?: string;
+  reason?: string;
+};
+
+type GithubPayload = LooseRecord & {
+  issueNumber: number | string | null;
+  repo: string | null;
+  title: string;
+  body: string;
+  url: string | null;
+  actor: string | null;
+  workflow: string;
+  planMode: string;
+  route: TriageRoute;
+  action: string | null;
+  commandText: string | null;
+  labels: string[];
+  delivery: string | null;
+  triggerReason: string | null;
+};
+
+type ProjectGithubConfig = LooseRecord & {
+  fullName?: string;
+  repo?: string;
+};
+
+type ProjectRecord = LooseRecord & {
+  sourcePath?: string | null;
+  projectRuntimeRoot?: string | null;
+  github?: ProjectGithubConfig | null;
+};
+
+type ContextPack = LooseRecord & {
+  path?: string;
+};
+
+type ContextPackResult = LooseRecord & {
+  contextPack?: ContextPack | null;
+  error?: unknown;
+};
+
+type HubQueueInput = LooseRecord & {
+  projectId?: string;
+  sourcePath?: string | null;
+  priority?: string;
+  description?: string;
+  type?: string;
+  metadata?: LooseRecord;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+type HubQueueEntry = LooseRecord & {
+  id?: string;
+  metadata?: LooseRecord;
+};
+
+type EnqueueFn = (hubRoot: string, input: HubQueueInput) => Promise<HubQueueEntry>;
+
+type CreateJobFn = (cpbRoot: string, input: LooseRecord) => Promise<LooseRecord | null>;
+
+type GithubQueueOptions = RouteOptions & {
+  enqueueFn?: EnqueueFn;
+  sourcePath?: string | null;
+  getProjectFn?: ((root: string, id: string) => Promise<ProjectRecord | null>) | null;
+};
+
+type ChannelCommand = LooseRecord & {
+  type?: string;
+  project?: string;
+  task?: string;
+  issue?: number | string;
+  workflowRequested?: boolean;
+  workflow?: string;
+  planMode?: string;
+  command?: string;
+  triage?: string;
+};
+
+type ChannelContext = LooseRecord & {
+  channel?: string;
+  externalId?: string;
+  triggerId?: string;
+  teamId?: string;
+  channelId?: string;
+  actor?: string;
+  sourcePath?: string;
+  commandText?: string;
+  actorName?: string;
+  channelName?: string;
+};
+
+type ChannelPayload = LooseRecord & {
+  task: string;
+  workflow: string;
+  planMode: string;
+  command: string | null;
+  issueNumber: number | string | null;
+  requestedWorkflow: string | null;
+  requestedPlanMode: string | null;
+  triage: string | null;
+  route: TriageRoute | null;
+  commandText: string | null;
+  actor: string | null;
+  actorName: string | null;
+  teamId: string | null;
+  channelId: string | null;
+  channelName: string | null;
+  triggerId: string | null;
+};
+
+type ChannelQueueOptions = RouteOptions & {
+  enqueueFn?: EnqueueFn;
+  createJobFn?: CreateJobFn | null;
+  sourcePath?: string | null;
+  getProjectFn?: ((root: string, id: string) => Promise<ProjectRecord | null>) | null;
+};
+
+type IssueLabel = string | (LooseRecord & { name?: string });
+
+type GithubIssue = LooseRecord & {
+  number?: number | string;
+  id?: number | string;
+  projectId?: string;
+  labels?: IssueLabel[];
+  title?: string;
+  body?: string;
+  url?: string;
+  state?: string;
+};
+
+type CiFailure = LooseRecord & {
+  runId?: string;
+  buildId?: string;
+  workflow?: string;
+  branch?: string;
+  commit?: string;
+  message?: string;
+  url?: string;
+};
 
 const EVENT_SOURCE_DIR = "event-sources";
 const CANDIDATE_QUEUE_FILE = "candidates.json";
@@ -17,7 +265,7 @@ const CANDIDATE_LOCK_TTL_MS = 30_000;
 const ROUTABLE_WORKFLOWS = new Set(["direct", "standard", "complex", "blocked"]);
 
 
-function controlRoot(cpbRoot: string, { hubRoot, controlRoot: explicitControlRoot }: AnyRecord = {}): string {
+function controlRoot(cpbRoot: string, { hubRoot, controlRoot: explicitControlRoot }: EventSourceStorageOptions = {}): string {
   const root = explicitControlRoot || hubRoot || cpbRoot;
   if (!root || typeof root !== "string" || !root.trim()) {
     throw new Error("hubRoot or controlRoot is required for event source storage");
@@ -25,11 +273,11 @@ function controlRoot(cpbRoot: string, { hubRoot, controlRoot: explicitControlRoo
   return path.resolve(root);
 }
 
-function sourceDir(cpbRoot: string, options: AnyRecord = {}): string {
+function sourceDir(cpbRoot: string, options: EventSourceStorageOptions = {}): string {
   return path.join(controlRoot(cpbRoot, options), EVENT_SOURCE_DIR);
 }
 
-function candidateFile(cpbRoot: string, options: AnyRecord = {}): string {
+function candidateFile(cpbRoot: string, options: EventSourceStorageOptions = {}): string {
   return path.join(sourceDir(cpbRoot, options), CANDIDATE_QUEUE_FILE);
 }
 
@@ -41,9 +289,16 @@ function dedupeKey(source: string, externalId: unknown): string {
   return `${source}:${externalId}`;
 }
 
-const candidateChains = new Map<string, Promise<void>>();
+// Values are sequencing chains whose resolved result is never consumed (only
+// `.then`-chained and compared by reference for cleanup), so the resolved type
+// is intentionally left as `unknown` rather than cast to `void`.
+const candidateChains = new Map<string, Promise<unknown>>();
 
-async function withCandidateFileLock<T>(cpbRoot: string, options: AnyRecord, fn: () => Promise<T>): Promise<T> {
+function hasErrorCode(err: unknown, code: string): boolean {
+  return typeof err === "object" && err !== null && "code" in err && err.code === code;
+}
+
+async function withCandidateFileLock<T>(cpbRoot: string, options: EventSourceStorageOptions, fn: () => Promise<T>): Promise<T> {
   const file = candidateFile(cpbRoot, options);
   const lockDir = `${file}.lock`;
   await mkdir(path.dirname(lockDir), { recursive: true });
@@ -55,7 +310,7 @@ async function withCandidateFileLock<T>(cpbRoot: string, options: AnyRecord, fn:
       acquired = true;
       break;
     } catch (err) {
-      if (!err || err.code !== "EEXIST") throw err;
+      if (!hasErrorCode(err, "EEXIST")) throw err;
       try {
         const info = await stat(lockDir);
         if (Date.now() - info.mtimeMs >= CANDIDATE_LOCK_TTL_MS) {
@@ -78,11 +333,11 @@ async function withCandidateFileLock<T>(cpbRoot: string, options: AnyRecord, fn:
   }
 }
 
-function withCandidateLock<T>(cpbRoot: string, options: AnyRecord, fn: () => Promise<T>): Promise<T> {
+function withCandidateLock<T>(cpbRoot: string, options: EventSourceStorageOptions, fn: () => Promise<T>): Promise<T> {
   const key = controlRoot(cpbRoot, options);
   const prev = candidateChains.get(key) || Promise.resolve();
   const next = prev.then(() => withCandidateFileLock<T>(cpbRoot, options, fn));
-  candidateChains.set(key, next.catch(() => {}) as Promise<void>);
+  candidateChains.set(key, next.catch(() => {}));
   const cleanup = () => {
     if (candidateChains.get(key) === next) candidateChains.delete(key);
   };
@@ -96,7 +351,7 @@ async function atomicWriteJson(file: string, data: unknown) {
   await rename(tmp, file);
 }
 
-async function readQueue(file: string): Promise<AnyRecord[]> {
+async function readQueue(file: string): Promise<CandidateEntry[]> {
   try {
     const raw = await readFile(file, "utf8");
     const queue = JSON.parse(raw);
@@ -105,7 +360,7 @@ async function readQueue(file: string): Promise<AnyRecord[]> {
     }
     return queue;
   } catch (err) {
-    if (err?.code === "ENOENT") return [];
+    if (hasErrorCode(err, "ENOENT")) return [];
     if (err instanceof SyntaxError) {
       throw new Error(`candidate queue malformed: ${err.message}`);
     }
@@ -117,7 +372,7 @@ async function readQueue(file: string): Promise<AnyRecord[]> {
  * Ingest an external event into the candidate queue.
  * Returns the created candidate entry.
  */
-export async function ingestEvent(cpbRoot: string, event: AnyRecord, options: AnyRecord = {}): Promise<AnyRecord> {
+export async function ingestEvent(cpbRoot: string, event: CandidateEvent, options: EventSourceStorageOptions = {}): Promise<CandidateEntry> {
   const {
     source,
     externalId,
@@ -131,7 +386,7 @@ export async function ingestEvent(cpbRoot: string, event: AnyRecord, options: An
     throw new Error("ingestEvent requires source and externalId");
   }
 
-  const entry = {
+  const entry: CandidateEntry = {
     id: generateId(),
     source,
     externalId: String(externalId),
@@ -162,7 +417,7 @@ export async function ingestEvent(cpbRoot: string, event: AnyRecord, options: An
   });
 }
 
-function githubQueueExternalId(event: AnyRecord) {
+function githubQueueExternalId(event: GithubEvent) {
   if (event.delivery) return event.delivery;
   return [
     event.event || "github",
@@ -177,15 +432,15 @@ function githubPriority(labels: string[] = []) {
   return labels.some((label) => /p0|critical|urgent|blocker/i.test(label)) ? "high" : "normal";
 }
 
-function effectiveRoute(route: AnyRecord | null | undefined) {
+function effectiveRoute(route: TriageRoute | null | undefined): RouteDetails {
   return route?.effectiveRoute || route?.effective || {};
 }
 
-function requestedRoute(route: AnyRecord | null | undefined) {
+function requestedRoute(route: TriageRoute | null | undefined): RouteDetails | null {
   return route?.requestedRoute || route?.requested || null;
 }
 
-function routingMetadata(route: AnyRecord | null | undefined) {
+function routingMetadata(route: TriageRoute | null | undefined) {
   if (!route) return null;
   const acpTriager = route.acpTriager
     ? {
@@ -205,7 +460,7 @@ function routingMetadata(route: AnyRecord | null | undefined) {
     effective: effectiveRoute(route),
     effectiveRoute: route.effectiveRoute || null,
     protectedUpgrade: route.protectedUpgrade ?? ((route.protectedScopes || []).length > 0 || Boolean(route.actualDiffRisk?.protected)),
-    protectedKeywords: route.protectedKeywords || (route.protectedScopes || []).map((scope: AnyRecord) => scope.scope),
+    protectedKeywords: route.protectedKeywords || (route.protectedScopes || []).map((scope: ProtectedScope) => scope.scope),
     protectedScopes: route.protectedScopes || [],
     actualDiffRisk: route.actualDiffRisk || null,
     actorTrust: route.actorTrust || null,
@@ -230,7 +485,7 @@ function autoTriageMode(explicitMode: unknown, envMode: unknown): string {
   return process.env.CPB_TRIAGE_ACP === "1" ? "auto" : "rules";
 }
 
-function routeConflict(decision: AnyRecord): boolean {
+function routeConflict(decision: TriageRoute): boolean {
   return Boolean(
     decision?.requestedRoute
       && decision?.ruleRoute
@@ -241,7 +496,7 @@ function routeConflict(decision: AnyRecord): boolean {
   );
 }
 
-function autoAcpDecision(decision: AnyRecord = {}) {
+function autoAcpDecision(decision: TriageRoute = {}) {
   if ((decision.protectedScopes || []).length > 0 || decision.actualDiffRisk?.protected) {
     return { useAcp: false, reason: "protected or changed-file risk is already forced to complex/full" };
   }
@@ -257,7 +512,7 @@ function autoAcpDecision(decision: AnyRecord = {}) {
   return { useAcp: false, reason: "confident deterministic route" };
 }
 
-function withTriageStrategy(decision: AnyRecord, mode: string, strategy: AnyRecord): AnyRecord {
+function withTriageStrategy(decision: TriageRoute, mode: string, strategy: TriageStrategy): TriageRoute {
   return {
     ...decision,
     triageMode: mode,
@@ -269,97 +524,102 @@ function withTriageStrategy(decision: AnyRecord, mode: string, strategy: AnyReco
   };
 }
 
-async function resolveGithubRoute(cpbRoot: string, event: AnyRecord, {
+function triageRoute(decision: LooseRecord): TriageRoute {
+  return decision as TriageRoute;
+}
+
+function withTriageMode(decision: LooseRecord, mode: string): TriageRoute {
+  return {
+    ...decision,
+    triageMode: mode,
+  } as TriageRoute;
+}
+
+async function resolveGithubRoute(cpbRoot: string, event: GithubEvent, {
   hubRoot,
   triageMode,
   acpPool,
   triageAgent = "claude",
   triageTimeoutMs = 60_000,
   triageCwd = process.cwd(),
-}: AnyRecord = {}) {
+}: RouteOptions = {}): Promise<TriageRoute> {
   const requestedMode = autoTriageMode(
     triageMode || process.env.CPB_GITHUB_TRIAGE_MODE,
     process.env.CPB_TRIAGE_MODE,
   );
   const effectiveMode = requestedMode === "auto" ? "auto" : requestedMode;
   if (effectiveMode === "acp") {
-    return triageGithubIssueWithAcp(event, {
+    return triageRoute(await triageGithubIssueWithAcp(event, {
       cpbRoot,
       hubRoot,
       cwd: triageCwd,
       agent: triageAgent,
       timeoutMs: triageTimeoutMs,
       acpPool,
-    });
+    }));
   }
-  const rulesDecision = triageGithubIssue(event);
+  const rulesDecision = triageRoute(triageGithubIssue(event));
   if (effectiveMode === "auto") {
     const strategy = autoAcpDecision(rulesDecision);
     if (strategy.useAcp) {
-      const acpDecision = await triageGithubIssueWithAcp(event, {
+      const acpDecision = triageRoute(await triageGithubIssueWithAcp(event, {
         cpbRoot,
         hubRoot,
         cwd: triageCwd,
         agent: triageAgent,
         timeoutMs: triageTimeoutMs,
         acpPool,
-      });
+      }));
       return withTriageStrategy(acpDecision, "auto", { ...strategy, usedAcp: true });
     }
     return withTriageStrategy(rulesDecision, "auto", { ...strategy, usedAcp: false });
   }
-  return {
-    ...rulesDecision,
-    triageMode: effectiveMode,
-  };
+  return withTriageMode(rulesDecision, effectiveMode);
 }
 
-async function resolveChannelRoute(cpbRoot: string, command: AnyRecord, context: AnyRecord, {
+async function resolveChannelRoute(cpbRoot: string, command: ChannelCommand, context: ChannelContext, {
   hubRoot,
   triageMode,
   acpPool,
   triageAgent = "claude",
   triageTimeoutMs = 60_000,
   triageCwd = process.cwd(),
-}: AnyRecord = {}) {
+}: RouteOptions = {}): Promise<TriageRoute> {
   const requestedMode = autoTriageMode(
     command.triage || triageMode || process.env.CPB_CHANNEL_TRIAGE_MODE,
     process.env.CPB_TRIAGE_MODE,
   );
   const effectiveMode = requestedMode === "auto" ? "auto" : requestedMode;
   if (effectiveMode === "acp") {
-    return triageChannelCommandWithAcp(command, context, {
+    return triageRoute(await triageChannelCommandWithAcp(command, context, {
       cpbRoot,
       hubRoot,
       cwd: triageCwd,
       agent: triageAgent,
       timeoutMs: triageTimeoutMs,
       acpPool,
-    });
+    }));
   }
-  const rulesDecision = triageChannelCommand(command, context);
+  const rulesDecision = triageRoute(triageChannelCommand(command, context));
   if (effectiveMode === "auto") {
     const strategy = autoAcpDecision(rulesDecision);
     if (strategy.useAcp) {
-      const acpDecision = await triageChannelCommandWithAcp(command, context, {
+      const acpDecision = triageRoute(await triageChannelCommandWithAcp(command, context, {
         cpbRoot,
         hubRoot,
         cwd: triageCwd,
         agent: triageAgent,
         timeoutMs: triageTimeoutMs,
         acpPool,
-      });
+      }));
       return withTriageStrategy(acpDecision, "auto", { ...strategy, usedAcp: true });
     }
     return withTriageStrategy(rulesDecision, "auto", { ...strategy, usedAcp: false });
   }
-  return {
-    ...rulesDecision,
-    triageMode: effectiveMode,
-  };
+  return withTriageMode(rulesDecision, effectiveMode);
 }
 
-function githubQueuePayload(event: AnyRecord, match: AnyRecord, route: AnyRecord) {
+function githubQueuePayload(event: GithubEvent, match: GithubMatch, route: TriageRoute): GithubPayload {
   const effective = effectiveRoute(route);
   return {
     issueNumber: event.issueNumber ?? null,
@@ -383,7 +643,7 @@ function githubHubPriority(labels: string[] = []) {
   return labels.some((label) => /p0|critical|urgent|blocker/i.test(label)) ? "P0" : "P2";
 }
 
-async function resolveRegisteredProject(hubRoot: string, projectId: string, getProjectFn: ((root: string, id: string) => Promise<AnyRecord | null>) | null) {
+async function resolveRegisteredProject(hubRoot: string, projectId: string, getProjectFn: ((root: string, id: string) => Promise<ProjectRecord | null>) | null) {
   if (!hubRoot || !projectId || typeof getProjectFn !== "function") return null;
   try {
     return await getProjectFn(hubRoot, projectId);
@@ -392,20 +652,34 @@ async function resolveRegisteredProject(hubRoot: string, projectId: string, getP
   }
 }
 
-function sourcePathForQueue(explicitSourcePath: string | null, project: AnyRecord | null): string | null {
+function sourcePathForQueue(explicitSourcePath: string | null, project: ProjectRecord | null): string | null {
   return explicitSourcePath || project?.sourcePath || null;
 }
 
-function projectRuntimeRootForImmediateJob(project: AnyRecord | null): string | null {
+function projectRuntimeRootForImmediateJob(project: ProjectRecord | null): string | null {
   const dataRoot = project?.projectRuntimeRoot;
   return typeof dataRoot === "string" && dataRoot.trim() ? dataRoot : null;
 }
 
-async function maybeGenerateQueueContextPack(project: AnyRecord | null, hubRoot: string, task: string): Promise<null> {
+async function maybeGenerateQueueContextPack(project: ProjectRecord | null, hubRoot: string, task: string): Promise<ContextPackResult | null> {
   return null;
 }
 
-function githubHubQueueInput({ event, match, payload, candidateEntry, sourcePath, contextPackResult = null }: AnyRecord) {
+function githubHubQueueInput({
+  event,
+  match,
+  payload,
+  candidateEntry,
+  sourcePath,
+  contextPackResult = null,
+}: {
+  event: GithubEvent;
+  match: GithubMatch;
+  payload: GithubPayload;
+  candidateEntry: CandidateEntry;
+  sourcePath: string | null;
+  contextPackResult?: ContextPackResult | null;
+}): HubQueueInput {
   const route = payload.route;
   const contextPack = contextPackResult?.contextPack || null;
   return {
@@ -441,8 +715,8 @@ function githubHubQueueInput({ event, match, payload, candidateEntry, sourcePath
 
 export async function createGithubIssueQueueJob(
   cpbRoot: string,
-  event: AnyRecord,
-  match: AnyRecord,
+  event: GithubEvent,
+  match: GithubMatch,
   {
     hubRoot = cpbRoot,
     enqueueFn = enqueueHubQueue,
@@ -452,7 +726,7 @@ export async function createGithubIssueQueueJob(
     acpPool = null,
     triageAgent = "claude",
     triageTimeoutMs = 60_000,
-  }: AnyRecord = {},
+  }: GithubQueueOptions = {},
 ) {
   if (!event || event.status !== "ok") {
     throw new Error("GitHub event must be normalized before queue creation");
@@ -543,7 +817,7 @@ export async function createGithubIssueQueueJob(
   };
 }
 
-function channelExternalId(source: string, context: AnyRecord = {}): string {
+function channelExternalId(source: string, context: ChannelContext = {}): string {
   if (context.externalId) return context.externalId;
   if (context.triggerId) return context.triggerId;
   return [
@@ -556,7 +830,7 @@ function channelExternalId(source: string, context: AnyRecord = {}): string {
   ].join(":");
 }
 
-function channelQueuePayload(command: AnyRecord, context: AnyRecord = {}, route: AnyRecord | null = null) {
+function channelQueuePayload(command: ChannelCommand, context: ChannelContext = {}, route: TriageRoute | null = null): ChannelPayload {
   const effective = effectiveRoute(route);
   const workflowRequested = command.workflowRequested || (command.workflow && command.workflow !== "standard");
   const explicitCustomWorkflow = workflowRequested
@@ -582,11 +856,27 @@ function channelQueuePayload(command: AnyRecord, context: AnyRecord = {}, route:
   };
 }
 
-function channelDescription(payload: AnyRecord): string {
+function channelDescription(payload: ChannelPayload): string {
   return payload.task || (payload.issueNumber ? `GitHub issue #${payload.issueNumber}` : "");
 }
 
-function channelHubQueueInput({ command, source, payload, candidateEntry, sourcePath, project, contextPackResult = null }: AnyRecord) {
+function channelHubQueueInput({
+  command,
+  source,
+  payload,
+  candidateEntry,
+  sourcePath,
+  project,
+  contextPackResult = null,
+}: {
+  command: ChannelCommand;
+  source: string;
+  payload: ChannelPayload;
+  candidateEntry: CandidateEntry;
+  sourcePath: string | null;
+  project: ProjectRecord | null;
+  contextPackResult?: ContextPackResult | null;
+}): HubQueueInput {
   const repo = project?.github?.fullName || project?.github?.repo || null;
   const issueUrl = payload.issueNumber && repo ? `https://github.com/${repo}/issues/${payload.issueNumber}` : null;
   const contextPack = contextPackResult?.contextPack || null;
@@ -626,8 +916,8 @@ function channelHubQueueInput({ command, source, payload, candidateEntry, source
 
 export async function createChannelQueueJob(
   cpbRoot: string,
-  command: AnyRecord,
-  context: AnyRecord = {},
+  command: ChannelCommand,
+  context: ChannelContext = {},
   {
     hubRoot = cpbRoot,
     enqueueFn = enqueueHubQueue,
@@ -638,7 +928,7 @@ export async function createChannelQueueJob(
     acpPool = null,
     triageAgent = "claude",
     triageTimeoutMs = 60_000,
-  }: AnyRecord = {},
+  }: ChannelQueueOptions = {},
 ) {
   if (!command || !["run", "issue"].includes(command.type)) {
     throw new Error("channel command must be a run or issue command before queue creation");
@@ -728,7 +1018,7 @@ export async function createChannelQueueJob(
 /**
  * List candidate events, optionally filtered by status or source.
  */
-export async function listCandidates(cpbRoot: string, { status, source, ...rootOptions }: AnyRecord = {}): Promise<AnyRecord[]> {
+export async function listCandidates(cpbRoot: string, { status, source, ...rootOptions }: CandidateListOptions = {}): Promise<CandidateEntry[]> {
   const file = candidateFile(cpbRoot, rootOptions);
   const queue = await readQueue(file);
 
@@ -742,7 +1032,12 @@ export async function listCandidates(cpbRoot: string, { status, source, ...rootO
 /**
  * Update a candidate's status (pending → processed | dismissed).
  */
-export async function updateCandidate(cpbRoot: string, candidateId: string, { status, reason, ...inlineRootOptions }: AnyRecord, options: AnyRecord = {}) {
+export async function updateCandidate(
+  cpbRoot: string,
+  candidateId: string,
+  { status, reason, ...inlineRootOptions }: CandidateUpdateOptions,
+  options: EventSourceStorageOptions = {},
+): Promise<CandidateEntry | null> {
   const rootOptions = { ...inlineRootOptions, ...options };
   return withCandidateLock(cpbRoot, rootOptions, async () => {
     const file = candidateFile(cpbRoot, rootOptions);
@@ -764,12 +1059,12 @@ export async function updateCandidate(cpbRoot: string, candidateId: string, { st
 /**
  * Normalize a GitHub issue into a candidate event.
  */
-export function githubIssueToCandidate(issue: AnyRecord, { projectId }: AnyRecord = {}) {
+export function githubIssueToCandidate(issue: GithubIssue, { projectId }: { projectId?: string } = {}) {
   return {
     source: "github-issue",
     externalId: String(issue.number || issue.id),
     projectId: projectId || issue.projectId || null,
-    priority: issue.labels?.some?.((l: string | Record<string, unknown>) => {
+    priority: issue.labels?.some?.((l: string | LooseRecord) => {
       const name = typeof l === "string" ? l : (typeof l.name === "string" ? l.name : "");
       return name && /p0|critical|urgent|blocker/i.test(name);
     }) ? "high" : "normal",
@@ -777,7 +1072,7 @@ export function githubIssueToCandidate(issue: AnyRecord, { projectId }: AnyRecor
       title: issue.title || `Issue #${issue.number}`,
       body: (issue.body || "").slice(0, 2000),
       labels: Array.isArray(issue.labels)
-        ? issue.labels.map((l: AnyRecord) => (typeof l === "string" ? l : l.name)).filter(Boolean)
+        ? issue.labels.map((l: IssueLabel) => (typeof l === "string" ? l : l.name)).filter(Boolean)
         : [],
       url: issue.url || null,
       state: issue.state || "OPEN",
@@ -788,7 +1083,7 @@ export function githubIssueToCandidate(issue: AnyRecord, { projectId }: AnyRecor
 /**
  * Normalize a CI failure into a candidate event.
  */
-export function ciFailureToCandidate(failure: AnyRecord, { projectId }: AnyRecord = {}) {
+export function ciFailureToCandidate(failure: CiFailure, { projectId }: { projectId?: string } = {}) {
   return {
     source: "ci-failure",
     externalId: failure.runId || failure.buildId || `ci-${Date.now()}`,

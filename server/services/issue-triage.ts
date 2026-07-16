@@ -1,4 +1,4 @@
-import { AnyRecord } from "../../shared/types.js";
+import { recordValue, type LooseRecord } from "../../shared/types.js";
 import { mergeRoutePolicy, normalizeRoute } from "../../core/triage/schema.js";
 import { classifyIssueRules } from "../../core/triage/rules.js";
 
@@ -11,7 +11,7 @@ function stripJsonFence(raw: unknown): string {
     .trim();
 }
 
-function routeFromWorkflowPlan({ workflow = null, planMode = null, reason = null, source = "command" }: AnyRecord = {}) {
+function routeFromWorkflowPlan({ workflow = null, planMode = null, reason = null, source = "command" }: LooseRecord = {}) {
   if (!workflow && !planMode) return null;
   return normalizeRoute({
     workflow: workflow || undefined,
@@ -21,25 +21,34 @@ function routeFromWorkflowPlan({ workflow = null, planMode = null, reason = null
   });
 }
 
-function withMode(decision: AnyRecord, triageMode: string): AnyRecord {
+function withMode(decision: LooseRecord, triageMode: string): LooseRecord {
   return {
     ...decision,
     triageMode,
   };
 }
 
-function githubTriageInput(event: AnyRecord = {}, requestedRoute: AnyRecord | null = null): AnyRecord {
+function stringValue(value: unknown, fallback = ""): string {
+  return typeof value === "string" && value ? value : fallback;
+}
+
+function numberValue(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function githubTriageInput(event: LooseRecord = {}, requestedRoute: LooseRecord | null = null): LooseRecord {
+  const raw = recordValue(event.raw);
   return {
     labels: event.labels,
     title: event.title,
     body: event.body,
     actor: event.actor,
-    authorAssociation: event.raw?.authorAssociation || event.authorAssociation || null,
+    authorAssociation: raw.authorAssociation || event.authorAssociation || null,
     requestedRoute,
   };
 }
 
-function channelRequestedRoute(command: AnyRecord = {}) {
+function channelRequestedRoute(command: LooseRecord = {}) {
   const hasRequestedRoute = Boolean(
     command.workflowRequested
       || command.planModeRequested
@@ -55,7 +64,7 @@ function channelRequestedRoute(command: AnyRecord = {}) {
     : null;
 }
 
-function channelTriageInput(command: AnyRecord = {}, context: AnyRecord = {}, requested: AnyRecord | null = null): AnyRecord {
+function channelTriageInput(command: LooseRecord = {}, context: LooseRecord = {}, requested: LooseRecord | null = null): LooseRecord {
   return {
     title: command.task || (command.issue ? `GitHub issue #${command.issue}` : ""),
     task: command.task,
@@ -67,7 +76,7 @@ function channelTriageInput(command: AnyRecord = {}, context: AnyRecord = {}, re
   };
 }
 
-export function buildAcpTriagerPrompt(input: AnyRecord = {}, ruleDecision: AnyRecord | null = null): string {
+export function buildAcpTriagerPrompt(input: LooseRecord = {}, ruleDecision: LooseRecord | null = null): string {
   const rules = ruleDecision || classifyIssueRules(input);
   return [
     "You are the CodePatchBay issue routing triager.",
@@ -101,66 +110,71 @@ export function buildAcpTriagerPrompt(input: AnyRecord = {}, ruleDecision: AnyRe
   ].join("\n");
 }
 
-export function parseAcpTriagerResponse(raw: unknown): AnyRecord {
+export function parseAcpTriagerResponse(raw: unknown): LooseRecord {
   const text = stripJsonFence(raw);
   if (!text) return { requestedRoute: null, raw: "" };
-  let parsed: AnyRecord;
+  let parsed: LooseRecord;
   try {
     parsed = JSON.parse(text);
   } catch (error) {
-    return { requestedRoute: null, raw: text, error: `invalid ACP triage JSON: ${error.message}` };
+    return { requestedRoute: null, raw: text, error: `invalid ACP triage JSON: ${recordValue(error).message}` };
   }
-  const route = parsed.requestedRoute || parsed.requested || parsed.route || null;
+  const route = recordValue(parsed.requestedRoute || parsed.requested || parsed.route);
   return {
-    requestedRoute: route
+    requestedRoute: Object.keys(route).length > 0
       ? normalizeRoute({ ...route, source: "acp", reason: route.reason || "ACP triager route" })
       : null,
     raw: text,
   };
 }
 
-export function triageIssue(input: AnyRecord = {}, { requestedRoute = null, acpRoute = null, acpResponse = null }: AnyRecord = {}) {
+export function triageIssue(input: LooseRecord = {}, { requestedRoute = null, acpRoute = null, acpResponse = null }: LooseRecord = {}) {
   const rules = classifyIssueRules({
     ...input,
     requestedRoute: requestedRoute || input.requestedRoute,
   });
-  const parsedAcp = acpRoute
-    ? normalizeRoute({ ...acpRoute, source: acpRoute.source || "acp" })
+  const acpRouteRecord = recordValue(acpRoute);
+  const parsedAcp = Object.keys(acpRouteRecord).length > 0
+    ? normalizeRoute({ ...acpRouteRecord, source: acpRouteRecord.source || "acp" })
     : parseAcpTriagerResponse(acpResponse).requestedRoute;
 
   return mergeRoutePolicy({
     ruleRoute: rules.ruleRoute,
-    requestedRoute: requestedRoute || input.requestedRoute || rules.requestedRoute,
-    acpRoute: parsedAcp,
-    actorTrust: rules.actorTrust,
+    requestedRoute: recordValue(requestedRoute || input.requestedRoute || rules.requestedRoute),
+    acpRoute: recordValue(parsedAcp),
+    actorTrust: recordValue(rules.actorTrust),
     protectedScopes: rules.protectedScopes,
-    actualDiffRisk: rules.actualDiffRisk,
+    actualDiffRisk: recordValue(rules.actualDiffRisk),
     reasons: rules.reasons,
-  } as AnyRecord);
+  });
 }
 
-export async function triageIssueWithAcp(input: AnyRecord = {}, {
+export async function triageIssueWithAcp(input: LooseRecord = {}, {
   cpbRoot = process.cwd(),
   hubRoot = null,
   cwd = process.cwd(),
   agent = "claude",
   timeoutMs = 60_000,
   acpPool = null,
-}: AnyRecord = {}) {
+}: LooseRecord = {}) {
   const rules = classifyIssueRules(input);
   const prompt = buildAcpTriagerPrompt(input, rules);
   let acpResponse = null;
   let acpError = null;
 
   try {
-    const pool = acpPool || (await import("./acp/acp-pool.js")).getManagedAcpPool({ cpbRoot, hubRoot });
-    const _r = await pool.execute(agent, prompt, cwd, timeoutMs);
-    acpResponse = _r.output;
+    const pool = acpPool
+      ? recordValue(acpPool)
+      : recordValue((await import("./acp/acp-pool.js")).getManagedAcpPool({ cpbRoot: stringValue(cpbRoot, process.cwd()), hubRoot: stringValue(hubRoot) || null }));
+    const executor = recordValue(pool);
+    if (typeof executor.execute !== "function") throw new Error("ACP pool execute unavailable");
+    const result = recordValue(await executor.execute(stringValue(agent, "claude"), prompt, stringValue(cwd, process.cwd()), numberValue(timeoutMs, 60_000)));
+    acpResponse = result.output;
   } catch (error) {
-    acpError = error.message;
+    acpError = recordValue(error).message || String(error);
   }
 
-  const parsed: AnyRecord = acpResponse ? parseAcpTriagerResponse(acpResponse) : { requestedRoute: null };
+  const parsed: LooseRecord = acpResponse ? parseAcpTriagerResponse(acpResponse) : { requestedRoute: null };
   const decision = triageIssue(input, { acpRoute: parsed.requestedRoute });
   return {
     ...decision,
@@ -173,12 +187,13 @@ export async function triageIssueWithAcp(input: AnyRecord = {}, {
   };
 }
 
-export function triageGithubIssue(event: AnyRecord = {}, { requestedRoute = null, acpRoute = null }: AnyRecord = {}) {
-  return withMode(triageIssue(githubTriageInput(event, requestedRoute), { requestedRoute, acpRoute }), "rules");
+export function triageGithubIssue(event: LooseRecord = {}, { requestedRoute = null, acpRoute = null }: LooseRecord = {}) {
+  const requested = requestedRoute ? recordValue(requestedRoute) : null;
+  return withMode(triageIssue(githubTriageInput(event, requested), { requestedRoute: requested, acpRoute }), "rules");
 }
 
-export async function triageGithubIssueWithAcp(event: AnyRecord = {}, options: AnyRecord = {}) {
-  const requestedRoute = options.requestedRoute || null;
+export async function triageGithubIssueWithAcp(event: LooseRecord = {}, options: LooseRecord = {}) {
+  const requestedRoute = options.requestedRoute ? recordValue(options.requestedRoute) : null;
   const decision = await triageIssueWithAcp(githubTriageInput(event, requestedRoute), {
     ...options,
     requestedRoute,
@@ -186,12 +201,12 @@ export async function triageGithubIssueWithAcp(event: AnyRecord = {}, options: A
   return withMode(decision, "acp");
 }
 
-export function triageChannelCommand(command: AnyRecord = {}, context: AnyRecord = {}) {
+export function triageChannelCommand(command: LooseRecord = {}, context: LooseRecord = {}) {
   const requested = channelRequestedRoute(command);
-  return withMode(triageIssue(channelTriageInput(command, context, requested), { requestedRoute: requested }), command.triage || "rules");
+  return withMode(triageIssue(channelTriageInput(command, context, requested), { requestedRoute: requested }), stringValue(command.triage, "rules"));
 }
 
-export async function triageChannelCommandWithAcp(command: AnyRecord = {}, context: AnyRecord = {}, options: AnyRecord = {}) {
+export async function triageChannelCommandWithAcp(command: LooseRecord = {}, context: LooseRecord = {}, options: LooseRecord = {}) {
   const requested = channelRequestedRoute(command);
   const decision = await triageIssueWithAcp(channelTriageInput(command, context, requested), {
     ...options,

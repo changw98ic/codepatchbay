@@ -161,9 +161,58 @@ test("smart mode attaches schedulerDecision with mode, selectedAt, score, and re
   const decision = candidate.metadata.schedulerDecision;
   assert.equal(decision.mode, "smart");
   assert.ok(decision.selectedAt);
+  assert.equal(decision.rank, 1);
   assert.ok(typeof decision.score === "number");
   assert.ok(Array.isArray(decision.reasons));
   assert.ok(decision.reasons.length > 0);
+});
+
+test("smart mode preserves ranked batch dispatch instead of serializing eligible work", async () => {
+  const hubRoot = await hubWithSchedulerMode("smart");
+  const store = new AssignmentStore(hubRoot);
+  await store.init();
+
+  const p2 = await enqueue(hubRoot, { projectId: "proj-c", description: "p2", priority: "P2" });
+  const p0 = await enqueue(hubRoot, { projectId: "proj-a", description: "p0", priority: "P0" });
+  const p1 = await enqueue(hubRoot, { projectId: "proj-b", description: "p1", priority: "P1" });
+  const scheduler = new Scheduler(hubRoot, {
+    assignmentStore: store,
+    workerStore: { findIdleWorker: async () => null },
+  });
+
+  const candidates = await scheduler.nextCandidates(3);
+
+  assert.deepEqual(candidates.map((entry) => entry.id), [p0.id, p1.id, p2.id]);
+  assert.deepEqual(candidates.map((entry) => entry.metadata.schedulerDecision.rank), [1, 2, 3]);
+});
+
+test("smart mode records evidence-backed retry strategy and failure fingerprint", async () => {
+  const hubRoot = await hubWithSchedulerMode("smart");
+  const store = new AssignmentStore(hubRoot);
+  await store.init();
+  const fingerprint = "sha256:stable-failure";
+  const retried = await enqueue(hubRoot, {
+    projectId: "proj",
+    description: "evidence-backed retry",
+    priority: "P1",
+    metadata: {
+      lastFailureKind: "verification_failed",
+      failureCount: 1,
+      sourceContext: { retry: { retryStrategy: "fresh_attempt", failureFingerprint: fingerprint } },
+    },
+  });
+  const scheduler = new Scheduler(hubRoot, {
+    assignmentStore: store,
+    workerStore: { findIdleWorker: async () => null },
+  });
+
+  const candidate = await scheduler.nextCandidate();
+  const decision = candidate.metadata.schedulerDecision;
+
+  assert.equal(candidate.id, retried.id);
+  assert.equal(decision.retryStrategy, "fresh_attempt");
+  assert.equal(decision.failureFingerprint, fingerprint);
+  assert.ok(decision.reasons.includes("evidence-backed-fresh-attempt"));
 });
 
 // ── FailureRouter smart mode supervisor eligibility ──
@@ -197,6 +246,110 @@ test("FailureRouter skips supervisor for verification_failed in default mode", a
   });
   assert.equal(diagnosed, false);
   assert.equal(result.action, "retry_same_worker");
+});
+
+test("FailureRouter gives an exhausted in-attempt solver one explicit fresh diagnosis attempt", async () => {
+  const router = new FailureRouter();
+  const result = await router.route({
+    assignment: { attempts: 1, sourceContext: {} },
+    attempt: { attempt: 1 },
+    result: {
+      failure: {
+        kind: FailureKind.VERIFICATION_FAILED,
+        reason: "same focused test still fails",
+        retryable: true,
+        cause: {
+          solver: {
+            exhausted: true,
+            repairAttempts: 2,
+            failureFingerprint: "sha256:fingerprint-1",
+          },
+        },
+      },
+    },
+  });
+
+  assert.equal(result.action, "retry_same_worker");
+  assert.equal(result.retryStrategy, "fresh_session_diagnosis");
+  assert.equal(result.retryPhase, null);
+  assert.match(String(result.failureFingerprint), /^sha256:/);
+  assert.notEqual(result.failureFingerprint, "sha256:fingerprint-1");
+  assert.equal(result.forceFreshSession, true);
+});
+
+test("FailureRouter stops unchanged verification failures across solver attempts", async () => {
+  const router = new FailureRouter();
+  const result = await router.route({
+    assignment: {
+      attempts: 2,
+      sourceContext: { retry: { failureFingerprint: "sha256:fingerprint-1" } },
+    },
+    attempt: { attempt: 2 },
+    result: {
+      failure: {
+        kind: FailureKind.VERIFICATION_FAILED,
+        reason: "same focused test still fails",
+        retryable: true,
+        cause: {
+          solver: {
+            exhausted: true,
+            failureFingerprint: "sha256:fingerprint-1",
+          },
+        },
+      },
+    },
+  });
+
+  assert.equal(result.action, "mark_failed");
+  assert.match(result.reason, /repeated unchanged/i);
+  assert.match(result.reason, /blind retry denied/i);
+});
+
+test("FailureRouter advances repeated implementation failures once, then stops instead of cycling", async () => {
+  const router = new FailureRouter();
+  const failure = {
+    kind: FailureKind.VERIFICATION_FAILED,
+    reason: "focused parser behavior still fails",
+    retryable: true,
+    cause: { verdict: { fix_scope: ["src/parser.ts"] } },
+  };
+  const first = await router.route({
+    assignment: { attempts: 0, sourceContext: {} },
+    attempt: { attempt: 1 },
+    result: { failure },
+  });
+  assert.equal(first.action, "retry_same_worker");
+  assert.equal(first.retryStrategy, "targeted_repair");
+
+  const second = await router.route({
+    assignment: {
+      attempts: 1,
+      sourceContext: { retry: {
+        failureFingerprint: first.failureFingerprint,
+        retryStrategy: first.retryStrategy,
+      } },
+    },
+    attempt: { attempt: 2 },
+    result: { failure },
+  });
+  assert.equal(second.action, "retry_same_worker");
+  assert.equal(second.retryStrategy, "fresh_session_diagnosis");
+  assert.equal(second.forceFreshSession, true);
+
+  const exhausted = await router.route({
+    assignment: {
+      attempts: 2,
+      sourceContext: { retry: {
+        failureFingerprint: second.failureFingerprint,
+        retryStrategy: second.retryStrategy,
+      } },
+    },
+    attempt: { attempt: 3 },
+    result: { failure },
+  });
+  assert.equal(exhausted.action, "mark_failed");
+  assert.equal(exhausted.retryable, false);
+  assert.match(String(exhausted.reason), /exhausted distinct queue recovery strategies/);
 });
 
 test("FailureRouter consults supervisor for verification_failed in smart mode", async () => {

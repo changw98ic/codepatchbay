@@ -2,15 +2,37 @@ import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { access, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { AnyRecord } from "../../shared/types.js";
+import { pinnedHubRedisConfigFile } from "../../shared/hub-state-redis.js";
+import type { LooseRecord } from "../../shared/types.js";
 import { buildLocator, locatorEnvelope, projectExists } from "./phase-locator.js";
 import { getJob, listJobsFromIndex } from "./job/job-store.js";
 import { getWorkflow, bridgeForPhase as workflowBridgeForPhase, roleForPhase as workflowRoleForPhase } from "./workflow-definition.js";
 import { checkPermission } from "./permission-matrix.js";
 import { resolveProjectDataRoot } from "./runtime.js";
+import { BoundedOutput, subprocessOutputMaxBytes } from "../../shared/bounded-output.js";
 
-type RunChildResult = { exitCode: number; stdout: string; error?: Error | null };
+type RunChildResult = { exitCode: number; stdout: string; outputTruncated?: boolean; error?: Error | null };
+type RunChildOptions = {
+  env?: NodeJS.ProcessEnv;
+  onOutput?: (chunk: string) => void;
+};
 const PARENT_PLAN_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+function recordValue(value: unknown): LooseRecord {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as LooseRecord : {};
+}
+
+function stringValue(value: unknown, fallback = ""): string {
+  return typeof value === "string" && value ? value : fallback;
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter(Boolean).map(String) : [];
+}
+
+function processEnv(value: unknown): NodeJS.ProcessEnv {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as NodeJS.ProcessEnv : process.env;
+}
 
 export function roleForBridge(scriptPath: string) {
   const base = path.basename(scriptPath);
@@ -73,7 +95,7 @@ export async function validatePhaseInputs(cpbRoot: string, project: string, jobI
 export async function checkPhasePermissions(cpbRoot: string, project: string, jobId: string, phase: string, targetPath: string, action: string) {
   const dataRoot = await resolveProjectDataRoot(cpbRoot, project, { hubRoot: process.env.CPB_HUB_ROOT });
   const job = await getJob(cpbRoot, project, jobId, { dataRoot });
-  const workflow = getWorkflow(job?.workflow);
+  const workflow = getWorkflow(job?.workflow || "standard");
   const role = workflowRoleForPhase(workflow, phase) || phaseRole(phase);
   if (!role) return { allowed: true };
 
@@ -123,7 +145,7 @@ export async function readParentPlanRecord(cpbRoot: string, project: string, pla
   }
 }
 
-export async function writeParentPlanRecord(cpbRoot: string, project: string, planCacheKey: string, record: AnyRecord, opts: { dataRoot?: string | null } = {}) {
+export async function writeParentPlanRecord(cpbRoot: string, project: string, planCacheKey: string, record: LooseRecord, opts: { dataRoot?: string | null } = {}) {
   if (!planCacheKey) throw new Error("planCacheKey is required");
   const file = parentPlanRecordPath(cpbRoot, project, planCacheKey, opts);
   await writeAtomic(file, `${JSON.stringify(record, null, 2)}\n`);
@@ -143,7 +165,7 @@ function wordOverlap(a: string, b: string) {
   return common / Math.min(sa.size, sb.size);
 }
 
-async function planFileExists(cpbRoot: string, project: string, planId: string, { dataRoot }: AnyRecord = {}) {
+async function planFileExists(cpbRoot: string, project: string, planId: string, { dataRoot }: LooseRecord = {}) {
   try {
     if (!dataRoot) throw new Error("project runtime root required for parent plan artifact lookup");
     await access(path.join(path.resolve(dataRoot), "wiki", "inbox", `plan-${planId}.md`));
@@ -153,15 +175,16 @@ async function planFileExists(cpbRoot: string, project: string, planId: string, 
   }
 }
 
-function stableParentPlanPayload({ project, task, sourceContext = {} }: AnyRecord = {}) {
-  const planGroupId = sourceContext?.planGroupId || null;
+function stableParentPlanPayload({ project, task, sourceContext = {} }: LooseRecord = {}): LooseRecord {
+  const context = recordValue(sourceContext);
+  const planGroupId = context.planGroupId || null;
   if (planGroupId) {
     return {
       project,
       planGroupId,
       source: {
-        repo: sourceContext?.repo || null,
-        issueNumber: sourceContext?.issueNumber ?? null,
+        repo: context.repo || null,
+        issueNumber: context.issueNumber ?? null,
       },
     };
   }
@@ -169,29 +192,29 @@ function stableParentPlanPayload({ project, task, sourceContext = {} }: AnyRecor
     project,
     task: String(task || "").trim().replace(/\s+/g, " "),
     source: {
-      repo: sourceContext?.repo || null,
-      issueNumber: sourceContext?.issueNumber ?? null,
-      issueUrl: sourceContext?.issueUrl || null,
-      sourceFingerprint: sourceContext?.sourceFingerprint || null,
-      specHash: sourceContext?.specHash || null,
-      designHash: sourceContext?.designHash || null,
-      tasksHash: sourceContext?.tasksHash || null,
-      taskId: sourceContext?.taskId || null,
-      parentPlanId: sourceContext?.parentPlanId || null,
+      repo: context.repo || null,
+      issueNumber: context.issueNumber ?? null,
+      issueUrl: context.issueUrl || null,
+      sourceFingerprint: context.sourceFingerprint || null,
+      specHash: context.specHash || null,
+      designHash: context.designHash || null,
+      tasksHash: context.tasksHash || null,
+      taskId: context.taskId || null,
+      parentPlanId: context.parentPlanId || null,
     },
   };
 }
 
-function explicitParentPlanId(sourceContext: AnyRecord = {}) {
-  const value = sourceContext?.parentPlanId || null;
+function explicitParentPlanId(sourceContext: LooseRecord = {}) {
+  const value = recordValue(sourceContext).parentPlanId || null;
   return value ? String(value).replace(/^plan-/, "") : null;
 }
 
-function hashPayload(payload: AnyRecord) {
+function hashPayload(payload: LooseRecord) {
   return createHash("sha256").update(JSON.stringify(payload)).digest("hex");
 }
 
-function planArtifactPath(_cpbRoot: string, _project: string, planArtifact: string, { dataRoot }: AnyRecord = {}) {
+function planArtifactPath(_cpbRoot: string, _project: string, planArtifact: string, { dataRoot }: LooseRecord = {}) {
   if (!dataRoot) throw new Error("project runtime root required for parent plan artifact path");
   const artifact = String(planArtifact || "").replace(/^plan-/, "");
   return path.join(path.resolve(dataRoot), "wiki", "inbox", `plan-${artifact}.md`);
@@ -206,7 +229,7 @@ async function artifactExists(filePath: string) {
   }
 }
 
-export function parentPlanCacheIdentity({ project, task, sourceContext = {} }: AnyRecord = {}) {
+export function parentPlanCacheIdentity({ project, task, sourceContext = {} }: LooseRecord = {}) {
   const payload = stableParentPlanPayload({ project, task, sourceContext });
   const digest = hashPayload(payload);
   return {
@@ -216,27 +239,29 @@ export function parentPlanCacheIdentity({ project, task, sourceContext = {} }: A
   };
 }
 
-async function resolvePlanCacheDataRoot(cpbRoot: string, project: string, { dataRoot, hubRoot }: AnyRecord = {}) {
+async function resolvePlanCacheDataRoot(cpbRoot: string, project: string, { dataRoot, hubRoot }: LooseRecord = {}) {
   return await resolveProjectDataRoot(cpbRoot, project, { dataRoot, hubRoot });
 }
 
-export async function resolveParentPlanCache(cpbRoot: string, { project, task, sourceContext = {}, dataRoot, hubRoot }: AnyRecord = {}) {
+export async function resolveParentPlanCache(cpbRoot: string, { project, task, sourceContext = {}, dataRoot, hubRoot }: LooseRecord = {}) {
   if (!project) throw new Error("project is required");
-  const resolvedDataRoot = await resolvePlanCacheDataRoot(cpbRoot, project, { dataRoot, hubRoot });
-  const identity = parentPlanCacheIdentity({ project, task, sourceContext });
-  const file = parentPlanRecordPath(cpbRoot, project, identity.planCacheKey, { dataRoot: resolvedDataRoot });
-  const cached = await readParentPlanRecord(cpbRoot, project, identity.planCacheKey, { dataRoot: resolvedDataRoot });
+  const projectId = stringValue(project);
+  const resolvedDataRoot = await resolvePlanCacheDataRoot(cpbRoot, projectId, { dataRoot, hubRoot });
+  const sourceContextRecord = recordValue(sourceContext);
+  const identity = parentPlanCacheIdentity({ project, task, sourceContext: sourceContextRecord });
+  const file = parentPlanRecordPath(cpbRoot, projectId, identity.planCacheKey, { dataRoot: resolvedDataRoot });
+  const cached = recordValue(await readParentPlanRecord(cpbRoot, projectId, identity.planCacheKey, { dataRoot: resolvedDataRoot }));
 
-  const explicitPlanId = explicitParentPlanId(sourceContext);
+  const explicitPlanId = explicitParentPlanId(sourceContextRecord);
   const planId = cached?.parentPlanId || cached?.planId || explicitPlanId || null;
   const planArtifact = cached?.planArtifact || (planId ? `plan-${planId}` : null);
-  const artifactPath = planArtifact ? planArtifactPath(cpbRoot, project, planArtifact, { dataRoot: resolvedDataRoot }) : null;
+  const artifactPath = planArtifact ? planArtifactPath(cpbRoot, projectId, String(planArtifact), { dataRoot: resolvedDataRoot }) : null;
   const cacheHit = Boolean(planId && artifactPath && await artifactExists(artifactPath));
 
   return {
     schemaVersion: 1,
     source: "parent_plan_cache",
-    project,
+    project: projectId,
     dataRoot: resolvedDataRoot,
     task,
     ...identity,
@@ -245,7 +270,7 @@ export async function resolveParentPlanCache(cpbRoot: string, { project, task, s
     parentPlanId: cacheHit ? planId : null,
     reusedPlanId: cacheHit ? planId : null,
     reusedPlanArtifact: cacheHit ? planArtifact : null,
-    mergedPlanIds: cacheHit ? [...new Set([planId, ...(cached?.mergedPlanIds || [])])] : [],
+    mergedPlanIds: cacheHit ? [...new Set([String(planId), ...stringArray(cached.mergedPlanIds)])] : [],
     stale: Boolean(cached && !cacheHit),
     cachedAt: cached?.updatedAt || null,
   };
@@ -262,10 +287,11 @@ export async function writeParentPlanCache(cpbRoot: string, {
   planId,
   planArtifact = null,
   mergedPlanIds = [],
-}: AnyRecord = {}) {
+}: LooseRecord = {}) {
   if (!project) throw new Error("project is required");
   if (!planId) throw new Error("planId is required");
-  const resolvedDataRoot = await resolvePlanCacheDataRoot(cpbRoot, project, { dataRoot, hubRoot });
+  const projectId = stringValue(project);
+  const resolvedDataRoot = await resolvePlanCacheDataRoot(cpbRoot, projectId, { dataRoot, hubRoot });
   const identity = planCacheKey && planGroupId
     ? { planGroupId, planCacheKey, payload: stableParentPlanPayload({ project, task, sourceContext }) }
     : parentPlanCacheIdentity({ project, task, sourceContext });
@@ -273,19 +299,19 @@ export async function writeParentPlanCache(cpbRoot: string, {
   const record = {
     schemaVersion: 1,
     source: "parent_plan_cache",
-    project,
+    project: projectId,
     task,
     planGroupId: identity.planGroupId,
     planCacheKey: identity.planCacheKey,
     parentPlanId: String(planId),
     planId: String(planId),
     planArtifact: artifact,
-    planArtifactPath: planArtifactPath(cpbRoot, project, artifact, { dataRoot: resolvedDataRoot }),
-    mergedPlanIds: [...new Set([String(planId), ...mergedPlanIds.filter(Boolean).map(String)])],
+    planArtifactPath: planArtifactPath(cpbRoot, projectId, String(artifact), { dataRoot: resolvedDataRoot }),
+    mergedPlanIds: [...new Set([String(planId), ...stringArray(mergedPlanIds)])],
     payload: identity.payload,
     updatedAt: new Date().toISOString(),
   };
-  const stored = await writeParentPlanRecord(cpbRoot, project, identity.planCacheKey, record, { dataRoot: resolvedDataRoot });
+  const stored = await writeParentPlanRecord(cpbRoot, projectId, String(identity.planCacheKey), record, { dataRoot: resolvedDataRoot });
   return {
     ...stored,
     dataRoot: resolvedDataRoot,
@@ -297,13 +323,14 @@ export async function writeParentPlanCache(cpbRoot: string, {
   };
 }
 
-function parentPlanHitResult(identity: AnyRecord, { source, planId, artifact, parentJobId = null, cachedAt = null }: AnyRecord) {
+function parentPlanHitResult(identity: LooseRecord, { source, planId, artifact, parentJobId = null, cachedAt = null }: LooseRecord) {
+  const payload = recordValue(identity.payload);
   return {
     schemaVersion: 2,
     cacheHit: true,
     source,
-    project: identity.payload.project,
-    task: identity.payload.task,
+    project: payload.project,
+    task: payload.task,
     ...identity,
     parentPlanId: planId,
     reusedPlanId: planId,
@@ -315,13 +342,14 @@ function parentPlanHitResult(identity: AnyRecord, { source, planId, artifact, pa
   };
 }
 
-function parentPlanMissResult(identity: AnyRecord, stale = false, cachedAt: string | null = null): AnyRecord {
+function parentPlanMissResult(identity: LooseRecord, stale = false, cachedAt: string | null = null): LooseRecord {
+  const payload = recordValue(identity.payload);
   return {
     schemaVersion: 2,
     cacheHit: false,
     source: null,
-    project: identity.payload.project,
-    task: identity.payload.task,
+    project: payload.project,
+    task: payload.task,
     ...identity,
     parentPlanId: null,
     reusedPlanId: null,
@@ -333,28 +361,30 @@ function parentPlanMissResult(identity: AnyRecord, stale = false, cachedAt: stri
   };
 }
 
-async function findParentPlanJobIndexHit(cpbRoot: string, project: string, { sourceContext, task, dataRoot }: AnyRecord = {}) {
+async function findParentPlanJobIndexHit(cpbRoot: string, project: string, { sourceContext, task, dataRoot }: LooseRecord = {}) {
   const allJobs = await listJobsFromIndex(cpbRoot, { dataRoot });
   const cutoff = Date.now() - PARENT_PLAN_MAX_AGE_MS;
-  const candidates = (allJobs as AnyRecord[])
+  const context = recordValue(sourceContext);
+  const jobs = Array.isArray(allJobs) ? allJobs.map(recordValue) : [];
+  const candidates = jobs
     .filter((job) => job.project === project)
-    .filter((job) => job.completedPhases?.includes("plan"))
-    .filter((job) => job.artifacts?.plan)
+    .filter((job) => stringArray(job.completedPhases).includes("plan"))
+    .filter((job) => recordValue(job.artifacts).plan)
     .filter((job) => job.status !== "cancelled")
     .filter((job) => {
       const updatedAt = new Date(job.updatedAt || job.createdAt).getTime();
       return !Number.isNaN(updatedAt) && updatedAt >= cutoff;
     })
-    .sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
+    .sort((a, b) => String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? "")));
 
   if (candidates.length === 0) return null;
 
-  const issueNumber = sourceContext?.issueNumber;
+  const issueNumber = context.issueNumber;
   if (issueNumber) {
     for (const job of candidates) {
-      const jobIssue = job.sourceContext?.issueNumber;
+      const jobIssue = recordValue(job.sourceContext).issueNumber;
       if (jobIssue && String(jobIssue) === String(issueNumber)) {
-        const planId = job.artifacts.plan.replace(/^plan-/, "");
+        const planId = String(recordValue(job.artifacts).plan).replace(/^plan-/, "");
         if (await planFileExists(cpbRoot, project, planId, { dataRoot })) {
           return { planId, parentJobId: job.jobId, source: "same_issue" };
         }
@@ -363,9 +393,9 @@ async function findParentPlanJobIndexHit(cpbRoot: string, project: string, { sou
   }
 
   for (const job of candidates) {
-    const overlap = wordOverlap(task || "", job.task || "");
+    const overlap = wordOverlap(String(task || ""), String(job.task || ""));
     if (overlap >= 0.5) {
-      const planId = job.artifacts.plan.replace(/^plan-/, "");
+      const planId = String(recordValue(job.artifacts).plan).replace(/^plan-/, "");
       if (await planFileExists(cpbRoot, project, planId, { dataRoot })) {
         return { planId, parentJobId: job.jobId, source: "task_overlap" };
       }
@@ -375,34 +405,36 @@ async function findParentPlanJobIndexHit(cpbRoot: string, project: string, { sou
   return null;
 }
 
-export async function resolveParentPlan(cpbRoot: string, { project, task, sourceContext = {}, dataRoot, hubRoot }: AnyRecord = {}) {
+export async function resolveParentPlan(cpbRoot: string, { project, task, sourceContext = {}, dataRoot, hubRoot }: LooseRecord = {}) {
   if (!project) throw new Error("project is required");
-  const resolvedDataRoot = await resolvePlanCacheDataRoot(cpbRoot, project, { dataRoot, hubRoot });
-  const identity = parentPlanCacheIdentity({ project, task, sourceContext });
+  const projectId = stringValue(project);
+  const resolvedDataRoot = await resolvePlanCacheDataRoot(cpbRoot, projectId, { dataRoot, hubRoot });
+  const sourceContextRecord = recordValue(sourceContext);
+  const identity = parentPlanCacheIdentity({ project, task, sourceContext: sourceContextRecord });
 
-  const explicitPlanId = explicitParentPlanId(sourceContext);
+  const explicitPlanId = explicitParentPlanId(sourceContextRecord);
   if (explicitPlanId) {
     const artifact = `plan-${explicitPlanId}`;
-    if (await planFileExists(cpbRoot, project, explicitPlanId, { dataRoot: resolvedDataRoot })) {
+    if (await planFileExists(cpbRoot, projectId, explicitPlanId, { dataRoot: resolvedDataRoot })) {
       return parentPlanHitResult(identity, { source: "explicit", planId: explicitPlanId, artifact });
     }
   }
 
-  const cached = await readParentPlanRecord(cpbRoot, project, identity.planCacheKey, { dataRoot: resolvedDataRoot });
+  const cached = recordValue(await readParentPlanRecord(cpbRoot, projectId, identity.planCacheKey, { dataRoot: resolvedDataRoot }));
   const cachedPlanId = cached?.parentPlanId || cached?.planId || null;
   if (cachedPlanId) {
     const artifact = cached?.planArtifact || `plan-${cachedPlanId}`;
-    if (await planFileExists(cpbRoot, project, cachedPlanId, { dataRoot: resolvedDataRoot })) {
+    if (await planFileExists(cpbRoot, projectId, String(cachedPlanId), { dataRoot: resolvedDataRoot })) {
       return parentPlanHitResult(identity, {
         source: "cache",
-        planId: cachedPlanId,
-        artifact,
-        cachedAt: cached?.updatedAt || null,
+        planId: String(cachedPlanId),
+        artifact: String(artifact),
+        cachedAt: cached?.updatedAt ? String(cached.updatedAt) : null,
       });
     }
   }
 
-  const indexHit = await findParentPlanJobIndexHit(cpbRoot, project, { sourceContext, task, dataRoot: resolvedDataRoot });
+  const indexHit = await findParentPlanJobIndexHit(cpbRoot, projectId, { sourceContext, task, dataRoot: resolvedDataRoot });
   if (indexHit) {
     const artifact = `plan-${indexHit.planId}`;
     return parentPlanHitResult(identity, {
@@ -413,13 +445,13 @@ export async function resolveParentPlan(cpbRoot: string, { project, task, source
     });
   }
 
-  return parentPlanMissResult(identity, Boolean(cached), cached?.updatedAt || null);
+  return parentPlanMissResult(identity, Boolean(cached), cached?.updatedAt ? String(cached.updatedAt) : null);
 }
 
-function runChild(command: string, args: string[], cwd: string, options: AnyRecord = {}): Promise<RunChildResult> {
+function runChild(command: string, args: string[], cwd: string, options: RunChildOptions = {}): Promise<RunChildResult> {
   return new Promise((resolve) => {
     let settled = false;
-    const stdoutChunks: Buffer[] = [];
+    const stdout = new BoundedOutput(subprocessOutputMaxBytes(process.env.CPB_SUBPROCESS_OUTPUT_MAX_BYTES));
 
     function finish(result: RunChildResult) {
       if (settled) return;
@@ -440,33 +472,36 @@ function runChild(command: string, args: string[], cwd: string, options: AnyReco
     }
 
     child.stdout.on("data", (chunk) => {
-      stdoutChunks.push(chunk);
+      stdout.append(chunk);
       if (options.onOutput) options.onOutput(chunk.toString("utf8"));
     });
     child.stderr.on("data", (chunk) => {
       process.stderr.write(chunk);
     });
-    child.on("error", (err) => finish({ exitCode: 1, stdout: "", error: err }));
+    child.on("error", (err) => finish({ exitCode: 1, stdout: stdout.toString(), outputTruncated: stdout.truncated, error: err }));
     child.on("close", (code) => {
-      const stdout = Buffer.concat(stdoutChunks).toString("utf8");
-      finish({ exitCode: code ?? 1, stdout });
+      finish({ exitCode: code ?? 1, stdout: stdout.toString(), outputTruncated: stdout.truncated });
     });
   });
 }
 
-export async function dispatchPhase(cpbRoot: string, { project, jobId, phase, script, scriptArgs, executorRoot, env }: AnyRecord = {}) {
-  const validation = await validatePhaseInputs(cpbRoot, project, jobId, phase);
+export async function dispatchPhase(cpbRoot: string, { project, jobId, phase, script, scriptArgs, executorRoot, env }: LooseRecord = {}) {
+  const projectId = stringValue(project);
+  const job = stringValue(jobId);
+  const phaseName = stringValue(phase);
+  const scriptPath = stringValue(script);
+  const validation = await validatePhaseInputs(cpbRoot, projectId, job, phaseName);
   if (!validation.valid) {
     return { exitCode: 1, error: new Error(validation.errors.join("; ")), envelope: null };
   }
 
-  const locator = await buildLocator(cpbRoot, project, jobId, { phase, executorRoot });
+  const locator = await buildLocator(cpbRoot, projectId, job, { phase: phaseName, executorRoot });
   const envelope = locatorEnvelope(locator);
 
-  const resolvedExecutorRoot = executorRoot ? path.resolve(executorRoot) : path.resolve(cpbRoot);
-  const bridgeScript = path.isAbsolute(script)
-    ? script
-    : path.join(resolvedExecutorRoot, script);
+  const resolvedExecutorRoot = executorRoot ? path.resolve(stringValue(executorRoot)) : path.resolve(cpbRoot);
+  const bridgeScript = path.isAbsolute(scriptPath)
+    ? scriptPath
+    : path.join(resolvedExecutorRoot, scriptPath);
 
   const jobRunner = path.resolve(resolvedExecutorRoot, "bridges", "job-runner.js");
   if (!await fileExists(jobRunner)) {
@@ -480,15 +515,21 @@ export async function dispatchPhase(cpbRoot: string, { project, jobId, phase, sc
   const runnerArgs = [
     jobRunner,
     "--cpb-root", cpbRoot,
-    "--project", project,
-    "--job-id", jobId,
-    "--phase", phase,
+    "--project", projectId,
+    "--job-id", job,
+    "--phase", phaseName,
     "--script", bridgeScript,
     "--",
-    ...(scriptArgs || []),
+    ...stringArray(scriptArgs),
   ];
 
-  const result = await runChild("node", runnerArgs, cpbRoot, { env: env || process.env });
+  const runnerEnv = { ...processEnv(env) };
+  const hubRoot = runnerEnv.CPB_HUB_ROOT;
+  if (hubRoot && !runnerEnv.CPB_HUB_STATE_REDIS_CONFIG_FILE) {
+    const pinnedConfig = await pinnedHubRedisConfigFile(hubRoot);
+    if (pinnedConfig) runnerEnv.CPB_HUB_STATE_REDIS_CONFIG_FILE = pinnedConfig;
+  }
+  const result = await runChild("node", runnerArgs, cpbRoot, { env: runnerEnv });
 
   return {
     exitCode: result.exitCode,
@@ -498,18 +539,18 @@ export async function dispatchPhase(cpbRoot: string, { project, jobId, phase, sc
   };
 }
 
-export async function runPhase(cpbRoot: string, options: AnyRecord) {
+export async function runPhase(cpbRoot: string, options: LooseRecord) {
   return dispatchPhase(cpbRoot, options);
 }
 
-export async function runPhaseFromLocator(locator: AnyRecord, script: string, scriptArgs: string[]) {
-  const result = await dispatchPhase(locator.cpbRoot, {
-    project: locator.project,
-    jobId: locator.jobId,
-    phase: locator.phase,
+export async function runPhaseFromLocator(locator: LooseRecord, script: string, scriptArgs: string[]) {
+  const result = await dispatchPhase(stringValue(locator.cpbRoot), {
+    project: stringValue(locator.project),
+    jobId: stringValue(locator.jobId),
+    phase: stringValue(locator.phase),
     script,
     scriptArgs,
-    executorRoot: locator.executorRoot,
+    executorRoot: stringValue(locator.executorRoot),
   });
 
   return {

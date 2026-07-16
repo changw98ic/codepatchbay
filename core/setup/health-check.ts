@@ -1,7 +1,10 @@
+import { recordValue, type LooseRecord } from "../../shared/types.js";
 import { getSetupAgent } from "./agent-catalog.js";
 import { normalizeCommandProbe } from "./detect.js";
 
 const SCHEMA_VERSION = 1;
+
+type RunCommand = (command: string, args: string[]) => Promise<LooseRecord>;
 
 function splitCommand(commandLine: string) {
   const parts = String(commandLine || "").trim().split(/\s+/).filter(Boolean);
@@ -19,11 +22,12 @@ async function defaultRunCommand(command: string, args: string[] = []) {
     });
     return { ok: true, stdout: result.stdout || "", stderr: result.stderr || "" };
   } catch (error) {
-    return { ok: false, stdout: error.stdout || "", stderr: error.stderr || "", error };
+    const err = recordValue(error);
+    return { ok: false, stdout: err.stdout || "", stderr: err.stderr || "", error };
   }
 }
 
-function asAgent(agentOrId: unknown): Record<string, any> {
+function asAgent(agentOrId: unknown): LooseRecord {
   if (typeof agentOrId === "string") {
     const agent = getSetupAgent(agentOrId);
     if (!agent) throw new Error(`Unknown setup agent: ${agentOrId}`);
@@ -32,7 +36,7 @@ function asAgent(agentOrId: unknown): Record<string, any> {
   if (!agentOrId || typeof agentOrId !== "object") {
     throw new Error("checkSetupAgentHealth requires an agent id or manifest");
   }
-  return agentOrId;
+  return recordValue(agentOrId);
 }
 
 function skippedCheck(reason: string) {
@@ -45,7 +49,7 @@ function skippedCheck(reason: string) {
   };
 }
 
-function okOrProbe(result: Record<string, any>) {
+function okOrProbe(result: LooseRecord) {
   const probe = normalizeCommandProbe(result);
   if (probe.status === "installed") {
     return { ...probe, status: "ok" };
@@ -53,25 +57,29 @@ function okOrProbe(result: Record<string, any>) {
   return probe;
 }
 
-function overallStatus(checks: Record<string, Record<string, any>>): string {
+function overallStatus(checks: Record<string, LooseRecord>): string {
   if (checks.binary.status !== "installed") return "missing";
   const blocking = [checks.auth, checks.adapter].some((check) => !["ok", "skipped"].includes(check.status));
   return blocking ? "degraded" : "ready";
 }
 
-export async function checkSetupAgentHealth(agentOrId: unknown, { runCommand = defaultRunCommand }: Record<string, any> = {}) {
+export async function checkSetupAgentHealth(agentOrId: unknown, { runCommand = defaultRunCommand }: LooseRecord = {}) {
   const agent = asAgent(agentOrId);
-  const binary = normalizeCommandProbe(await runCommand(agent.binary, ["--version"]));
+  const commandRunner = typeof runCommand === "function" ? runCommand as RunCommand : defaultRunCommand;
+  const binaryName = typeof agent.binary === "string" ? agent.binary : "";
+  const binary = normalizeCommandProbe(await commandRunner(binaryName, ["--version"]));
 
-  let auth: Record<string, any> = skippedCheck("agent manifest does not define auth.statusCommand");
-  if (agent.auth?.statusCommand) {
-    const parsed = splitCommand(agent.auth.statusCommand);
-    auth = okOrProbe(await runCommand(parsed.command, parsed.args));
+  let auth: LooseRecord = skippedCheck("agent manifest does not define auth.statusCommand");
+  const authConfig = recordValue(agent.auth);
+  if (authConfig.statusCommand) {
+    const parsed = splitCommand(String(authConfig.statusCommand));
+    auth = okOrProbe(await commandRunner(parsed.command, parsed.args));
   }
 
-  let adapter: Record<string, any> = skippedCheck("agent manifest does not define adapter.command");
-  if (agent.adapter?.command) {
-    adapter = okOrProbe(await runCommand(agent.adapter.command, ["--help"]));
+  let adapter: LooseRecord = skippedCheck("agent manifest does not define adapter.command");
+  const adapterConfig = recordValue(agent.adapter);
+  if (adapterConfig.command) {
+    adapter = okOrProbe(await commandRunner(String(adapterConfig.command), ["--help"]));
   }
 
   const checks = { binary, auth, adapter };
@@ -80,7 +88,7 @@ export async function checkSetupAgentHealth(agentOrId: unknown, { runCommand = d
     agent: {
       id: agent.id,
       displayName: agent.displayName,
-      binary: agent.binary,
+      binary: binaryName,
     },
     status: overallStatus(checks),
     checks,

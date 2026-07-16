@@ -2,7 +2,99 @@
 import { execSync } from "node:child_process";
 import { mkdir, readFile, writeFile, rename, stat } from "node:fs/promises";
 import path from "node:path";
+import type { LooseRecord } from "../../../core/contracts/types.js";
 import { listJobs } from "../job/job-store.js";
+
+type EvolveIssue = LooseRecord & {
+  id?: string;
+  project?: string;
+  description?: string;
+  sourcePath?: string;
+  priority?: string;
+  status?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  claimedAt?: string;
+  detail?: LooseRecord;
+};
+
+type EvolveOptions = LooseRecord & {
+  allowlist?: string[];
+  requireCleanWorktree?: boolean;
+  availableAgents?: string[];
+  dataRoot?: string;
+  projectRuntimeRoot?: string;
+  hubRoot?: string;
+  repoRoot?: string;
+  baseRef?: string;
+  candidate?: string;
+};
+
+type CandidatePayload = LooseRecord & {
+  title?: string;
+  body?: string;
+  labels?: string[];
+};
+
+type CandidateRecord = LooseRecord & {
+  id?: string;
+  source?: string;
+  payload?: CandidatePayload;
+};
+
+type EvolveJob = LooseRecord & {
+  trigger?: string;
+  sourceContext?: { type?: string };
+  createdAt?: string;
+  status?: string;
+};
+
+type MergeFileEntry = {
+  file: string;
+  classification: string;
+};
+
+type MergeSummary = {
+  entries: MergeFileEntry[];
+  counts: Record<string, number>;
+};
+
+type CommandError = {
+  stdout?: unknown;
+  stderr?: unknown;
+  message?: unknown;
+  code?: unknown;
+};
+
+type EvolveState = LooseRecord & {
+  knownGoodCommit?: string | null;
+  round?: number;
+  status?: string;
+  enabled?: boolean;
+  updatedAt?: string | number | null;
+};
+
+type CompletionResult = LooseRecord & {
+  ok?: boolean;
+  code?: number | null;
+  error?: unknown;
+};
+
+function isRecord(value: unknown): value is LooseRecord {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isEvolveIssue(value: unknown): value is EvolveIssue {
+  return isRecord(value);
+}
+
+function toIssueList(value: unknown): EvolveIssue[] {
+  return Array.isArray(value) ? value.filter(isEvolveIssue) : [];
+}
+
+function commandError(value: unknown): CommandError {
+  return isRecord(value) ? value : {};
+}
 
 const HIGH_RISK_PATTERNS = [
   { pattern: /\b(?:secret|api[_-]?key|password|token|credential)\b/i, reason: "involves secrets or credentials" },
@@ -15,7 +107,7 @@ const HIGH_RISK_PATTERNS = [
 /**
  * Check whether an issue passes all guarded-run policy checks.
  */
-export function checkPolicy(issue: Record<string, any>, opts: Record<string, any> = {}) {
+export function checkPolicy(issue: EvolveIssue, opts: EvolveOptions = {}) {
   const reasons = [];
   const allowlist = opts.allowlist || [];
   const requireCleanWorktree = opts.requireCleanWorktree !== false;
@@ -102,7 +194,7 @@ const RISKY_CATEGORIES = [
 const DEFAULT_DAILY_LIMIT = 10;
 const DEFAULT_CONSECUTIVE_FAILURE_LIMIT = 3;
 
-function classifyCategory(payload: Record<string, any>) {
+function classifyCategory(payload: CandidatePayload) {
   const title = (payload.title || "").toLowerCase();
   const body = (payload.body || "").toLowerCase();
   const labels = (payload.labels || []).map((l: string) => l.toLowerCase());
@@ -142,7 +234,7 @@ function recommendAgent(category: string, _availableAgents: string[]) {
 /**
  * Evaluate a candidate event and produce a task recommendation.
  */
-export async function evaluateCandidate(cpbRoot: string, candidate: Record<string, any>, { availableAgents = [] }: { availableAgents?: string[] } = {}) {
+export async function evaluateCandidate(cpbRoot: string, candidate: CandidateRecord | null | undefined, { availableAgents = [] }: { availableAgents?: string[] } = {}) {
   if (!candidate || !candidate.payload) return null;
 
   const category = classifyCategory(candidate.payload);
@@ -168,8 +260,11 @@ export async function evaluateCandidate(cpbRoot: string, candidate: Record<strin
 /**
  * Scan pending candidates and evaluate them for task generation.
  */
-export async function scanCandidates(cpbRoot: string, { availableAgents = [], ...rootOptions }: Record<string, any> = {}) {
-  const pending = await listCandidates(cpbRoot, { status: "pending", ...rootOptions });
+export async function scanCandidates(cpbRoot: string, { availableAgents = [], ...rootOptions }: EvolveOptions = {}) {
+  const pending = await listCandidates(cpbRoot, {
+    status: "pending",
+    source: typeof rootOptions.source === "string" ? rootOptions.source : undefined,
+  });
 
   const results = [];
   for (const candidate of pending) {
@@ -185,7 +280,7 @@ export async function scanCandidates(cpbRoot: string, { availableAgents = [], ..
 /**
  * Check if proactive mode is enabled and within budget.
  */
-export async function checkProactiveBudget(cpbRoot: string, options: Record<string, any> = {}) {
+export async function checkProactiveBudget(cpbRoot: string, options: EvolveOptions = {}) {
   const enabled = process.env.CPB_PROACTIVE === "1";
   if (!enabled) {
     return { allowed: false, reason: "proactive disabled (CPB_PROACTIVE not set to 1)" };
@@ -197,7 +292,7 @@ export async function checkProactiveBudget(cpbRoot: string, options: Record<stri
   const jobs = await listJobs(cpbRoot, { hubRoot: options.hubRoot });
   const windowMs = 24 * 60 * 60 * 1000;
   const cutoff = Date.now() - windowMs;
-  const windowProactive = jobs.filter((j: Record<string, any>) => {
+  const windowProactive = jobs.filter((j: EvolveJob) => {
     if (j.trigger !== "proactive" && j.sourceContext?.type !== "proactive") return false;
     const ts = j.createdAt ? new Date(j.createdAt).getTime() : 0;
     return ts > cutoff;
@@ -219,7 +314,7 @@ export async function checkProactiveBudget(cpbRoot: string, options: Record<stri
   return { allowed: true, remaining: dailyLimit - windowProactive.length };
 }
 
-function buildTaskDescription(candidate: Record<string, any>) {
+function buildTaskDescription(candidate: CandidateRecord) {
   const parts = [`Source: ${candidate.source}`];
   if (candidate.payload.title) parts.push(`Title: ${candidate.payload.title}`);
   if (candidate.payload.body) parts.push(candidate.payload.body.slice(0, 500));
@@ -268,8 +363,9 @@ function splitLines(value: string | null | undefined) {
     .filter(Boolean);
 }
 
-function gitError(args: string[], err: Record<string, any>) {
-  const details = String(err?.stderr || err?.stdout || err?.message || "").trim();
+function gitError(args: string[], err: unknown) {
+  const commandErr = commandError(err);
+  const details = String(commandErr.stderr || commandErr.stdout || commandErr.message || "").trim();
   return new Error(`git ${args.join(" ")} failed${details ? `: ${details}` : ""}`);
 }
 
@@ -286,10 +382,11 @@ async function runGit(cwd: string, args: string[], { allowFailure = false } = {}
     };
   } catch (err) {
     if (!allowFailure) throw gitError(args, err);
+    const commandErr = commandError(err);
     return {
-      stdout: err?.stdout || "",
-      stderr: err?.stderr || err?.message || "",
-      exitCode: Number.isInteger(err?.code) ? err.code : 1,
+      stdout: String(commandErr.stdout || ""),
+      stderr: String(commandErr.stderr || commandErr.message || ""),
+      exitCode: typeof commandErr.code === "number" && Number.isInteger(commandErr.code) ? commandErr.code : 1,
     };
   }
 }
@@ -379,7 +476,7 @@ async function resolveCandidateCommit(repoRoot: string, candidate: string) {
   throw new Error(`candidate is not a git ref or worktree: ${candidate}`);
 }
 
-function abortReasonsForSummary(changedSummary: Record<string, any>, conflictSummary: Record<string, any>, mergeStatus: string) {
+function abortReasonsForSummary(changedSummary: MergeSummary, conflictSummary: MergeSummary, mergeStatus: string) {
   const reasons = [];
 
   if (changedSummary.counts[MERGE_CLASSIFICATION.SHARED_STATE] > 0) {
@@ -387,8 +484,8 @@ function abortReasonsForSummary(changedSummary: Record<string, any>, conflictSum
       code: "shared_state_changed",
       message: "candidate changes CPB/shared-state files; merge steward must not touch them",
       files: changedSummary.entries
-        .filter((entry: Record<string, any>) => entry.classification === MERGE_CLASSIFICATION.SHARED_STATE)
-        .map((entry: Record<string, any>) => entry.file),
+        .filter((entry) => entry.classification === MERGE_CLASSIFICATION.SHARED_STATE)
+        .map((entry) => entry.file),
     });
   }
 
@@ -397,8 +494,8 @@ function abortReasonsForSummary(changedSummary: Record<string, any>, conflictSum
       code: "needs_human_changed",
       message: "candidate changes governance/config/schema files that need human review",
       files: changedSummary.entries
-        .filter((entry: Record<string, any>) => entry.classification === MERGE_CLASSIFICATION.NEEDS_HUMAN)
-        .map((entry: Record<string, any>) => entry.file),
+        .filter((entry) => entry.classification === MERGE_CLASSIFICATION.NEEDS_HUMAN)
+        .map((entry) => entry.file),
     });
   }
 
@@ -413,7 +510,7 @@ function abortReasonsForSummary(changedSummary: Record<string, any>, conflictSum
   return reasons;
 }
 
-export async function previewMerge({ repoRoot = process.cwd(), baseRef = "HEAD", candidate }: Record<string, any> = {}) {
+export async function previewMerge({ repoRoot = process.cwd(), baseRef = "HEAD", candidate }: EvolveOptions = {}) {
   if (!candidate) throw new Error("candidate is required");
 
   const canonicalRepoRoot = await realpath(path.resolve(repoRoot));
@@ -506,7 +603,7 @@ async function nextId(dir: string, prefix: string) {
       acquired = true;
       break;
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+      if (!isErrnoException(err) || err.code !== "EEXIST") throw err;
       await new Promise((r) => setTimeout(r, 100));
     }
   }
@@ -536,7 +633,7 @@ async function logAppend(wikiDir: string, msg: string) {
       acquired = true;
       break;
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+      if (!isErrnoException(err) || err.code !== "EEXIST") throw err;
       await new Promise((r) => setTimeout(r, 50));
     }
   }
@@ -709,19 +806,25 @@ export async function runResearch({ project, task, executorRoot, cpbRoot }: { pr
 const EVOLVE_LOCK_TTL_MS = 30_000;
 const SAFE_PROJECT = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
 
+function isErrnoException(err: unknown): err is NodeJS.ErrnoException {
+  if (err === null || typeof err !== "object") return false;
+  const candidate = err as LooseRecord;
+  return typeof candidate.code === "string";
+}
+
 function assertProject(project: string) {
   if (!SAFE_PROJECT.test(project || "")) {
     throw new Error(`invalid project name: ${project}`);
   }
 }
 
-export function evolveDir(projectRoot: string, project: string, options: Record<string, any> = {}) {
+export function evolveDir(projectRoot: string, project: string, options: EvolveOptions = {}) {
   assertProject(project);
   const dataRoot = options.dataRoot || options.projectRuntimeRoot;
   return path.join(path.resolve(dataRoot || path.join(projectRoot, "cpb-task")), "evolve", project);
 }
 
-function statePath(projectRoot: string, project: string, file: string, options: Record<string, any> = {}) {
+function statePath(projectRoot: string, project: string, file: string, options: EvolveOptions = {}) {
   return path.join(evolveDir(projectRoot, project, options), file);
 }
 
@@ -730,7 +833,7 @@ async function readJSON(filePath: string, fallback: unknown) {
     const raw = await readFile(filePath, "utf8");
     return JSON.parse(raw);
   } catch (err) {
-    if (err && (err as NodeJS.ErrnoException).code === "ENOENT") return fallback;
+    if (isErrnoException(err) && err.code === "ENOENT") return fallback;
     return fallback;
   }
 }
@@ -742,32 +845,33 @@ async function writeAtomic(filePath: string, content: string) {
   await rename(tmp, filePath);
 }
 
-export async function loadProjectState(projectRoot: string, project: string, options: Record<string, any> = {}) {
-  return readJSON(statePath(projectRoot, project, "state.json", options), {
+export async function loadProjectState(projectRoot: string, project: string, options: EvolveOptions = {}): Promise<EvolveState> {
+  const state = await readJSON(statePath(projectRoot, project, "state.json", options), {
     knownGoodCommit: null,
     round: 0,
     status: "idle",
     enabled: true,
     updatedAt: null,
   });
+  return isRecord(state) ? state : {};
 }
 
-export async function saveProjectState(projectRoot: string, project: string, state: Record<string, any>, options: Record<string, any> = {}) {
+export async function saveProjectState(projectRoot: string, project: string, state: EvolveState, options: EvolveOptions = {}) {
   const next = { ...state, updatedAt: new Date().toISOString() };
   await writeAtomic(statePath(projectRoot, project, "state.json", options), `${JSON.stringify(next, null, 2)}\n`);
   return next;
 }
 
-export async function loadBacklog(projectRoot: string, project: string, options: Record<string, any> = {}) {
-  return readJSON(statePath(projectRoot, project, "backlog.json", options), []);
+export async function loadBacklog(projectRoot: string, project: string, options: EvolveOptions = {}) {
+  return toIssueList(await readJSON(statePath(projectRoot, project, "backlog.json", options), []));
 }
 
-export async function saveBacklog(projectRoot: string, project: string, backlog: Record<string, any>[], options: Record<string, any> = {}) {
+export async function saveBacklog(projectRoot: string, project: string, backlog: EvolveIssue[], options: EvolveOptions = {}) {
   await writeAtomic(statePath(projectRoot, project, "backlog.json", options), `${JSON.stringify(backlog, null, 2)}\n`);
   return backlog;
 }
 
-async function withBacklogLock<T>(projectRoot: string, project: string, callback: () => Promise<T>, options: Record<string, any> = {}): Promise<T> {
+async function withBacklogLock<T>(projectRoot: string, project: string, callback: () => Promise<T>, options: EvolveOptions = {}): Promise<T> {
   const lockDir = statePath(projectRoot, project, "backlog.json.lock", options);
   await mkdir(path.dirname(lockDir), { recursive: true });
   let acquired = false;
@@ -777,7 +881,7 @@ async function withBacklogLock<T>(projectRoot: string, project: string, callback
       acquired = true;
       break;
     } catch (err) {
-      if (!err || (err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+      if (!isErrnoException(err) || err.code !== "EEXIST") throw err;
       try {
         const info = await stat(lockDir);
         if (Date.now() - info.mtimeMs >= EVOLVE_LOCK_TTL_MS) {
@@ -798,11 +902,11 @@ async function withBacklogLock<T>(projectRoot: string, project: string, callback
   }
 }
 
-function issueKeyFn2(issue: Record<string, any>) {
+function issueKeyFn2(issue: EvolveIssue) {
   return issue.id || issue.description;
 }
 
-export async function pushIssues(projectRoot: string, project: string, issues: Record<string, any>[], options: Record<string, any> = {}) {
+export async function pushIssues(projectRoot: string, project: string, issues: EvolveIssue[], options: EvolveOptions = {}) {
   return withBacklogLock(projectRoot, project, async () => {
     const backlog = await loadBacklog(projectRoot, project, options);
     const existing = new Set(backlog.map(issueKeyFn2));
@@ -832,11 +936,11 @@ function priorityScore(priority: string) {
   return 3;
 }
 
-export async function popIssue(projectRoot: string, project: string, options: Record<string, any> = {}) {
+export async function popIssue(projectRoot: string, project: string, options: EvolveOptions = {}) {
   return withBacklogLock(projectRoot, project, async () => {
     const backlog = await loadBacklog(projectRoot, project, options);
-    const pending = backlog.filter((issue: Record<string, any>) => issue.status === "pending");
-    pending.sort((a: Record<string, any>, b: Record<string, any>) => priorityScore(a.priority) - priorityScore(b.priority));
+    const pending = backlog.filter((issue) => issue.status === "pending");
+    pending.sort((a, b) => priorityScore(a.priority) - priorityScore(b.priority));
     const issue = pending[0] || null;
     if (!issue) return null;
     issue.status = "in_progress";
@@ -846,15 +950,15 @@ export async function popIssue(projectRoot: string, project: string, options: Re
   }, options);
 }
 
-function matchesIssue(issue: Record<string, any>, identity: string) {
+function matchesIssue(issue: EvolveIssue, identity: string) {
   return Boolean(identity)
     && (issue.id === identity || issue.description === identity || issueKeyFn2(issue) === identity);
 }
 
-export async function updateIssueStatus(projectRoot: string, project: string, identity: string, status: string, detail: Record<string, any> = {}, options: Record<string, any> = {}) {
+export async function updateIssueStatus(projectRoot: string, project: string, identity: string, status: string, detail: LooseRecord = {}, options: EvolveOptions = {}) {
   return withBacklogLock(projectRoot, project, async () => {
     const backlog = await loadBacklog(projectRoot, project, options);
-    const issue = backlog.find((item: Record<string, any>) => matchesIssue(item, identity));
+    const issue = backlog.find((item) => matchesIssue(item, identity));
     if (!issue) return null;
     issue.status = status;
     issue.updatedAt = new Date().toISOString();
@@ -866,10 +970,10 @@ export async function updateIssueStatus(projectRoot: string, project: string, id
   }, options);
 }
 
-export async function claimIssue(projectRoot: string, project: string, identity: string, options: Record<string, any> = {}) {
+export async function claimIssue(projectRoot: string, project: string, identity: string, options: EvolveOptions = {}) {
   return withBacklogLock(projectRoot, project, async () => {
     const backlog = await loadBacklog(projectRoot, project, options);
-    const issue = backlog.find((item: Record<string, any>) => matchesIssue(item, identity) && item.status === "pending");
+    const issue = backlog.find((item) => matchesIssue(item, identity) && item.status === "pending");
     if (!issue) return null;
     issue.status = "in_progress";
     issue.claimedAt = new Date().toISOString();
@@ -879,7 +983,7 @@ export async function claimIssue(projectRoot: string, project: string, identity:
   }, options);
 }
 
-export async function completeIssue(projectRoot: any, project: any, identity: any, result: Record<string, any> = {}, options: Record<string, any> = {}) {
+export async function completeIssue(projectRoot: string, project: string, identity: string, result: CompletionResult = {}, options: EvolveOptions = {}) {
   const status = result.ok ? "completed" : "failed";
   return updateIssueStatus(projectRoot, project, identity, status, {
     exitCode: result.code ?? null,
@@ -888,7 +992,7 @@ export async function completeIssue(projectRoot: any, project: any, identity: an
   }, options);
 }
 
-export async function appendHistory(projectRoot: string, project: string, entry: Record<string, any>, options: Record<string, any> = {}) {
+export async function appendHistory(projectRoot: string, project: string, entry: LooseRecord, options: EvolveOptions = {}) {
   await mkdir(evolveDir(projectRoot, project, options), { recursive: true });
   const filePath = statePath(projectRoot, project, "history.jsonl", options);
   const line = JSON.stringify({ ...entry, project, timestamp: new Date().toISOString() }) + "\n";
@@ -899,7 +1003,7 @@ export async function loadGlobalConfig(hubRoot: string) {
   return readJSON(path.join(path.resolve(hubRoot), "evolve", "global", "config.json"), { projects: {} });
 }
 
-export async function saveGlobalConfig(hubRoot: string, config: Record<string, any>) {
+export async function saveGlobalConfig(hubRoot: string, config: LooseRecord) {
   const filePath = path.join(path.resolve(hubRoot), "evolve", "global", "config.json");
   await writeAtomic(filePath, `${JSON.stringify(config, null, 2)}\n`);
   return config;

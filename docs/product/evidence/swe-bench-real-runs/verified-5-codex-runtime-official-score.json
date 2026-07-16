@@ -1,0 +1,243 @@
+{
+  "schemaVersion": 1,
+  "validationMode": "swe-bench-verified-official-docker-score-codex-runtime-5",
+  "scoredAt": "2026-07-06T16:08:54.877Z",
+  "batch": {
+    "manifest": ".omx/swebench-ladder/20260706-verified-5-codex-runtime-232055/manifest.json",
+    "originalReport": ".omx/swebench-ladder/20260706-verified-5-codex-runtime-232055/swebench-batch-report.json",
+    "scoredReport": ".omx/swebench-ladder/20260706-verified-5-codex-runtime-232055/swebench-batch-report.scored.json",
+    "terminalStates": {
+      "failed": 5
+    },
+    "providerPreflightOk": true,
+    "runtimeFailureSummary": "CPB verifier phase failed through Codex backend request errors; official source-only scorer evidence is recorded separately and does not overwrite CPB phase status."
+  },
+  "harness": {
+    "package": "swebench",
+    "dataset": "SWE-bench/SWE-bench_Verified",
+    "split": "test",
+    "maxWorkers": 1,
+    "timeoutSeconds": 1800,
+    "forceRebuild": false,
+    "cacheLevel": "instance",
+    "clean": false,
+    "runId": "cpb-verified-5-codex-20260706-source-only",
+    "command": "python -m swebench.harness.run_evaluation --dataset_name SWE-bench/SWE-bench_Verified --split test --instance_ids django__django-13343 django__django-13346 django__django-13363 django__django-13401 --predictions_path .omx/swebench-ladder/20260706-official-scorer-verified-5-codex-runtime/prediction.jsonl --max_workers 1 --timeout 1800 --force_rebuild False --cache_level instance --clean False --run_id cpb-verified-5-codex-20260706-source-only --report_dir .omx/swebench-ladder/20260706-official-scorer-verified-5-codex-runtime/report"
+  },
+  "predictionBuild": {
+    "predictionsPath": ".omx/swebench-ladder/20260706-official-scorer-verified-5-codex-runtime/prediction.jsonl",
+    "sourcePatchManifest": ".omx/swebench-ladder/20260706-official-scorer-verified-5-codex-runtime/source-patch-manifest.json",
+    "sourceOnly": true,
+    "excludedInstances": [
+      {
+        "instanceId": "django__django-13344",
+        "reason": "CPB produced only a test diff, so no source-only official prediction was submitted.",
+        "scoredReportExemptionReason": "source_patch_absent"
+      }
+    ]
+  },
+  "officialReport": {
+    "aggregateReport": ".omx/swebench-ladder/20260706-official-scorer-verified-5-codex-runtime/aggregate-report.json",
+    "summaryPath": ".omx/swebench-ladder/20260706-official-scorer-verified-5-codex-runtime/official-score-summary.json",
+    "totals": {
+      "total_instances": 4,
+      "submitted_instances": 4,
+      "completed_instances": 4,
+      "resolved_instances": 4,
+      "unresolved_instances": 0,
+      "empty_patch_instances": 0,
+      "error_instances": 0
+    },
+    "resolvedIds": [
+      "django__django-13343",
+      "django__django-13346",
+      "django__django-13363",
+      "django__django-13401"
+    ],
+    "unresolvedIds": [],
+    "errorIds": []
+  },
+  "scoredReportSummary": {
+    "sourcePatchJobs": 4,
+    "scorerRequired": 4,
+    "scorerCompleted": 4,
+    "scorerResolved": 4,
+    "scorerUnresolved": 0,
+    "scorerFailed": 0,
+    "scorerExempted": 1,
+    "validation": {
+      "valid": true,
+      "violations": []
+    }
+  },
+  "samples": [
+    {
+      "instanceId": "django__django-13343",
+      "repository": "django/django",
+      "baseCommit": "ece18207cbb64dd89014e279ac636a6c9829828e",
+      "datasetRowRef": "https://datasets-server.huggingface.co/rows?dataset=SWE-bench%2FSWE-bench_Verified&config=default&split=test&offset=107&length=1",
+      "problemStatementSha256": "e105d6198bfcc19f652eb3f7d9a0fc8243ada3b8492de1688b31b3e4b43a1153",
+      "sourcePatch": {
+        "path": ".omx/swebench-ladder/20260706-official-scorer-verified-5-codex-runtime/patches/django__django-13343.patch",
+        "bytes": 1350,
+        "sha256": "86ee255638696a16428e9a331178ee62bf88adc08a8dbeb50f369549b27a9c23",
+        "sourceOnly": true
+      },
+      "cpbRuntime": {
+        "terminalStatus": "failed",
+        "failureKind": "agent_exit_nonzero",
+        "changedFiles": [
+          "django/db/models/fields/files.py",
+          "tests/file_storage/tests.py"
+        ],
+        "patchKind": "source_patch",
+        "sourceChangedFiles": [
+          "django/db/models/fields/files.py"
+        ]
+      },
+      "officialResult": {
+        "resolved": true,
+        "patchSuccessfullyApplied": true,
+        "failToPass": {
+          "success": 1,
+          "failure": 0
+        },
+        "passToPass": {
+          "success": 130,
+          "failure": 0
+        }
+      },
+      "artifacts": {
+        "officialReport": "logs/run_evaluation/cpb-verified-5-codex-20260706-source-only/codepatchbay-codex-real-run/django__django-13343/report.json",
+        "testOutput": "logs/run_evaluation/cpb-verified-5-codex-20260706-source-only/codepatchbay-codex-real-run/django__django-13343/test_output.txt",
+        "officialPatch": "logs/run_evaluation/cpb-verified-5-codex-20260706-source-only/codepatchbay-codex-real-run/django__django-13343/patch.diff"
+      }
+    },
+    {
+      "instanceId": "django__django-13346",
+      "repository": "django/django",
+      "baseCommit": "9c92924cd5d164701e2514e1c2d6574126bd7cc2",
+      "datasetRowRef": "https://datasets-server.huggingface.co/rows?dataset=SWE-bench%2FSWE-bench_Verified&config=default&split=test&offset=109&length=1",
+      "problemStatementSha256": "3cb764082e21011777c787f5ecf6688762b6f899a8b1f4ef1fab404245dc227c",
+      "sourcePatch": {
+        "path": ".omx/swebench-ladder/20260706-official-scorer-verified-5-codex-runtime/patches/django__django-13346.patch",
+        "bytes": 1709,
+        "sha256": "a488e51e8a4f6c28fecbe9945be383526302b530ac427840dadf9c986a8ecc5d",
+        "sourceOnly": true
+      },
+      "cpbRuntime": {
+        "terminalStatus": "failed",
+        "failureKind": "swebench_execute_no_edit_progress",
+        "changedFiles": [
+          "django/db/models/fields/json.py",
+          "tests/model_fields/test_jsonfield.py"
+        ],
+        "patchKind": "source_patch",
+        "sourceChangedFiles": [
+          "django/db/models/fields/json.py"
+        ]
+      },
+      "officialResult": {
+        "resolved": true,
+        "patchSuccessfullyApplied": true,
+        "failToPass": {
+          "success": 2,
+          "failure": 0
+        },
+        "passToPass": {
+          "success": 65,
+          "failure": 0
+        }
+      },
+      "artifacts": {
+        "officialReport": "logs/run_evaluation/cpb-verified-5-codex-20260706-source-only/codepatchbay-codex-real-run/django__django-13346/report.json",
+        "testOutput": "logs/run_evaluation/cpb-verified-5-codex-20260706-source-only/codepatchbay-codex-real-run/django__django-13346/test_output.txt",
+        "officialPatch": "logs/run_evaluation/cpb-verified-5-codex-20260706-source-only/codepatchbay-codex-real-run/django__django-13346/patch.diff"
+      }
+    },
+    {
+      "instanceId": "django__django-13363",
+      "repository": "django/django",
+      "baseCommit": "76e0151ea0e0f56dca66cee846a78b89346d2c4c",
+      "datasetRowRef": "https://datasets-server.huggingface.co/rows?dataset=SWE-bench%2FSWE-bench_Verified&config=default&split=test&offset=110&length=1",
+      "problemStatementSha256": "097d83cb362b6f57378d29dc14641c115abeeb3aabfa8bf57ed92f2da0b790ea",
+      "sourcePatch": {
+        "path": ".omx/swebench-ladder/20260706-official-scorer-verified-5-codex-runtime/patches/django__django-13363.patch",
+        "bytes": 1055,
+        "sha256": "8a2204a6fff551af9bf5ac350bcfb727e28f6385961fcc0c239585ce695ef65e",
+        "sourceOnly": true
+      },
+      "cpbRuntime": {
+        "terminalStatus": "failed",
+        "failureKind": "swebench_execute_no_edit_progress",
+        "changedFiles": [
+          "django/db/models/functions/datetime.py",
+          "tests/db_functions/datetime/test_extract_trunc.py"
+        ],
+        "patchKind": "source_patch",
+        "sourceChangedFiles": [
+          "django/db/models/functions/datetime.py"
+        ]
+      },
+      "officialResult": {
+        "resolved": true,
+        "patchSuccessfullyApplied": true,
+        "failToPass": {
+          "success": 1,
+          "failure": 0
+        },
+        "passToPass": {
+          "success": 76,
+          "failure": 0
+        }
+      },
+      "artifacts": {
+        "officialReport": "logs/run_evaluation/cpb-verified-5-codex-20260706-source-only/codepatchbay-codex-real-run/django__django-13363/report.json",
+        "testOutput": "logs/run_evaluation/cpb-verified-5-codex-20260706-source-only/codepatchbay-codex-real-run/django__django-13363/test_output.txt",
+        "officialPatch": "logs/run_evaluation/cpb-verified-5-codex-20260706-source-only/codepatchbay-codex-real-run/django__django-13363/patch.diff"
+      }
+    },
+    {
+      "instanceId": "django__django-13401",
+      "repository": "django/django",
+      "baseCommit": "453967477e3ddae704cd739eac2449c0e13d464c",
+      "datasetRowRef": "https://datasets-server.huggingface.co/rows?dataset=SWE-bench%2FSWE-bench_Verified&config=default&split=test&offset=111&length=1",
+      "problemStatementSha256": "07a5d3176edc3678b34a08f4f72789a0f7e0af6a29389b6109c5009e098762a3",
+      "sourcePatch": {
+        "path": ".omx/swebench-ladder/20260706-official-scorer-verified-5-codex-runtime/patches/django__django-13401.patch",
+        "bytes": 1721,
+        "sha256": "ea6506de18917420b28c5a248549ed4be8f33f0d16e56e0e5bcacd81d35fb24f",
+        "sourceOnly": true
+      },
+      "cpbRuntime": {
+        "terminalStatus": "failed",
+        "failureKind": "swebench_execute_no_edit_progress",
+        "changedFiles": [
+          "django/db/models/fields/__init__.py",
+          "tests/model_fields/tests.py"
+        ],
+        "patchKind": "source_patch",
+        "sourceChangedFiles": [
+          "django/db/models/fields/__init__.py"
+        ]
+      },
+      "officialResult": {
+        "resolved": true,
+        "patchSuccessfullyApplied": true,
+        "failToPass": {
+          "success": 1,
+          "failure": 0
+        },
+        "passToPass": {
+          "success": 32,
+          "failure": 0
+        }
+      },
+      "artifacts": {
+        "officialReport": "logs/run_evaluation/cpb-verified-5-codex-20260706-source-only/codepatchbay-codex-real-run/django__django-13401/report.json",
+        "testOutput": "logs/run_evaluation/cpb-verified-5-codex-20260706-source-only/codepatchbay-codex-real-run/django__django-13401/test_output.txt",
+        "officialPatch": "logs/run_evaluation/cpb-verified-5-codex-20260706-source-only/codepatchbay-codex-real-run/django__django-13401/patch.diff"
+      }
+    }
+  ]
+}

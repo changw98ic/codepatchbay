@@ -67,7 +67,7 @@ export async function listRuntimeDataRoots(cpbRoot: string, { hubRoot, includeHu
 
 // ── runtime-health ──
 import { readFile } from "node:fs/promises";
-import { AnyRecord } from "../../shared/types.js";
+import { recordValue, type LooseRecord } from "../../shared/types.js";
 import { inspectCurrentRelease } from "./release/release-store.js";
 import { loadQueue } from "./hub/hub-queue.js";
 import { readLeaderStatus } from "../orchestrator/leader-lock.js";
@@ -75,7 +75,7 @@ import { readJobsIndex } from "./job/job-store.js";
 import { listEventFiles, materializeJob, readEventsReadOnly } from "./event/event-store.js";
 import { readLease, isLeaseStale } from "./infra.js";
 
-type RuntimeJob = AnyRecord & {
+type RuntimeJob = LooseRecord & {
   jobId?: string;
   project?: string;
   status?: string;
@@ -87,7 +87,7 @@ type RuntimeJob = AnyRecord & {
 
 const TERMINAL_JOB_STATUSES = new Set(["completed", "failed", "blocked", "cancelled"]);
 
-async function probeValue(probes: AnyRecord, key: string, fallback: () => any) {
+async function probeValue(probes: LooseRecord, key: string, fallback: () => any) {
   if (Object.prototype.hasOwnProperty.call(probes, key)) {
     const value = probes[key];
     return typeof value === "function" ? await value() : value;
@@ -123,7 +123,7 @@ async function readActiveRelease(env: NodeJS.ProcessEnv) {
   };
 }
 
-function countQueueBlockers(entries: AnyRecord[]) {
+function countQueueBlockers(entries: LooseRecord[]) {
   const counts = {
     codegraph_unavailable: 0,
     agent_rate_limited: 0,
@@ -204,7 +204,7 @@ async function findStaleJobs(cpbRoot: string, hubRoot: string) {
 
   for (const root of roots) {
     const index = await readJobsIndex(cpbRoot, runtimeOpts(root.dataRoot));
-    const jobs = Object.values((index as AnyRecord)?.jobs || {}) as RuntimeJob[];
+    const jobs = Object.values((index as LooseRecord)?.jobs || {}) as RuntimeJob[];
     for (const job of jobs) {
       if (!job?.jobId || TERMINAL_JOB_STATUSES.has(job.status)) continue;
       if (!job.leaseId) {
@@ -229,14 +229,14 @@ async function findStaleJobs(cpbRoot: string, hubRoot: string) {
   return stale;
 }
 
-function hasPriorDivergence(history: AnyRecord[], count: number) {
+function hasPriorDivergence(history: LooseRecord[], count: number) {
   return (history || []).some((entry) => {
-    const prior = entry?.jobsIndexDivergence;
-    return prior && prior.count > 0 && count > 0;
+    const prior = recordValue(entry?.jobsIndexDivergence);
+    return Number(prior.count) > 0 && count > 0;
   });
 }
 
-function hasFailedReconcileEvidence(evidence: AnyRecord | AnyRecord[] | null, count: number) {
+function hasFailedReconcileEvidence(evidence: LooseRecord | LooseRecord[] | null, count: number) {
   if (!evidence || count <= 0) return false;
   if (Array.isArray(evidence)) {
     return evidence.some((entry) => hasFailedReconcileEvidence(entry, count));
@@ -244,9 +244,17 @@ function hasFailedReconcileEvidence(evidence: AnyRecord | AnyRecord[] | null, co
   return evidence.attempted === true && evidence.success === false;
 }
 
-export function classifyJobsIndexDivergence(count: number, { history = [], reconcileEvidence = null }: Record<string, any> = {}) {
+export function classifyJobsIndexDivergence(count: number, { history = [], reconcileEvidence = null }: LooseRecord = {}) {
+  const historyEntries = Array.isArray(history)
+    ? history.filter((entry): entry is LooseRecord => entry !== null && typeof entry === "object" && !Array.isArray(entry))
+    : [];
+  const evidence: LooseRecord | LooseRecord[] | null = Array.isArray(reconcileEvidence)
+    ? reconcileEvidence.filter((entry): entry is LooseRecord => entry !== null && typeof entry === "object" && !Array.isArray(entry))
+    : reconcileEvidence !== null && typeof reconcileEvidence === "object" && !Array.isArray(reconcileEvidence)
+    ? recordValue(reconcileEvidence)
+    : null;
   if (count <= 0) return "ok";
-  if (hasPriorDivergence(history, count) || hasFailedReconcileEvidence(reconcileEvidence, count)) {
+  if (hasPriorDivergence(historyEntries, count) || hasFailedReconcileEvidence(evidence, count)) {
     return "blocker";
   }
   return "warning";

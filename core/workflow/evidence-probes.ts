@@ -1,4 +1,4 @@
-import { AnyRecord } from "../../shared/types.js";
+import { recordValue, type LooseRecord } from "../../shared/types.js";
 
 /**
  * Evidence observation validation result.
@@ -34,7 +34,7 @@ function text(value: unknown) {
  * { checklistId, verificationMethod, predicateId, result: "pass" } — is rejected
  * because the method-specific fields are missing.
  */
-export function validateEvidenceObservation(entry: AnyRecord, checklistItem: AnyRecord, { attemptId, finalWorktree }: AnyRecord = {}): EvidenceValidation {
+export function validateEvidenceObservation(entry: LooseRecord, checklistItem: LooseRecord, { attemptId, finalWorktree }: LooseRecord = {}): EvidenceValidation {
   if (!entry || typeof entry !== "object") return INVALID;
   if (text(attemptId) && text(entry.attemptId) !== text(attemptId)) return INVALID;
 
@@ -100,7 +100,7 @@ function wrap(ok: boolean): EvidenceValidation {
  *   required for valid — the record must say where it ran — but is not a
  *   pass/fail signal on its own.
  */
-function validateCommandObservation(entry: AnyRecord): EvidenceValidation {
+function validateCommandObservation(entry: LooseRecord): EvidenceValidation {
   const hasCommand = text(entry.command);
   const hasIntegerExitCode = Number.isInteger(entry.exitCode);
   const hasDigest = text(entry.stdoutSha256) || text(entry.stderrSha256) || text(entry.parsedOutputDigest);
@@ -116,11 +116,12 @@ function validateCommandObservation(entry: AnyRecord): EvidenceValidation {
  * additionally requires matchCount > 0 (the observation actually proves the
  * item). matchCount:0 → { valid: true, satisfied: false }.
  */
-function validateStaticObservation(entry: AnyRecord): EvidenceValidation {
+function validateStaticObservation(entry: LooseRecord): EvidenceValidation {
   const hasQueryId = text(entry.queryId);
-  const hasIntegerMatchCount = Number.isInteger(entry.matchCount);
+  const matchCount = typeof entry.matchCount === "number" && Number.isInteger(entry.matchCount) ? entry.matchCount : null;
+  const hasIntegerMatchCount = matchCount !== null;
   const valid = Boolean(hasQueryId && hasIntegerMatchCount);
-  const satisfied = Boolean(valid && entry.matchCount > 0);
+  const satisfied = Boolean(hasQueryId && matchCount !== null && matchCount > 0);
   return { valid, satisfied };
 }
 
@@ -130,7 +131,7 @@ function validateStaticObservation(entry: AnyRecord): EvidenceValidation {
  * (payloadMatcher + matchedValue) so a self-attested "I observed an event of
  * type X" is recorded honestly as not-satisfied rather than silently passing.
  */
-function validateRuntimeEventObservation(entry: AnyRecord): EvidenceValidation {
+function validateRuntimeEventObservation(entry: LooseRecord): EvidenceValidation {
   const valid = Boolean(
     text(entry.eventType)
     && (text(entry.eventId) || text(entry.observedAt) || text(entry.ts))
@@ -150,7 +151,7 @@ function validateRuntimeEventObservation(entry: AnyRecord): EvidenceValidation {
  * attemptId; satisfied = valid plus a POSITIVE payload matcher
  * (payloadMatcher + matchedValue).
  */
-function validateArtifactEventObservation(entry: AnyRecord): EvidenceValidation {
+function validateArtifactEventObservation(entry: LooseRecord): EvidenceValidation {
   const valid = Boolean(
     (text(entry.artifactKind) || text(entry.eventType))
     && (text(entry.artifactHash) || text(entry.path) || text(entry.artifactId))
@@ -175,7 +176,7 @@ function validateArtifactEventObservation(entry: AnyRecord): EvidenceValidation 
  * only self-attest "I exported section X" with no proof of content, which is
  * recordable (valid) but not satisfying.
  */
-function validateAuditExportObservation(entry: AnyRecord): EvidenceValidation {
+function validateAuditExportObservation(entry: LooseRecord): EvidenceValidation {
   const valid = Boolean(
     (text(entry.exportId) || text(entry.invocationId) || text(entry.probeId))
     && text(entry.sectionPath)
@@ -191,7 +192,7 @@ function validateAuditExportObservation(entry: AnyRecord): EvidenceValidation {
  * (payloadMatcher + matchedValue) so a self-attested "DAG node N fired" is
  * recorded honestly as not-satisfied rather than silently passing.
  */
-function validateDagEventObservation(entry: AnyRecord): EvidenceValidation {
+function validateDagEventObservation(entry: LooseRecord): EvidenceValidation {
   const valid = Boolean(
     (text(entry.nodeId) || text(entry.dagNodeId))
     && (text(entry.eventType) || text(entry.artifactKind) || text(entry.probeId))
@@ -212,7 +213,7 @@ function validateDagEventObservation(entry: AnyRecord): EvidenceValidation {
  * (payloadMatcher + matchedValue) so a self-attested "worker W transitioned" is
  * recorded honestly as not-satisfied rather than silently passing.
  */
-function validateWorkerLifecycleObservation(entry: AnyRecord): EvidenceValidation {
+function validateWorkerLifecycleObservation(entry: LooseRecord): EvidenceValidation {
   const valid = Boolean(
     (text(entry.assignmentId) || text(entry.workerId))
     && (text(entry.eventType) || text(entry.lifecycleEvent) || text(entry.probeId))
@@ -244,7 +245,7 @@ function validateWorkerLifecycleObservation(entry: AnyRecord): EvidenceValidatio
  *   { valid: true, satisfied: false } (recordable but not proven), matching
  *   spec's "self-attested approval fields are not enough".
  */
-function validateManualObservation(entry: AnyRecord, checklistItem: AnyRecord): EvidenceValidation {
+function validateManualObservation(entry: LooseRecord, checklistItem: LooseRecord): EvidenceValidation {
   const valid = Boolean(
     text(entry.approver)
     && (text(entry.approvedAt) || text(entry.ts))
@@ -272,11 +273,12 @@ function validateManualObservation(entry: AnyRecord, checklistItem: AnyRecord): 
  *   RAN and returned empty, not just a flag. valid-without-signature →
  *   { valid: true, satisfied: false }.
  */
-function validateAbsenceCheckObservation(entry: AnyRecord): EvidenceValidation {
+function validateAbsenceCheckObservation(entry: LooseRecord): EvidenceValidation {
+  const queryWindow = recordValue(entry.queryWindow);
   const valid = Boolean(
     entry.absence === true
-    && text(entry.queryWindow?.from)
-    && text(entry.queryWindow?.to)
+    && text(queryWindow.from)
+    && text(queryWindow.to)
     && Array.isArray(entry.eventTypes)
     && text(entry.attemptId),
   );
@@ -294,14 +296,16 @@ function validateAbsenceCheckObservation(entry: AnyRecord): EvidenceValidation {
  * SECONDARY SOURCE: explicit hard-gate checks that already carry checklistId,
  * predicateId, and probeId. These are merged in — deduplicated by checklistId.
  */
-export function buildEvidenceProbePlan({ acceptanceChecklist, hardGateChecks = [], attemptId }: AnyRecord) {
-  const probes: AnyRecord[] = [];
-  const probeByChecklistId = new Map<string, AnyRecord>();
+export function buildEvidenceProbePlan({ acceptanceChecklist, hardGateChecks = [], attemptId }: LooseRecord) {
+  const probes: LooseRecord[] = [];
+  const probeByChecklistId = new Map<string, LooseRecord>();
   const seenExplicitChecklistIds = new Set<string>();
+  const checklist = recordValue(acceptanceChecklist);
 
   // Primary: generate probes from acceptance checklist items
-  const items = Array.isArray(acceptanceChecklist?.items) ? acceptanceChecklist.items : [];
-  for (const item of items) {
+  const items = Array.isArray(checklist.items) ? checklist.items : [];
+  for (const itemValue of items) {
+    const item = recordValue(itemValue);
     const checklistId = text(item.id);
     const predicateId = text(item.predicateId);
     if (!checklistId || !predicateId) continue;
@@ -327,7 +331,9 @@ export function buildEvidenceProbePlan({ acceptanceChecklist, hardGateChecks = [
   // gate), so when its checklistId was already added by primary we UPGRADE
   // that probe's observation/emitFailedClaim in place rather than dropping it.
   // Duplicate explicit checks (same checklistId) are deduped — first wins.
-  for (const check of hardGateChecks) {
+  const explicitChecks = Array.isArray(hardGateChecks) ? hardGateChecks : [];
+  for (const checkValue of explicitChecks) {
+    const check = recordValue(checkValue);
     const checklistId = text(check.checklistId);
     const predicateId = text(check.predicateId);
     const probeId = text(check.probeId);
@@ -337,24 +343,26 @@ export function buildEvidenceProbePlan({ acceptanceChecklist, hardGateChecks = [
 
     const existing = probeByChecklistId.get(checklistId);
     if (existing) {
-      existing.observation = check.observation || check;
+      const observation = recordValue(check.observation || check);
+      existing.observation = observation;
       // Defensive re-stamp: the secondary observation may have been rebuilt
       // from a bare `check` object lacking attemptId. Re-assert it so no
       // probe observation can lose attemptId (the validateEvidenceObservation
       // gate requires it when attemptId is non-empty).
-      if (text(attemptId)) existing.observation.attemptId = existing.observation.attemptId ?? attemptId;
+      if (text(attemptId)) observation.attemptId = observation.attemptId ?? attemptId;
       if (check.emitFailedClaim === true) existing.emitFailedClaim = true;
       continue;
     }
 
+    const observation = recordValue(check.observation || check);
     const probe = {
       checklistId,
       predicateId,
       probeId,
-      observation: check.observation || check,
+      observation,
       emitFailedClaim: check.emitFailedClaim === true,
     };
-    if (text(attemptId)) probe.observation.attemptId = probe.observation.attemptId ?? attemptId;
+    if (text(attemptId)) observation.attemptId = observation.attemptId ?? attemptId;
     probeByChecklistId.set(checklistId, probe);
     probes.push(probe);
   }
@@ -370,7 +378,7 @@ export function buildEvidenceProbePlan({ acceptanceChecklist, hardGateChecks = [
  * Build a method-specific probe for a checklist item.
  * Returns a probe definition that can be used to generate evidence claims.
  */
-export function buildProbeForMethod(checklistItem: AnyRecord, observation: AnyRecord, probeId: string) {
+export function buildProbeForMethod(checklistItem: LooseRecord, observation: LooseRecord, probeId: string) {
   return {
     checklistId: checklistItem.id,
     predicateId: checklistItem.predicateId,

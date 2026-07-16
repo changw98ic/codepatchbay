@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "validationMode": "swe-bench-official-docker-score",
+  "scoredAt": "2026-06-25T00:48:43Z",
+  "harness": {
+    "package": "swebench",
+    "version": "4.1.0",
+    "command": "python -m swebench.harness.run_evaluation --dataset_name SWE-bench/SWE-bench_Verified --split test --instance_ids django__django-13128 --predictions_path /tmp/cpb-swebench-score-django-13128/prediction.jsonl --max_workers 1 --timeout 1800 --force_rebuild False --cache_level instance --clean False --run_id cpb-django-13128-20260625-emptyhome --report_dir /tmp/cpb-swebench-score-django-13128",
+    "environmentWorkaround": "HOME=/tmp/cpb-empty-home DOCKER_CONFIG=/tmp/cpb-empty-docker-config was required because the default Docker Desktop credsStore=desktop helper hung during Python SDK image pulls."
+  },
+  "docker": {
+    "serverVersion": "28.3.3",
+    "serverArchitecture": "linux/arm64",
+    "instanceImage": "swebench/sweb.eval.x86_64.django_1776_django-13128:latest",
+    "runId": "cpb-django-13128-20260625-emptyhome"
+  },
+  "prediction": {
+    "instanceId": "django__django-13128",
+    "dataset": "SWE-bench/SWE-bench_Verified",
+    "split": "test",
+    "modelNameOrPath": "codepatchbay-codex-real-run",
+    "patchSha256": "d2581419dadca357d4ff93deeda33d643fbe2840084266e6eca357d90485a8dd",
+    "predictionPath": "/tmp/cpb-swebench-score-django-13128/prediction.jsonl",
+    "patchPath": "/tmp/cpb-swebench-score-django-13128/model.patch"
+  },
+  "result": {
+    "totalInstances": 1,
+    "submittedInstances": 1,
+    "completedInstances": 1,
+    "resolvedInstances": 1,
+    "unresolvedInstances": 0,
+    "emptyPatchInstances": 0,
+    "errorInstances": 0,
+    "resolvedIds": [
+      "django__django-13128"
+    ],
+    "patchSuccessfullyApplied": true,
+    "resolved": true,
+    "failToPass": {
+      "success": 7,
+      "failure": 0,
+      "tests": [
+        "test_date_case_subtraction (expressions.tests.FTimeDeltaTests)",
+        "test_date_subquery_subtraction (expressions.tests.FTimeDeltaTests)",
+        "test_date_subtraction (expressions.tests.FTimeDeltaTests)",
+        "test_datetime_subquery_subtraction (expressions.tests.FTimeDeltaTests)",
+        "test_datetime_subtraction_microseconds (expressions.tests.FTimeDeltaTests)",
+        "test_time_subquery_subtraction (expressions.tests.FTimeDeltaTests)",
+        "test_time_subtraction (expressions.tests.FTimeDeltaTests)"
+      ]
+    },
+    "passToPass": {
+      "success": 134,
+      "failure": 0
+    }
+  },
+  "artifacts": {
+    "finalReport": "/tmp/cpb-swebench-score-django-13128/codepatchbay-codex-real-run.cpb-django-13128-20260625-emptyhome.json",
+    "instanceReport": "/tmp/cpb-swebench-score-django-13128/logs/run_evaluation/cpb-django-13128-20260625-emptyhome/codepatchbay-codex-real-run/django__django-13128/report.json",
+    "runInstanceLog": "/tmp/cpb-swebench-score-django-13128/logs/run_evaluation/cpb-django-13128-20260625-emptyhome/codepatchbay-codex-real-run/django__django-13128/run_instance.log",
+    "testOutput": "/tmp/cpb-swebench-score-django-13128/logs/run_evaluation/cpb-django-13128-20260625-emptyhome/codepatchbay-codex-real-run/django__django-13128/test_output.txt"
+  }
+}

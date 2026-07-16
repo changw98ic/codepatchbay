@@ -1,6 +1,6 @@
 import type { PhaseResult } from "../../shared/types.js";
 
-type LooseRecord = Record<string, unknown>;
+import { recordValue, type LooseRecord } from "../contracts/types.js";
 
 type RuntimeArtifact = {
   kind?: unknown;
@@ -33,13 +33,13 @@ type EmitDiagnosticArtifactEventsInput = {
   now?: () => string;
 };
 
-function recordValue(value: unknown): LooseRecord {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as LooseRecord : {};
-}
-
 function artifactValue(value: unknown): RuntimeArtifact | null {
   const record = recordValue(value);
   return record.kind && record.name ? record : null;
+}
+
+function stringOrNull(value: unknown): string | null {
+  return value === undefined || value === null ? null : String(value);
 }
 
 function isRuntimeArtifact(value: RuntimeArtifact | null): value is RuntimeArtifact {
@@ -61,10 +61,10 @@ export async function writeRuntimeArtifactEvent({
     jobId,
     project,
     phase,
-    kind: artifact.kind,
-    artifactKind: artifact.kind,
-    artifact: artifact.name,
-    artifactId: artifact.id,
+    kind: stringOrNull(artifact.kind),
+    artifactKind: stringOrNull(artifact.kind),
+    artifact: stringOrNull(artifact.name),
+    artifactId: stringOrNull(artifact.id),
     attemptId: attemptId || null,
     sha256: artifact.sha256 || null,
     ts: now(),

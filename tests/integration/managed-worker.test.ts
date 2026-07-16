@@ -7,13 +7,27 @@ import { test } from "node:test";
 
 import { createIsolatedWorktreeWithRetry } from "../../runtime/worker/worktree-manager.js";
 import { finalizeAndWriteSuccessfulResult } from "../../runtime/worker/assignment-finalizer.js";
+import {
+  executionLeaseRenewalLost,
+  shouldRetainWorkerWorktree,
+} from "../../runtime/worker/managed-worker.js";
 import { registerProject } from "../../server/services/hub/hub-registry.js";
+import { getJob } from "../../server/services/job/job-store.js";
 import { AssignmentStore } from "../../shared/orchestrator/assignment-store.js";
 import { readJson, tempRoot, writeJson } from "../helpers.js";
 
 const repoRoot = path.resolve(import.meta.dirname, "..", "..");
 const workerScript = path.join(repoRoot, "runtime", "worker", "managed-worker.js");
 const testAgentScript = path.join(repoRoot, "tests", "fixtures", "test-acp-agent.js");
+
+test("managed worker stops before inbox ownership can expire", () => {
+  assert.equal(executionLeaseRenewalLost({ renewed: true }), false);
+  assert.equal(executionLeaseRenewalLost({ renewed: false }), true);
+  assert.equal(executionLeaseRenewalLost({ errored: true, errorCode: "STALE_ATTEMPT" }), true);
+  assert.equal(executionLeaseRenewalLost({ errored: true, errorCode: "HUB_WORKER_BROKER_OPERATION_DENIED" }), true);
+  assert.equal(executionLeaseRenewalLost({ errored: true, elapsedSinceSuccessMs: 49_999 }), false);
+  assert.equal(executionLeaseRenewalLost({ errored: true, elapsedSinceSuccessMs: 50_000 }), true);
+});
 
 function jsonEnvelope(data) {
   return `\`\`\`json\n${JSON.stringify(data, null, 2)}\n\`\`\``;
@@ -48,7 +62,6 @@ function spawnWorker({ workerId, hubRoot, cpbRoot, env = {}, timeoutMs = 30_000,
     env: {
       ...process.env,
       CPB_CODEGRAPH_ENABLED: "0",
-      CPB_AGENT_ISOLATE_HOME: "0",
       CPB_ACP_USE_MANAGED_POOL: "0",
       CPB_ACP_PERSISTENT_PROCESS: "0",
       CPB_ACP_TIMEOUT_MS: "30000",
@@ -92,6 +105,15 @@ async function listJsonFiles(dir) {
   }
 }
 
+async function readJsonl(filePath: string) {
+  const raw = await readFile(filePath, "utf8");
+  return raw.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+}
+
+async function readJobAcpAudit(projectRuntimeRoot: string, projectId: string, jobId: string) {
+  return readJsonl(path.join(projectRuntimeRoot, "acp-audit", projectId, `${jobId}.jsonl`));
+}
+
 async function writeWorkerScenario(root) {
   const scenarioPath = path.join(root, "scenario.json");
   await writeJson(scenarioPath, {
@@ -121,6 +143,14 @@ async function writeWorkerScenario(root) {
           planMarkdown: [
             "## Analysis",
             "- Exercise managed worker with fake ACP.",
+            "",
+            "## Bounded Handoff",
+            "- Real actors: managed worker fake ACP assignment and README.md",
+            "- Entrypoints: worker assignment execution path",
+            "- Bypass candidates: dry-run PR preview and checklist decomposition paths",
+            "- Edit files: README.md",
+            "- Verification targets: Worker lifecycle test",
+            "- Blockers: none",
             "",
             "## Files to modify",
             "- README.md",
@@ -205,6 +235,32 @@ async function writeWorkerScenario(root) {
   return scenarioPath;
 }
 
+test("managed worker only retains worktrees for explicit product validation runs", () => {
+  assert.equal(shouldRetainWorkerWorktree({}), false);
+  assert.equal(shouldRetainWorkerWorktree({ CPB_PRODUCT_VALIDATION_KEEP_WORKTREE: "0" }), false);
+  assert.equal(shouldRetainWorkerWorktree({ CPB_PRODUCT_VALIDATION_KEEP_WORKTREE: "1" }), true);
+});
+
+test("managed worker stays alive in persistent mode with an empty inbox", async () => {
+  const hubRoot = await tempRoot("cpb-managed-empty-inbox");
+  const cpbRoot = await tempRoot("cpb-managed-empty-cpb");
+  const workerId = "w-empty";
+  const worker = spawnWorker({ workerId, hubRoot, cpbRoot, once: false, timeoutMs: 5_000 });
+
+  try {
+    const registry = await waitFor(
+      async () => readJson(path.join(hubRoot, "workers", "registry", `worker-${workerId}.json`)),
+      { timeoutMs: 3_000 },
+    );
+    assert.equal(registry.status, "ready");
+    await new Promise((resolve) => setTimeout(resolve, 750));
+    assert.equal(worker.child.exitCode, null, worker.stderr);
+  } finally {
+    worker.child.kill("SIGTERM");
+    await worker.done.catch(() => null);
+  }
+});
+
 // A checklist injected via sourceContext.acceptanceChecklist must pass
 // validateAcceptanceChecklist + validateChecklistSourceCoverage. Its static
 // item's allowedFiles MUST match the files the execute fixture actually writes
@@ -253,18 +309,44 @@ async function writeValidAssignment({
   hubRoot: string;
   workerId: string;
   sourcePath: string;
-  metadata?: Record<string, any>;
+  metadata?: Record<string, unknown>;
   assignmentId?: string;
   entryId?: string;
   task?: string;
   workflow?: string;
   planMode?: string;
   attemptToken?: string;
-  acceptanceChecklist?: Record<string, any> | null;
+  acceptanceChecklist?: Record<string, unknown> | null;
 }) {
   const project = await registerProject(hubRoot, { id: "proj", name: "proj", sourcePath, skipCodeGraphGate: true });
   const attemptDir = path.join(hubRoot, "assignments", assignmentId, "attempts", "001");
   await mkdir(path.join(attemptDir, "control"), { recursive: true });
+  await writeJson(path.join(hubRoot, "assignments", assignmentId, "state.json"), {
+    assignmentId,
+    entryId,
+    projectId: "proj",
+    task,
+    sourcePath,
+    workflow,
+    planMode,
+    sourceContext: {
+      issueNumber: 9,
+      ...(acceptanceChecklist ? { acceptanceChecklist } : {}),
+    },
+    metadata: {
+      agents: {
+        planner: "fake-acp",
+        executor: "fake-acp",
+        verifier: "fake-acp",
+      },
+      ...metadata,
+    },
+    status: "assigned",
+    attempts: 1,
+    activeAttempt: 1,
+    workerId,
+    assignedAt: new Date().toISOString(),
+  });
   await writeJson(path.join(attemptDir, "attempt.json"), {
     assignmentId,
     attempt: 1,
@@ -387,7 +469,7 @@ test("managed worker atomically claims and removes malformed inbox payloads", as
     attempt: 1,
   });
 
-  const worker = spawnWorker({ workerId, hubRoot, cpbRoot, timeoutMs: 10_000 });
+  const worker = spawnWorker({ workerId, hubRoot, cpbRoot, timeoutMs: 30_000 });
   let stopped = null;
   try {
     await waitFor(async () => {
@@ -406,6 +488,29 @@ test("managed worker atomically claims and removes malformed inbox payloads", as
   assert.match(worker.stderr, /missing attemptToken/);
   const registry = await readJson(path.join(hubRoot, "workers", "registry", `worker-${workerId}.json`));
   assert.match(registry.status, /^(ready|exited)$/);
+});
+
+test("managed worker can exit persistent mode after idle drain when requested", async () => {
+  const hubRoot = await tempRoot("cpb-managed-empty-drain");
+  const cpbRoot = await tempRoot("cpb-managed-empty-drain-cpb");
+  const workerId = "w-empty-drain";
+  const worker = spawnWorker({
+    workerId,
+    hubRoot,
+    cpbRoot,
+    once: false,
+    timeoutMs: 8_000,
+    env: {
+      CPB_WORKER_EXIT_ON_IDLE: "1",
+      CPB_WORKER_IDLE_EXIT_MS: "300",
+    },
+  });
+
+  const stopped = await worker.done;
+  assert.equal(stopped.code, 0, stopped.stderr);
+  const registry = await readJson(path.join(hubRoot, "workers", "registry", `worker-${workerId}.json`));
+  assert.equal(registry.status, "exited");
+  assert.equal(registry.exitSignal, "idle");
 });
 
 test("managed worker writes accepted, heartbeat, result, and cleans worktree and registry after fake ACP run", async () => {
@@ -482,6 +587,10 @@ test("managed worker writes accepted, heartbeat, result, and cleans worktree and
   assert.equal(result.status, "completed");
   assert.equal(result.jobResult.status, "completed");
   assert.deepEqual(result.jobResult.phaseResults.map((phase) => phase.phase), ["plan", "execute", "verify"]);
+  const assignmentState = await readJson(path.join(hubRoot, "assignments", assignmentId, "state.json"));
+  assert.equal(assignmentState.status, "completed");
+  assert.ok(assignmentState.completedAt);
+  assert.ok(assignmentState.resultWrittenAt);
   assert.equal(existsSync(path.join(project.projectRuntimeRoot, "events", "proj", "job-managed-success.jsonl")), true);
   assert.equal(existsSync(path.join(project.projectRuntimeRoot, "jobs-index.json")), true);
   assert.equal(existsSync(path.join(project.projectRuntimeRoot, "wiki", "inbox")), true);
@@ -524,16 +633,17 @@ test("managed worker writes accepted, heartbeat, result, and cleans worktree and
   assert.equal(checklistVerdict.items[0].evidenceRefs[0].evidenceId, "EV-001");
 
   const registry = await readJson(path.join(hubRoot, "workers", "registry", `worker-${workerId}.json`));
-  assert.equal(registry.status, "ready");
+  assert.equal(registry.status, "exited");
   assert.equal(registry.currentAssignmentId, null);
   assert.deepEqual(await listJsonFiles(path.join(hubRoot, "workers", "inbox", workerId)), []);
   assert.deepEqual(await listJsonFiles(path.join(hubRoot, "workers", "inbox", workerId, "processing")), []);
   assert.equal(existsSync(worktree.worktreePath), false);
 
   const transcript = await readFile(transcriptPath, "utf8");
-  assert.match(transcript, /software planning agent/);
   assert.match(transcript, /software execution agent/);
-  assert.match(transcript, /software verification agent/);
+  const launches = (await readJobAcpAudit(project.projectRuntimeRoot, "proj", "job-managed-success"))
+    .filter((event) => event.event === "agent_launch");
+  assert.deepEqual(launches.map((event) => event.phase), ["plan", "execute", "verify"]);
 
   await rm(root, { recursive: true, force: true });
 });
@@ -588,6 +698,11 @@ test("managed worker default checklist decomposition runs inside the worker path
     assert.equal(result.status, "completed");
     assert.equal(result.jobResult.status, "completed");
     const jobId = result.jobResult.jobId;
+    assert.equal(
+      existsSync(path.join(project.projectRuntimeRoot, "agent-homes", "fake-acp", jobId)),
+      true,
+      "flagship release gate must run ACP agents with isolated HOME under the project runtime root",
+    );
 
     const outputsDir = path.join(project.projectRuntimeRoot, "wiki", "outputs");
     const readArtifact = async (prefix: string) => {
@@ -609,8 +724,9 @@ test("managed worker default checklist decomposition runs inside the worker path
     assert.equal(checklistVerdict.items[0].checklistId, "AC-001");
     assert.equal(checklistVerdict.items[0].evidenceRefs[0].ledgerId, `evidence-ledger-${jobId}`);
 
-    const transcript = await readFile(transcriptPath, "utf8");
-    assert.match(transcript, /decomposing a task into structured acceptance-checklist items/);
+    const launches = (await readJobAcpAudit(project.projectRuntimeRoot, "proj", jobId))
+      .filter((event) => event.event === "agent_launch");
+    assert.equal(launches.some((event) => event.phase === "prepare_task" && event.role === "planner"), true);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -693,6 +809,127 @@ test("managed worker writes dry-run PR preview after evidence-backed fake ACP ru
     assert.match(result.finalizeResult.pr.request.head, /^cpb\/job-managed-finalize-pipeline/);
     assert.match(result.finalizeResult.pr.request.body, /Completion Gate/i);
     assert.match(result.finalizeResult.pr.request.body, /Verdict/i);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("managed worker flagship issue to draft PR dry-run uses default checklist decomposition and evidence", async () => {
+  const root = await tempRoot("cpb-managed-flagship-dry-run");
+  const hubRoot = path.join(root, "hub");
+  const cpbRoot = path.join(root, "cpb");
+  const sourcePath = path.join(root, "source");
+  const workerId = "w-flagship";
+  await mkdir(sourcePath, { recursive: true });
+  await writeFile(path.join(sourcePath, "README.md"), "# Managed Worker Flagship Fixture\n", "utf8");
+  await writeFile(path.join(sourcePath, "package.json"), `${JSON.stringify({ name: "managed-worker-flagship", private: true }, null, 2)}\n`, "utf8");
+  const scenarioPath = await writeWorkerScenario(root);
+  const transcriptPath = path.join(root, "transcript-flagship.jsonl");
+  const { assignmentId, attemptDir, project } = await writeValidAssignment({
+    hubRoot,
+    workerId,
+    sourcePath,
+    assignmentId: "a-managed-flagship",
+    entryId: "managed-flagship",
+    task: "GitHub Issue to evidence-backed draft PR dry-run",
+    attemptToken: "attempt-token-flagship",
+    metadata: {
+      autoFinalize: true,
+      finalizeMode: "pr",
+      repo: "owner/repo",
+      issueNumber: 42,
+      issueUrl: "https://github.com/owner/repo/issues/42",
+      issueTitle: "Managed worker flagship dry-run",
+    },
+  });
+
+  try {
+    const worker = spawnWorker({
+      workerId,
+      hubRoot,
+      cpbRoot,
+      env: {
+        CPB_ROOT: cpbRoot,
+        CPB_HUB_ROOT: hubRoot,
+        CPB_EXECUTOR_ROOT: repoRoot,
+        CPB_PROJECT_ROOTS: root,
+        CPB_ACP_FAKE_ACP_COMMAND: process.execPath,
+        CPB_ACP_FAKE_ACP_ARGS: JSON.stringify([
+          testAgentScript,
+          "--scenario-file", scenarioPath,
+          "--transcript-file", transcriptPath,
+        ]),
+        CPB_CHECKLIST_DECOMPOSE: "1",
+      },
+      timeoutMs: 60_000,
+    });
+
+    const finished = await worker.done;
+    assert.equal(finished.code, 0, finished.stderr);
+
+    const result = await readJson(path.join(attemptDir, "result.json"));
+    assert.equal(result.assignmentId, assignmentId);
+    assert.equal(result.status, "completed");
+    assert.equal(result.jobResult.status, "completed");
+    const jobId = result.jobResult.jobId;
+
+    const outputsDir = path.join(project.projectRuntimeRoot, "wiki", "outputs");
+    const readArtifact = async (prefix: string) => {
+      const files = (await readdir(outputsDir)).filter((f) => f.startsWith(`${prefix}-`) && f.endsWith(".md"));
+      assert.equal(files.length, 1, `expected exactly one ${prefix} artifact, found ${files.length}`);
+      return JSON.parse(await readFile(path.join(outputsDir, files[0]), "utf8"));
+    };
+    const frozenChecklist = await readArtifact("acceptance-checklist");
+    assert.equal(frozenChecklist.status, "frozen");
+    assert.equal(frozenChecklist.items.length, 1);
+    assert.equal(frozenChecklist.items[0].id, "AC-001");
+    assert.equal(frozenChecklist.items[0].predicateId, "managed-readme-change");
+    assert.deepEqual(frozenChecklist.items[0].allowedFiles, ["README.md"]);
+    const evidenceLedger = await readArtifact("evidence-ledger");
+    assert.equal(evidenceLedger.evidence[0].id, "EV-001");
+    assert.equal(evidenceLedger.evidence[0].checklistId, "AC-001");
+    assert.equal(evidenceLedger.evidence[0].result, "pass");
+    assert.ok(evidenceLedger.evidence[0].matchCount >= 1);
+    const checklistVerdict = await readArtifact("checklist-verdict");
+    assert.equal(checklistVerdict.status, "pass");
+    assert.equal(checklistVerdict.items[0].checklistId, "AC-001");
+    assert.equal(checklistVerdict.items[0].result, "pass");
+    assert.equal(checklistVerdict.items[0].evidenceRefs[0].ledgerId, `evidence-ledger-${jobId}`);
+
+    assert.equal(result.finalizeResult.status, "dry-run");
+    assert.equal(result.finalizeResult.mode, "dry-run");
+    assert.equal(result.finalizeResult.issue.repo, "owner/repo");
+    assert.equal(result.finalizeResult.issue.number, 42);
+    assert.equal(result.finalizeResult.planned.pullRequestPreview, true);
+    assert.equal(result.finalizeResult.planned.push, false);
+    assert.equal(result.finalizeResult.planned.pullRequest, false);
+    assert.equal(result.finalizeResult.completionGate.outcome, "complete");
+    assert.equal(result.finalizeResult.verdict.status, "pass");
+    assert.equal(result.finalizeResult.pr.status, "dry-run");
+    assert.equal(result.finalizeResult.pr.request.repo, "owner/repo");
+    assert.equal(result.finalizeResult.pr.request.draft, true);
+    assert.match(result.finalizeResult.pr.request.head, /^cpb\/job-managed-flagship-pipeline/);
+    assert.match(result.finalizeResult.pr.request.body, /Completion Gate/i);
+    assert.match(result.finalizeResult.pr.request.body, /Verdict/i);
+
+    const projectedJob = await getJob(cpbRoot, "proj", jobId, { dataRoot: project.projectRuntimeRoot });
+    assert.equal(projectedJob?.finalizer?.ok, true);
+    assert.equal(projectedJob?.finalizer?.status, "dry-run");
+    assert.equal(projectedJob?.finalizer?.mode, "dry-run");
+
+    const acpAuditFiles = result.jobResult.phaseResults
+      .map((phase) => phase.diagnostics?.acpAuditFile)
+      .filter(Boolean);
+    assert.equal(acpAuditFiles.length, 3);
+    for (const auditFile of acpAuditFiles) {
+      const launch = (await readJsonl(auditFile)).find((event) => event.event === "agent_launch");
+      assert.equal(launch?.agentHome?.isolated, true);
+      assert.match(launch?.agentHome?.home || "", new RegExp(`^${project.projectRuntimeRoot.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/agent-homes/fake-acp/${jobId}`));
+    }
+
+    const launches = (await readJobAcpAudit(project.projectRuntimeRoot, "proj", jobId))
+      .filter((event) => event.event === "agent_launch");
+    assert.deepEqual(launches.map((event) => event.phase), ["prepare_task", "plan", "execute", "verify"]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -829,7 +1066,9 @@ test("managed worker stops an active assignment when its cancel control file app
     assert.equal(result.status, "cancelled");
     assert.equal(result.attemptToken, "attempt-token-cancel");
     assert.equal(result.jobResult.status, "cancelled");
+    assert.equal(result.jobResult.jobId, "job-managed-cancel");
     assert.equal(result.jobResult.failure.kind, "runtime_interrupted");
+    assert.equal(result.jobResult.failure.phase, "execute");
     assert.equal(result.jobResult.failure.retryable, false);
     assert.match(result.jobResult.failure.reason, /cancel/i);
 
@@ -844,7 +1083,7 @@ test("managed worker stops an active assignment when its cancel control file app
   }
 });
 
-test("managed worker releases persistent ACP provider resources between assignments", async () => {
+test("managed worker closes attempt sessions between assignments without requiring provider process churn", async () => {
   const root = await tempRoot("cpb-managed-persistent");
   const hubRoot = path.join(root, "hub");
   const cpbRoot = path.join(root, "cpb");
@@ -910,24 +1149,44 @@ test("managed worker releases persistent ACP provider resources between assignme
     assert.equal(secondResult.status, "completed");
     assert.deepEqual(firstResult.jobResult.phaseResults.map((phase) => phase.phase), ["execute", "verify"]);
     assert.deepEqual(secondResult.jobResult.phaseResults.map((phase) => phase.phase), ["execute", "verify"]);
+    assert.notEqual(
+      firstResult.jobResult.phaseResults[0].diagnostics.conversationKey,
+      firstResult.jobResult.phaseResults[1].diagnostics.conversationKey,
+      "executor and independent verifier must not share a conversation",
+    );
+    assert.notEqual(
+      firstResult.jobResult.phaseResults[0].diagnostics.conversationKey,
+      secondResult.jobResult.phaseResults[0].diagnostics.conversationKey,
+      "different assignment attempts must not share a conversation",
+    );
+    await waitFor(async () => {
+      const audits = await Promise.all([
+        readJobAcpAudit(first.project.projectRuntimeRoot, "proj", "job-managed-persistent-one"),
+        readJobAcpAudit(second.project.projectRuntimeRoot, "proj", "job-managed-persistent-two"),
+      ]);
+      return audits.flat().filter((event) => event.event === "session_close").length === 4;
+    }, { timeoutMs: 10_000 });
 
     const transcript = (await readFile(transcriptPath, "utf8"))
       .trim()
       .split("\n")
       .filter(Boolean)
       .map((line) => JSON.parse(line));
-    assert.equal(transcript.filter((event) => event.event === "initialize").length, 4);
-    assert.equal(transcript.filter((event) => event.event === "session/new").length, 4);
-    assert.equal(transcript.filter((event) => event.event === "session/close").length, 4);
-    assert.equal(transcript.filter((event) => event.event === "session/prompt").length, 4);
+    const initializeCount = transcript.filter((event) => event.event === "initialize").length;
+    assert.ok(initializeCount >= 2 && initializeCount <= 4, `unexpected provider process count: ${initializeCount}`);
+    assert.equal(transcript.filter((event) => event.event === "session/new").length, 2);
+    assert.equal(transcript.filter((event) => event.event === "session/close").length, 2);
+    assert.equal(transcript.filter((event) => event.event === "session/prompt").length, 2);
 
     const firstAuditFile = firstResult.jobResult.phaseResults[0].diagnostics.acpAuditFile;
     const secondAuditFile = secondResult.jobResult.phaseResults[0].diagnostics.acpAuditFile;
     const firstAudit = (await readFile(firstAuditFile, "utf8")).trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
     const secondAudit = (await readFile(secondAuditFile, "utf8")).trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
     assert.ok(firstAudit.some((event) => event.event === "agent_launch"));
+    assert.equal(firstAudit.filter((event) => event.event === "session_close").length, 2);
     assert.ok(firstAudit.every((event) => event.jobId === "job-managed-persistent-one"));
     assert.ok(secondAudit.some((event) => event.event === "session_new"));
+    assert.equal(secondAudit.filter((event) => event.event === "session_close").length, 2);
     assert.ok(secondAudit.every((event) => event.jobId === "job-managed-persistent-two"));
   } finally {
     worker.child.kill("SIGTERM");

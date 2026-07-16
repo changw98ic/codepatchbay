@@ -6,7 +6,7 @@ import { mkdir, readFile, rename, writeFile, mkdtemp, rm, chmod } from "node:fs/
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { AnyRecord } from "../../../shared/types.js";
+import type { LooseRecord } from "../../../shared/types.js";
 import { appendEvent, readEvents } from "../event/event-store.js";
 import { getJob } from "../job/job-store.js";
 import { buildCodePatchBayPrBody } from "../pr-body.js";
@@ -16,7 +16,159 @@ import { redactSecrets } from "../secret-policy.js";
 
 const execFileAsync = promisify(execFileCb);
 
-type LooseRecord = Record<string, any>;
+type GitHubRecord = LooseRecord & {
+  repository?: string;
+  repo?: string | null;
+  repositoryFullName?: string;
+  projectId?: string;
+  project?: string;
+  number?: string | number;
+  issueNumber?: string | number;
+  issues?: GitHubRecord[];
+  title?: string;
+  issueTitle?: string;
+  state?: string;
+  url?: string;
+  labels?: unknown;
+  body?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  closedAt?: string | null;
+  id?: string;
+  html_url?: string;
+  maxBuffer?: number;
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+  encoding?: BufferEncoding | string;
+  cpbRoot?: string;
+  github?: { fullName?: string };
+  sourcePath?: string;
+  count?: number;
+  stdout?: string;
+  stderr?: string;
+  code?: string | number | null;
+  message?: string;
+  status?: unknown;
+  ok?: boolean;
+  reason?: string;
+  failurePhase?: unknown;
+  retryCount?: number;
+  workflow?: string;
+  jobId?: string;
+  task?: string;
+  worktree?: string;
+  worktreeBranch?: string;
+  worktreeBaseBranch?: string;
+  head?: string | null;
+  base?: string | null;
+  draft?: boolean;
+  sourceContext?: LooseRecord;
+  payload?: LooseRecord;
+  metadata?: LooseRecord;
+  pr?: LooseRecord;
+  job?: LooseRecord | null;
+  queueEntry?: LooseRecord | null;
+  projection?: LooseRecord | null;
+  planner?: string;
+  executor?: unknown;
+  verifier?: string;
+  request?: GitHubRecord;
+  response?: LooseRecord;
+  branchPreparation?: GitHubRecord | null;
+  commit?: string | null;
+  prUrl?: string | null;
+  prNumber?: number | null;
+  jobStatus?: string;
+  posted?: boolean;
+  dedupeKey?: string;
+  transportMode?: string | null;
+  transportFallback?: boolean;
+  dataRoot?: string;
+  agents?: LooseRecord;
+  artifacts?: LooseRecord;
+  audit?: LooseRecord;
+  tests?: unknown;
+  completionGate?: unknown;
+  verdictDetail?: LooseRecord | null;
+  verdict?: unknown;
+  branchPushed?: boolean;
+  dryRun?: boolean;
+  allowLive?: boolean;
+  allowLiveFinalize?: boolean;
+  pushToken?: string | null;
+};
+
+type GitHubCommandResult = LooseRecord & {
+  stdout?: string;
+  stderr?: string;
+  code?: string | number | null;
+};
+
+type DraftPullRequestResult = GitHubRecord & {
+  evidence?: LooseRecord & { reason?: string };
+  error?: LooseRecord | null;
+  request?: GitHubRecord;
+  branchPreparation?: GitHubRecord | null;
+};
+
+type NormalizedGithubIssue = {
+  repository: string | null;
+  projectId: string;
+  number: number;
+  title: string;
+  state: string;
+  url: string | null;
+  labels: string[];
+  body: string;
+  createdAt: string | null;
+  updatedAt: string | null;
+  closedAt: string | null;
+};
+
+type RunCommand = (command: string, args: string[], options?: GitHubRecord) => Promise<GitHubCommandResult | string>;
+type GithubStatusJobInput = Parameters<typeof jobToGithubStatusUpdate>[0];
+
+function isRecord(value: unknown): value is LooseRecord {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function recordValue(value: unknown): LooseRecord {
+  return isRecord(value) ? value : {};
+}
+
+function stringValue(value: unknown, fallback = "") {
+  return value === null || value === undefined ? fallback : String(value);
+}
+
+function numberValue(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function commandResult(value: GitHubCommandResult | string): GitHubCommandResult {
+  return typeof value === "string" ? { stdout: value, stderr: "" } : value;
+}
+
+function githubStatusUpdate(projection: unknown, job: unknown): GitHubRecord | null {
+  const update = isRecord(projection)
+    ? projection
+    : jobToGithubStatusUpdate(recordValue(job) as GithubStatusJobInput);
+  if (!isRecord(update)) return null;
+  const normalized = update as GitHubRecord;
+  if (update.reason !== null && update.reason !== undefined) {
+    normalized.reason = stringValue(update.reason);
+  }
+  return normalized;
+}
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : (isRecord(error) && typeof error.message === "string" ? error.message : String(error || ""));
+}
+
+function errorCode(error: unknown) {
+  return isRecord(error) && (typeof error.code === "string" || typeof error.code === "number") ? String(error.code) : null;
+}
 
 // ============================================================
 // branch-names.ts exports
@@ -45,13 +197,13 @@ export function slugifyBranchComponent(value: unknown, { fallback = "github-issu
   return `${prefix}-${suffix}`;
 }
 
-export function buildGithubIssueBranchParts({ issueNumber, title, jobId, maxSlugLength = DEFAULT_MAX_SLUG_LENGTH }: { issueNumber?: string | number; title?: string; jobId?: string; maxSlugLength?: number } = {}) {
+export function buildGithubIssueBranchParts({ issueNumber, title, jobId, maxSlugLength = DEFAULT_MAX_SLUG_LENGTH }: LooseRecord = {}) {
   const number = Number.parseInt(String(issueNumber), 10);
   if (!Number.isFinite(number) || number <= 0) {
     throw new Error("issueNumber is required for GitHub issue branch naming");
   }
   const jobComponent = `issue-${number}`;
-  const slug = slugifyBranchComponent(title || jobId || jobComponent, { maxLength: maxSlugLength });
+  const slug = slugifyBranchComponent(String(title || jobId || jobComponent), { maxLength: numberValue(maxSlugLength) ?? DEFAULT_MAX_SLUG_LENGTH });
   const worktreeName = `${jobComponent}-${slug}`;
   return {
     jobComponent,
@@ -87,19 +239,20 @@ export function normalizeGithubLabels(labels: unknown) {
   return Array.isArray(labels) ? labels.map(normalizeLabel).filter(Boolean) : [];
 }
 
-export function normalizeGithubIssue(issue: AnyRecord = {}, { repo, projectId }: AnyRecord = {}) {
+export function normalizeGithubIssue(issue: LooseRecord = {}, { repo, projectId }: LooseRecord = {}): NormalizedGithubIssue {
+  const repository = issue.repository || issue.repo || issue.repositoryFullName || repo || null;
   return {
-    repository: issue.repository || issue.repo || issue.repositoryFullName || repo || null,
-    projectId: issue.projectId || projectId || "flow",
+    repository: repository === null ? null : String(repository),
+    projectId: stringValue(issue.projectId || projectId || "flow"),
     number: Number(issue.number),
-    title: issue.title || `Issue #${issue.number}`,
+    title: stringValue(issue.title || `Issue #${issue.number}`),
     state: String(issue.state || "OPEN").toUpperCase(),
-    url: issue.url || null,
+    url: issue.url === undefined || issue.url === null ? null : String(issue.url),
     labels: normalizeGithubLabels(issue.labels),
-    body: issue.body || "",
-    createdAt: issue.createdAt || null,
-    updatedAt: issue.updatedAt || issue.createdAt || null,
-    closedAt: issue.closedAt || null,
+    body: stringValue(issue.body),
+    createdAt: issue.createdAt === undefined || issue.createdAt === null ? null : String(issue.createdAt),
+    updatedAt: (issue.updatedAt || issue.createdAt) === undefined || (issue.updatedAt || issue.createdAt) === null ? null : String(issue.updatedAt || issue.createdAt),
+    closedAt: issue.closedAt === undefined || issue.closedAt === null ? null : String(issue.closedAt),
   };
 }
 
@@ -110,17 +263,18 @@ export async function readGithubIssues(hubRoot: string) {
     if (!Array.isArray(issues)) return [];
     return issues.map((issue) => normalizeGithubIssue(issue));
   } catch (err) {
-    if (err && err.code === "ENOENT") return [];
+    if (recordValue(err).code === "ENOENT") return [];
     throw err;
   }
 }
 
-export async function writeGithubIssues(hubRoot: string, { repo, projectId = "flow", issues, syncedAt = new Date().toISOString() }: AnyRecord = {}) {
-  const normalized = (issues || [])
-    .map((issue: AnyRecord) => normalizeGithubIssue(issue, { repo, projectId }))
-    .filter((issue: AnyRecord) => Number.isFinite(issue.number));
+export async function writeGithubIssues(hubRoot: string, { repo, projectId = "flow", issues, syncedAt = new Date().toISOString() }: GitHubRecord = {}) {
+  const sourceIssues = Array.isArray(issues) ? issues.map(recordValue) : [];
+  const normalized = sourceIssues
+    .map((issue) => normalizeGithubIssue(issue, { repo, projectId }))
+    .filter((issue) => Number.isFinite(issue.number));
   const existing = await readGithubIssues(hubRoot);
-  const retained = existing.filter((issue: AnyRecord) => !issueBelongsToSyncScope(issue, { repo, projectId }));
+  const retained = existing.filter((issue) => !issueBelongsToSyncScope(recordValue(issue), { repo, projectId }));
   const merged = [...retained, ...normalized];
   const payload = {
     version: CACHE_VERSION,
@@ -135,7 +289,7 @@ export async function writeGithubIssues(hubRoot: string, { repo, projectId = "fl
   return payload;
 }
 
-function issueBelongsToSyncScope(issue: AnyRecord, { repo, projectId }: AnyRecord = {}) {
+function issueBelongsToSyncScope(issue: LooseRecord, { repo, projectId }: LooseRecord = {}) {
   const normalized = normalizeGithubIssue(issue);
   if (projectId && normalized.projectId === projectId) return true;
   if (!repo) return false;
@@ -143,23 +297,24 @@ function issueBelongsToSyncScope(issue: AnyRecord, { repo, projectId }: AnyRecor
   return !projectId || !normalized.projectId || normalized.projectId === "flow";
 }
 
-async function runGh(args: string[], { cwd, execFile = execFileAsync }: AnyRecord = {}) {
+async function runGh(args: string[], { cwd, execFile = execFileAsync }: LooseRecord & { execFile?: RunCommand } = {}) {
   const result = await execFile("gh", args, {
-    cwd,
+    cwd: stringValue(cwd, process.cwd()),
     maxBuffer: 20 * 1024 * 1024,
     encoding: "utf8",
   });
-  return typeof result === "string" ? result : result.stdout;
+  return commandResult(result).stdout || "";
 }
 
-async function resolveRepo(repo: string | null, { cwd, execFile }: AnyRecord = {}) {
-  if (repo) return repo;
-  const stdout = await runGh(["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"], { cwd, execFile });
+async function resolveRepo(repo: unknown, { cwd, execFile }: LooseRecord & { execFile?: RunCommand } = {}) {
+  const repoName = stringValue(repo);
+  if (repoName) return repoName;
+  const stdout = await runGh(["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"], { cwd: stringValue(cwd, process.cwd()), execFile });
   return stdout.trim();
 }
 
-export async function closeGithubIssueWithGh({ repo, number, body }: AnyRecord, { runCommand = execFileAsync }: AnyRecord = {}) {
-  const args = ["issue", "close", String(number), "--repo", repo];
+export async function closeGithubIssueWithGh({ repo, number, body }: GitHubRecord, { runCommand = execFileAsync }: GitHubRecord & { runCommand?: RunCommand } = {}) {
+  const args = ["issue", "close", String(number), "--repo", stringValue(repo)];
   if (body) args.push("--comment", body);
   await runCommand("gh", args, { maxBuffer: 1024 * 1024 });
   return { ok: true };
@@ -172,8 +327,9 @@ export async function syncGithubIssuesFromGh(hubRoot: string, {
   limit = 1000,
   cwd = process.cwd(),
   execFile,
-}: AnyRecord = {}) {
-  const resolvedRepo = await resolveRepo(repo, { cwd, execFile });
+}: LooseRecord & { execFile?: RunCommand } = {}) {
+  const cwdPath = stringValue(cwd, process.cwd());
+  const resolvedRepo = await resolveRepo(repo, { cwd: cwdPath, execFile });
   const normalizedState = ["open", "closed", "all"].includes(String(state).toLowerCase())
     ? String(state).toLowerCase()
     : "open";
@@ -189,11 +345,11 @@ export async function syncGithubIssuesFromGh(hubRoot: string, {
     String(normalizedLimit),
     "--json",
     "number,title,body,url,state,labels,createdAt,updatedAt,closedAt",
-  ], { cwd, execFile });
+  ], { cwd: cwdPath, execFile });
   const issues = JSON.parse(stdout);
   return writeGithubIssues(hubRoot, {
     repo: resolvedRepo,
-    projectId,
+    projectId: stringValue(projectId, "flow"),
     issues,
   });
 }
@@ -206,8 +362,8 @@ export async function syncConfiguredGithubIssuesFromGh(hubRoot: string, {
   execFile,
   listProjectsFn = listProjects,
   syncProjectFn = syncGithubIssuesFromGh,
-}: AnyRecord = {}) {
-  const projects = await listProjectsFn(hubRoot, { enabledOnly: true }) as AnyRecord[];
+}: GitHubRecord & { execFile?: RunCommand; listProjectsFn?: typeof listProjects; syncProjectFn?: typeof syncGithubIssuesFromGh } = {}) {
+  const projects = (await listProjectsFn(hubRoot, { enabledOnly: true })) as GitHubRecord[];
   const selected = projectId ? projects.filter((project) => project.id === projectId) : projects;
   if (projectId && selected.length === 0) {
     throw new Error(`project not found or disabled: ${projectId}`);
@@ -226,7 +382,7 @@ export async function syncConfiguredGithubIssuesFromGh(hubRoot: string, {
     const projectCwd = project.sourcePath || cwd;
     const result = await syncProjectFn(hubRoot, {
       repo,
-      projectId: project.id,
+      projectId: stringValue(project.id),
       state,
       limit,
       cwd: projectCwd,
@@ -261,7 +417,7 @@ function hashBody(body: string) {
   return createHash("sha256").update(body || "", "utf8").digest("hex");
 }
 
-function responseSummary(response: Record<string, unknown> | null | undefined) {
+function responseSummary(response: LooseRecord | null | undefined) {
   if (!response || typeof response !== "object") return null;
   return {
     id: response.id ?? null,
@@ -269,16 +425,16 @@ function responseSummary(response: Record<string, unknown> | null | undefined) {
   };
 }
 
-export async function postGithubCommentWithGh({ repo, issueNumber, body }: LooseRecord, { runCommand = execFileAsync }: LooseRecord = {}) {
-  const result = await runCommand("gh", [
+export async function postGithubCommentWithGh({ repo, issueNumber, body }: GitHubRecord, { runCommand = execFileAsync }: GitHubRecord & { runCommand?: RunCommand } = {}) {
+  const result = commandResult(await runCommand("gh", [
     "issue",
     "comment",
     String(issueNumber),
     "--repo",
-    repo,
+    stringValue(repo),
     "--body",
-    body,
-  ], { maxBuffer: 1024 * 1024 });
+    stringValue(body),
+  ], { maxBuffer: 1024 * 1024 }));
   return {
     url: null as string | null,
     html_url: null as string | null,
@@ -287,7 +443,8 @@ export async function postGithubCommentWithGh({ repo, issueNumber, body }: Loose
   };
 }
 
-function statusHeading(status: string) {
+function statusHeading(status: unknown) {
+  status = String(status || "");
   if (status === "blocked") return "CodePatchBay blocked this run.";
   if (status === "failed") return "CodePatchBay failed this run.";
   if (status === "passed") return "Verified patch ready.";
@@ -295,7 +452,7 @@ function statusHeading(status: string) {
   return "CodePatchBay updated this run.";
 }
 
-function statusDetailLines(projection: LooseRecord) {
+function statusDetailLines(projection: GitHubRecord) {
   if (projection.status === "blocked") {
     return [`- Reason: ${projection.reason || "approval or manual review required"}`];
   }
@@ -312,7 +469,7 @@ function statusDetailLines(projection: LooseRecord) {
     ];
   }
   if (projection.status === "pr-opened") {
-    const pr = projection.pr || {};
+    const pr = recordValue(projection.pr);
     const prLabel = pr.number ? `#${pr.number}` : pr.url || "created";
     return [
       `- PR: ${prLabel}`,
@@ -322,18 +479,22 @@ function statusDetailLines(projection: LooseRecord) {
   return [`- Status: ${projection.status || "unknown"}`];
 }
 
-export function buildQueuedComment({ job = {}, queueEntry = null, agents = {} }: LooseRecord = {}) {
-  const normalizedJob = job || {};
-  const workflow = normalizedJob.workflow || queueEntry?.payload?.workflow || queueEntry?.metadata?.workflow || "standard";
+export function buildQueuedComment({ job = {}, queueEntry = null, agents = {} }: GitHubRecord = {}) {
+  const normalizedJob = recordValue(job);
+  const normalizedQueueEntry = recordValue(queueEntry);
+  const payload = recordValue(normalizedQueueEntry.payload);
+  const metadata = recordValue(normalizedQueueEntry.metadata);
+  const normalizedAgents = recordValue(agents);
+  const workflow = normalizedJob.workflow || payload.workflow || metadata.workflow || "standard";
   return [
     "CodePatchBay queued this issue.",
     "",
     `- Job: ${normalizedJob.jobId || "pending"}`,
-    queueEntry?.id ? `- Queue: ${queueEntry.id}` : null,
+    normalizedQueueEntry.id ? `- Queue: ${normalizedQueueEntry.id}` : null,
     `- Workflow: ${workflow}`,
-    agentLine("Planner", agents.planner),
-    agentLine("Executor", agents.executor),
-    agentLine("Verifier", agents.verifier),
+    agentLine("Planner", stringValue(normalizedAgents.planner)),
+    agentLine("Executor", stringValue(normalizedAgents.executor)),
+    agentLine("Verifier", stringValue(normalizedAgents.verifier)),
     "",
     "I'll post updates here.",
     "",
@@ -349,7 +510,7 @@ export async function postGithubQueuedComment({
   dryRun = false,
   postComment,
   transportMode = null,
-}: LooseRecord = {}) {
+}: GitHubRecord & { postComment?: (request: GitHubRecord) => Promise<GitHubRecord> } = {}) {
   const body = buildQueuedComment({ job, queueEntry, agents });
   const request = {
     repo,
@@ -387,16 +548,16 @@ export async function postGithubQueuedComment({
       request,
       body,
       error: {
-        message: error.message,
-        code: error.code || null,
+        message: errorMessage(error),
+        code: errorCode(error),
       },
       transportMode,
     };
   }
 }
 
-export function buildGithubStatusComment({ projection, job }: LooseRecord = {}) {
-  const update = projection || jobToGithubStatusUpdate(job);
+export function buildGithubStatusComment({ projection, job }: GitHubRecord = {}) {
+  const update = githubStatusUpdate(projection, job);
   if (!update) {
     throw new Error("GitHub terminal status projection is required");
   }
@@ -411,7 +572,7 @@ export function buildGithubStatusComment({ projection, job }: LooseRecord = {}) 
   ].join("\n");
 }
 
-async function alreadyPostedStatusComment(cpbRoot: string, project: string, jobId: string, dedupeKey: string, { dataRoot }: LooseRecord = {}) {
+async function alreadyPostedStatusComment(cpbRoot: string, project: string, jobId: string, dedupeKey: string, { dataRoot }: GitHubRecord = {}) {
   if (!cpbRoot || !project || !jobId || !dedupeKey) return false;
   const events = await readEvents(cpbRoot, project, jobId, { dataRoot });
   return events.some((event) => (
@@ -430,8 +591,8 @@ export async function postGithubStatusComment({
   postComment,
   dataRoot,
   transportMode = null,
-}: LooseRecord = {}) {
-  const update = projection || jobToGithubStatusUpdate(job);
+}: GitHubRecord & { postComment?: (request: GitHubRecord) => Promise<GitHubRecord> } = {}) {
+  const update = githubStatusUpdate(projection, job);
   if (!update) {
     return {
       status: "skipped",
@@ -440,16 +601,18 @@ export async function postGithubStatusComment({
     };
   }
 
-  const auditProject = project || update.project;
+  const auditProject = stringValue(project || update.project);
+  const updateJobId = stringValue(update.jobId);
+  const updateStatus = stringValue(update.status);
   const body = buildGithubStatusComment({ projection: update, job });
   const request = {
     repo: update.repo,
     issueNumber: update.issueNumber,
     body,
   };
-  const dedupeKey = update.dedupeKey;
+  const dedupeKey = stringValue(update.dedupeKey);
 
-  if (await alreadyPostedStatusComment(cpbRoot, auditProject, update.jobId, dedupeKey, { dataRoot })) {
+  if (await alreadyPostedStatusComment(stringValue(cpbRoot), auditProject, updateJobId, dedupeKey, { dataRoot })) {
     return {
       status: "duplicate",
       posted: false,
@@ -474,12 +637,12 @@ export async function postGithubStatusComment({
       throw new Error("GitHub comment transport not configured");
     }
     const response = await postComment(request);
-    await appendEvent(cpbRoot, auditProject, update.jobId, {
+    await appendEvent(stringValue(cpbRoot), auditProject, updateJobId, {
       type: "github_comment_posted",
-      jobId: update.jobId,
+      jobId: updateJobId,
       project: auditProject,
       commentKind: "terminal-status",
-      status: update.status,
+      status: updateStatus,
       dedupeKey,
       repo: update.repo,
       issueNumber: update.issueNumber,
@@ -499,20 +662,20 @@ export async function postGithubStatusComment({
       response,
     };
   } catch (error) {
-    if (cpbRoot && auditProject && update.jobId) {
-      await appendEvent(cpbRoot, auditProject, update.jobId, {
+    if (cpbRoot && auditProject && updateJobId) {
+      await appendEvent(stringValue(cpbRoot), auditProject, updateJobId, {
         type: "github_comment_failed",
-        jobId: update.jobId,
+        jobId: updateJobId,
         project: auditProject,
         commentKind: "terminal-status",
-        status: update.status,
+        status: updateStatus,
         dedupeKey,
         repo: update.repo,
         issueNumber: update.issueNumber,
         bodyHash: hashBody(body),
         error: {
-          message: error.message,
-          code: error.code || null,
+          message: errorMessage(error),
+          code: errorCode(error),
         },
         transportMode,
         transportFallback: transportMode === "gh",
@@ -526,8 +689,8 @@ export async function postGithubStatusComment({
       request,
       body,
       error: {
-        message: error.message,
-        code: error.code || null,
+        message: errorMessage(error),
+        code: errorCode(error),
       },
     };
   }
@@ -537,22 +700,23 @@ export async function postGithubStatusComment({
 // github-pr.ts exports
 // ============================================================
 
-function isPass(verdict: string) {
+function isPass(verdict: unknown) {
   return String(verdict || "").toUpperCase() === "PASS";
 }
 
-function prTitle(job: AnyRecord) {
-  const title = job.task || job.sourceContext?.issueTitle || `Issue #${job.sourceContext?.issueNumber || job.jobId}`;
+function prTitle(job: GitHubRecord) {
+  const sourceContext = recordValue(job.sourceContext);
+  const title = job.task || sourceContext.issueTitle || `Issue #${sourceContext.issueNumber || job.jobId}`;
   return `[cpb] ${title}`;
 }
 
-function verdictForBody(verdict: string, verdictDetail: Record<string, unknown> | null) {
+function verdictForBody(verdict: unknown, verdictDetail: LooseRecord | null) {
   if (verdictDetail && typeof verdictDetail === "object") return verdictDetail;
   const status = String(verdict || "").toLowerCase();
   return { status: status || "unavailable" };
 }
 
-function prBody(job: AnyRecord, routingContext: AnyRecord | null = null, agents: AnyRecord = {}, bodyContext: AnyRecord = {}) {
+function prBody(job: GitHubRecord, routingContext: LooseRecord | null = null, agents: LooseRecord = {}, bodyContext: LooseRecord = {}) {
   const {
     artifacts = {},
     tests = [],
@@ -560,21 +724,32 @@ function prBody(job: AnyRecord, routingContext: AnyRecord | null = null, agents:
     verdict = { status: "pass" },
     completionGate = null,
   } = bodyContext || {};
+  const sourceContext = recordValue(job.sourceContext);
   return buildCodePatchBayPrBody({
-    job,
-    verdict,
-    completionGate,
-    routingContext,
-    agents,
-    artifacts,
-    tests,
-    audit,
+    job: {
+      jobId: stringValue(job.jobId) || null,
+      project: stringValue(job.project) || null,
+      workflow: stringValue(job.workflow) || null,
+      retryCount: numberValue(job.retryCount),
+      sourceContext: {
+        issueNumber: sourceContext.issueNumber ?? null,
+        repo: stringValue(sourceContext.repo || sourceContext.repository) || null,
+      },
+    },
+    verdict: recordValue(verdict),
+    completionGate: recordValue(completionGate),
+    routingContext: routingContext ? recordValue(routingContext) : null,
+    agents: recordValue(agents),
+    artifacts: recordValue(artifacts),
+    tests: Array.isArray(tests) ? tests : [],
+    audit: recordValue(audit),
   });
 }
 
-function buildPrRequest(job: AnyRecord, routingContext: AnyRecord | null = null, agents: AnyRecord = {}, bodyContext: AnyRecord = {}) {
+function buildPrRequest(job: GitHubRecord, routingContext: LooseRecord | null = null, agents: LooseRecord = {}, bodyContext: LooseRecord = {}): GitHubRecord {
+  const sourceContext = recordValue(job.sourceContext);
   return {
-    repo: job.sourceContext?.repo || null,
+    repo: stringValue(sourceContext.repo) || null,
     title: prTitle(job),
     body: prBody(job, routingContext, agents, bodyContext),
     head: job.worktreeBranch || null,
@@ -583,16 +758,17 @@ function buildPrRequest(job: AnyRecord, routingContext: AnyRecord | null = null,
   };
 }
 
-function prepareCommitMessage(job: AnyRecord) {
+function prepareCommitMessage(job: GitHubRecord) {
+  const sourceContext = recordValue(job?.sourceContext);
   return [
     `Finalize CPB job ${job?.jobId || "unknown"}`,
     "",
-    job?.sourceContext?.issueNumber ? `Issue: #${job.sourceContext.issueNumber}` : null,
+    sourceContext.issueNumber ? `Issue: #${sourceContext.issueNumber}` : null,
     `CPB-Job: ${job?.jobId || "unknown"}`,
   ].filter(Boolean).join("\n");
 }
 
-function blocked(reason: string, evidence: AnyRecord = {}, error: Record<string, unknown> | null = null) {
+function blocked(reason: string, evidence: GitHubRecord = {}, error: LooseRecord | null = null): DraftPullRequestResult {
   return {
     status: "blocked.pr",
     jobStatus: "passed",
@@ -610,10 +786,10 @@ function parseGhPrUrl(stdout: string) {
   return { url: match[0], number: Number.parseInt(match[1], 10) };
 }
 
-async function runGit(cwd: string, args: string[], { runCommand = execFileAsync, env }: AnyRecord = {}) {
-  const opts: AnyRecord = { cwd, maxBuffer: 1024 * 1024 };
+async function runGit(cwd: string, args: string[], { runCommand = execFileAsync, env }: GitHubRecord & { runCommand?: RunCommand; env?: NodeJS.ProcessEnv } = {}) {
+  const opts: GitHubRecord = { cwd, maxBuffer: 1024 * 1024 };
   if (env) opts.env = env;
-  return runCommand("git", args, opts);
+  return await runCommand("git", args, opts) as GitHubRecord;
 }
 
 async function createGitAskpassScript(tmpDir: string, token: string) {
@@ -629,11 +805,11 @@ esac
   return askpass;
 }
 
-export async function preparePullRequestBranchWithGit(request: AnyRecord, job: AnyRecord, {
+export async function preparePullRequestBranchWithGit(request: GitHubRecord, job: GitHubRecord, {
   runCommand = execFileAsync,
   remote = "origin",
   token = null,
-}: AnyRecord = {}) {
+}: GitHubRecord & { runCommand?: RunCommand; remote?: string; token?: string | null } = {}) {
   if (!job?.worktree) {
     return {
       ok: false,
@@ -691,8 +867,8 @@ export async function preparePullRequestBranchWithGit(request: AnyRecord, job: A
         head: request.head,
       },
       error: {
-        message: redactSecrets(error.message),
-        code: error.code || null,
+        message: redactSecrets(errorMessage(error)),
+        code: errorCode(error),
       },
     };
   } finally {
@@ -702,28 +878,28 @@ export async function preparePullRequestBranchWithGit(request: AnyRecord, job: A
   }
 }
 
-export async function createPullRequestWithGh(request: AnyRecord, { runCommand = execFileAsync }: AnyRecord = {}) {
+export async function createPullRequestWithGh(request: GitHubRecord, { runCommand = execFileAsync }: GitHubRecord & { runCommand?: RunCommand } = {}) {
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), "cpb-pr-body-"));
   const bodyFile = path.join(tmpDir, "body.md");
   try {
     await writeFile(bodyFile, request.body || "", "utf8");
     const args = [
       "pr", "create",
-      "--title", request.title,
+      "--title", stringValue(request.title),
       "--body-file", bodyFile,
-      "--repo", request.repo,
-      "--head", request.head,
-      "--base", request.base,
+      "--repo", stringValue(request.repo),
+      "--head", stringValue(request.head),
+      "--base", stringValue(request.base),
     ];
     if (request.draft) args.push("--draft");
-    const result = await runCommand("gh", args, { maxBuffer: 1024 * 1024 });
+    const result = commandResult(await runCommand("gh", args, { maxBuffer: 1024 * 1024 }));
     const parsed = parseGhPrUrl(result.stdout);
     return {
       url: parsed.url,
       html_url: parsed.url,
       number: parsed.number,
       stdout: result.stdout || "",
-      stderr: redactSecrets(result.stderr || ""),
+      stderr: stringValue(redactSecrets(result.stderr || "")),
     };
   } finally {
     await rm(tmpDir, { recursive: true, force: true });
@@ -746,16 +922,19 @@ export async function openDraftPullRequest({
   audit = {},
   verdictDetail = null,
   completionGate = null,
-}: AnyRecord = {}): Promise<AnyRecord> {
+}: GitHubRecord & { createPullRequest?: ((request: LooseRecord) => Promise<LooseRecord>); runCommand?: RunCommand } = {}): Promise<DraftPullRequestResult> {
+  const normalizedJob = recordValue(job) as GitHubRecord;
+  const normalizedAgents = recordValue(agents);
+  const normalizedRoutingContext = isRecord(routingContext) ? routingContext : null;
   if (!isPass(verdict)) {
     return {
       status: "skipped",
       reason: "draft PR creation requires a PASS verdict",
-      jobStatus: job?.status || null,
+      jobStatus: stringValue(normalizedJob.status, "unknown"),
     };
   }
 
-  const request = buildPrRequest(job || {}, routingContext, agents, {
+  const request = buildPrRequest(normalizedJob, normalizedRoutingContext, normalizedAgents, {
     artifacts,
     tests,
     audit,
@@ -788,7 +967,7 @@ export async function openDraftPullRequest({
 
   let branchPreparation = null;
   if (!branchPushed) {
-    branchPreparation = await preparePullRequestBranchWithGit(request, job, { runCommand, token: pushToken });
+    branchPreparation = await preparePullRequestBranchWithGit(request, normalizedJob, { runCommand, token: pushToken });
     if (!branchPreparation.ok) {
       return blocked(branchPreparation.reason || "branch has not been pushed", {
         ...evidence,
@@ -799,27 +978,27 @@ export async function openDraftPullRequest({
 
   try {
     const transport = typeof createPullRequest === "function"
-      ? createPullRequest
-      : (req: AnyRecord) => createPullRequestWithGh(req, { runCommand });
-    const response = await transport(request);
+      ? (req: GitHubRecord) => createPullRequest(req) as Promise<GitHubRecord>
+      : (req: GitHubRecord) => createPullRequestWithGh(req, { runCommand });
+    const response = recordValue(await transport(request));
     return {
       status: "pr.opened",
       jobStatus: "passed",
       request,
       response,
-      prUrl: response?.url || response?.html_url || null,
-      prNumber: response?.number || null,
+      prUrl: stringValue(response?.url || response?.html_url) || null,
+      prNumber: numberValue(response?.number),
       branchPreparation,
     };
   } catch (error) {
     return blocked("failed to open draft PR", evidence, {
-      message: redactSecrets(error.message),
-      code: error.code || null,
+      message: stringValue(redactSecrets(errorMessage(error))),
+      code: errorCode(error),
     });
   }
 }
 
-export async function maybeOpenDraftPrAfterPass(cpbRoot: string, project: string, jobId: string, options: AnyRecord = {}) {
+export async function maybeOpenDraftPrAfterPass(cpbRoot: string, project: string, jobId: string, options: GitHubRecord & { createPullRequest?: (request: LooseRecord) => Promise<LooseRecord>; runCommand?: RunCommand } = {}) {
   const job = await getJob(cpbRoot, project, jobId, { dataRoot: options.dataRoot });
   const result = await openDraftPullRequest({
     job,

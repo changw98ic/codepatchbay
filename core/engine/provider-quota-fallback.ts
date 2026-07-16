@@ -11,7 +11,7 @@ import {
   ProviderServices,
 } from "./provider-handoff.js";
 
-type LooseRecord = Record<string, unknown>;
+import { recordValue, type LooseRecord } from "../contracts/types.js";
 
 type HandoffState = {
   count: number;
@@ -66,6 +66,8 @@ type RunQuotaFallbackState = {
   providerAttempts: ProviderAttempt[];
   phaseAgents: ProviderAgents;
   result: PhaseResult;
+  excludeProviderFamily?: string | null;
+  allowedAgents?: string[] | null;
 };
 
 type RunQuotaFallbackDeps = {
@@ -86,19 +88,15 @@ type HandoffBundleInput = {
   task: string;
   originProvider: string | null;
   failureReason: string;
-  partialStdout: string;
-  partialStderr: string;
-  previousResults: LooseRecord[];
+  partialStdout?: string;
+  partialStderr?: string;
+  previousResults?: LooseRecord[];
   cpbRoot: string;
-  sourcePath: string | null | undefined;
+  sourcePath?: string | null;
 };
 
 function ts(now: () => string) {
   return now();
-}
-
-function recordValue(value: unknown): LooseRecord {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as LooseRecord : {};
 }
 
 function stringValue(value: unknown): string | null {
@@ -144,7 +142,7 @@ export async function runQuotaFallbackRetry(
     hubRoot, pool, phase, role, nodeId, dagNode, project, task, jobId, job,
     workflow, planMode, cpbRoot, dataRoot, sourcePath, phaseSourceContext = {},
     state, phaseResults, attemptId, phaseTimeout,
-    handoffState, providerAttempts, phaseAgents,
+    handoffState, providerAttempts, phaseAgents, excludeProviderFamily = null, allowedAgents = null,
   } = n;
   const providerServices = normalizeProviderServices(ctx.providerServices);
   const preflightProvider = deps.preflightProvider || defaultPreflightProvider;
@@ -157,14 +155,16 @@ export async function runQuotaFallbackRetry(
     handoffState.count += 1;
     const fail = recordValue(result.failure);
     const quotaCause = recordValue(fail.cause);
+    const transportFailure = result.failure?.kind === FailureKind.AGENT_UNAVAILABLE
+      && recordValue(result.diagnostics).transportFailure === true;
     const quotaProviderKey = stringValue(quotaCause.providerKey);
-    handoffState.from = handoffState.from || quotaProviderKey;
     handoffState.to = null;
 
     const activeAgent = phaseAgents[role];
     const failedProviderKey = quotaProviderKey || resolveProviderKey(pool, activeAgent, ctx.agent || null);
     const failedAgent = agentName(activeAgent);
     const failedVariant = agentVariant(activeAgent);
+    handoffState.from = handoffState.from || failedProviderKey;
     let delegateFailure: unknown = null;
     try {
       if (typeof providerServices.delegateMarkProviderUnavailable !== "function") {
@@ -176,9 +176,9 @@ export async function runQuotaFallbackRetry(
         providerKey: failedProviderKey,
         agent: failedAgent,
         variant: failedVariant,
-        status: stringValue(quotaCause.status) || "rate_limited",
+        status: transportFailure ? "unknown" : stringValue(quotaCause.status) || "rate_limited",
         nextEligibleAt: typeof quotaCause.nextEligibleAt === "number" ? quotaCause.nextEligibleAt : nowMs() + 60_000,
-        source: stringValue(quotaCause.source) || "run-job-handoff",
+        source: transportFailure ? "provider-transport-handoff" : stringValue(quotaCause.source) || "run-job-handoff",
         confidence: typeof quotaCause.confidence === "number" ? quotaCause.confidence : 0.8,
         reason: String(fail.reason || ""),
       });
@@ -187,6 +187,10 @@ export async function runQuotaFallbackRetry(
     }
 
     if (delegateFailure) {
+      // retain: dynamic — delegateFailure originates from an arbitrary throw boundary
+      // (provider/delegate implementations, may be non-Error throws); narrowing without
+      // divergence would require speculative guards that change observable error text, so
+      // we keep the cast at this external boundary.
       const err = delegateFailure as Error & { code?: string };
       result = phaseFailed({
         phase,
@@ -202,7 +206,7 @@ export async function runQuotaFallbackRetry(
             providerAttempts: providerAttempts.length > 0 ? providerAttempts : null,
           },
         }),
-      }) as PhaseResult;
+      });
       break;
     }
 
@@ -210,7 +214,7 @@ export async function runQuotaFallbackRetry(
       providerKey: failedProviderKey,
       agent: failedAgent,
       variant: failedVariant,
-      status: stringValue(quotaCause.status) || "rate_limited",
+      status: transportFailure ? "transport_failure" : stringValue(quotaCause.status) || "rate_limited",
       at: ts(now),
     });
 
@@ -222,7 +226,9 @@ export async function runQuotaFallbackRetry(
       role,
       agents: phaseAgents,
       agent: ctx.agent || null,
-      excludeProvider: quotaProviderKey,
+      excludeProvider: failedProviderKey,
+      excludeProviderFamily,
+      allowedAgents,
     }).catch((): null => null);
 
     if (!fallback || !fallback.available) {
@@ -265,9 +271,12 @@ export async function runQuotaFallbackRetry(
       project,
       phase,
       role,
-      from: quotaProviderKey,
+      from: failedProviderKey,
       to: fallback.selectedProviderKey,
       reason: String(fail.reason || ""),
+      failureKind: fail.kind || null,
+      handoffKind: transportFailure ? "provider_transport" : "provider_quota",
+      status: transportFailure ? "transport_failure" : stringValue(quotaCause.status) || "rate_limited",
       midRun: true,
       attempt: handoffState.count,
       ts: ts(now),
@@ -278,9 +287,12 @@ export async function runQuotaFallbackRetry(
       project,
       phase,
       role,
-      from: quotaProviderKey,
+      from: failedProviderKey,
       to: fallback.selectedProviderKey,
       reason: String(fail.reason || ""),
+      failureKind: fail.kind || null,
+      handoffKind: transportFailure ? "provider_transport" : "provider_quota",
+      status: transportFailure ? "transport_failure" : stringValue(quotaCause.status) || "rate_limited",
     }, now);
 
     let continuationContext: unknown = null;
@@ -291,7 +303,7 @@ export async function runQuotaFallbackRetry(
           jobId,
           phase,
           task,
-          originProvider: quotaProviderKey,
+          originProvider: failedProviderKey,
           failureReason: String(fail.reason || ""),
           partialStdout: String(quotaCause.stdout || ""),
           partialStderr: String(quotaCause.stderr || ""),
@@ -350,10 +362,13 @@ function shouldAttemptQuotaFallback(
   hubRoot: string | null | undefined,
   maxHandoffs: number,
 ) {
+  const transportFailure = result.failure?.kind === FailureKind.AGENT_UNAVAILABLE
+    && recordValue(result.diagnostics).transportFailure === true;
+  const quotaFailure = result.failure?.kind === FailureKind.AGENT_RATE_LIMITED;
   return Boolean(
     hubRoot &&
     !isPhasePassed(result) &&
-    result.failure?.kind === FailureKind.AGENT_RATE_LIMITED &&
+    (quotaFailure || transportFailure) &&
     result.failure?.retryable &&
     recordValue(result.failure?.cause).hardGate !== true &&
     handoffState.count < maxHandoffs

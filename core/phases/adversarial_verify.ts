@@ -1,9 +1,17 @@
+import type { LooseRecord } from "../../shared/types.js";
 import { phasePassed, phaseFailed } from "../contracts/phase-result.js";
 import { FailureKind, failure } from "../contracts/failure.js";
 import { runAgent } from "../agents/agent-runner.js";
 import { parseVerifierJson } from "../agents/response-parser.js";
 import { writeArtifact } from "../artifacts/artifact-store.js";
 import { writePromptArtifact, withPromptArtifactDiagnostics } from "../artifacts/prompt-artifact.js";
+import { buildPhaseAcpEnv } from "./phase-env.js";
+import {
+  buildScopeReviewRequest,
+  executionMapFromPhaseResults,
+  validateScopeReview,
+  type ScopeReviewRequest,
+} from "../workflow/scope-amendment.js";
 
 const JSON_INSTRUCTION = `
 
@@ -16,7 +24,11 @@ Example response:
   "verdict": "pass",
   "reason": "No exploitable verification gap remains",
   "details": "I attacked the assumptions around concurrency and provider fallback; the existing tests cover the risky paths.",
-  "confidence": 0.9
+  "confidence": 0.9,
+  "targetChecklistIds": [],
+  "fixScope": [],
+  "expected": null,
+  "observed": null
 }
 \`\`\`
 
@@ -25,13 +37,68 @@ Rules:
 - Do NOT include any text outside the code block
 - verdict MUST be exactly "pass", "fail", or "partial"
 - Focus only on attack hypotheses, missing proof, and residual risk
+- When a frozen scope amendment review is present, scopeReview MUST be a top-level field
+- For "fail" or "partial", include the concrete expected and observed behavior, targetChecklistIds when known, and repository-relative fixScope paths only when they fall inside the frozen checklist scope. Use empty arrays instead of guessing.
 - Do not implement fixes or edit files`;
 
-export async function runAdversarialVerify(ctx: Record<string, any>) {
+type ResolvedAgent = {
+  agent: string;
+  variant: string | null;
+};
+
+function recordValue(value: unknown): LooseRecord {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as LooseRecord : {};
+}
+
+function stringValue(value: unknown, fallback = ""): string {
+  return typeof value === "string" && value ? value : fallback;
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.map(String) : [];
+}
+
+function riskMapFromContext(ctx: LooseRecord): LooseRecord {
+  return recordValue(recordValue(ctx.sourceContext).riskMap);
+}
+
+function buildRetrySection(sourceContext: LooseRecord) {
+  const retry = recordValue(sourceContext.retry);
+  if (Object.keys(retry).length === 0) return "";
+  return `
+
+## Previous Attempt Failed
+Your previous adversarial verification pass was rejected. Rerun this same phase with the corrected behavior below.
+
+Error type: ${stringValue(retry.failureKind)}
+Error: ${stringValue(retry.failureReason)}
+Failure class: ${stringValue(retry.failureClass, "unknown")}
+Failure fingerprint: ${stringValue(retry.failureFingerprint, "unavailable")}
+Recovery strategy: ${stringValue(retry.retryStrategy, "unavailable")}
+Strategy changed: ${retry.strategyChanged === true ? "yes" : "no"}
+${retry.retryClass ? `Repair class: ${retry.retryClass}` : ""}
+${Array.isArray(retry.fixScope) && retry.fixScope.length > 0 ? `Fix scope: ${retry.fixScope.join(", ")}` : ""}
+${retry.failureEvidence ? `Failure evidence:\n\`\`\`json\n${JSON.stringify(retry.failureEvidence, null, 2)}\n\`\`\`` : ""}
+${retry.instruction ? `Repair instruction: ${retry.instruction}` : ""}
+${retry.previousOutput ? `\nPrevious output for reference:\n\`\`\`\n${retry.previousOutput}\n\`\`\`` : ""}`;
+}
+
+export async function runAdversarialVerify(ctx: LooseRecord) {
   const { project, cpbRoot, pool, sourcePath, jobId } = ctx;
   const { dataRoot } = ctx;
-  const role = ctx.role || "adversarial_verifier";
-  const prompt = await buildAdversarialPrompt(ctx) + JSON_INSTRUCTION;
+  const role = stringValue(ctx.role, "adversarial_verifier");
+  const previousResults = Array.isArray(ctx.previousResults) ? ctx.previousResults.map(recordValue) : [];
+  const candidateIdentity = latestCandidateIdentity(previousResults);
+  const sourceContext = recordValue(ctx.sourceContext);
+  const checklist = recordValue(sourceContext.acceptanceChecklistArtifact).name
+    ? recordValue(sourceContext.acceptanceChecklist)
+    : null;
+  const scopeReviewRequest = buildScopeReviewRequest({
+    executionMap: executionMapFromPhaseResults(previousResults),
+    checklist,
+    candidateId: candidateIdentity,
+  });
+  const prompt = await buildAdversarialPrompt(ctx, { scopeReviewRequest }) + JSON_INSTRUCTION;
   const resolvedAgent = resolveAgent(ctx, "codex");
   const promptArtifact = await writePromptArtifact(cpbRoot, {
     project,
@@ -42,8 +109,11 @@ export async function runAdversarialVerify(ctx: Record<string, any>) {
     prompt,
     dataRoot,
   });
+  const verificationRound = previousResults.filter((result) => result.phase === "adversarial_verify").length + 1;
+  const verificationConversationKey = `${stringValue(ctx.conversationKey, `cpb:${project}:${jobId}:adversarial-verifier`)}:candidate:${candidateIdentity || "unknown"}:round:${verificationRound}`;
 
-  const agentResult: Record<string, any> = await runAgent({
+  const agentResult: LooseRecord = await runAgent({
+    phase: "adversarial_verify",
     role,
     ...resolvedAgent,
     project,
@@ -51,29 +121,33 @@ export async function runAdversarialVerify(ctx: Record<string, any>) {
     prompt,
     cwd: sourcePath || cpbRoot,
     pool,
-    timeoutMs: ctx.timeouts?.adversarial_verify ?? 0,
+    timeoutMs: typeof recordValue(ctx.timeouts).adversarial_verify === "number" ? recordValue(ctx.timeouts).adversarial_verify : 0,
     scope: ctx.scope,
-    env: ctx.env,
+    env: buildPhaseAcpEnv(ctx, "adversarial_verify"),
     dataRoot,
+    onProgress: ctx.onProgress,
+    attemptId: ctx.attemptId,
+    conversationKey: verificationConversationKey,
   });
 
   if (!agentResult.ok) {
+    const failureKind = typeof agentResult.kind === "string" ? agentResult.kind : FailureKind.UNKNOWN;
     return phaseFailed({
       phase: "adversarial_verify",
       failure: failure({
-        kind: agentResult.kind,
+        kind: failureKind,
         phase: "adversarial_verify",
         reason: agentResult.reason,
-        retryable: agentResult.retryable,
-        exitCode: agentResult.exitCode,
-        signal: agentResult.signal,
-        cause: { ...(agentResult.cause || {}), adversarial: true },
+        retryable: agentResult.retryable === true,
+        exitCode: typeof agentResult.exitCode === "number" ? agentResult.exitCode : null,
+        signal: stringValue(agentResult.signal) || null,
+        cause: { ...recordValue(agentResult.cause), adversarial: true },
       }),
-      diagnostics: withPromptArtifactDiagnostics(agentResult.diagnostics, promptArtifact),
+      diagnostics: withPromptArtifactDiagnostics(recordValue(agentResult.diagnostics), promptArtifact),
     });
   }
 
-  const verdict: Record<string, unknown> = parseVerifierJson(agentResult.output) as Record<string, unknown>;
+  const verdict = recordValue(parseVerifierJson(agentResult.output));
   if (!verdict.ok) {
     return phaseFailed({
       phase: "adversarial_verify",
@@ -85,28 +159,66 @@ export async function runAdversarialVerify(ctx: Record<string, any>) {
         stderrSnippet: agentResult.output.slice(-500),
         cause: { adversarial: true },
       }),
-      diagnostics: withPromptArtifactDiagnostics(agentResult.diagnostics, promptArtifact),
+      diagnostics: withPromptArtifactDiagnostics(recordValue(agentResult.diagnostics), promptArtifact),
     });
   }
 
+  const scopeReviewValidation = validateScopeReview(verdict.scopeReview, scopeReviewRequest);
+  if (
+    scopeReviewRequest
+    && (
+      !scopeReviewValidation.ok
+      || (verdict.status === "pass" && scopeReviewValidation.decision !== "approve")
+    )
+  ) {
+    const reason = !scopeReviewValidation.ok
+      ? scopeReviewValidation.reason
+      : "a passing adversarial verdict must approve the required scope expansion";
+    return phaseFailed({
+      phase: "adversarial_verify",
+      failure: failure({
+        kind: FailureKind.VERDICT_INVALID,
+        phase: "adversarial_verify",
+        reason,
+        retryable: true,
+        cause: {
+          adversarial: true,
+          candidateId: candidateIdentity,
+          scopeReviewRequest,
+          scopeReview: verdict.scopeReview || null,
+          scopeReviewValidation,
+        },
+      }),
+      diagnostics: withPromptArtifactDiagnostics({
+        ...recordValue(agentResult.diagnostics),
+        verdict,
+        scopeReviewRequest,
+        scopeReviewValidation,
+      }, promptArtifact),
+    });
+  }
+
+  const riskMap = riskMapFromContext(ctx);
   const artifact = await writeArtifact(cpbRoot, {
     project,
     jobId,
     kind: "adversarial_verdict",
-    content: renderAdversarialVerdictMarkdown(verdict, ctx.sourceContext?.riskMap),
+    content: renderAdversarialVerdictMarkdown(verdict, riskMap),
     dataRoot,
     metadata: {
       ...verdict,
       adversarial: true,
-      riskMap: ctx.sourceContext?.riskMap || null,
+      riskMap: Object.keys(riskMap).length > 0 ? riskMap : null,
     },
   });
 
   const diagnostics = withPromptArtifactDiagnostics({
-    ...agentResult.diagnostics,
+    ...recordValue(agentResult.diagnostics),
     artifact,
     verdict,
-    adversarialFocus: ctx.sourceContext?.riskMap?.adversarialFocus || [],
+    scopeReviewRequest,
+    scopeReviewValidation,
+    adversarialFocus: stringArray(riskMap.adversarialFocus),
   }, promptArtifact);
 
   if (verdict.status !== "pass") {
@@ -121,7 +233,7 @@ export async function runAdversarialVerify(ctx: Record<string, any>) {
           adversarial: true,
           verdict,
           artifact,
-          focus: ctx.sourceContext?.riskMap?.adversarialFocus || [],
+          focus: stringArray(riskMap.adversarialFocus),
           fix_scope: verdict.fix_scope || verdict.fixScope || null,
         },
       }),
@@ -134,10 +246,21 @@ export async function runAdversarialVerify(ctx: Record<string, any>) {
     verdict: `VERDICT: ${verdict.status.toUpperCase()}`,
     artifact,
     diagnostics,
-  } as { phase: string; artifact?: unknown; diagnostics?: Record<string, unknown>; verdict?: string });
+  } as Parameters<typeof phasePassed>[0] & { verdict?: string });
 }
 
-function renderAdversarialVerdictMarkdown(verdict: Record<string, any>, riskMap: Record<string, any> | null = null) {
+function latestCandidateIdentity(previousResults: LooseRecord[]) {
+  for (let index = previousResults.length - 1; index >= 0; index -= 1) {
+    const result = previousResults[index];
+    if (result.phase !== "execute") continue;
+    const candidate = recordValue(recordValue(result.diagnostics).candidateArtifact);
+    const identityHash = stringValue(candidate.identityHash);
+    if (identityHash) return identityHash;
+  }
+  return null;
+}
+
+function renderAdversarialVerdictMarkdown(verdict: LooseRecord, riskMap: LooseRecord | null = null) {
   const statusUpper = String(verdict.status || "unknown").toUpperCase();
   return `# Adversarial Verdict
 
@@ -157,12 +280,70 @@ ${verdict.details || "N/A"}
 `;
 }
 
-async function buildAdversarialPrompt(ctx: Record<string, any>) {
-  if (typeof ctx.buildPrompt === "function") {
-    return ctx.buildPrompt("adversarial_verify", ctx);
+async function buildAdversarialPrompt(
+  ctx: LooseRecord,
+  { scopeReviewRequest = null }: { scopeReviewRequest?: ScopeReviewRequest | null } = {},
+) {
+  const retrySection = buildRetrySection(recordValue(ctx.sourceContext));
+  const riskMap = riskMapFromContext(ctx);
+  const previousResults = Array.isArray(ctx.previousResults) ? ctx.previousResults.map(recordValue) : [];
+  let verifyResult: LooseRecord | null = null;
+  for (let index = previousResults.length - 1; index >= 0; index -= 1) {
+    const result = previousResults[index];
+    if (recordValue(result.artifact).kind === "verdict") {
+      verifyResult = result;
+      break;
+    }
   }
-  const riskMap = ctx.sourceContext?.riskMap || {};
-  const verifyArtifact = ctx.previousResults?.findLast?.((result: Record<string, any>) => result.artifact?.kind === "verdict")?.artifact || null;
+  const verifyArtifact = recordValue(verifyResult?.artifact);
+  const sourceContext = recordValue(ctx.sourceContext);
+  const checklist = recordValue(sourceContext.acceptanceChecklist);
+  const observableContracts = (Array.isArray(checklist.items) ? checklist.items : [])
+    .map(recordValue)
+    .filter((item) => Object.keys(recordValue(item.observableContract)).length > 0)
+    .map((item) => ({
+      checklistId: stringValue(item.id),
+      requirement: stringValue(item.requirement),
+      observableContract: recordValue(item.observableContract),
+    }));
+  const observableSection = observableContracts.length > 0 ? `
+
+## Frozen Pre-Execution Observable Contracts
+${JSON.stringify(observableContracts, null, 2)}
+` : "";
+  const scopeReviewSection = scopeReviewRequest ? `
+
+## FROZEN SCOPE AMENDMENT REVIEW (MANDATORY)
+The executor changed files outside the plan-time checklist scope. Independently inspect the exact candidate diff and decide whether each file is necessary for an existing frozen requirement. Do not defer to the ordinary verifier or executor.
+
+Return a top-level scopeReview field. Copy candidateId, requestHash, and unmappedFiles exactly; map every file exactly once using only listed checklist ids. PASS is invalid unless decision is "approve". Return FAIL/PARTIAL with decision "deny" when any expansion is unnecessary, unsafe, unrelated, or insufficiently evidenced.
+
+Required scopeReview shape:
+{
+  "candidateId": "${scopeReviewRequest.candidateId}",
+  "requestHash": "${scopeReviewRequest.requestHash}",
+  "decision": "approve",
+  "unmappedFiles": ${JSON.stringify(scopeReviewRequest.unmappedFiles)},
+  "mappings": [
+    {
+      "file": "${scopeReviewRequest.unmappedFiles[0]}",
+      "checklistIds": ["${String(scopeReviewRequest.checklistItems[0]?.id || "AC-001")}"],
+      "necessity": "Why the existing requirement needs this file",
+      "risk": "What compatibility or configuration risk was challenged",
+      "evidence": ["Exact independent diff/test/config evidence"]
+    }
+  ]
+}
+
+Frozen review request:
+${JSON.stringify(scopeReviewRequest, null, 2)}
+` : "";
+  if (typeof ctx.buildPrompt === "function") {
+    return await ctx.buildPrompt("adversarial_verify", ctx, { scopeReviewRequest })
+      + observableSection
+      + scopeReviewSection
+      + retrySection;
+  }
   return `You are an adversarial verifier. Try to disprove the ordinary verifier verdict without editing files.
 
 Task: ${ctx.task}
@@ -170,16 +351,38 @@ Project: ${ctx.project}
 Job: ${ctx.jobId}
 
 Risk level: ${riskMap.riskLevel || "unknown"}
-Risk domains: ${(riskMap.domains || []).join(", ") || "unknown"}
-Focus: ${(riskMap.adversarialFocus || []).join(", ") || "verification gaps"}
-Ordinary verify artifact: ${verifyArtifact?.name || "unavailable"}
+Risk domains: ${stringArray(riskMap.domains).join(", ") || "unknown"}
+Focus: ${stringArray(riskMap.adversarialFocus).join(", ") || "verification gaps"}
+Ordinary verify artifact: ${verifyArtifact.name || "unavailable"}
+${observableSection}
+${scopeReviewSection}
 
-Attack the assumptions, missing tests, unsafe provider/worktree state, and retry/remediation gaps.`;
+Attack the assumptions, missing tests, unsafe provider/worktree state, and retry/remediation gaps.
+
+Acceptance source of truth: original task requirements, frozen acceptance checklist artifacts, cited evidence ledger entries, real commands/tests you run, and current worktree state. The plan artifact is an attack guide, not an independent acceptance criterion.
+
+## Real-path challenge contract
+- Identify named real actors from the task, diff, checklist, and evidence ledger: classes, functions, routes, configs, subclasses, wrappers, adapters, or callers.
+- Try to find bypass candidates: alternate entrypoints, subclasses overriding base initialization/methods, wrappers that skip the patched function, cached paths, feature flags, or compatibility shims.
+- Treat agent-authored minimal regression tests as supporting evidence only. Challenge whether they exercise the original failing path or merely the executor's interpretation.
+- Treat every frozen observableContract as a pre-candidate oracle. For exact_text/contains_text contracts, independently execute the real entrypoint and compare the observation with expectedObservation while rejecting every forbiddenObservations entry. A candidate-authored assertion, or an inline probe whose expected value was copied from candidate output, is circular evidence.
+- Expand user-visible formatting templates with representative values and inspect quote, escape, separator, collection-boundary, slice, and pluralization boundaries. Reject native list/map/tuple representations wrapped in leftover scalar quote delimiters unless the frozen expectedObservation explicitly contains them.
+- Enumerate every explicit numbered/bulleted task obligation. Attack any plan, checklist, or diff that silently collapses, defers, or labels one out of scope.
+- For versioned, future/current, migration, release, or deprecation work, independently determine the checkout's phase from repository-native version metadata, whatsnew/changelog files, release configuration, or branch-owned tests. Reject commit-date-only chronology. Probe the applicable default behavior and wrapper/bypass, masked/subclass, and unexpected-warning paths.
+- If a diagnostic command/probe that targets a named real path is blocked or absent, treat that as missing critical proof unless the current diff/evidence gives another concrete real-path proof.
+- Return FAIL or PARTIAL when the evidence covers only a minimal repro and leaves a plausible real task path or bypass candidate unverified.
+
+Return FAIL or PARTIAL only for a concrete behavioral failure, unsatisfied checklist/task requirement, missing/invalid evidence, unsafe worktree/provider state, unrun critical proof, or missing real-path proof. If the only remaining concern is that the implementation chose a different code path than the plan suggested while checklist evidence, real-path coverage, and your independent checks pass, return PASS and document that plan deviation as residual risk/details.
+${retrySection}`;
 }
 
-function resolveAgent(ctx: Record<string, any>, fallback: string) {
-  const role = ctx.role || "adversarial_verifier";
-  const raw = ctx.agents?.[role] || ctx.agents?.adversarial_verifier || ctx.agents?.verifier || ctx.agent || fallback;
-  if (typeof raw === "object" && raw !== null) return { agent: raw.agent || fallback, variant: raw.variant || null };
-  return { agent: raw, variant: null };
+function resolveAgent(ctx: LooseRecord, fallback: string): ResolvedAgent {
+  const role = stringValue(ctx.role, "adversarial_verifier");
+  const agents = recordValue(ctx.agents);
+  const raw = agents[role] || agents.adversarial_verifier || agents.verifier || ctx.agent || fallback;
+  if (raw !== null && typeof raw === "object" && !Array.isArray(raw)) {
+    const record = recordValue(raw);
+    return { agent: stringValue(record.agent, fallback), variant: stringValue(record.variant) || null };
+  }
+  return { agent: stringValue(raw, fallback), variant: null };
 }

@@ -1,7 +1,22 @@
+import type { LooseRecord } from "../../shared/types.js";
 import { spawn } from "node:child_process";
 import path from "node:path";
 
 type CommandResult = { ok: boolean; output: string };
+type DoctorSmokeResult = {
+  ok: boolean;
+  inbox: number;
+  outputs: number;
+};
+type DoctorResults = LooseRecord & {
+  errors: string[];
+  warnings: string[];
+  smokeTest?: DoctorSmokeResult;
+};
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
 
 function runCmd(cmd: string, args: string[], cwd = process.cwd()): Promise<CommandResult> {
   return new Promise((resolve) => {
@@ -24,7 +39,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
   // Hub-specific consistency checks
   const { resolveHubRoot } = await import("../../server/services/hub/hub-registry.js");
   const hubRoot = resolveHubRoot(cpbRoot);
-  const results: Record<string, any> = { errors: [], warnings: [] };
+  const results: DoctorResults = { errors: [], warnings: [] };
 
   await Promise.all([
     checkQueueAssignments(hubRoot, results),
@@ -32,7 +47,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
     checkOrphanLeases(hubRoot, results),
     checkDeadPidAssignments(hubRoot, results),
     checkRuntimeHealth(cpbRoot, executorRoot, results),
-  ]).catch((err) => { results.errors.push(`Consistency checks crashed: ${err.message || err}`); });
+  ]).catch((err) => { results.errors.push(`Consistency checks crashed: ${errorMessage(err)}`); });
 
   if (results.errors.length > 0) result.summary.success = false;
 
@@ -45,7 +60,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
       results.smokeTest = { ok: smokeResult.ok, inbox: smokeResult.artifacts.inbox.length, outputs: smokeResult.artifacts.outputs.length };
       if (!smokeResult.ok) result.summary.success = false;
     } catch (err) {
-      results.errors.push(`Smoke test failed: ${err.message}`);
+      results.errors.push(`Smoke test failed: ${errorMessage(err)}`);
       result.summary.success = false;
     }
   }
@@ -71,7 +86,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
   return result.summary.success ? 0 : 1;
 }
 
-async function checkQueueAssignments(hubRoot, results) {
+async function checkQueueAssignments(hubRoot, results: DoctorResults) {
   const { listQueue } = await import("../../server/services/hub/hub-queue.js");
   const { AssignmentStore } = await import("../../shared/orchestrator/assignment-store.js");
   const { WorkerStore } = await import("../../shared/orchestrator/worker-store.js");
@@ -105,7 +120,7 @@ async function checkQueueAssignments(hubRoot, results) {
     if (staleScheduled > 0) {
       results.warnings.push(`Queue has ${staleScheduled} scheduled entries with terminal assignment`);
     }
-  } catch (err) { results.errors.push(`scheduled-entry check failed: ${err.message || err}`); }
+  } catch (err) { results.errors.push(`scheduled-entry check failed: ${errorMessage(err)}`); }
 
   // Check claimedBy on queue entries — if the claiming worker is dead, flag it
   try {
@@ -121,7 +136,7 @@ async function checkQueueAssignments(hubRoot, results) {
     if (claimedByDead > 0) {
       results.warnings.push(`Queue has ${claimedByDead} entries claimed by exited workers`);
     }
-  } catch (err) { results.errors.push(`claimedBy check failed: ${err.message || err}`); }
+  } catch (err) { results.errors.push(`claimedBy check failed: ${errorMessage(err)}`); }
 
   // Check worker.currentAssignmentId — if a worker claims to be running a terminal assignment, flag it
   try {
@@ -135,10 +150,10 @@ async function checkQueueAssignments(hubRoot, results) {
         results.warnings.push(`Worker ${w.workerId} still references terminal assignment ${w.currentAssignmentId}`);
       }
     }
-  } catch (err) { results.errors.push(`currentAssignmentId check failed: ${err.message || err}`); }
+  } catch (err) { results.errors.push(`currentAssignmentId check failed: ${errorMessage(err)}`); }
 }
 
-async function checkZombieWorkers(hubRoot, results) {
+async function checkZombieWorkers(hubRoot, results: DoctorResults) {
   const { WorkerStore } = await import("../../shared/orchestrator/worker-store.js");
   const store = new WorkerStore(hubRoot);
   const workers = await store.listWorkers();
@@ -155,7 +170,7 @@ async function checkZombieWorkers(hubRoot, results) {
   }
 }
 
-async function checkOrphanLeases(hubRoot, results) {
+async function checkOrphanLeases(hubRoot, results: DoctorResults) {
   const { readdir, readFile } = await import("node:fs/promises");
   const path = await import("node:path");
   const leasesDir = path.join(hubRoot, "providers", "acp-leases");
@@ -170,7 +185,7 @@ async function checkOrphanLeases(hubRoot, results) {
         if (lease.pid) {
           try { process.kill(lease.pid, 0); } catch { orphans++; }
         }
-      } catch (err) { results.warnings.push(`orphan lease file read failed: ${err.message || err}`); }
+      } catch (err) { results.warnings.push(`orphan lease file read failed: ${errorMessage(err)}`); }
     }
     if (orphans > 0) {
       results.warnings.push(`Found ${orphans} orphan ACP leases (owner PID dead)`);
@@ -180,12 +195,12 @@ async function checkOrphanLeases(hubRoot, results) {
     try {
       const { access } = await import("node:fs/promises");
       await access(leasesDir);
-      results.errors.push(`Leases dir exists but cannot be read: ${err.message || err}`);
+      results.errors.push(`Leases dir exists but cannot be read: ${errorMessage(err)}`);
     } catch { /* dir doesn't exist — no warning needed */ }
   }
 }
 
-async function checkDeadPidAssignments(hubRoot, results) {
+async function checkDeadPidAssignments(hubRoot, results: DoctorResults) {
   const { AssignmentStore } = await import("../../shared/orchestrator/assignment-store.js");
   const { readFile } = await import("node:fs/promises");
   const path = await import("node:path");
@@ -208,11 +223,11 @@ async function checkDeadPidAssignments(hubRoot, results) {
           results.errors.push(`Assignment ${a.assignmentId} running but worker PID ${hb.pid} is dead`);
         }
       }
-    } catch (err) { results.warnings.push(`heartbeat read failed for ${a.assignmentId}: ${err.message || err}`); }
+    } catch (err) { results.warnings.push(`heartbeat read failed for ${a.assignmentId}: ${errorMessage(err)}`); }
   }
 }
 
-async function checkRuntimeHealth(cpbRoot, executorRoot, results) {
+async function checkRuntimeHealth(cpbRoot, executorRoot, results: DoctorResults) {
   const { collectRuntimeHealth } = await import("../../server/services/runtime.js");
   const health = await collectRuntimeHealth({ cpbRoot, executorRoot });
   results.runtimeHealth = health;

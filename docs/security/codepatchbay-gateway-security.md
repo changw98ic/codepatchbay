@@ -210,9 +210,9 @@ CPB provides layered isolation for agent processes:
 - **Agent home isolation**: each agent job gets its own HOME, XDG_CONFIG_HOME,
   XDG_DATA_HOME, and XDG_CACHE_HOME directories. Provider credentials are
   symlinked selectively (e.g. only `auth.json` and `config.toml` for Codex).
-- **OS-level sandbox** (optional): `CPB_AGENT_SANDBOX` supports `off`,
+- **OS-level sandbox** (fail-closed by default): `CPB_AGENT_SANDBOX` supports `off`,
   `best-effort`, `required`, and `strict` modes using macOS `sandbox-exec` or
-  Linux `bwrap`. Strict mode denies network and subprocess by default.
+  Linux `bwrap`. Required mode denies network by default; strict mode also denies subprocesses.
 - **Environment allowlist**: child processes receive only an explicit allowlist
   of runtime and provider-specific credential variables. Provider credentials
   are scoped per agent (Codex receives OpenAI keys, Claude receives Anthropic

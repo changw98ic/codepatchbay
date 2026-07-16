@@ -1,40 +1,85 @@
+import type { LooseRecord } from "../../shared/types.js";
 /**
  * DAG executor for workflow nodes.
  * Provides topological sort, ready-node identification, and concurrency control.
  * Compatible with legacy linear phase workflows via automatic conversion.
  */
 
+type DagCallbackContext = LooseRecord & {
+  node: LooseRecord;
+  attempt: number;
+  maxAttempts: number;
+};
+
+type DagResult = LooseRecord & {
+  ok?: boolean;
+  retryable?: boolean;
+  reactivate?: string;
+  reason?: string;
+};
+
+type DagCallbacks = {
+  executor?: (node: LooseRecord, ctx: DagCallbackContext) => Promise<DagResult> | DagResult;
+  shouldStop?: () => boolean;
+  onBeforeNode?: (nodeId: string, ctx: DagCallbackContext) => Promise<boolean | void> | boolean | void;
+  onNodeResult?: (nodeId: string, result: DagResult, ctx: DagCallbackContext) => Promise<void> | void;
+  seedCompleted?: string[];
+};
+
+function recordValue(value: unknown): LooseRecord {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as LooseRecord : {};
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === "string" ? value : String(value || "");
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter(Boolean).map(String) : [];
+}
+
+function nodeId(node: LooseRecord): string {
+  return stringValue(node.id);
+}
+
+function nodeDeps(node: LooseRecord): string[] {
+  return stringArray(node.dependsOn);
+}
+
 /**
  * Topologically sort DAG nodes. Returns array of node IDs.
  * Throws if cycle detected.
  */
-export function topologicalSort(nodes: Record<string, any>[]) {
-  const adjacency = new Map();
-  const inDegree = new Map();
+export function topologicalSort(nodes: LooseRecord[]) {
+  const adjacency = new Map<string, string[]>();
+  const inDegree = new Map<string, number>();
   for (const n of nodes) {
-    adjacency.set(n.id, []);
-    inDegree.set(n.id, 0);
+    const id = nodeId(n);
+    adjacency.set(id, []);
+    inDegree.set(id, 0);
   }
   for (const n of nodes) {
-    for (const dep of n.dependsOn || []) {
+    const id = nodeId(n);
+    for (const dep of nodeDeps(n)) {
       if (adjacency.has(dep)) {
-        adjacency.get(dep).push(n.id);
-        inDegree.set(n.id, (inDegree.get(n.id) || 0) + 1);
+        adjacency.get(dep)?.push(id);
+        inDegree.set(id, (inDegree.get(id) || 0) + 1);
       }
     }
   }
 
-  const queue = [];
+  const queue: string[] = [];
   for (const [id, deg] of inDegree) {
     if (deg === 0) queue.push(id);
   }
 
-  const sorted = [];
+  const sorted: string[] = [];
   while (queue.length > 0) {
     const id = queue.shift();
+    if (!id) continue;
     sorted.push(id);
     for (const next of adjacency.get(id) || []) {
-      inDegree.set(next, inDegree.get(next) - 1);
+      inDegree.set(next, (inDegree.get(next) || 0) - 1);
       if (inDegree.get(next) === 0) queue.push(next);
     }
   }
@@ -52,13 +97,14 @@ export function topologicalSort(nodes: Record<string, any>[]) {
  * @param {Set} runningNodeIds - IDs of currently running nodes
  * @returns {Array} Node IDs that are ready to execute
  */
-export function readyNodes(nodes: Record<string, any>[], completedNodeIds: Set<string>, runningNodeIds: Set<string> = new Set()) {
+export function readyNodes(nodes: LooseRecord[], completedNodeIds: Set<string>, runningNodeIds: Set<string> = new Set()) {
   const result: string[] = [];
   for (const n of nodes) {
-    if (completedNodeIds.has(n.id) || runningNodeIds.has(n.id)) continue;
-    const deps = n.dependsOn || [];
-    if (deps.length === 0 || deps.every((d: string) => completedNodeIds.has(d))) {
-      result.push(n.id);
+    const id = nodeId(n);
+    if (completedNodeIds.has(id) || runningNodeIds.has(id)) continue;
+    const deps = nodeDeps(n);
+    if (deps.length === 0 || deps.every((d) => completedNodeIds.has(d))) {
+      result.push(id);
     }
   }
   return result;
@@ -67,22 +113,22 @@ export function readyNodes(nodes: Record<string, any>[], completedNodeIds: Set<s
 /**
  * Check if all DAG nodes are completed.
  */
-export function isDagComplete(nodes: Record<string, any>[], completedNodeIds: Set<string>) {
-  return nodes.every((n) => completedNodeIds.has(n.id));
+export function isDagComplete(nodes: LooseRecord[], completedNodeIds: Set<string>) {
+  return nodes.every((n) => completedNodeIds.has(nodeId(n)));
 }
 
 /**
  * Get a node by ID.
  */
-export function getNode(nodes: Record<string, any>[], nodeId: string) {
-  return nodes.find((n) => n.id === nodeId) || null;
+export function getNode(nodes: LooseRecord[], nodeId: string) {
+  return nodes.find((n) => nodeId === n.id) || null;
 }
 
-function orderedPhaseEntries(phaseStates: Record<string, any>) {
+function orderedPhaseEntries(phaseStates: LooseRecord) {
   if (!phaseStates || typeof phaseStates !== "object") return [];
   return Object.entries(phaseStates)
     .map(([phase, value]) => {
-      const status = value && typeof value === "object" ? (value as Record<string, any>).status : value;
+      const status = value && typeof value === "object" && !Array.isArray(value) ? recordValue(value).status : value;
       return [phase, status];
     })
     .filter(([phase]) => Boolean(phase));
@@ -92,22 +138,24 @@ function orderedPhaseEntries(phaseStates: Record<string, any>) {
  * Derive deterministic DAG resume metadata from node-first state.
  * Falls back to phase names only when no workflow DAG nodes are available.
  */
-export function deriveDagResumeState({ workflowDag, nodeStates = {}, phaseStates = {} }: Record<string, any> = {}) {
-  const nodes: Record<string, any>[] = Array.isArray(workflowDag?.nodes) ? workflowDag.nodes.filter((node: Record<string, any>) => node?.id) : [];
+export function deriveDagResumeState({ workflowDag, nodeStates = {}, phaseStates = {} }: LooseRecord = {}) {
+  const workflow = recordValue(workflowDag);
+  const nodes: LooseRecord[] = Array.isArray(workflow.nodes) ? workflow.nodes.map(recordValue).filter((node) => node.id) : [];
+  const nodeStateMap = recordValue(nodeStates);
 
   if (nodes.length === 0) {
-    const nodeEntries = Object.entries(nodeStates || {}).filter(([nodeId]) => Boolean(nodeId));
+    const nodeEntries = Object.entries(nodeStateMap).filter(([nodeId]) => Boolean(nodeId));
     if (nodeEntries.length > 0) {
       const completedNodeIds = [];
       let failedNodeId = null;
       let failedPhase = null;
       for (const [nodeId, node] of nodeEntries) {
-        const entry = node as Record<string, any>;
-        const status = node && typeof node === "object" ? entry.status : node;
+        const nodeObj = node && typeof node === "object" && !Array.isArray(node) ? recordValue(node) : null;
+        const status = nodeObj ? nodeObj.status : node;
         if (status === "completed" || status === "skipped") completedNodeIds.push(nodeId);
-        if (!failedNodeId && ["failed", "blocked", "cancelled"].includes(status)) {
+        if (!failedNodeId && ["failed", "blocked", "cancelled"].includes(String(status))) {
           failedNodeId = nodeId;
-          failedPhase = entry?.phase || nodeId;
+          failedPhase = stringValue(nodeObj?.phase) || nodeId;
         }
       }
       return {
@@ -121,16 +169,16 @@ export function deriveDagResumeState({ workflowDag, nodeStates = {}, phaseStates
 
     const completedNodeIds = [];
     let failedNodeId = null;
-    for (const [phase, status] of orderedPhaseEntries(phaseStates)) {
+    for (const [phase, status] of orderedPhaseEntries(recordValue(phaseStates))) {
       if (status === "completed") completedNodeIds.push(phase);
-      if (!failedNodeId && ["failed", "blocked", "cancelled"].includes(status)) failedNodeId = phase;
+      if (!failedNodeId && ["failed", "blocked", "cancelled"].includes(String(status))) failedNodeId = phase;
     }
     const resumeTarget = failedNodeId ? { nodeId: failedNodeId, phase: failedNodeId } : null;
     return {
       completedNodeIds,
       failedNodeId,
       readyNodeIds: failedNodeId ? [failedNodeId] : [],
-      blockedNodeIds: [] as string[],
+      blockedNodeIds: [],
       resumeTarget,
     };
   }
@@ -141,34 +189,36 @@ export function deriveDagResumeState({ workflowDag, nodeStates = {}, phaseStates
   let failedNodeId = null;
 
   for (const node of nodes) {
-    const status = nodeStates[node.id]?.status;
+    const id = nodeId(node);
+    const status = recordValue(nodeStateMap[id]).status;
     if (status === "completed" || status === "skipped") {
-      completed.add(node.id);
+      completed.add(id);
       continue;
     }
     if (status === "running" || status === "retrying") {
-      running.add(node.id);
-      unavailable.add(node.id);
+      running.add(id);
+      unavailable.add(id);
       continue;
     }
     if (status === "failed" || status === "blocked" || status === "cancelled") {
-      unavailable.add(node.id);
-      if (!failedNodeId) failedNodeId = node.id;
+      unavailable.add(id);
+      if (!failedNodeId) failedNodeId = id;
     }
   }
 
-  const completedNodeIds = nodes.map((node) => node.id).filter((id: string) => completed.has(id));
+  const completedNodeIds = nodes.map(nodeId).filter((id) => completed.has(id));
   const readyNodeIds: string[] = [];
   const blockedNodeIds: string[] = [];
 
   for (const node of nodes) {
-    if (completed.has(node.id) || running.has(node.id)) continue;
-    const deps = node.dependsOn || [];
-    const depsComplete = deps.every((dep: string) => completed.has(dep));
+    const id = nodeId(node);
+    if (completed.has(id) || running.has(id)) continue;
+    const deps = nodeDeps(node);
+    const depsComplete = deps.every((dep) => completed.has(dep));
     if (depsComplete) {
-      readyNodeIds.push(node.id);
-    } else if (!unavailable.has(node.id)) {
-      blockedNodeIds.push(node.id);
+      readyNodeIds.push(id);
+    } else if (!unavailable.has(id)) {
+      blockedNodeIds.push(id);
     }
   }
 
@@ -188,28 +238,30 @@ export function deriveDagResumeState({ workflowDag, nodeStates = {}, phaseStates
  * Validate a DAG: check for cycles, missing deps, duplicate IDs.
  * Returns { valid: true } or { valid: false, errors: string[] }.
  */
-export function validateDag(nodes: Record<string, any>[]) {
+export function validateDag(nodes: LooseRecord[]) {
   const errors = [];
   const ids = new Set();
 
   for (const n of nodes) {
-    if (!n.id) {
+    const id = nodeId(n);
+    if (!id) {
       errors.push(`node missing id: ${JSON.stringify(n)}`);
       continue;
     }
-    if (ids.has(n.id)) {
-      errors.push(`duplicate node id: ${n.id}`);
+    if (ids.has(id)) {
+      errors.push(`duplicate node id: ${id}`);
     }
-    ids.add(n.id);
+    ids.add(id);
     if (!n.phase) {
-      errors.push(`node ${n.id} missing phase`);
+      errors.push(`node ${id} missing phase`);
     }
   }
 
   for (const n of nodes) {
-    for (const dep of n.dependsOn || []) {
+    const id = nodeId(n);
+    for (const dep of nodeDeps(n)) {
       if (!ids.has(dep)) {
-        errors.push(`node ${n.id} depends on unknown node: ${dep}`);
+        errors.push(`node ${id} depends on unknown node: ${dep}`);
       }
     }
   }
@@ -245,7 +297,7 @@ export function phasesToDag(phases: string[], roleForPhase: Record<string, strin
  * Get the maximum concurrency for ready nodes.
  * Respects maxConcurrentNodes limit.
  */
-export function scheduleReadyNodes(nodes: Record<string, any>[], completedNodeIds: Set<string>, runningNodeIds: Set<string>, maxConcurrent = 2) {
+export function scheduleReadyNodes(nodes: LooseRecord[], completedNodeIds: Set<string>, runningNodeIds: Set<string>, maxConcurrent = 2) {
   const ready = readyNodes(nodes, completedNodeIds, runningNodeIds);
   const available = maxConcurrent - runningNodeIds.size;
   return ready.slice(0, Math.max(0, available));
@@ -268,11 +320,12 @@ export function scheduleReadyNodes(nodes: Record<string, any>[], completedNodeId
  * @param {string[]} [callbacks.seedCompleted] - Node IDs to pre-mark as completed
  * @returns {Promise<{ok: boolean, results: Map, failedNode?: string, reason?: string}>}
  */
-export async function executeDag(dag: Record<string, any>, callbacks: Record<string, any>) {
+export async function executeDag(dag: LooseRecord, callbacks: DagCallbacks) {
   const { executor, shouldStop = () => false, onBeforeNode, onNodeResult, seedCompleted } = callbacks;
-  const nodes = dag.nodes;
-  const completed = new Set<string>(seedCompleted || []);
-  const results = new Map<string, any>();
+  if (typeof executor !== "function") throw new Error("executeDag requires executor callback");
+  const nodes = Array.isArray(dag.nodes) ? dag.nodes.map(recordValue).filter((node) => node.id) : [];
+  const completed = new Set<string>(stringArray(seedCompleted));
+  const results = new Map<string, unknown>();
   const attempts = new Map<string, number>();
 
   while (!isDagComplete(nodes, completed)) {
@@ -284,7 +337,7 @@ export async function executeDag(dag: Record<string, any>, callbacks: Record<str
     const nodeId = ready[0];
     const node = getNode(nodes, nodeId);
     if (!node) return { ok: false, results, failedNode: nodeId, reason: `missing node: ${nodeId}` };
-    const maxAttempts = node.maxRetries ?? 3;
+    const maxAttempts = typeof node.maxRetries === "number" ? node.maxRetries : 3;
     const attempt = (attempts.get(nodeId) || 0) + 1;
     attempts.set(nodeId, attempt);
     const ctx = { node, attempt, maxAttempts };
@@ -294,23 +347,25 @@ export async function executeDag(dag: Record<string, any>, callbacks: Record<str
       if (proceed === false) return { ok: false, results, failedNode: nodeId, reason: "cancelled" };
     }
 
-    const result = await executor(node, ctx);
+    const result = recordValue(await executor(node, ctx)) as DagResult;
     results.set(nodeId, result);
     if (onNodeResult) await onNodeResult(nodeId, result, ctx);
 
     if (result.ok) {
       completed.add(nodeId);
     } else if (result.reactivate) {
-      const toClear = [result.reactivate];
+      const toClear = [String(result.reactivate)];
       const visited = new Set(toClear);
       while (toClear.length > 0) {
         const current = toClear.shift();
+        if (!current) continue;
         completed.delete(current);
         results.delete(current);
         for (const n of nodes) {
-          if ((n.dependsOn || []).includes(current) && !visited.has(n.id)) {
-            visited.add(n.id);
-            toClear.push(n.id);
+          const id = stringValue(n.id);
+          if (nodeDeps(n).includes(String(current)) && !visited.has(id)) {
+            visited.add(id);
+            toClear.push(id);
           }
         }
       }

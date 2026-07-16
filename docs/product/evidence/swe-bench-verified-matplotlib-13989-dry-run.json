@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "validationMode": "swe-bench-verified",
+  "validatedAt": "2026-06-24T13:14:23.000Z",
+  "source": {
+    "dataset": "SWE-bench/SWE-bench_Verified",
+    "split": "test",
+    "datasetUrl": "https://huggingface.co/datasets/SWE-bench/SWE-bench_Verified",
+    "datasetRowsApi": "https://datasets-server.huggingface.co/rows?dataset=SWE-bench%2FSWE-bench_Verified&config=default&split=test&offset=253&length=1",
+    "rowIndex": 253
+  },
+  "sample": {
+    "instanceId": "matplotlib__matplotlib-13989",
+    "repository": "matplotlib/matplotlib",
+    "baseCommit": "a3e2897bfaf9eaac1d6649da535c4e721c89fa69",
+    "createdAt": "2019-04-19T01:47:57Z",
+    "version": "3.0",
+    "difficulty": "<15 min fix",
+    "problemStatementSha256": "13d52a70d283b3677d5258aadda203f99ac501d0073989215713092077f6e3ff",
+    "failToPassTests": 66,
+    "passToPassTests": 28835
+  },
+  "cpbDryRunEvidence": {
+    "dryRunFinalizerStatus": "dry-run",
+    "draftPrPreview": true,
+    "noLiveSideEffects": true,
+    "prBodyRequiredManualReconstruction": false,
+    "scope": "Real external benchmark sample evidence for the CPB flagship dry-run product gate. This bundle does not claim the SWE-bench task was solved or that the benchmark test suite was executed."
+  }
+}

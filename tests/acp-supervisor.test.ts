@@ -8,6 +8,7 @@ import { AcpSupervisor } from "../server/orchestrator/acp-supervisor.js";
 import { FailureRouter } from "../server/orchestrator/failure-router.js";
 import { HubOrchestrator } from "../server/orchestrator/hub-orchestrator.js";
 import { AcpPool } from "../server/services/acp/acp-pool.js";
+import { recordValue } from "../shared/types.js";
 import { tempRoot, readJson } from "./helpers.js";
 
 function supervisorInput() {
@@ -95,18 +96,24 @@ test("AcpSupervisor start writes resident health from pool state and quotas", as
         providers: { "codex:control-plane": 1 },
       };
     },
+    async execute() {
+      return { output: "" };
+    },
   };
 
   const supervisor = new AcpSupervisor({ cpbRoot, hubRoot, pool });
   const state = await supervisor.start();
-  const persisted = await readJson(path.join(hubRoot, "supervisor", "state.json"));
+  const persisted = recordValue(await readJson(path.join(hubRoot, "supervisor", "state.json")));
 
   assert.equal(state.status, "healthy");
   assert.equal(state.agent, "codex");
   assert.equal(state.providerKey, "codex:control-plane");
   assert.equal(state.poolScope, "control-plane");
-  assert.equal(state.providerHealth["codex:control-plane"].status, "available");
-  assert.equal(state.connectionLeases.providers["codex:control-plane"], 1);
+  const providerHealth = recordValue(state.providerHealth["codex:control-plane"]);
+  const connectionLeases = recordValue(state.connectionLeases);
+  const leaseProviders = recordValue(connectionLeases.providers);
+  assert.equal(providerHealth.status, "available");
+  assert.equal(leaseProviders["codex:control-plane"], 1);
   assert.equal(persisted.status, "healthy");
   assert.equal(persisted.kind, "resident_supervisor");
 });

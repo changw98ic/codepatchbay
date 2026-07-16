@@ -1,3 +1,4 @@
+import type { LooseRecord } from "../../shared/types.js";
 import {
   defaultAgentForRole,
   getDescriptor,
@@ -32,9 +33,39 @@ const ROUTING_AGENT_ROLES = Object.freeze([
 const BUILTIN_AGENT_NAMES = new Set(["codex", "claude"]);
 const CATEGORY_SET = new Set(ROUTING_TASK_CATEGORIES);
 
-function routingRules(routing: Record<string, any>): Record<string, any> {
-  if (!routing || typeof routing !== "object" || Array.isArray(routing)) return {};
-  if (routing.rules && typeof routing.rules === "object" && !Array.isArray(routing.rules)) {
+type AgentSelectionOptions = {
+  role?: string;
+  preferredAgent?: string | null;
+  fallbackAgent?: string | null;
+  agentAvailability?: LooseRecord | null;
+  allowFallback?: boolean;
+  policyAllowsFallback?: boolean;
+};
+
+type PhaseAgentOptions = {
+  routing?: LooseRecord | null;
+  phase?: string;
+  role?: string | null;
+  agentAvailability?: LooseRecord | null;
+  agentHealth?: LooseRecord | null;
+  teamPolicy?: LooseRecord | null;
+};
+
+type RoutingValidationOptions = {
+  isWorkflowName?: (workflow: string) => boolean;
+};
+
+function isRecord(value: unknown): value is LooseRecord {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function stringOrNull(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+function routingRules(routing: LooseRecord): LooseRecord {
+  if (!isRecord(routing)) return {};
+  if (isRecord(routing.rules)) {
     return routing.rules;
   }
   return routing;
@@ -44,7 +75,6 @@ function defaultAgent(role: string): string {
   try {
     return defaultAgentForRole(role);
   } catch {
-    if (role === "executor") return "claude";
     return "codex";
   }
 }
@@ -63,25 +93,25 @@ function normalizeCategory(category: string): string | null {
   return CATEGORY_SET.has(value) ? value : null;
 }
 
-export function resolveRoutingForCategory(category: string, routing: Record<string, any>): Record<string, any> | null {
+export function resolveRoutingForCategory(category: string, routing: LooseRecord): LooseRecord | null {
   const normalized = normalizeCategory(category);
   if (!normalized) return null;
   const rules = routingRules(routing);
   const rule = rules[normalized];
-  if (!rule || typeof rule !== "object" || Array.isArray(rule)) return null;
+  if (!isRecord(rule)) return null;
   return {
     category: normalized,
-    workflow: rule.workflow || null,
-    planner: rule.planner || null,
-    executor: rule.executor || null,
-    verifier: rule.verifier || null,
-    reviewer: rule.reviewer || null,
+    workflow: stringOrNull(rule.workflow),
+    planner: stringOrNull(rule.planner),
+    executor: stringOrNull(rule.executor),
+    verifier: stringOrNull(rule.verifier),
+    reviewer: stringOrNull(rule.reviewer),
     fallback: rule.fallback || null,
     allowFallback: rule.allowFallback !== false,
   };
 }
 
-export function defaultRoutingForCategory(category: string, { workflow = "standard" }: Record<string, any> = {}): Record<string, any> {
+export function defaultRoutingForCategory(category: string, { workflow = "standard" }: { workflow?: string } = {}): LooseRecord {
   const normalized = normalizeCategory(category);
   return {
     category: normalized,
@@ -95,9 +125,10 @@ export function defaultRoutingForCategory(category: string, { workflow = "standa
   };
 }
 
-export function resolveEffectiveRouting(category: string, routing: Record<string, any>, { workflow = "standard" }: Record<string, any> = {}): Record<string, any> {
+export function resolveEffectiveRouting(category: string, routing: LooseRecord, { workflow = "standard" }: LooseRecord = {}): LooseRecord {
   const resolved = resolveRoutingForCategory(category, routing);
-  const defaults = defaultRoutingForCategory(category, { workflow });
+  const workflowName = stringOrNull(workflow) || "standard";
+  const defaults = defaultRoutingForCategory(category, { workflow: workflowName });
   if (!resolved) return defaults;
   return {
     ...defaults,
@@ -110,33 +141,34 @@ export function resolveEffectiveRouting(category: string, routing: Record<string
   };
 }
 
-export function agentForRoutingPhase(routing: Record<string, any>, phase: string, role: string | null = null): string | null {
+export function agentForRoutingPhase(routing: LooseRecord, phase: string, role: string | null = null): string | null {
   const resolvedRole = role || ROUTING_PHASE_ROLES[phase];
-  return resolvedRole ? routing?.[resolvedRole] || null : null;
+  return resolvedRole ? stringOrNull(routing?.[resolvedRole]) : null;
 }
 
-export function fallbackAgentForRole(routing: Record<string, any>, role: string): string | null {
+export function fallbackAgentForRole(routing: LooseRecord, role: string): string | null {
   const fallback = routing?.fallback;
   if (!fallback) return null;
   if (typeof fallback === "string") return fallback;
-  if (typeof fallback === "object" && !Array.isArray(fallback)) {
-    return fallback[role] || null;
+  if (isRecord(fallback)) {
+    return stringOrNull(fallback[role]);
   }
   return null;
 }
 
-function availabilityFor(agentAvailability: Record<string, any> | null, agent: string | null): Record<string, any> {
-  if (!agent || !agentAvailability || typeof agentAvailability !== "object") {
+function availabilityFor(agentAvailability: LooseRecord | null, agent: string | null): LooseRecord {
+  if (!agent || !isRecord(agentAvailability)) {
     return { available: true, reason: null };
   }
   const entry = agentAvailability[agent];
   if (entry === undefined) return { available: true, reason: null };
   if (entry === false) return { available: false, reason: "unavailable" };
   if (entry === true) return { available: true, reason: null };
-  if (typeof entry === "object" && entry) {
+  if (isRecord(entry)) {
+    const status = typeof entry.status === "string" ? entry.status : "";
     return {
-      available: entry.available !== false && !["unavailable", "rate_limited", "offline"].includes(entry.status),
-      reason: entry.reason || entry.status || null,
+      available: entry.available !== false && !["unavailable", "rate_limited", "offline"].includes(status),
+      reason: stringOrNull(entry.reason) || status || null,
     };
   }
   return { available: Boolean(entry), reason: null };
@@ -149,7 +181,7 @@ export function selectAgentWithFallback({
   agentAvailability = null,
   allowFallback = true,
   policyAllowsFallback = true,
-}: Record<string, any> = {}) {
+}: AgentSelectionOptions = {}) {
   const preferred = preferredAgent || null;
   const fallback = fallbackAgent || null;
   const fallbackPermitted = allowFallback !== false && policyAllowsFallback !== false;
@@ -203,20 +235,21 @@ export function selectAgentWithFallback({
   };
 }
 
-export function healthToAvailability(agentHealth: Record<string, any> | null): Record<string, any> | null {
-  if (!agentHealth || typeof agentHealth !== "object") return null;
-  const result: Record<string, any> = {};
+export function healthToAvailability(agentHealth: LooseRecord | null): LooseRecord | null {
+  if (!isRecord(agentHealth)) return null;
+  const result: LooseRecord = {};
   for (const [agent, health] of Object.entries(agentHealth)) {
     if (health === true) {
       result[agent] = { available: true };
     } else if (health === false) {
       result[agent] = { available: false, status: "unavailable", reason: "health check failed" };
-    } else if (health && typeof health === "object") {
-      const healthRecord = health as Record<string, any>;
+    } else if (isRecord(health)) {
+      const healthRecord = health;
+      const status = typeof healthRecord.status === "string" ? healthRecord.status : "";
       const unavailable = healthRecord.healthy === false
-        || ["unavailable", "offline", "rate_limited"].includes(healthRecord.status);
+        || ["unavailable", "offline", "rate_limited"].includes(status);
       result[agent] = unavailable
-        ? { available: false, status: healthRecord.status || "unavailable", reason: healthRecord.reason || null }
+        ? { available: false, status: status || "unavailable", reason: stringOrNull(healthRecord.reason) }
         : { available: true };
     } else {
       result[agent] = { available: true };
@@ -232,8 +265,9 @@ export function resolvePhaseAgentWithFallback({
   agentAvailability = null,
   agentHealth = null,
   teamPolicy = null,
-}: Record<string, any> = {}) {
-  const effectiveRole = role || ROUTING_PHASE_ROLES[phase];
+}: PhaseAgentOptions = {}) {
+  const phaseName = phase || "";
+  const effectiveRole = role || ROUTING_PHASE_ROLES[phaseName];
   if (!effectiveRole) {
     return {
       phase,
@@ -248,42 +282,44 @@ export function resolvePhaseAgentWithFallback({
   }
 
   const availability = agentHealth
-    ? { ...(agentAvailability || {}), ...healthToAvailability(agentHealth) }
+    ? { ...(agentAvailability || {}), ...(healthToAvailability(agentHealth) || {}) }
     : agentAvailability;
+  const teamRouting = isRecord(teamPolicy?.routing) ? teamPolicy.routing : {};
 
   const selection = selectAgentWithFallback({
     role: effectiveRole,
-    preferredAgent: agentForRoutingPhase(routing, phase, effectiveRole),
-    fallbackAgent: fallbackAgentForRole(routing, effectiveRole),
+    preferredAgent: routing ? agentForRoutingPhase(routing, phaseName, effectiveRole) : null,
+    fallbackAgent: routing ? fallbackAgentForRole(routing, effectiveRole) : null,
     agentAvailability: availability,
     allowFallback: routing?.allowFallback !== false,
-    policyAllowsFallback: teamPolicy?.routing?.allowFallback !== false,
+    policyAllowsFallback: teamRouting.allowFallback !== false,
   });
 
-  return { ...selection, phase };
+  return { ...selection, phase: phaseName };
 }
 
-export function validateRoutingRules(routing: Record<string, any>, { isWorkflowName }: Record<string, any> = {}) {
+export function validateRoutingRules(routing: LooseRecord, { isWorkflowName }: RoutingValidationOptions = {}) {
   const errors: string[] = [];
   const rules = routingRules(routing);
 
   for (const [category, rawRule] of Object.entries(rules)) {
-    const rule = rawRule as Record<string, any>;
     if (!CATEGORY_SET.has(category)) {
       errors.push(`unknown routing category: ${category}`);
       continue;
     }
-    if (!rule || typeof rule !== "object" || Array.isArray(rule)) {
+    if (!isRecord(rawRule)) {
       errors.push(`routing rule for ${category} must be an object`);
       continue;
     }
+    const rule = rawRule;
 
-    if (rule.workflow && isWorkflowName && !isWorkflowName(rule.workflow)) {
+    const workflow = stringOrNull(rule.workflow);
+    if (workflow && isWorkflowName && !isWorkflowName(workflow)) {
       errors.push(`routing rule ${category} references unknown workflow: ${rule.workflow}`);
     }
 
     for (const role of ROUTING_AGENT_ROLES) {
-      const agent = rule[role];
+      const agent = stringOrNull(rule[role]);
       if (agent && !isKnownAgent(agent)) {
         errors.push(`routing rule ${category}.${role} references unknown agent: ${agent}`);
       }
@@ -297,7 +333,7 @@ export function validateRoutingRules(routing: Record<string, any>, { isWorkflowN
   return { valid: errors.length === 0, errors };
 }
 
-export function assertValidRoutingRules(routing: Record<string, any>, options: Record<string, any> = {}) {
+export function assertValidRoutingRules(routing: LooseRecord, options: RoutingValidationOptions = {}) {
   const result = validateRoutingRules(routing, options);
   if (!result.valid) {
     throw new Error(`invalid routing rules: ${result.errors.join("; ")}`);

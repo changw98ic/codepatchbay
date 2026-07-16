@@ -32,7 +32,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { AnyRecord } from "../shared/types.js";
+import { LooseRecord } from "../shared/types.js";
 
 import { evaluateCompletionGate } from "../core/engine/completion-gate.js";
 import {
@@ -279,7 +279,7 @@ function passingVerdictWithRuntimeEvidence(checklistId = "AC-001", evId = "EV-HE
   };
 }
 
-function evidenceLedger(evidence: AnyRecord[], ledgerId = "evidence-ledger-r6") {
+function evidenceLedger(evidence: LooseRecord[], ledgerId = "evidence-ledger-r6") {
   return {
     schemaVersion: 1,
     jobId: "job-r6",

@@ -176,11 +176,13 @@ test("SWE-bench batch queue Claude-compatible aliases resolve provider variants"
   assert.equal(glmEnv.CPB_CLAUDE_VARIANT, "glm");
   assert.equal(glmEnv.CPB_ACTIVE_CLAUDE_VARIANT, "glm");
   assert.equal(glmEnv.ANTHROPIC_MODEL, "glm-test-model");
+  assert.equal(glmEnv.CLAUDE_CODE_ATTRIBUTION_HEADER, "0");
 
   const mimoEnv = envForAgent("claude-mimo", env);
   assert.equal(mimoEnv.CPB_CLAUDE_VARIANT, "mimo-v2.5pro");
   assert.equal(mimoEnv.CPB_ACTIVE_CLAUDE_VARIANT, "mimo-v2.5pro");
   assert.equal(mimoEnv.ANTHROPIC_MODEL, "mimo-test-model");
+  assert.equal(mimoEnv.CLAUDE_CODE_ATTRIBUTION_HEADER, "0");
 
   assert.equal(recordValue(getProviderAdapter("claude:glm")).timezone, "Asia/Shanghai");
   assert.equal(recordValue(getProviderAdapter("claude:mimo-v2.5pro")).timezone, "Asia/Shanghai");
@@ -401,7 +403,7 @@ test("SWE-bench batch queue builds dataset row refs and normalized records", () 
   assert.match(String(record.problemStatementSha256), /^[a-f0-9]{64}$/);
 });
 
-test("SWE-bench batch queue writes CPB-ready assignment metadata", () => {
+test("SWE-bench batch queue submits the unmodified problem statement without oracle hints", () => {
   const record = recordFromDatasetRow(sampleRow, 7);
   const input = buildBatchAssignmentInput({
     record,
@@ -418,23 +420,15 @@ test("SWE-bench batch queue writes CPB-ready assignment metadata", () => {
   const metadata = recordValue(input.metadata);
   const productValidation = recordValue(metadata.productValidation);
   const sourceContext = recordValue(input.sourceContext);
-  const acceptanceChecklist = recordValue(sourceContext.acceptanceChecklist);
   const sourceProductValidation = recordValue(sourceContext.productValidation);
   assert.deepEqual(metadata.agents, DEFAULT_PRODUCT_VALIDATION_AGENTS);
   assert.deepEqual(productValidation.agents, DEFAULT_PRODUCT_VALIDATION_AGENTS);
-  assert.deepEqual(productValidation.canonicalCommands, sourceProductValidation.canonicalCommands);
-  assert.deepEqual(productValidation.diagnosticCommands, sourceProductValidation.diagnosticCommands);
-  assert.ok(Array.isArray(productValidation.diagnosticCommands));
-  assert.match(String(productValidation.diagnosticCommands[0]), /expressions\.tests\.FTimeDeltaTests/);
-  assert.ok(Array.isArray(productValidation.canonicalCommands));
-  assert.match(String(productValidation.canonicalCommands[0]), /tests\/runtests.py/);
+  assert.equal(input.task, sampleRow.problem_statement);
+  assert.equal(Object.hasOwn(sourceContext, "acceptanceChecklist"), false);
+  assert.equal(Object.hasOwn(productValidation, "canonicalCommands"), false);
+  assert.equal(Object.hasOwn(productValidation, "diagnosticCommands"), false);
+  assert.equal(Object.hasOwn(sourceProductValidation, "canonicalCommands"), false);
   assert.equal(sourceContext.benchmarkInstanceId, "django__django-13128");
-  assert.ok(Array.isArray(acceptanceChecklist.items));
-  const checklistItems = Array.isArray(acceptanceChecklist.items) ? acceptanceChecklist.items : [];
-  const regressionItem = recordValue(checklistItems[0]);
-  assert.equal(regressionItem.predicateId, "swebench-local-regression-test");
-  assert.match(String(regressionItem.expectedEvidence), /exact canonical FAIL_TO_PASS command/i);
-  assert.doesNotMatch(String(regressionItem.expectedEvidence), /direct failing-before/i);
 });
 
 test("SWE-bench batch report validation rejects omitted manifest assignments", () => {
@@ -2001,7 +1995,7 @@ test("SWE-bench batch output writer includes hub result evidence when available"
   assert.equal(recordValue(writtenReport.validation).valid, true);
 });
 
-test("SWE-bench batch queue propagates verifier agent into worker dynamic plan env", () => {
+test("SWE-bench worker env keeps infrastructure settings but injects no solving policy", () => {
   const env = buildManagedWorkerEnv({
     repoRoot: "/repo",
     hubRoot: "/tmp/hub",
@@ -2016,16 +2010,22 @@ test("SWE-bench batch queue propagates verifier agent into worker dynamic plan e
   assert.equal(env.CPB_ACP_TIMEOUT_MS, "12345");
   assert.equal(env.CPB_ACP_IDLE_TIMEOUT_MS, "12345");
   assert.equal(env.CPB_ACP_SESSION_UPDATE_IDLE_TIMEOUT_MS, "12345");
-  assert.equal(env.CPB_ACP_SWEBENCH_EXECUTE_NO_EDIT_TOOL_LIMIT, "5");
-  assert.equal(env.CPB_PHASE_RETRY_MAX, "3");
-  assert.equal(env.CPB_CHECKLIST_DECOMPOSE, "1");
-  assert.equal(env.CPB_ACP_DISABLE_WEB_TOOLS, "1");
-  assert.equal(env.CPB_ACP_TOOL_CALL_BUDGET_PLAN, "40");
-  assert.equal(env.CPB_ACP_TOOL_CALL_BUDGET_EXECUTE, "40");
-  assert.equal(env.CPB_ACP_TOOL_CALL_BUDGET_VERIFY, "80");
-  assert.equal(env.CPB_ACP_TOOL_CALL_BUDGET_ADVERSARIAL_VERIFY, "80");
-  assert.equal(env.CPB_ACP_TOOL_EVENT_BUDGET_PLAN, "160");
-  assert.equal(env.CPB_ACP_TOOL_EVENT_BUDGET_EXECUTE, "120");
+  for (const key of [
+    "CPB_ACP_SWEBENCH_EXECUTE_NO_EDIT_TOOL_LIMIT",
+    "CPB_PHASE_RETRY_MAX",
+    "CPB_CHECKLIST_DECOMPOSE",
+    "CPB_ACP_DISABLE_WEB_TOOLS",
+    "CPB_ACP_TOOL_CALL_BUDGET_PLAN",
+    "CPB_ACP_TOOL_CALL_BUDGET_EXECUTE",
+    "CPB_ACP_TOOL_CALL_BUDGET_VERIFY",
+    "CPB_ACP_TOOL_CALL_BUDGET_ADVERSARIAL_VERIFY",
+    "CPB_ACP_TOOL_EVENT_BUDGET_PLAN",
+    "CPB_ACP_TOOL_EVENT_BUDGET_EXECUTE",
+    "CPB_ACP_TOOL_EVENT_BUDGET_VERIFY",
+    "CPB_ACP_TOOL_EVENT_BUDGET_ADVERSARIAL_VERIFY",
+  ]) {
+    assert.equal(Object.hasOwn(env, key), false, key);
+  }
   const longEnv = buildManagedWorkerEnv({
     repoRoot: "/repo",
     hubRoot: "/tmp/hub",
@@ -2035,13 +2035,11 @@ test("SWE-bench batch queue propagates verifier agent into worker dynamic plan e
   });
   assert.equal(longEnv.CPB_ACP_IDLE_TIMEOUT_MS, "600000");
   assert.equal(longEnv.CPB_ACP_SESSION_UPDATE_IDLE_TIMEOUT_MS, "600000");
-  assert.equal(longEnv.CPB_ACP_SWEBENCH_EXECUTE_NO_EDIT_TOOL_LIMIT, "5");
-  assert.equal(env.CPB_ACP_TOOL_EVENT_BUDGET_VERIFY, "240");
-  assert.equal(env.CPB_ACP_TOOL_EVENT_BUDGET_ADVERSARIAL_VERIFY, "240");
+  assert.equal(Object.hasOwn(longEnv, "CPB_ACP_SWEBENCH_EXECUTE_NO_EDIT_TOOL_LIMIT"), false);
 });
 
-test("SWE-bench batch queue tolerates CodeGraph index-only project registration", () => {
-  assert.match(batchQueueSource, /CPB_CODEGRAPH_INDEX_ONLY_OK\s*=\s*"1"/);
+test("SWE-bench batch queue does not weaken CodeGraph readiness", () => {
+  assert.doesNotMatch(batchQueueSource, /CPB_CODEGRAPH_INDEX_ONLY_OK\s*:\s*"1"/);
   assert.match(batchQueueSource, /registerProject/);
 });
 

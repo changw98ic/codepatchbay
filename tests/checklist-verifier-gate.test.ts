@@ -7,22 +7,239 @@
  */
 
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
-import { AnyRecord } from "../shared/types.js";
+import { promisify } from "node:util";
+import { LooseRecord, recordValue } from "../shared/types.js";
 
 import { runJob } from "../core/engine/run-job.js";
+import {
+  buildDisposableVerificationReplayEnv,
+  executableVerificationEvidenceSummary,
+  isRepositoryTestPath,
+  summarizeIndependentVerifierExecutions,
+} from "../core/phases/verify.js";
+import { observableContractExecutionCoverage } from "../core/workflow/observable-contract.js";
 import { appendEvent } from "../server/services/event/event-store.js";
 import { buildArtifactIndex } from "../server/services/job/job-projection.js";
 import { tempRoot } from "./helpers.js";
 
+const execFileAsync = promisify(execFile);
 
-function jsonEnvelope(data: AnyRecord) {
+test("repository test path classification separates production files from common test layouts", () => {
+  for (const file of [
+    "tests/unit/widget.test.ts",
+    "src/__tests__/widget.js",
+    "pkg/test_widget.py",
+    "pkg/widget_test.go",
+    "spec/widget_spec.rb",
+  ]) assert.equal(isRepositoryTestPath(file), true, file);
+  for (const file of ["src/widget.ts", "astropy/timeseries/core.py", "docs/testing-guide.md"]) {
+    assert.equal(isRepositoryTestPath(file), false, file);
+  }
+});
+
+test("disposable verifier replays permit generated test artifacts without weakening the candidate checkout", () => {
+  const env = buildDisposableVerificationReplayEnv({
+    sourceContext: { riskMap: { riskLevel: "high" } },
+  });
+
+  assert.equal(env.CPB_VERIFIER_REPLAY_WORKSPACE_WRITE, "1");
+  assert.equal(env.CPB_CODEX_VERIFIER_WORKSPACE_WRITE, "1");
+  assert.equal(env.CPB_ACP_TOOL_CALL_BUDGET_VERIFY, "45");
+});
+
+test("fresh verifier ACP audit accepts completed runtime probes but rejects inspection and failed tests", () => {
+  const sessionId = "verify-session-1";
+  const audit = [
+    { event: "tool_call", phase: "verify", role: "verifier", sessionId, toolCallId: "git", kind: "execute", title: "git diff --stat", status: "in_progress" },
+    { event: "tool_call", phase: "verify", role: "verifier", sessionId, toolCallId: "git", status: "completed" },
+    { event: "tool_call", phase: "verify", role: "verifier", sessionId, toolCallId: "pytest", kind: "execute", title: "python -m pytest tests/test_feature.py", status: "in_progress" },
+    { event: "tool_call", phase: "verify", role: "verifier", sessionId, toolCallId: "pytest", status: "failed" },
+    { event: "tool_call", phase: "verify", role: "verifier", sessionId, toolCallId: "probe", kind: "execute", title: "python - <<'PY'\nassert 2 + 2 == 4\nPY", status: "in_progress" },
+    { event: "tool_call", phase: "verify", role: "verifier", sessionId, toolCallId: "probe", status: "completed" },
+  ].map((entry) => JSON.stringify(entry)).join("\n");
+
+  const summary = summarizeIndependentVerifierExecutions(audit, { sessionId });
+  assert.equal(summary.ok, true);
+  assert.equal(summary.observations.length, 1);
+  const observation = recordValue(summary.observations[0]);
+  assert.equal(observation.toolCallId, "probe");
+  assert.equal(observation.executionClass, "runtime_probe");
+  assert.match(String(observation.auditEventSha256), /^sha256:/);
+});
+
+test("fresh verifier ACP audit accepts runtime probes with environment assignments", () => {
+  const sessionId = "verify-session-env";
+  const audit = [
+    {
+      event: "tool_call",
+      phase: "verify",
+      role: "verifier",
+      sessionId,
+      toolCallId: "probe",
+      kind: "execute",
+      title: "PYTHONPATH=. MPLBACKEND=Agg python -c \"assert 2 + 2 == 4\"",
+      status: "in_progress",
+    },
+    {
+      event: "tool_call",
+      phase: "verify",
+      role: "verifier",
+      sessionId,
+      toolCallId: "probe",
+      status: "completed",
+    },
+  ].map((entry) => JSON.stringify(entry)).join("\n");
+
+  const summary = summarizeIndependentVerifierExecutions(audit, { sessionId });
+  assert.equal(summary.ok, true);
+  assert.equal(summary.observations.length, 1);
+  assert.equal(recordValue(summary.observations[0]).executionClass, "runtime_probe");
+});
+
+test("candidate-derived runtime expectations cannot satisfy a frozen text oracle", () => {
+  const expected = "expected ['time', 'flux'] as the first columns but found ['time']";
+  const nestedQuoteFailure = "expected '['time', 'flux']' as the first columns but found '['time']'";
+  const frozenChecklist = {
+    schemaVersion: 1,
+    jobId: "job-oracle",
+    project: "project-oracle",
+    status: "frozen",
+    items: [{
+      id: "AC-001",
+      allowedFiles: ["src/diagnostic.py"],
+      observableContract: {
+        contractId: "OBS-001",
+        contractSha256: `sha256:${"a".repeat(64)}`,
+        frozenBeforeExecution: true,
+        observationKind: "contains_text",
+        probeInput: "Trigger a missing required value",
+        expectedObservation: expected,
+        forbiddenObservations: [nestedQuoteFailure],
+        oracleSourceRefs: [{ kind: "task_text", locator: "task:0" }],
+        candidateIndependent: true,
+      },
+    }],
+  };
+  const circular = {
+    ok: true,
+    attempts: [{
+      executionClass: "runtime_probe",
+      status: "completed",
+      command: `python -c "actual=${JSON.stringify(nestedQuoteFailure)}; assert actual == ${JSON.stringify(nestedQuoteFailure)}"`,
+    }],
+    observations: [],
+  };
+  const rejected = observableContractExecutionCoverage(frozenChecklist, circular);
+  assert.equal(rejected.ok, false);
+  assert.deepEqual(rejected.missingContractIds, ["OBS-001"]);
+
+  const bound = {
+    ok: true,
+    attempts: [{
+      executionClass: "runtime_probe",
+      status: "completed",
+      command: `python -c "actual='...'; expected=${JSON.stringify(expected)}; forbidden=${JSON.stringify(nestedQuoteFailure)}; assert expected in actual; assert forbidden not in actual"`,
+    }],
+    observations: [],
+  };
+  const accepted = observableContractExecutionCoverage(frozenChecklist, bound);
+  assert.equal(accepted.ok, true);
+  assert.deepEqual(accepted.passedContractIds, ["OBS-001"]);
+
+  const executable = executableVerificationEvidenceSummary({}, {}, circular, frozenChecklist);
+  assert.equal(executable.genericExecutionPassed, true);
+  assert.equal(executable.ok, false);
+});
+
+test("a failed frozen-oracle assertion is classified as candidate evidence, not missing infrastructure", () => {
+  const expected = "expected [a, b] but found [a]";
+  const forbidden = "expected '[a, b]' but found '[a]'";
+  const frozenChecklist = {
+    items: [{
+      id: "AC-007",
+      allowedFiles: ["src/diagnostic.py"],
+      observableContract: {
+        contractId: "OBS-007",
+        frozenBeforeExecution: true,
+        observationKind: "exact_text",
+        expectedObservation: expected,
+        forbiddenObservations: [forbidden],
+      },
+    }],
+  };
+  const failed = observableContractExecutionCoverage(frozenChecklist, {
+    attempts: [{
+      executionClass: "runtime_probe",
+      status: "failed",
+      command: `python -c "expected=${JSON.stringify(expected)}; forbidden=${JSON.stringify(forbidden)}; actual='bad'; assert actual == expected; assert actual != forbidden"`,
+    }],
+  });
+  assert.equal(failed.ok, false);
+  assert.deepEqual(failed.failedContractIds, ["OBS-007"]);
+  assert.deepEqual(failed.fixScope, ["src/diagnostic.py"]);
+});
+
+test("fresh verifier ACP audit is session-bound and fail-closed", () => {
+  const audit = JSON.stringify({
+    event: "tool_call",
+    phase: "verify",
+    role: "verifier",
+    sessionId: "old-session",
+    toolCallId: "test",
+    kind: "execute",
+    title: "pytest tests/test_feature.py",
+    status: "completed",
+  });
+
+  assert.equal(summarizeIndependentVerifierExecutions(audit, { sessionId: "current-session" }).ok, false);
+  assert.equal(summarizeIndependentVerifierExecutions(audit, {}).ok, false);
+});
+
+test("fresh verifier ACP audit resolves the current session from the exact execution window", () => {
+  const audit = [
+    { ts: "2026-07-14T00:00:00.000Z", event: "tool_call", phase: "verify", role: "verifier", sessionId: "old", toolCallId: "old-test", kind: "execute", title: "pytest old.py", status: "completed" },
+    { ts: "2026-07-14T00:01:01.000Z", event: "session_new", phase: "verify", role: "verifier", sessionId: "current" },
+    { ts: "2026-07-14T00:01:02.000Z", event: "tool_call", phase: "verify", role: "verifier", sessionId: "current", toolCallId: "current-test", kind: "execute", title: "python -m pytest tests/test_current.py", status: "completed" },
+    { ts: "2026-07-14T00:01:03.000Z", event: "session_close", phase: "verify", role: "verifier", sessionId: "current" },
+  ].map((entry) => JSON.stringify(entry)).join("\n");
+
+  const summary = summarizeIndependentVerifierExecutions(audit, {
+    startedAt: "2026-07-14T00:01:00.000Z",
+    completedAt: "2026-07-14T00:01:04.000Z",
+  });
+  assert.equal(summary.ok, true);
+  assert.equal(summary.sessionId, "current");
+  assert.equal(recordValue(summary.observations[0]).toolCallId, "current-test");
+});
+
+test("fresh verifier ACP audit excludes a later same-role session outside the completed window", () => {
+  const audit = [
+    { ts: "2026-07-14T00:01:01.000Z", event: "session_new", phase: "verify", role: "verifier", sessionId: "candidate" },
+    { ts: "2026-07-14T00:01:02.000Z", event: "tool_call", phase: "verify", role: "verifier", sessionId: "candidate", toolCallId: "candidate-probe", kind: "execute", title: "python -c \"assert 2 + 2 == 4\"", status: "completed" },
+    { ts: "2026-07-14T00:01:04.500Z", event: "session_new", phase: "verify", role: "verifier", sessionId: "baseline-replay" },
+    { ts: "2026-07-14T00:01:05.000Z", event: "tool_call", phase: "verify", role: "verifier", sessionId: "baseline-replay", toolCallId: "baseline-read", kind: "read", title: "Read frozen test file", status: "completed" },
+  ].map((entry) => JSON.stringify(entry)).join("\n");
+
+  const summary = summarizeIndependentVerifierExecutions(audit, {
+    startedAt: "2026-07-14T00:01:00.000Z",
+    completedAt: "2026-07-14T00:01:03.000Z",
+  });
+  assert.equal(summary.ok, true);
+  assert.equal(summary.sessionId, "candidate");
+  assert.equal(summary.observations.length, 1);
+  assert.equal(recordValue(summary.observations[0]).toolCallId, "candidate-probe");
+  assert.equal(recordValue(summary.observations[0]).executionClass, "runtime_probe");
+});
+
+function jsonEnvelope(data: LooseRecord) {
   return "```json\n" + JSON.stringify(data, null, 2) + "\n```";
 }
 
-function checklist(overrides: AnyRecord = {}) {
+function checklist(overrides: LooseRecord = {}) {
   return {
     schemaVersion: 1,
     jobId: "job-checklist",
@@ -50,15 +267,33 @@ function checklist(overrides: AnyRecord = {}) {
   };
 }
 
-function makeVerifierPool(verdictOverride: AnyRecord = {}) {
+function makeVerifierPool(verdictOverride: LooseRecord = {}, options: LooseRecord = {}) {
   let verifierPrompt = "";
   const pool = {
-    async execute(_agent: string, _prompt: string, _cwd: string, _timeoutMs: number, meta: AnyRecord) {
+    async execute(_agent: string, _prompt: string, _cwd: string, _timeoutMs: number, meta: LooseRecord) {
       if (meta.role === "planner") {
+        if (/\bdecomposedItems\b/.test(_prompt)) {
+          return {
+            output: jsonEnvelope({
+              status: "ok",
+              decomposedItems: [
+                {
+                  requirement: "README is updated",
+                  predicateId: "PRED-001",
+                  verificationMethod: "static",
+                  allowedFiles: ["README.md"],
+                  sourceRefs: [{ kind: "task_text", locator: "task:0" }],
+                },
+              ],
+            }),
+            providerKey: "fake",
+            variant: null,
+          };
+        }
         return {
           output: jsonEnvelope({
             status: "ok",
-            planMarkdown: "## Analysis\n- ok\n\n## Files to modify\n- README.md\n\n## Implementation Steps\n1. edit\n\n## Testing\n- npm test\n\n## Risks\n- none",
+            planMarkdown: "## Analysis\n- ok\n\n## Bounded Handoff\n- Real actors: README documentation fixture\n- Entrypoints: runJob standard workflow\n- Bypass candidates: none\n- Edit files: README.md\n- Verification targets: npm test\n- Blockers: none\n\n## Files to modify\n- README.md\n\n## Implementation Steps\n1. edit\n\n## Testing\n- npm test\n\n## Risks\n- none",
           }),
           providerKey: "fake",
           variant: null,
@@ -81,6 +316,20 @@ function makeVerifierPool(verdictOverride: AnyRecord = {}) {
       }
       if (meta.role === "verifier") {
         verifierPrompt = _prompt;
+        if (options.verdictFileEnvelope) {
+          const match = _prompt.match(/VERIFIER_JSON_OUTPUT_FILE=([^\n]+)/);
+          assert.ok(match?.[1], "verifier prompt must expose VERIFIER_JSON_OUTPUT_FILE");
+          const verdictFilePath = match[1].trim();
+          await mkdir(path.dirname(verdictFilePath), { recursive: true });
+          await writeFile(verdictFilePath, JSON.stringify(options.verdictFileEnvelope, null, 2), "utf8");
+        }
+        if (typeof options.verifierOutput === "string") {
+          return {
+            output: options.verifierOutput,
+            providerKey: "fake",
+            variant: null,
+          };
+        }
         return {
           output: jsonEnvelope({
             status: "ok",
@@ -108,28 +357,43 @@ function makeVerifierPool(verdictOverride: AnyRecord = {}) {
 
 async function makeSourceRoot() {
   const sourcePath = await tempRoot("cpb-verifier-source");
+  await mkdir(path.join(sourcePath, ".cpb"), { recursive: true });
   await writeFile(path.join(sourcePath, "README.md"), "# fixture\n", "utf8");
   await writeFile(
     path.join(sourcePath, "package.json"),
     JSON.stringify({ name: "verifier-fixture", private: true }, null, 2),
     "utf8",
   );
+  await writeFile(
+    path.join(sourcePath, ".cpb", "verification-probes.json"),
+    JSON.stringify({
+      schemaVersion: 1,
+      probes: [{ predicateId: "PRED-CMD", executable: process.execPath, args: ["-e", "process.exit(0)"] }],
+    }, null, 2) + "\n",
+    "utf8",
+  );
+  await execFileAsync("git", ["init", "-q"], { cwd: sourcePath });
+  await execFileAsync("git", ["config", "user.email", "test@example.com"], { cwd: sourcePath });
+  await execFileAsync("git", ["config", "user.name", "Test User"], { cwd: sourcePath });
+  await execFileAsync("git", ["add", "-A"], { cwd: sourcePath });
+  await execFileAsync("git", ["commit", "-q", "-m", "initial fixture"], { cwd: sourcePath });
   return sourcePath;
 }
 
-async function runVerifierFixture(pool: AnyRecord, opts: AnyRecord = {}) {
+async function runVerifierFixture(pool: LooseRecord, opts: LooseRecord = {}) {
   const cpbRoot = await tempRoot("cpb-verifier-gate");
   const sourcePath = await makeSourceRoot();
   const dataRoot = path.join(cpbRoot, "runtime", "projects", "flow");
-  const events: AnyRecord[] = [];
+  const events: LooseRecord[] = [];
+  const prepareOverrides = recordValue(opts.prepareOverrides);
 
-  const prepareTaskResult: AnyRecord = {
+  const prepareTaskResult: LooseRecord = {
     phases: ["plan", "execute", "verify"],
     riskMap: { riskLevel: "low" },
-    ...(opts.prepareOverrides || {}),
+    ...prepareOverrides,
   };
   if (opts.withChecklist !== false) {
-    prepareTaskResult.acceptanceChecklist = checklist();
+    prepareTaskResult.acceptanceChecklist = opts.acceptanceChecklist || checklist();
   }
 
   const result = await runJob({
@@ -151,7 +415,7 @@ async function runVerifierFixture(pool: AnyRecord, opts: AnyRecord = {}) {
     completeJob: async () => ({}),
     failJob: async () => ({}),
     blockJob: async () => ({}),
-    appendEvent: async (_root: string, _project: string, _jobId: string, event: AnyRecord) => {
+    appendEvent: async (_root: string, _project: string, _jobId: string, event: LooseRecord) => {
       events.push(event);
       await appendEvent(cpbRoot, "flow", opts.jobId || "job-checklist", event, { dataRoot });
     },
@@ -188,14 +452,81 @@ test("checklist-aware job with legacy verifier pass fails as VERDICT_INVALID and
 
   // The persisted verdict must be a synthesized fail
   const index = await buildArtifactIndex(cpbRoot, "flow", "job-checklist", { dataRoot });
-  const verdictEntry = index.entries.find((entry: AnyRecord) => entry.kind === "checklist-verdict");
+  const verdictEntry = index.entries.find((entry: LooseRecord) => entry.kind === "checklist-verdict");
   assert.ok(verdictEntry?.path, "checklist-verdict must have a readable artifact path");
   const persistedVerdict = JSON.parse(await readFile(verdictEntry.path, "utf8"));
   assert.equal(persistedVerdict.status, "fail", "synthesized verdict must have status fail");
 
   // The synthesized verdict must have every required item unchecked
-  const uncheckedItems = persistedVerdict.items.filter((item: AnyRecord) => item.result === "unchecked");
+  const uncheckedItems = persistedVerdict.items.filter((item: LooseRecord) => item.result === "unchecked");
   assert.equal(uncheckedItems.length, persistedVerdict.items.length, "all items must be unchecked in synthesized verdict");
+});
+
+test("partial checklist verdict is normalized to semantic fail instead of verdict-invalid", async () => {
+  const pool = makeVerifierPool({
+    verdict: "partial",
+    reason: "independent verification could not prove the required behavior",
+    checklistVerdict: {
+      schemaVersion: 1,
+      jobId: "job-checklist",
+      status: "partial",
+      items: [{
+        checklistId: "AC-001",
+        result: "unchecked",
+        evidenceRefs: [],
+        actualResult: "The scoped diff exists but behavior remains unproven.",
+        reason: "No independent behavioral proof.",
+        fixScope: [],
+      }],
+      blocking: [],
+      fixScope: [],
+      reason: "Required behavior remains unproven.",
+    },
+  });
+  const { result, cpbRoot, dataRoot } = await runVerifierFixture(pool);
+
+  assert.equal(result.status, "failed");
+  const phaseResults = Array.isArray(result.phaseResults) ? result.phaseResults : [];
+  const verifyResult = phaseResults.find((phaseResult: LooseRecord) => phaseResult.phase === "verify") as LooseRecord;
+  assert.equal(recordValue(verifyResult.failure).kind, "verification_failed");
+
+  const index = await buildArtifactIndex(cpbRoot, "flow", "job-checklist", { dataRoot });
+  const verdictEntry = index.entries.find((entry: LooseRecord) => entry.kind === "checklist-verdict");
+  assert.ok(verdictEntry?.path);
+  const persistedVerdict = JSON.parse(await readFile(verdictEntry.path, "utf8"));
+  assert.equal(persistedVerdict.status, "fail");
+  assert.equal(persistedVerdict.items[0].result, "unchecked");
+});
+
+test("invalid verifier JSON persists full raw output artifact for diagnosis", async () => {
+  const rawOutput = [
+    "raw-output-begin:" + "x".repeat(900),
+    "```json",
+    JSON.stringify({ status: "ok", reason: "tail only would hide the prefix" }, null, 2),
+    "```",
+    "raw-output-end",
+  ].join("\n");
+  const pool = makeVerifierPool({}, { verifierOutput: rawOutput });
+  const { result } = await runVerifierFixture(pool);
+
+  assert.equal(result.status, "failed");
+  const phaseResults = Array.isArray(result.phaseResults) ? result.phaseResults : [];
+  const verifyResult = phaseResults.find((phaseResult: LooseRecord) => phaseResult.phase === "verify") as LooseRecord;
+  assert.ok(verifyResult, `verify phase result must exist: ${JSON.stringify(result, null, 2).slice(0, 4000)}`);
+  const verifyFailure = recordValue(verifyResult.failure);
+  const verifyDiagnostics = recordValue(verifyResult.diagnostics);
+  assert.equal(verifyFailure.kind, "verdict_invalid");
+  assert.ok(
+    String(verifyFailure.stderrSnippet || "").length < rawOutput.length,
+    "legacy stderrSnippet remains a short tail and cannot be the only diagnostic",
+  );
+
+  const rawArtifact = recordValue(verifyDiagnostics.rawAgentOutputArtifact);
+  assert.ok(rawArtifact?.path, "invalid verifier output must persist a raw output artifact");
+  const persisted = await readFile(rawArtifact.path, "utf8");
+  assert.equal(persisted, rawOutput);
+  assert.ok(persisted.includes("raw-output-begin:"), "full artifact must preserve the prefix lost by tail snippets");
+  assert.ok(persisted.includes("raw-output-end"), "full artifact must preserve the output tail");
 });
 
 /**
@@ -238,10 +569,121 @@ test("checklist-aware job with checklistVerdict and fresh evidence passes and em
 
   // The persisted checklist-verdict should be pass
   const index = await buildArtifactIndex(cpbRoot, "flow", "job-checklist", { dataRoot });
-  const verdictEntry = index.entries.find((entry: AnyRecord) => entry.kind === "checklist-verdict");
+  const verdictEntry = index.entries.find((entry: LooseRecord) => entry.kind === "checklist-verdict");
   assert.ok(verdictEntry?.path, "checklist-verdict must have a readable artifact path");
   const persistedVerdict = JSON.parse(await readFile(verdictEntry.path, "utf8"));
   assert.equal(persistedVerdict.status, "pass", "checklist verdict must be pass");
+});
+
+test("checklistVerdict item reason is recovered from actualResult when verifier omits it", async () => {
+  const pool = makeVerifierPool({
+    checklistVerdict: {
+      schemaVersion: 1,
+      jobId: "job-checklist",
+      status: "pass",
+      items: [
+        {
+          checklistId: "AC-001",
+          result: "pass",
+          evidenceRefs: [{ ledgerId: "pending", evidenceId: "EV-001" }],
+          actualResult: "README updated as required",
+          fixScope: [],
+        },
+      ],
+      blocking: [],
+      fixScope: [],
+      reason: "all items passed with evidence",
+    },
+  });
+
+  const { result, cpbRoot, dataRoot } = await runVerifierFixture(pool);
+
+  assert.equal(result.status, "completed");
+  const index = await buildArtifactIndex(cpbRoot, "flow", "job-checklist", { dataRoot });
+  const verdictEntry = index.entries.find((entry: LooseRecord) => entry.kind === "checklist-verdict");
+  assert.ok(verdictEntry?.path, "checklist-verdict must have a readable artifact path");
+  const persistedVerdict = JSON.parse(await readFile(verdictEntry.path, "utf8"));
+  assert.equal(persistedVerdict.items[0].reason, "README updated as required");
+});
+
+test("verifier JSON file is accepted when final agent output is not parseable", async () => {
+  const checklistVerdict = {
+    schemaVersion: 1,
+    jobId: "job-checklist",
+    status: "pass",
+    items: [
+      {
+        checklistId: "AC-001",
+        result: "pass",
+        evidenceRefs: [{ ledgerId: "pending", evidenceId: "EV-001" }],
+        actualResult: "README updated as required",
+        reason: "README diff shows requested content",
+        fixScope: [],
+      },
+    ],
+    blocking: [],
+    fixScope: [],
+    reason: "all items passed with evidence",
+  };
+  const pool = makeVerifierPool({}, {
+    verifierOutput: "final ACP message was swallowed or polluted",
+    verdictFileEnvelope: {
+      status: "ok",
+      verdict: "pass",
+      reason: "verified from file",
+      details: "The controlled verifier file contains the JSON envelope.",
+      confidence: 0.91,
+      checklistVerdict,
+    },
+  });
+
+  const { result, events, cpbRoot, dataRoot } = await runVerifierFixture(pool);
+
+  assert.equal(result.status, "completed");
+  assert.ok(
+    events.some((e) => e.type === "artifact_created" && e.kind === "checklist-verdict"),
+    "checklist-verdict artifact_created event must exist",
+  );
+  const index = await buildArtifactIndex(cpbRoot, "flow", "job-checklist", { dataRoot });
+  const verdictEntry = index.entries.find((entry: LooseRecord) => entry.kind === "checklist-verdict");
+  assert.ok(verdictEntry?.path, "checklist-verdict must have a readable artifact path");
+  const persistedVerdict = JSON.parse(await readFile(verdictEntry.path, "utf8"));
+  assert.equal(persistedVerdict.status, "pass", "verdict file should drive a passing checklist verdict");
+});
+
+test("checklist-aware pass without checklistVerdict is recovered when every required item has passing ledger evidence", async () => {
+  const pool = makeVerifierPool();
+  const commandChecklist = checklist({
+    items: [{
+      ...checklist().items[0],
+      predicateId: "PRED-CMD",
+      verificationMethod: "command",
+      expectedEvidence: "maintainer-approved command probe exits successfully",
+      allowedFiles: [],
+    }],
+  });
+  const { events, cpbRoot, dataRoot } = await runVerifierFixture(pool, { acceptanceChecklist: commandChecklist });
+
+  assert.ok(
+    events.some((e) => e.type === "artifact_created" && e.kind === "evidence-ledger"),
+    "evidence-ledger artifact_created event must exist",
+  );
+  assert.ok(
+    events.some((e) => e.type === "artifact_created" && e.kind === "checklist-verdict"),
+    "checklist-verdict artifact_created event must exist",
+  );
+
+  const index = await buildArtifactIndex(cpbRoot, "flow", "job-checklist", { dataRoot });
+  const ledgerEntry = index.entries.find((entry: LooseRecord) => entry.kind === "evidence-ledger");
+  assert.ok(ledgerEntry?.path, "evidence-ledger must have a readable artifact path");
+  const ledger = JSON.parse(await readFile(ledgerEntry.path, "utf8"));
+  assert.equal(ledger.evidence[0]?.result, "pass", "command probe should produce pass evidence");
+
+  const verdictEntry = index.entries.find((entry: LooseRecord) => entry.kind === "checklist-verdict");
+  assert.ok(verdictEntry?.path, "checklist-verdict must have a readable artifact path");
+  const persistedVerdict = JSON.parse(await readFile(verdictEntry.path, "utf8"));
+  assert.equal(persistedVerdict.status, "pass", "missing checklistVerdict should be synthesized from passing ledger evidence");
+  assert.deepEqual(persistedVerdict.items[0].evidenceRefs, [{ ledgerId: "evidence-ledger-job-checklist", evidenceId: "EV-001" }]);
 });
 
 /**
@@ -285,6 +727,48 @@ test("verifier prompt includes predeclared ledger ids and invented ids cause evi
   );
 });
 
+test("verifier prompt treats plan paths as advisory when checklist evidence is authoritative", async () => {
+  const pool = makeVerifierPool({
+    checklistVerdict: {
+      schemaVersion: 1,
+      jobId: "job-checklist",
+      status: "pass",
+      items: [
+        {
+          checklistId: "AC-001",
+          result: "pass",
+          evidenceRefs: [{ ledgerId: "pending", evidenceId: "EV-001" }],
+          actualResult: "README updated as required",
+          reason: "README diff shows requested content",
+          fixScope: [],
+        },
+      ],
+      blocking: [],
+      fixScope: [],
+      reason: "all items passed with evidence",
+    },
+  });
+
+  await runVerifierFixture(pool);
+
+  const verifierPrompt = pool.getVerifierPrompt();
+  assert.match(
+    verifierPrompt,
+    /The plan artifact is guidance for where to look, not an independent acceptance criterion/,
+    "verifier prompt must not turn plan implementation paths into acceptance criteria",
+  );
+  assert.match(
+    verifierPrompt,
+    /Return FAIL or PARTIAL only for a concrete unsatisfied requirement/,
+    "verifier prompt must require a concrete failure before blocking checklist-passing work",
+  );
+  assert.doesNotMatch(
+    verifierPrompt,
+    /If the diff implements a different product path than the plan requires, verdict = FAIL or PARTIAL even when tests pass/,
+    "old plan-path hard-fail rule must not be present",
+  );
+});
+
 /**
  * Case 4: a fresh hard-gate observation without matching
  * { checklistId, verificationMethod, predicateId } cannot prove a checklist item.
@@ -320,14 +804,14 @@ test("fresh hard-gate observation without matching fields cannot prove checklist
   // The evidence-ledger should have empty evidence because hard-gate
   // observations lack checklistId/verificationMethod/predicateId bindings
   const index = await buildArtifactIndex(cpbRoot, "flow", "job-checklist", { dataRoot });
-  const ledgerEntry = index.entries.find((entry: AnyRecord) => entry.kind === "evidence-ledger");
+  const ledgerEntry = index.entries.find((entry: LooseRecord) => entry.kind === "evidence-ledger");
   assert.ok(ledgerEntry?.path, "evidence-ledger must exist");
   const ledger = JSON.parse(await readFile(ledgerEntry.path, "utf8"));
   assert.ok(Array.isArray(ledger.evidence), "evidence must be an array");
   // Hard gate checks without checklistId/verificationMethod/predicateId should not
   // produce evidence claims in the ledger
   const unboundClaims = ledger.evidence.filter(
-    (e: AnyRecord) => !e.checklistId || !e.verificationMethod || !e.predicateId,
+    (e: LooseRecord) => !e.checklistId || !e.verificationMethod || !e.predicateId,
   );
   assert.equal(unboundClaims.length, 0, "no evidence claims should exist without checklist bindings");
 });
@@ -424,7 +908,7 @@ test("generic command/test summary fails as evidence_missing without method-spec
   // bindings in this test fixture), the evidence ledger should be empty or have no valid claims.
   // The checklist-verdict that passes must still reference valid evidence.
   const index = await buildArtifactIndex(cpbRoot, "flow", "job-checklist", { dataRoot });
-  const ledgerEntry = index.entries.find((entry: AnyRecord) => entry.kind === "evidence-ledger");
+  const ledgerEntry = index.entries.find((entry: LooseRecord) => entry.kind === "evidence-ledger");
   assert.ok(ledgerEntry?.path, "evidence-ledger must exist");
   const ledger = JSON.parse(await readFile(ledgerEntry.path, "utf8"));
   // With no properly bound hard-gate probes, evidence array should be empty

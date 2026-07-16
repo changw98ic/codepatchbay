@@ -2,8 +2,8 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { AnyRecord } from "../shared/types.js";
-import { materializeJob } from "../server/services/event/event-store.js";
+import { advanceMaterializedJob, materializeJob } from "../server/services/event/event-store.js";
+import type { EventRecord } from "../server/services/event/event-types.js";
 
 
 function ts(offset = 0) {
@@ -12,8 +12,13 @@ function ts(offset = 0) {
 
 const JOB_CREATED = { type: "job_created", jobId: "j1", project: "p", task: "t", ts: ts(0) };
 
-function materialize(...events: AnyRecord[]) {
-  return materializeJob([JOB_CREATED, ...events]) as AnyRecord;
+function materialize(...events: EventRecord[]) {
+  const allEvents = [JOB_CREATED, ...events];
+  const state = materializeJob(allEvents);
+  let incremental = materializeJob([allEvents[0]]);
+  for (const event of allEvents.slice(1)) incremental = advanceMaterializedJob(incremental, event);
+  assert.deepEqual(incremental, state);
+  return state;
 }
 
 // ── external_repair ──────────────────────────────────────

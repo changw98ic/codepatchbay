@@ -1,3 +1,4 @@
+import type { LooseRecord } from "../../../shared/types.js";
 import fs from 'fs/promises';
 import path from 'path';
 import { isSecretPath, notifySecretBlocked } from '../secret-policy.js';
@@ -16,6 +17,14 @@ const cache = new Map<string, { data: Record<string, string | null>; stats: Reco
 
 const ALL_FILES = ['context', 'tasks', 'decisions', 'log'];
 
+function projectFileList(value: unknown): string[] {
+  return Array.isArray(value) ? value.map(String) : ALL_FILES;
+}
+
+function secretBlockedHandler(value: unknown): ((event: LooseRecord) => void) | null {
+  return typeof value === 'function' ? (event: LooseRecord) => value(event) : null;
+}
+
 async function statFile(filePath: string) {
   try {
     const s = await fs.stat(filePath);
@@ -25,7 +34,7 @@ async function statFile(filePath: string) {
   }
 }
 
-async function readFileOrNull(filePath: string, onSecretBlocked: ((event: Record<string, unknown>) => void) | null) {
+async function readFileOrNull(filePath: string, onSecretBlocked: ((event: LooseRecord) => void) | null) {
   if (isSecretPath(filePath)) {
     notifySecretBlocked(onSecretBlocked, filePath, 'secret path read blocked');
     return null;
@@ -51,9 +60,9 @@ function statsEqual(a: { mtimeMs: number; size: number } | null, b: { mtimeMs: n
  * @param {string[]} [opts.files] - subset to load (default: all 4)
  * @returns {Object<string, string|null>} file contents keyed by name (no .md extension)
  */
-export async function loadProjectFiles(projDir: string, opts: Record<string, any> = {}) {
-  const requested: string[] = opts.files || ALL_FILES;
-  const onSecretBlocked = opts.onSecretBlocked;
+export async function loadProjectFiles(projDir: string, opts: LooseRecord = {}) {
+  const requested = projectFileList(opts.files);
+  const onSecretBlocked = secretBlockedHandler(opts.onSecretBlocked);
 
   if (!CACHE_ENABLED) {
     const entries = await Promise.all(

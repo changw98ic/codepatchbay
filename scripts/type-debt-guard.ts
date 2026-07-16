@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import type { LooseRecord } from "../shared/types.js";
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 

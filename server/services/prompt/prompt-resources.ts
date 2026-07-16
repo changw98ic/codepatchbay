@@ -1,11 +1,91 @@
 import { readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { resolveKnowledgePath } from "../knowledge/knowledge.js";
-import { AnyRecord } from "../../../shared/types.js";
+import type { LooseRecord } from "../../../shared/types.js";
 
 // ── profile-loader ────────────────────────────────────────────────────
 
 const PROFILES_DIR = "profiles";
+
+type JsonRecord = {
+  [key: string]: unknown;
+};
+
+type SkillFrontMatter = JsonRecord & {
+  name?: string;
+  description?: string;
+  triggers?: string[];
+  status?: string;
+  source?: string;
+  jobId?: string;
+  project?: string;
+  verdict?: string;
+  extractedAt?: string;
+};
+
+type LoadedSkill = JsonRecord & {
+  name: string;
+  description: string;
+  triggers: string[];
+  status: string;
+  source: string;
+  content: string;
+  reason?: string;
+};
+
+type Profile = JsonRecord & {
+  role: string;
+  soulMd: string | null;
+  permissions: {
+    write_paths: string[];
+    deny_tools: string[];
+    deny_commands: boolean;
+  };
+  agent: {
+    command: string | null;
+    args: string[];
+  };
+  subagentGuidance: unknown;
+  acp: {
+    profile: string;
+    uiLane: boolean;
+    uiLaneReason: string;
+  };
+};
+
+type SecretBlockedHandler = (event: LooseRecord) => void;
+
+type LayerResolveOptions = {
+  hubRoot?: string;
+  sourcePath?: string;
+  dataRoot?: string | null;
+  projectRuntimeRoot?: string | null;
+  sessionId?: string;
+  profile?: string;
+  task?: string;
+  onSecretBlocked?: SecretBlockedHandler | null;
+};
+
+function isRecord(value: unknown): value is JsonRecord {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function stringValue(value: unknown, fallback = ""): string {
+  return typeof value === "string" ? value : fallback;
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.map(String) : [];
+}
+
+function requiredString(value: unknown, name: string): string {
+  if (typeof value === "string") return value;
+  throw new TypeError(`${name} must be a string`);
+}
+
+function completedPhases(job: LooseRecord): string[] {
+  return Array.isArray(job.completedPhases) ? job.completedPhases.map(String) : [];
+}
 
 function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -14,10 +94,10 @@ function escapeRegex(s: string): string {
 export const DEFAULT_SKILL_LIMIT = 10;
 export const DEFAULT_SKILL_MAX_BYTES = 32768;
 
-function parseFrontMatter(content: string): AnyRecord {
+function parseFrontMatter(content: string): SkillFrontMatter {
   const parts = content.split("---");
   if (parts.length < 3) return {};
-  const fm: AnyRecord = {};
+  const fm: SkillFrontMatter = {};
   for (const line of parts[1].split("\n")) {
     const nm = line.match(/^name:\s*(.+)/);
     if (nm) fm.name = nm[1].trim();
@@ -33,9 +113,9 @@ function parseFrontMatter(content: string): AnyRecord {
   return fm;
 }
 
-export async function loadProfileSkills(cpbRoot: string, role: string, options: AnyRecord = {}) {
-  const maxSkills = options.maxSkills ?? DEFAULT_SKILL_LIMIT;
-  const maxBytes = options.maxBytes ?? DEFAULT_SKILL_MAX_BYTES;
+export async function loadProfileSkills(cpbRoot: string, role: string, options: LooseRecord = {}) {
+  const maxSkills = typeof options.maxSkills === "number" ? options.maxSkills : DEFAULT_SKILL_LIMIT;
+  const maxBytes = typeof options.maxBytes === "number" ? options.maxBytes : DEFAULT_SKILL_MAX_BYTES;
   const includeDrafts = options.includeDrafts ?? false;
   const skillsDir = path.join(cpbRoot, PROFILES_DIR, role, "skills");
 
@@ -48,8 +128,8 @@ export async function loadProfileSkills(cpbRoot: string, role: string, options: 
     if (extractedStat.isDirectory()) dirsToScan.push(extractedDir);
   } catch {}
 
-  const skills: AnyRecord[] = [];
-  const diagnostics: AnyRecord[] = [];
+  const skills: LoadedSkill[] = [];
+  const diagnostics: LooseRecord[] = [];
 
   for (const scanDir of dirsToScan) {
     let entries;
@@ -118,12 +198,14 @@ export async function loadProfileSkills(cpbRoot: string, role: string, options: 
   return { skills, diagnostics };
 }
 
-export async function selectProfileSkills(cpbRoot: string, role: string, context: AnyRecord = {}, options: AnyRecord = {}) {
+export async function selectProfileSkills(cpbRoot: string, role: string, context: LooseRecord = {}, options: LooseRecord = {}) {
   const { skills } = await loadProfileSkills(cpbRoot, role, options);
-  const { phase, task, artifactText } = context;
+  const phase = stringValue(context.phase);
+  const task = stringValue(context.task);
+  const artifactText = stringValue(context.artifactText);
   const matchText = [task, artifactText].filter(Boolean).join(" ").toLowerCase();
 
-  const selected: AnyRecord[] = [];
+  const selected: LoadedSkill[] = [];
 
   for (const skill of skills) {
     const nameLower = skill.name.toLowerCase();
@@ -158,7 +240,7 @@ export async function selectProfileSkills(cpbRoot: string, role: string, context
   return selected;
 }
 
-function defaultProfile(role: string): AnyRecord {
+function defaultProfile(role: string): Profile {
   return {
     role,
     soulMd: null,
@@ -169,7 +251,7 @@ function defaultProfile(role: string): AnyRecord {
   };
 }
 
-export async function loadProfile(cpbRoot: string, role: string, { projectWikiDir = null }: Record<string, any> = {}): Promise<AnyRecord> {
+export async function loadProfile(cpbRoot: string, role: string, { projectWikiDir = null }: { projectWikiDir?: string | null } = {}): Promise<Profile> {
   const profileDir = path.join(cpbRoot, PROFILES_DIR, role);
   const profile = defaultProfile(role);
 
@@ -183,28 +265,32 @@ export async function loadProfile(cpbRoot: string, role: string, { projectWikiDi
   // Load config.json
   try {
     const raw = await readFile(path.join(profileDir, "config.json"), "utf8");
-    const config = JSON.parse(raw);
-    if (config.permissions) {
+    const parsedConfig = JSON.parse(raw);
+    const config = isRecord(parsedConfig) ? parsedConfig : {};
+    const permissions = isRecord(config.permissions) ? config.permissions : null;
+    if (permissions) {
       profile.permissions = {
-        write_paths: config.permissions.write_paths ?? [],
-        deny_tools: config.permissions.deny_tools ?? [],
-        deny_commands: config.permissions.deny_commands ?? false,
+        write_paths: stringArray(permissions.write_paths),
+        deny_tools: stringArray(permissions.deny_tools),
+        deny_commands: permissions.deny_commands === true,
       };
     }
-    if (config.agent) {
+    const agent = isRecord(config.agent) ? config.agent : null;
+    if (agent) {
       profile.agent = {
-        command: config.agent.command ?? null,
-        args: config.agent.args ?? [],
+        command: typeof agent.command === "string" ? agent.command : null,
+        args: stringArray(agent.args),
       };
     }
     if (config.subagentGuidance) {
       profile.subagentGuidance = config.subagentGuidance;
     }
-    if (config.acp) {
+    const acp = isRecord(config.acp) ? config.acp : null;
+    if (acp) {
       profile.acp = {
-        profile: config.acp.profile || "headless",
-        uiLane: Boolean(config.acp.uiLane),
-        uiLaneReason: config.acp.uiLaneReason || "",
+        profile: stringValue(acp.profile, "headless"),
+        uiLane: Boolean(acp.uiLane),
+        uiLaneReason: stringValue(acp.uiLaneReason),
       };
     }
   } catch {
@@ -266,11 +352,11 @@ function slugify(text: string): string {
  * Only extracts from jobs that completed successfully (PASS verdict).
  * Writes a DRAFT skill file and appends a skill_extracted event.
  */
-export async function extractSkillFromJob(cpbRoot: string, project: string, jobId: string, job: AnyRecord) {
+export async function extractSkillFromJob(cpbRoot: string, project: string, jobId: string, job: LooseRecord) {
   const verdict = job.verdict || job.artifacts?.verdict;
   const role = inferRole(job);
-  const taskSummary = job.task || job.taskDescription || `job-${jobId}`;
-  const phases = job.completedPhases || [];
+  const taskSummary = stringValue(job.task || job.taskDescription, `job-${jobId}`);
+  const phases = completedPhases(job);
 
   if (!role || phases.length === 0) return null;
 
@@ -319,7 +405,7 @@ export async function extractSkillFromJob(cpbRoot: string, project: string, jobI
 /**
  * Review a draft skill — promote to active or reject.
  */
-export async function reviewSkill(cpbRoot: string, role: string, fileName: string, { approve, reviewer }: AnyRecord) {
+export async function reviewSkill(cpbRoot: string, role: string, fileName: string, { approve, reviewer }: LooseRecord) {
   const dir = skillsDirExtract(cpbRoot, role);
   const filePath = path.join(dir, fileName);
 
@@ -331,7 +417,7 @@ export async function reviewSkill(cpbRoot: string, role: string, fileName: strin
   }
 
   const newStatus = approve ? "active" : "rejected";
-  const updated = updateFrontmatterStatus(content, newStatus, reviewer);
+  const updated = updateFrontmatterStatus(content, newStatus, typeof reviewer === "string" ? reviewer : null);
 
   await writeFile(filePath, updated, "utf8");
 
@@ -351,7 +437,7 @@ export async function listExtractedSkills(cpbRoot: string, role: string) {
     return [];
   }
 
-  const skills: AnyRecord[] = [];
+  const skills: LooseRecord[] = [];
   for (const entry of entries) {
     if (!entry.isFile() || !entry.name.startsWith("extracted-") || !entry.name.endsWith(".md")) continue;
 
@@ -363,7 +449,7 @@ export async function listExtractedSkills(cpbRoot: string, role: string) {
       continue;
     }
 
-    const fm: AnyRecord = parseFrontMatter(content);
+    const fm = parseFrontMatter(content);
     skills.push({
       fileName: entry.name,
       role,
@@ -388,16 +474,16 @@ export async function loadActiveExtractedSkills(cpbRoot: string, role: string) {
   return all.filter((s) => s.status === "active");
 }
 
-function inferRole(job: AnyRecord): string | null {
-  if (job.role) return job.role;
-  const phases = job.completedPhases || [];
+function inferRole(job: LooseRecord): string | null {
+  if (typeof job.role === "string") return job.role;
+  const phases = completedPhases(job);
   if (phases.includes("execute")) return "executor";
   if (phases.includes("plan")) return "planner";
   if (phases.includes("verify")) return "verifier";
   return null;
 }
 
-function buildSkillContent(fm: AnyRecord, job: AnyRecord, isPositive: boolean): string {
+function buildSkillContent(fm: LooseRecord, job: LooseRecord, isPositive: boolean): string {
   const lines = [
     "---",
     `name: ${fm.name}`,
@@ -412,14 +498,15 @@ function buildSkillContent(fm: AnyRecord, job: AnyRecord, isPositive: boolean): 
     "",
   ];
 
-  const taskSummary = job.task || job.taskDescription || "unknown task";
+  const taskSummary = stringValue(job.task || job.taskDescription, "unknown task");
+  const phases = completedPhases(job);
 
   if (isPositive) {
     lines.push(`# Positive Pattern: ${taskSummary}`);
     lines.push("");
     lines.push("## Context");
     lines.push(`Project: ${fm.project}`);
-    lines.push(`Phases: ${(job.completedPhases || []).join(", ")}`);
+    lines.push(`Phases: ${phases.join(", ")}`);
     lines.push("");
     lines.push("## Pattern");
     lines.push(`Task "${taskSummary}" was completed successfully.`);
@@ -440,8 +527,8 @@ function buildSkillContent(fm: AnyRecord, job: AnyRecord, isPositive: boolean): 
     lines.push("");
     lines.push("## Failure Pattern");
     lines.push(`Task "${taskSummary}" failed or was blocked.`);
-    if (job.completedPhases?.length) {
-      lines.push(`Completed phases before failure: ${job.completedPhases.join(", ")}`);
+    if (phases.length) {
+      lines.push(`Completed phases before failure: ${phases.join(", ")}`);
     }
   }
 
@@ -476,7 +563,7 @@ import {
 } from "../knowledge/knowledge.js";
 import { isSecretPath, notifySecretBlocked } from "../secret-policy.js";
 
-async function readFileOrNull(filePath: string, onSecretBlocked: ((event: Record<string, unknown>) => void) | null | undefined): Promise<string | null> {
+async function readFileOrNull(filePath: string, onSecretBlocked: SecretBlockedHandler | null | undefined): Promise<string | null> {
   if (isSecretPath(filePath)) {
     notifySecretBlocked(onSecretBlocked, filePath, "secret path read blocked");
     return null;
@@ -498,9 +585,9 @@ function writePolicyForLayer(layerName: string): string {
   return "unknown";
 }
 
-async function resolveLayerContent(layerName: string, { hubRoot, sourcePath, dataRoot, projectRuntimeRoot, sessionId, profile, task, onSecretBlocked }: Record<string, any>): Promise<{ content: string | null; source: string }> {
-  const hub = path.resolve(hubRoot);
-  const src = path.resolve(sourcePath);
+async function resolveLayerContent(layerName: string, { hubRoot, sourcePath, dataRoot, projectRuntimeRoot, sessionId, profile, task, onSecretBlocked }: LayerResolveOptions): Promise<{ content: string | null; source: string }> {
+  const hub = path.resolve(requiredString(hubRoot, "hubRoot"));
+  const src = path.resolve(requiredString(sourcePath, "sourcePath"));
 
   switch (layerName) {
     case "global-soul-profile": {
@@ -547,8 +634,8 @@ async function resolveLayerContent(layerName: string, { hubRoot, sourcePath, dat
   }
 }
 
-export async function composePromptContext({ hubRoot, sourcePath, dataRoot, projectRuntimeRoot, sessionId, task, profile, onSecretBlocked }: Record<string, any> = {}) {
-  const layers: AnyRecord[] = [];
+export async function composePromptContext({ hubRoot, sourcePath, dataRoot, projectRuntimeRoot, sessionId, task, profile, onSecretBlocked }: LayerResolveOptions = {}) {
+  const layers: LooseRecord[] = [];
 
   for (const layerName of PROMPT_COMPOSITION_ORDER) {
     const { content, source } = await resolveLayerContent(layerName, {

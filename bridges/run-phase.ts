@@ -12,7 +12,7 @@
 
 import { readFile, appendFile, mkdir } from "node:fs/promises";
 import path from "node:path";
-import { AnyRecord } from "../shared/types.js";
+import type { LooseRecord } from "../core/contracts/types.js";
 import {
   buildPlannerPrompt,
   buildExecutorPrompt,
@@ -31,17 +31,42 @@ import {
 import { parseVerdictEnvelope } from "../core/workflow/verdict.js";
 import { applyVariant } from "../server/services/setup.js";
 import { runRepair, completeRepair } from "../server/services/review/review-dispatch.js";
+import { BoundedOutput, subprocessOutputMaxBytes } from "../shared/bounded-output.js";
 
 // --- CLI arg parsing ---
 
-function parseArgs(argv: string[]) {
+type PhaseName = "plan" | "execute" | "verify" | "review" | "repair";
+
+type ParsedArgs = {
+  phase: PhaseName;
+  executorRoot: string;
+  cpbRoot: string;
+  project: string;
+  options: Map<string, string>;
+};
+
+type PhaseRuntime = {
+  dataRoot: string;
+  wikiDir: string;
+  inboxDir: string;
+  outputsDir: string;
+};
+
+type AcpResult = LooseRecord & {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+  error?: Error;
+};
+
+function parseArgs(argv: string[]): ParsedArgs {
   const phase = argv[0];
   if (!phase || !["plan", "execute", "verify", "review", "repair"].includes(phase)) {
     throw new Error(`first argument must be a phase name (plan|execute|verify|review|repair), got: ${phase}`);
   }
 
-  const positional = [];
-  const options = new Map();
+  const positional: string[] = [];
+  const options = new Map<string, string>();
   for (let i = 1; i < argv.length; i++) {
     const token = argv[i];
     if (token.startsWith("--")) {
@@ -84,7 +109,7 @@ function parseArgs(argv: string[]) {
     throw new Error(`invalid project name: ${project}`);
   }
 
-  return { phase, executorRoot: path.resolve(executorRoot), cpbRoot: path.resolve(cpbRoot), project, options };
+  return { phase: phase as PhaseName, executorRoot: path.resolve(executorRoot), cpbRoot: path.resolve(cpbRoot), project, options };
 }
 
 async function phaseRuntime(cpbRoot: string, project: string) {
@@ -110,7 +135,7 @@ const RED = "\x1b[0;31m";
 const YELLOW = "\x1b[1;33m";
 const NC = "\x1b[0m";
 
-async function logAppend(cpbRoot: string, project: string, msg: string, runtime: AnyRecord | null = null) {
+async function logAppend(cpbRoot: string, project: string, msg: string, runtime: PhaseRuntime | null = null) {
   const logFile = runtime?.wikiDir
     ? path.join(runtime.wikiDir, "log.md")
     : wikiLogPath(cpbRoot, project);
@@ -162,7 +187,7 @@ async function dashboardUpdate(cpbRoot: string, project: string, phase: string, 
 // --- ACP runner ---
 
 
-async function runAcp(agent: string, prompt: string, cwd: string, executorRoot: string): Promise<AnyRecord> {
+async function runAcp(agent: string, prompt: string, cwd: string, executorRoot: string): Promise<AcpResult> {
   const { spawn } = await import("node:child_process");
   const clientPath = process.env.CPB_ACP_CLIENT || path.join(executorRoot, "bridges", "acp-client.js");
   const useDirect = !!process.env.CPB_ACP_CLIENT;
@@ -173,10 +198,11 @@ async function runAcp(agent: string, prompt: string, cwd: string, executorRoot: 
 
   return new Promise((resolve) => {
     let settled = false;
-    const stdoutChunks: Buffer[] = [];
-    const stderrChunks: Buffer[] = [];
+    const maxOutputBytes = subprocessOutputMaxBytes(process.env.CPB_SUBPROCESS_OUTPUT_MAX_BYTES);
+    const stdout = new BoundedOutput(maxOutputBytes);
+    const stderr = new BoundedOutput(maxOutputBytes);
 
-    function finish(result: AnyRecord) {
+    function finish(result: AcpResult) {
       if (settled) return;
       settled = true;
       resolve(result);
@@ -200,7 +226,8 @@ async function runAcp(agent: string, prompt: string, cwd: string, executorRoot: 
         stdio: ["pipe", "pipe", "pipe"],
       });
     } catch (err) {
-      finish({ exitCode: 1, stdout: "", stderr: err.message, error: err });
+      const error = err instanceof Error ? err : new Error(String(err));
+      finish({ exitCode: 1, stdout: "", stderr: error.message, error });
       return;
     }
 
@@ -208,18 +235,22 @@ async function runAcp(agent: string, prompt: string, cwd: string, executorRoot: 
     child.stdin.end();
 
     child.stdout.on("data", (chunk) => {
-      stdoutChunks.push(chunk);
+      stdout.append(chunk);
       process.stdout.write(chunk);
     });
     child.stderr.on("data", (chunk) => {
-      stderrChunks.push(chunk);
+      stderr.append(chunk);
       process.stderr.write(chunk);
     });
     child.on("error", (err) => finish({ exitCode: 1, stdout: "", stderr: "", error: err }));
     child.on("close", (code) => {
-      const stdout = Buffer.concat(stdoutChunks).toString("utf8");
-      const stderr = Buffer.concat(stderrChunks).toString("utf8");
-      finish({ exitCode: code ?? 1, stdout, stderr });
+      finish({
+        exitCode: code ?? 1,
+        stdout: stdout.toString(),
+        stderr: stderr.toString(),
+        stdoutTruncated: stdout.truncated,
+        stderrTruncated: stderr.truncated,
+      });
     });
 
     // Forward signals to child process group when possible
@@ -262,7 +293,7 @@ function parseReviewVerdict(content: string) {
 
 // --- Phase handlers ---
 
-async function handlePlan(args: AnyRecord) {
+async function handlePlan(args: ParsedArgs) {
   const { executorRoot, cpbRoot, project, options } = args;
   const task = options.get("--task") || "";
   if (!task) throw new Error("--task is required for plan phase");
@@ -299,7 +330,7 @@ async function handlePlan(args: AnyRecord) {
   return 0;
 }
 
-async function handleExecute(args: AnyRecord) {
+async function handleExecute(args: ParsedArgs) {
   const { executorRoot, cpbRoot, project, options } = args;
   const planId = options.get("--plan-id") || "";
   const jobId = options.get("--job-id") || "";
@@ -351,7 +382,7 @@ async function handleExecute(args: AnyRecord) {
   return 0;
 }
 
-async function handleVerify(args: AnyRecord) {
+async function handleVerify(args: ParsedArgs) {
   const { executorRoot, cpbRoot, project, options } = args;
   const deliverableId = options.get("--deliverable-id") || "";
   const jobId = options.get("--job-id") || "";
@@ -419,7 +450,7 @@ async function handleVerify(args: AnyRecord) {
   return 0;
 }
 
-async function handleReview(args: AnyRecord) {
+async function handleReview(args: ParsedArgs) {
   const { executorRoot, cpbRoot, project, options } = args;
   const deliverableId = options.get("--deliverable-id") || "";
   if (!deliverableId) throw new Error("--deliverable-id is required for review phase");
@@ -465,7 +496,7 @@ async function handleReview(args: AnyRecord) {
   return 0;
 }
 
-async function handleRepair(args: AnyRecord) {
+async function handleRepair(args: ParsedArgs) {
   const { executorRoot, cpbRoot, project, options } = args;
   const jobId = options.get("--job-id") || "";
   if (!jobId) throw new Error("--job-id is required for repair phase");
@@ -483,7 +514,7 @@ async function handleRepair(args: AnyRecord) {
   const { updateJobsIndexEntry } = await import("../server/services/job/job-store.js");
   const eventOpts = { dataRoot, includeLegacyFallback: false };
 
-  async function recordEvent(event: AnyRecord) {
+  async function recordEvent(event: LooseRecord) {
     await appendEv(cpbRoot, project, jobId, event, eventOpts);
     await checkpointJob(cpbRoot, project, jobId, eventOpts).catch(() => {});
     const state = materializeJob(await readEv(cpbRoot, project, jobId, eventOpts));

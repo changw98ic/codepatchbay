@@ -107,6 +107,81 @@ cpb github doctor                # verify connectivity
 cpb hub start                    # start Hub scheduler
 ```
 
+The Hub binds to loopback by default, but loopback is not an identity boundary. Startup always requires
+`CPB_HUB_BEARER_TOKEN`, `CPB_HUB_SERVICE_TOKENS_FILE`, or `CPB_HUB_OIDC_CONFIG_FILE`.
+Local development may explicitly set `CPB_HUB_ALLOW_ANONYMOUS_DEV=1`; that mode is loopback-only and never enterprise-ready.
+A non-loopback `CPB_HOST` should be deployed behind a TLS reverse proxy.
+Only explicitly secured networks should combine a non-loopback bind with `CPB_HUB_ALLOW_INSECURE_HTTP=1`.
+GitHub comment-triggered `/cpb run` is accepted only from repository owners,
+members, or collaborators.
+
+Enterprise deployments can set the absolute `CPB_HUB_SERVICE_TOKENS_FILE` path
+to use named service tokens stored only as SHA-256 digests and authorize them by
+`hub:health`, `hub:read`, or `hub:admin` scope plus project allowlists. The old
+`CPB_HUB_BEARER_TOKEN` remains a global `legacy-admin` compatibility credential.
+The authorization file must be a private, non-symlink file (`0600` on POSIX),
+and Hub must be restarted after rotation. See
+[`docs/security/cpb-hub-service-tokens.md`](docs/security/cpb-hub-service-tokens.md)
+for the schema, error contract, and rotation guidance.
+
+Before responding, the Hub durably writes the request id, principal, path
+without query parameters, status, scope decision, and machine error code to a
+SHA-256 hash-chain access audit. Integrity or write failure returns
+`503 HUB_ACCESS_AUDIT_UNAVAILABLE` instead of silently dropping the record. The
+log is bounded to 256 MiB by default, `cpb doctor` warns before capacity is
+exhausted, and `cpb hub verify-access-audit` verifies the chain. The local chain
+can be archived while the Hub is stopped with
+`cpb hub archive-access-audit --output PATH`; the archive is published before
+the live log is reset, interrupted transactions recover from a durable journal,
+and `CPB_HUB_ACCESS_AUDIT_ARCHIVE_SIGNING_KEY` enables HMAC-SHA256 manifests.
+This local mechanism does not replace a separately controlled SIEM or WORM store; see
+[`docs/security/cpb-hub-access-audit.md`](docs/security/cpb-hub-access-audit.md).
+
+All production project-registry writes use a cross-process transaction with a
+monotonic `revision`; a stale snapshot returns `HUB_REGISTRY_CONFLICT` instead
+of overwriting another process's commit. The owner-token lock is renewed,
+recovers dead owners, and is revalidated before publish, while registry and
+lock metadata reads reject symlinks and enforce byte limits. This guarantee is
+for competing processes on one host, not multi-host consensus. See
+[`docs/architecture/cpb-hub-registry-consistency.md`](docs/architecture/cpb-hub-registry-consistency.md).
+
+The Hub root contains both control-plane state and every registered project's runtime state.
+Backup and restore are offline operations. Snapshots carry a SHA-256 manifest, restore verifies
+all data before mutation, replacing existing state requires `--force`, and the previous root is
+retained as a `*.pre-restore-*` rollback directory:
+
+```bash
+cpb hub stop
+cpb hub backup --output /secure/backups/cpb-2026-07-11
+cpb hub verify-backup --input /secure/backups/cpb-2026-07-11
+cpb hub restore --input /secure/backups/cpb-2026-07-11 --force
+cpb hub recover-restore       # inspect and recover an interrupted restore transaction
+```
+
+Backups require `CPB_HUB_BACKUP_SIGNING_KEY` with at least 32 non-whitespace bytes by default.
+They include an HMAC-SHA256 signature, and verification and restore reject unsigned snapshots by default.
+Only local development compatibility may use `--allow-unsigned-dev` to create, verify, or restore an
+unsigned snapshot. Store the key separately from snapshots
+and include it in enterprise key rotation and disaster-recovery procedures.
+
+Backup and restore hold a token-owned maintenance lease beside the Hub root. Hub, orchestrator,
+worker, queue, project-registry, and quota-delegate write entry points reject concurrent writes.
+Restore uses a durable three-phase journal and fsyncs the parent directory after renames. After a
+process or host interruption, the next Hub start automatically rolls back an uncommitted state or
+verifies the committed replacement; `cpb hub recover-restore` runs the same recovery explicitly.
+
+Command and test acceptance probes no longer execute model-generated
+`expectedEvidence` text. Repositories that need these probes must commit a
+maintainer-reviewed `.cpb/verification-probes.json` policy at `HEAD`, binding a
+`predicateId` to structured `executable` and `args` fields. Missing policy
+produces an auditable failed claim and never falls back to shell execution. See
+[`docs/security/cpb-agent-secret-boundary.md`](docs/security/cpb-agent-secret-boundary.md).
+
+Before copying, backup and restore check free space on the destination filesystem and reserve
+256 MiB after the operation by default. Set `CPB_HUB_MIN_FREE_BYTES` to another non-negative byte
+count. Backup stages carry an ownership marker bound to the Hub and output path; later runs reclaim
+only stages proven to belong to that transaction and refuse to delete unmarked or mismatched directories.
+
 Label an issue `cpb` → auto plan → delegate → verify → open draft PR.
 
 ## Supported coding agents

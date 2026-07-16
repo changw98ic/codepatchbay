@@ -1,9 +1,11 @@
+import type { LooseRecord } from "../../shared/types.js";
 // Session Pin — crash-safe session metadata saved at spawn time.
 // Writes sessionPin into the process registry file so that orphan recovery
 // can pass session context to retry jobs.
 
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { isRecord } from "../contracts/types.js";
 
 interface SessionPin {
   phase: string;
@@ -32,12 +34,10 @@ export async function pinSessionToJob(
     const processesDir = path.join(path.resolve(dataRoot), "processes");
     const file = path.join(processesDir, `${jobId}.json`);
 
-    let entry: Record<string, unknown> | null = null;
+    let entry: LooseRecord | null = null;
     try {
-      const parsed = JSON.parse(await readFile(file, "utf8")) as unknown;
-      entry = parsed && typeof parsed === "object" && !Array.isArray(parsed)
-        ? parsed as Record<string, unknown>
-        : null;
+      const parsed: unknown = JSON.parse(await readFile(file, "utf8"));
+      entry = isRecord(parsed) ? parsed : null;
     } catch {
       // Process file not created yet — nothing to pin to.
       return;

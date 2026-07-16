@@ -67,12 +67,6 @@ type SweBenchVerificationCommands = {
   notes: string[];
 };
 
-type SweBenchChecklistInput = {
-  jobId: string;
-  projectId: string;
-  task: string;
-};
-
 const REPO_ROOT = path.resolve(import.meta.dirname, "..", "..");
 const DIST_ROOT = path.resolve(import.meta.dirname, "..");
 const PRODUCT_EVIDENCE_FILE = process.env.CPB_SWEBENCH_PRODUCT_EVIDENCE_FILE
@@ -340,10 +334,6 @@ function uniqueStrings(values: string[]) {
   return [...new Set(values.filter((value) => value.trim().length > 0))];
 }
 
-function regressionTestScopesForRecord() {
-  return ["tests/", "**/tests/"];
-}
-
 function parenthesizedTestTarget(testName: string) {
   const match = testName.match(/\(([^)]+)\)\s*$/);
   return match?.[1]?.trim() || "";
@@ -416,17 +406,6 @@ function pytestDiagnosticCommand(tests: string[], limit = 4) {
   return `python3 -m pytest -q ${targets.join(" ")}`;
 }
 
-function summarizeSweBenchTests(label: string, tests: string[], maxExamples = 8) {
-  const groups = uniqueStrings(tests.map(dottedTestGroup).filter(Boolean));
-  const examples = tests.slice(0, maxExamples);
-  const moreExamples = tests.length > examples.length ? `; ... ${tests.length - examples.length} more` : "";
-  const groupSummary = groups.length > 0
-    ? ` Groups: ${groups.slice(0, maxExamples).join(", ")}${groups.length > maxExamples ? `; ... ${groups.length - maxExamples} more` : ""}.`
-    : "";
-  const exampleSummary = examples.length > 0 ? ` Examples: ${examples.join("; ")}${moreExamples}.` : "";
-  return `${label}: ${tests.length} test${tests.length === 1 ? "" : "s"}.${groupSummary}${exampleSummary}`;
-}
-
 export function deriveSweBenchDiagnosticCommands(row: LooseRecord, record: SweBenchRecord): string[] {
   const failToPass = stringArrayFromJson(row.FAIL_TO_PASS);
   const command = record.representativeRepository === "django/django"
@@ -470,148 +449,11 @@ export function deriveSweBenchVerificationCommands(
   };
 }
 
-function formatCanonicalVerificationCommands(commands: SweBenchVerificationCommands, diagnosticCommands: string[] = []) {
-  const lines = [
-    "Canonical local verification commands:",
-    "Use these exact commands for command/test expectedEvidence and final verification ledger entries.",
-  ];
-  for (const note of commands.notes) lines.push(`- Note: ${note}`);
-  for (const command of commands.failToPass) lines.push(`- FAIL_TO_PASS: ${command}`);
-  for (const command of commands.passToPass) lines.push(`- PASS_TO_PASS smoke: ${command}`);
-  if (diagnosticCommands.length > 0) {
-    lines.push("Allowed bounded diagnostic commands:");
-    lines.push("- Diagnostic commands may supplement real-path and bypass investigation, but they are not canonical acceptance evidence.");
-    for (const command of diagnosticCommands) lines.push(`- DIAGNOSTIC: ${command}`);
-  }
-  return commands.failToPass.length > 0 || commands.passToPass.length > 0 ? lines.join("\n") : "";
-}
-
 export function buildTask(row: LooseRecord, record: SweBenchRecord) {
-  const failToPass = stringArrayFromJson(row.FAIL_TO_PASS);
-  const passToPass = stringArrayFromJson(row.PASS_TO_PASS);
-  const diagnosticCommands = deriveSweBenchDiagnosticCommands(row, record);
-  const canonicalCommands = formatCanonicalVerificationCommands(deriveSweBenchVerificationCommands(row, record), diagnosticCommands);
-  return [
-    `Resolve this SWE-bench Verified issue in ${record.representativeRepository}.`,
-    "",
-    `Instance: ${record.benchmarkInstanceId}`,
-    `Base commit: ${record.baseCommit}`,
-    "",
-    "Use the checked-out repository, the problem statement, and the listed SWE-bench tests as the only source of truth. Do not use external web search, webReader, browsers, or live GitHub/network lookups. Keep the change minimal, do not create live GitHub side effects, and return the required CPB JSON envelopes.",
-    canonicalCommands ? `\n${canonicalCommands}` : "",
-    "",
-    "Problem statement:",
-    stringValue(row.problem_statement),
-    "",
-    summarizeSweBenchTests("SWE-bench FAIL_TO_PASS summary", failToPass),
-    "",
-    summarizeSweBenchTests("SWE-bench PASS_TO_PASS summary", passToPass),
-  ].join("\n");
-}
-
-function sourceScopeForRecord(record: SweBenchRecord) {
-  switch (record.representativeRepository) {
-    case "astropy/astropy":
-      return ["astropy/"];
-    case "django/django":
-      return ["django/"];
-    case "matplotlib/matplotlib":
-      return ["lib/"];
-    case "pallets/flask":
-      return ["src/"];
-    default: {
-      const repoName = stringValue(record.representativeRepository).split("/").at(-1);
-      return repoName ? [`${repoName.replace(/[^a-zA-Z0-9_-]+/g, "-")}/`] : ["."];
-    }
-  }
-}
-
-export function buildSweBenchAcceptanceChecklist(
-  row: LooseRecord,
-  record: SweBenchRecord,
-  { jobId, projectId, task }: SweBenchChecklistInput,
-) {
-  const commands = deriveSweBenchVerificationCommands(row, record);
-  const implementationScopes = uniqueStrings([...sourceScopeForRecord(record), ...regressionTestScopesForRecord()]);
-  const regressionTestScopes = regressionTestScopesForRecord();
-  const items = [
-    {
-      requirement: "A minimal real in-repo regression test is added or updated to cover the SWE-bench issue before the source fix",
-      predicateId: "swebench-local-regression-test",
-      verificationMethod: "static",
-      expectedEvidence: "Changed real test file under tests/ or an in-package tests/ directory, plus exact canonical FAIL_TO_PASS command evidence for failing-before and passing-after in the verifier ledger",
-      area: "regression",
-      evidenceClass: "agent_regression_test",
-      evidenceOrigin: "agent_written",
-      allowedFiles: regressionTestScopes,
-    },
-    {
-      requirement: "The source fix is traced against the real problem-statement path and plausible bypass candidates, not only an agent-authored minimal reproduction",
-      predicateId: "swebench-real-path-trace",
-      verificationMethod: "static",
-      expectedEvidence: "Source diff exists under the implementation area; verifier/adversarial verdict must name the real actors, entrypoints, and bypass candidates considered",
-      area: "real_path",
-      evidenceClass: "real_path_trace",
-      evidenceOrigin: "deterministic_probe",
-      allowedFiles: sourceScopeForRecord(record),
-    },
-    ...commands.failToPass.map((command, index) => ({
-      requirement: "SWE-bench FAIL_TO_PASS oracle tests pass for the requested bug fix",
-      predicateId: `swebench-fail-to-pass-${index + 1}`,
-      verificationMethod: "test",
-      expectedEvidence: command,
-      area: "behavior",
-      evidenceClass: "canonical_oracle_test",
-      evidenceOrigin: "benchmark_required",
-      allowedFiles: implementationScopes,
-    })),
-    ...commands.passToPass.map((command, index) => ({
-      requirement: "SWE-bench PASS_TO_PASS smoke tests remain passing",
-      predicateId: `swebench-pass-to-pass-${index + 1}`,
-      verificationMethod: "test",
-      expectedEvidence: command,
-      area: "regression",
-      evidenceClass: "canonical_oracle_test",
-      evidenceOrigin: "benchmark_required",
-      allowedFiles: implementationScopes,
-    })),
-  ];
-  if (items.length === 1) {
-    items.push({
-      requirement: "Source implementation changes address the SWE-bench problem statement",
-      predicateId: "swebench-source-change",
-      verificationMethod: "static",
-      expectedEvidence: "source diff exists in the repository implementation area",
-      area: "implementation",
-      evidenceClass: "source_diff",
-      evidenceOrigin: "deterministic_probe",
-      allowedFiles: sourceScopeForRecord(record),
-    });
-  }
-  return {
-    schemaVersion: 1,
-    jobId,
-    project: projectId,
-    source: { task, issue: null, documents: [], requirementClassificationArtifact: null },
-    status: "frozen",
-    items: items.map((item, index) => ({
-      id: `AC-${String(index + 1).padStart(3, "0")}`,
-      requirement: item.requirement,
-      source: "task_text",
-      sourceRefs: [{ kind: "task_text", locator: "task:0", sha256: null }],
-      predicateId: item.predicateId,
-      required: true,
-      area: item.area,
-      risk: "medium",
-      verificationMethod: item.verificationMethod,
-      expectedEvidence: item.expectedEvidence,
-      evidenceClass: item.evidenceClass,
-      evidenceOrigin: item.evidenceOrigin,
-      dependsOn: [],
-      allowedFiles: item.allowedFiles,
-    })),
-    assumptions: [],
-  };
+  // The solver receives the same task surface as an ordinary CPB job. Dataset
+  // identity, oracle tests, and scorer data stay outside the solving path.
+  void record;
+  return stringValue(row.problem_statement).trim();
 }
 
 async function writeAssignment({
@@ -637,13 +479,6 @@ async function writeAssignment({
   const jobId = `job-${entryId}`;
   const attemptToken = `attempt-${entryId}-001`;
   const task = buildTask(row, record);
-  const acceptanceChecklist = buildSweBenchAcceptanceChecklist(row, record, { jobId, projectId, task });
-  const verificationCommands = deriveSweBenchVerificationCommands(row, record);
-  const canonicalCommands = [
-    ...verificationCommands.failToPass,
-    ...verificationCommands.passToPass,
-  ];
-  const diagnosticCommands = deriveSweBenchDiagnosticCommands(row, record);
   const project = await registerProject(hubRoot, {
     id: projectId,
     name: projectId,
@@ -682,14 +517,11 @@ async function writeAssignment({
       benchmarkRepository: record.representativeRepository,
       benchmarkBaseCommit: record.baseCommit,
       issueNumber: null,
-      acceptanceChecklist,
       productValidation: {
         validationMode: "swe-bench-verified",
         benchmarkInstanceId: record.benchmarkInstanceId,
         planMode,
         agents,
-        canonicalCommands,
-        diagnosticCommands,
       },
     },
     metadata: {
@@ -706,8 +538,6 @@ async function writeAssignment({
         benchmarkInstanceId: record.benchmarkInstanceId,
         planMode,
         agents,
-        canonicalCommands,
-        diagnosticCommands,
       },
     },
     attempt: 1,
@@ -717,13 +547,15 @@ async function writeAssignment({
   return { project, projectId, assignmentId, entryId, attemptDir };
 }
 
-async function runManagedWorker({
+export async function runManagedWorker({
   workerId,
   hubRoot,
   cpbRoot,
   assignmentId,
   phaseAgents,
   timeoutMs,
+  distRoot = DIST_ROOT,
+  extraEnv = {},
 }: {
   workerId: string;
   hubRoot: string;
@@ -731,8 +563,10 @@ async function runManagedWorker({
   assignmentId: string;
   phaseAgents: ProductValidationAgents;
   timeoutMs: number;
+  distRoot?: string;
+  extraEnv?: NodeJS.ProcessEnv;
 }) {
-  const workerScript = path.join(DIST_ROOT, "runtime", "worker", "managed-worker.js");
+  const workerScript = path.join(distRoot, "runtime", "worker", "managed-worker.js");
   return new Promise<CommandResult>((resolve) => {
     const child = spawn(process.execPath, [
       workerScript,
@@ -744,20 +578,14 @@ async function runManagedWorker({
       cwd: REPO_ROOT,
       env: {
         ...process.env,
+        ...extraEnv,
         CPB_ROOT: cpbRoot,
         CPB_HUB_ROOT: hubRoot,
         CPB_EXECUTOR_ROOT: REPO_ROOT,
         CPB_PROJECT_ROOTS: path.dirname(hubRoot),
-        CPB_CODEGRAPH_INDEX_ONLY_OK: "1",
         CPB_WORKER_DISPATCH_ENABLED: "0",
         CPB_ACP_USE_MANAGED_POOL: "0",
         CPB_ACP_PERSISTENT_PROCESS: "0",
-        CPB_CHECKLIST_DECOMPOSE: "1",
-        CPB_CHECKLIST_DECOMPOSE_RETRY_MAX: process.env.CPB_CHECKLIST_DECOMPOSE_RETRY_MAX || "2",
-        CPB_CHECKLIST_DECOMPOSE_RETRY_BASE_DELAY_MS: process.env.CPB_CHECKLIST_DECOMPOSE_RETRY_BASE_DELAY_MS || "1000",
-        CPB_PHASE_RETRY_MAX: process.env.CPB_PHASE_RETRY_MAX || "3",
-        CPB_PHASE_FEEDBACK_RETRY_MAX: process.env.CPB_PHASE_FEEDBACK_RETRY_MAX || "1",
-        CPB_PHASE_RETRY_BASE_DELAY_MS: process.env.CPB_PHASE_RETRY_BASE_DELAY_MS || "1000",
         CPB_DYNAMIC_VERIFIER_AGENT: phaseAgents.verifier,
         CPB_PRODUCT_VALIDATION_KEEP_WORKTREE: "1",
         CPB_ACP_TIMEOUT_MS: String(timeoutMs),

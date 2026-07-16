@@ -9,13 +9,104 @@ import { redactSecrets } from "../secret-policy.js";
 // buildChainSnapshot and analyzeChainSnapshot are defined locally below
 import { WorkerStore, summarizeWorkers } from "../../../shared/orchestrator/worker-store.js";
 
-type LooseRecord = Record<string, any>;
+type LooseRecord = {
+  [key: string]: unknown;
+  id?: string;
+  jobId?: string;
+  project?: string;
+  projectId?: string;
+  workerId?: string;
+  sessionId?: string;
+  status?: string;
+  phase?: string;
+  type?: string;
+  reason?: string;
+  category?: string;
+  action?: string;
+  leaseId?: string;
+  expiresAt?: string;
+  blockedReason?: string;
+  failureCode?: string;
+  currentPhase?: string;
+  workflow?: string;
+  task?: string;
+  createdAt?: string | number;
+  updatedAt?: string | number;
+  ts?: string;
+  projectRuntimeRoot?: string;
+  sourcePath?: string;
+  metadata?: LooseRecord;
+  worker?: LooseRecord;
+  idempotency?: LooseRecord;
+  dispatchKey?: string;
+  pools?: Record<string, LooseRecord>;
+  activeRequests?: LooseRecord[];
+  lastSpawnAt?: string;
+  active?: number;
+  limit?: number;
+  queued?: number;
+  requestCount?: number;
+  errorCount?: number;
+  recycleCount?: number;
+  lastRecycleReason?: string;
+  rateLimitedUntil?: string | number | null;
+  mode?: string;
+  transport?: string;
+  providerProcessReuse?: boolean;
+  sessionAgeMs?: number;
+  promptBytes?: number;
+  pid?: number;
+  currentAssignmentId?: string;
+  startedAt?: string;
+  lastSeenAt?: string;
+  lastHeartbeatAt?: string;
+};
+
+type AcpPoolLike = {
+  status: () => LooseRecord;
+  readProviderQuotas: () => Promise<LooseRecord>;
+};
+
+type ObservabilityOptions = {
+  cpbRoot: string;
+  hubRoot: string;
+  acpPool?: AcpPoolLike | null;
+};
+
+type ChainSnapshot = LooseRecord & {
+  job: LooseRecord | null;
+  eventTail: LooseRecord[];
+  lease: LooseRecord | null;
+  acpPool: LooseRecord | null;
+  queueEntry: LooseRecord | null;
+  inboxPending: number;
+  reviewSession: LooseRecord | null;
+  timestamp: string;
+};
+
+type RuntimeOptions = {
+  dataRoot?: string | null;
+};
+
+type PerformanceEntry = RuntimeOptions & {
+  agent?: string | null;
+  role?: string | null;
+  phase?: string | null;
+  status?: string | null;
+  durationMs?: number | null;
+  error?: unknown;
+  ts?: string | null;
+};
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error || "");
+}
 
 export function redactDiagnostics(value: unknown, key = "") {
   return redactSecrets(value, key);
 }
 
-export async function buildObservabilitySummary({ cpbRoot, hubRoot, acpPool }: LooseRecord = {}) {
+export async function buildObservabilitySummary({ cpbRoot, hubRoot, acpPool = null }: ObservabilityOptions) {
   const pool = acpPool || getManagedAcpPool({ cpbRoot, hubRoot });
   const now = Date.now();
   const workerStore = new WorkerStore(hubRoot);
@@ -100,10 +191,10 @@ export async function buildObservabilitySummary({ cpbRoot, hubRoot, acpPool }: L
     );
   }
 
-  const dispatchSummary: LooseRecord = { total: 0, completed: 0, failed: 0, running: 0, assigned: 0, pending: 0 };
+  const dispatchSummary: Record<string, number> = { total: 0, completed: 0, failed: 0, running: 0, assigned: 0, pending: 0 };
   for (const d of dispatches) {
     dispatchSummary.total++;
-    if (dispatchSummary[d.status] !== undefined) dispatchSummary[d.status]++;
+    if (d.status && dispatchSummary[d.status] !== undefined) dispatchSummary[d.status]++;
   }
 
   let observerBlockedChains = 0;
@@ -128,7 +219,7 @@ export async function buildObservabilitySummary({ cpbRoot, hubRoot, acpPool }: L
     }
   } catch {}
 
-  const projectRuntimeRoots = projects.reduce((acc: LooseRecord, p) => {
+  const projectRuntimeRoots = projects.reduce((acc: Record<string, string>, p) => {
     if (p.projectRuntimeRoot) acc[p.id] = p.projectRuntimeRoot;
     return acc;
   }, {});
@@ -159,7 +250,7 @@ export async function buildObservabilitySummary({ cpbRoot, hubRoot, acpPool }: L
   };
 }
 
-export async function buildDiagnosticBundle({ cpbRoot, hubRoot, acpPool }: LooseRecord = {}) {
+export async function buildDiagnosticBundle({ cpbRoot, hubRoot, acpPool = null }: ObservabilityOptions) {
   const pool = acpPool || getManagedAcpPool({ cpbRoot, hubRoot });
   const [hub, projects, queue, queueEntries, providerQuotas] = await Promise.all([
     hubStatus(hubRoot),
@@ -197,9 +288,9 @@ import { listSessions } from "../review/review-session.js";
 
 const EVENT_TAIL_SIZE = 10;
 
-export async function buildChainSnapshot({ cpbRoot, hubRoot, project, jobId }: LooseRecord) {
+export async function buildChainSnapshot({ cpbRoot, hubRoot, project, jobId }: { cpbRoot: string; hubRoot?: string | null; project: string; jobId: string }): Promise<ChainSnapshot> {
   const timestamp = new Date().toISOString();
-  const snapshot: LooseRecord = {
+  const snapshot: ChainSnapshot = {
     job: null,
     eventTail: [],
     lease: null,
@@ -212,16 +303,17 @@ export async function buildChainSnapshot({ cpbRoot, hubRoot, project, jobId }: L
 
   let events = [];
   try {
-    events = await readEvents(cpbRoot, project, jobId);
+    events = await readEvents(cpbRoot, project, jobId) as LooseRecord[];
     if (events.length > 0) {
-      snapshot.job = materializeJob(events);
+      const materialized = materializeJob(events);
+      snapshot.job = typeof materialized === "object" && materialized !== null ? materialized as LooseRecord : null;
     }
     snapshot.eventTail = events.slice(-EVENT_TAIL_SIZE);
   } catch {}
 
   if (snapshot.job?.leaseId) {
     try {
-      snapshot.lease = await readLease(cpbRoot, snapshot.job.leaseId);
+      snapshot.lease = await readLease(cpbRoot, snapshot.job.leaseId) as LooseRecord | null;
     } catch {}
   }
 
@@ -258,7 +350,7 @@ export async function buildChainSnapshot({ cpbRoot, hubRoot, project, jobId }: L
   return snapshot;
 }
 
-export function analyzeChainSnapshot(snapshot: LooseRecord) {
+export function analyzeChainSnapshot(snapshot: ChainSnapshot) {
   const { job, eventTail, lease, acpPool, queueEntry, reviewSession } = snapshot;
   const reasons: string[] = [];
   const details: LooseRecord = {};
@@ -341,9 +433,7 @@ export function analyzeChainSnapshot(snapshot: LooseRecord) {
   }
 
   if (job.status === "running" && lease && job.phase) {
-    const recentActivity = eventTail.filter(
-      (e: Record<string, any>) => e.type === "phase_activity" || e.type === "phase_started",
-    );
+    const recentActivity = eventTail.filter((e) => e.type === "phase_activity" || e.type === "phase_started");
     if (recentActivity.length > 0) {
       const lastActivityTs =
         recentActivity[recentActivity.length - 1].ts || null;
@@ -380,7 +470,7 @@ import { appendEvent, eventFileFor } from "../event/event-store.js";
 
 const PERFORMANCE_DIR = "performance";
 
-function perfDir(cpbRoot: string, options: Record<string, any> = {}) {
+function perfDir(cpbRoot: string, options: RuntimeOptions = {}) {
   if (!options.dataRoot) throw new Error("dataRoot is required");
   return path.join(path.resolve(options.dataRoot), PERFORMANCE_DIR);
 }
@@ -393,7 +483,7 @@ function agentKey(agent: string, role: string, phase: string) {
  * Record a performance entry from a completed job phase.
  * Writes a performance_recorded event and appends to agent metrics file.
  */
-export async function recordPerformance(cpbRoot: string, project: string, jobId: string, entry: Record<string, any>) {
+export async function recordPerformance(cpbRoot: string, project: string, jobId: string, entry: PerformanceEntry) {
   const { agent, role, phase, status, durationMs, error, ts } = entry;
   if (!agent || !phase) return;
   if (!entry.dataRoot) throw new Error("dataRoot is required");
@@ -432,7 +522,7 @@ export async function recordPerformance(cpbRoot: string, project: string, jobId:
 /**
  * Get aggregated performance metrics for an agent.
  */
-export async function getAgentPerformance(cpbRoot: string, agent: string, options: Record<string, any> = {}) {
+export async function getAgentPerformance(cpbRoot: string, agent: string, options: RuntimeOptions = {}) {
   const dir = perfDir(cpbRoot, options);
   const file = path.join(dir, `${agent}.jsonl`);
 
@@ -444,20 +534,21 @@ export async function getAgentPerformance(cpbRoot: string, agent: string, option
     return { agent, entries: 0, totalRequests: 0, totalErrors: 0, avgDurationMs: null, phases: {} };
   }
 
-  const entries = lines.map((l) => {
+  const entries: PerformanceEntry[] = lines.map((l) => {
     try { return JSON.parse(l); } catch { return null; }
-  }).filter(Boolean);
+  }).filter((entry): entry is PerformanceEntry => Boolean(entry));
 
   const totalRequests = entries.length;
   const totalErrors = entries.filter((e) => e.status === "failed").length;
-  const durations = entries.map((e) => e.durationMs).filter((d) => d && d > 0);
+  const durations = entries.map((e) => e.durationMs).filter((d): d is number => typeof d === "number" && d > 0);
   const avgDurationMs = durations.length > 0 ? Math.round(durations.reduce((a, b) => a + b, 0) / durations.length) : null;
 
-  const phases = {};
+  const phases: Record<string, { count: number; failures: number }> = {};
   for (const e of entries) {
-    if (!phases[e.phase]) phases[e.phase] = { count: 0, failures: 0 };
-    phases[e.phase].count++;
-    if (e.status === "failed") phases[e.phase].failures++;
+    const phase = e.phase || "unknown";
+    if (!phases[phase]) phases[phase] = { count: 0, failures: 0 };
+    phases[phase].count++;
+    if (e.status === "failed") phases[phase].failures++;
   }
 
   return { agent, entries: totalRequests, totalRequests, totalErrors, avgDurationMs, phases };
@@ -466,7 +557,7 @@ export async function getAgentPerformance(cpbRoot: string, agent: string, option
 /**
  * Record a quality score for an agent based on verifier verdict.
  */
-export async function recordQualityScore(cpbRoot: string, project: string, jobId: string, { agent, phase, verdict, ts }: Record<string, any>) {
+export async function recordQualityScore(cpbRoot: string, project: string, jobId: string, { agent, phase, verdict, ts, dataRoot }: PerformanceEntry & { verdict?: string | null }) {
   try {
     await appendEvent(cpbRoot, project, jobId, {
       type: "agent_quality_scored",
@@ -477,7 +568,7 @@ export async function recordQualityScore(cpbRoot: string, project: string, jobId
     });
   } catch {}
 
-  const dir = perfDir(cpbRoot);
+  const dir = perfDir(cpbRoot, { dataRoot });
   await mkdirPerf(dir, { recursive: true });
   const file = path.join(dir, `${agent}-quality.jsonl`);
 
@@ -505,9 +596,9 @@ export async function getAgentQuality(cpbRoot: string, agent: string) {
     return { agent, total: 0, pass: 0, fail: 0, passRate: null };
   }
 
-  const entries = lines.map((l) => {
+  const entries: Array<{ verdict?: string }> = lines.map((l) => {
     try { return JSON.parse(l); } catch { return null; }
-  }).filter(Boolean);
+  }).filter((entry): entry is { verdict?: string } => Boolean(entry));
 
   const pass = entries.filter((e) => e.verdict === "PASS").length;
   const fail = entries.filter((e) => e.verdict === "FAIL").length;
@@ -530,7 +621,7 @@ async function appendLine(file: string, line: string) {
 // ── diagnostics-bundle ──
 import { listJobs } from "../job/job-store.js";
 
-function jobSummary(job: Record<string, any>) {
+function jobSummary(job: LooseRecord) {
   return {
     jobId: job.jobId,
     project: job.project,
@@ -550,13 +641,13 @@ export async function gatherDiagnostics({
   hubRoot,
   recentJobsLimit = 5,
   acpPool = null,
-}: Record<string, any> = {}) {
-  const errors = [];
+}: ObservabilityOptions & { recentJobsLimit?: number } = { cpbRoot: process.cwd(), hubRoot: process.cwd() }) {
+  const errors: Array<{ source: string; message: string }> = [];
   let hub;
   try {
     hub = await hubStatus(hubRoot);
   } catch (e) {
-    errors.push({ source: "hub-status", message: e.message });
+    errors.push({ source: "hub-status", message: errorMessage(e) });
     hub = { hubRoot: path.resolve(hubRoot), projectCount: 0, enabledProjectCount: 0 };
   }
 
@@ -565,21 +656,21 @@ export async function gatherDiagnostics({
     const workerStore = new WorkerStore(hubRoot);
     managedWorkers = await workerStore.listWorkers();
   } catch (e) {
-    errors.push({ source: "workers", message: e.message });
+    errors.push({ source: "workers", message: errorMessage(e) });
   }
 
   let projects = [];
   try {
     projects = await listProjects(hubRoot);
   } catch (e) {
-    errors.push({ source: "projects", message: e.message });
+    errors.push({ source: "projects", message: errorMessage(e) });
   }
 
   let queue;
   try {
     queue = await queueStatus(hubRoot);
   } catch (e) {
-    errors.push({ source: "queue", message: e.message });
+    errors.push({ source: "queue", message: errorMessage(e) });
     queue = { total: 0, pending: 0, inProgress: 0, completed: 0, failed: 0, cancelled: 0 };
   }
 
@@ -595,7 +686,7 @@ export async function gatherDiagnostics({
       acp = { ...pool.status(), providerQuotas, rateLimits: providerQuotas };
     }
   } catch (e) {
-    errors.push({ source: "acp-pool", message: e.message });
+    errors.push({ source: "acp-pool", message: errorMessage(e) });
     acp = { pools: {}, providerQuotas: {}, rateLimits: {} };
   }
 
@@ -603,7 +694,7 @@ export async function gatherDiagnostics({
   try {
     knowledgePolicy = knowledgePolicySummary();
   } catch (e) {
-    errors.push({ source: "knowledge-policy", message: e.message });
+    errors.push({ source: "knowledge-policy", message: errorMessage(e) });
     knowledgePolicy = null;
   }
 
@@ -612,7 +703,7 @@ export async function gatherDiagnostics({
     const allJobs = await listJobs(cpbRoot);
     recentJobs = allJobs.slice(0, recentJobsLimit).map(jobSummary);
   } catch (e) {
-    errors.push({ source: "jobs", message: e.message });
+    errors.push({ source: "jobs", message: errorMessage(e) });
   }
 
   const result = {
@@ -621,7 +712,7 @@ export async function gatherDiagnostics({
     roots: {
       executorRoot: path.resolve(cpbRoot),
       hubRoot: path.resolve(hubRoot),
-      projectRuntimeRoots: projects.reduce((acc, p) => {
+      projectRuntimeRoots: projects.reduce((acc: Record<string, string>, p) => {
         if (p.projectRuntimeRoot) acc[p.id] = p.projectRuntimeRoot;
         return acc;
       }, {}),

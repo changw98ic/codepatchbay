@@ -1,3 +1,4 @@
+import { recordValue, type LooseRecord } from "../../shared/types.js";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { autoDiscoverAgents } from "./auto-discover.js";
@@ -11,7 +12,7 @@ const _squads = new Map<string, any>();
 const _rrCounters = new Map<string, number>(); // round-robin counters per squad
 let _loaded = false;
 
-function validateDescriptor(d: Record<string, any>) {
+function validateDescriptor(d: LooseRecord) {
   if (!d || typeof d !== "object") return false;
   if (typeof d.name !== "string" || !d.name) return false;
   if (typeof d.command !== "string" || !d.command) return false;
@@ -75,7 +76,7 @@ export async function loadRegistry(configDir: string) {
   try {
     const found = await autoDiscoverAgents();
     for (const d of found) {
-      if (!_registry.has(d.name)) {
+      if (typeof d.name === "string" && d.name && !_registry.has(d.name)) {
         _discovered.set(d.name, d);
       }
     }
@@ -86,11 +87,12 @@ export async function loadRegistry(configDir: string) {
   // Load squad definitions
   try {
     const raw = await readFile(SQUADS_FILE, "utf8");
-    const data = JSON.parse(raw);
-    if (data.squads && typeof data.squads === "object") {
-      for (const [name, squad] of Object.entries(data.squads as Record<string, any>)) {
-        if (squad.leader && Array.isArray(squad.members)) {
-          _squads.set(name, { ...squad, name });
+      const data = JSON.parse(raw);
+      if (data.squads && typeof data.squads === "object") {
+        for (const [name, squad] of Object.entries(data.squads as LooseRecord)) {
+        const squadRecord = recordValue(squad);
+        if (squadRecord.leader && Array.isArray(squadRecord.members)) {
+          _squads.set(name, { ...squadRecord, name });
         }
       }
     }
@@ -170,12 +172,14 @@ export function listAgentsByProtocol(protocol: string) {
 }
 
 /**
- * Default agent for a given role, based on descriptor defaultRoles.
- * Prefers ACP-protocol agents for pipeline routing.
- * Falls back to default mapping: planner/verifier/reviewer -> codex, executor/remediator -> claude.
+ * Default agent for a given role. Codex is the quality baseline for every
+ * coding role; alternative providers become defaults only through explicit
+ * configuration or sufficiently strong outcome evidence.
  */
 export function defaultAgentForRole(role: string) {
   ensureLoaded();
+  const codex = _registry.get("codex") || _discovered.get("codex");
+  if (codex && (codex.protocol || "unknown") === "acp") return "codex";
   // Prefer registered ACP agents with matching role
   for (const d of _registry.values()) {
     if (d.defaultRoles && d.defaultRoles.includes(role) && (d.protocol || "unknown") === "acp") {
@@ -189,9 +193,7 @@ export function defaultAgentForRole(role: string) {
     }
   }
   // Legacy fallback
-  const CODEX_ROLES = new Set(["planner", "verifier", "reviewer"]);
-  if (CODEX_ROLES.has(role)) return "codex";
-  return "claude";
+  return "codex";
 }
 
 /**
@@ -199,17 +201,7 @@ export function defaultAgentForRole(role: string) {
  * Used when no explicit --agent is specified.
  */
 export function legacyAgentForPhase(phase: string) {
-  switch (phase) {
-    case "plan":
-    case "verify":
-    case "review":
-      return "codex";
-    case "execute":
-    case "remediate":
-      return "claude";
-    default:
-      return "codex";
-  }
+  return "codex";
 }
 
 // --- Squad support ---
@@ -241,7 +233,7 @@ export function getSquad(name: string) {
  * poolStatus: optional object from AcpPool.status().pools — keyed by agent name,
  * each with { active } field.
  */
-export function resolveSquadAgent(squadName: string, { strategy, poolStatus }: Record<string, any> = {}) {
+export function resolveSquadAgent(squadName: string, { strategy, poolStatus }: LooseRecord = {}) {
   ensureLoaded();
   const squad = _squads.get(squadName);
   if (!squad) return null;
@@ -270,8 +262,10 @@ export function resolveSquadAgent(squadName: string, { strategy, poolStatus }: R
       }
       let best = available[0];
       let bestActive = Infinity;
+      const pools = recordValue(poolStatus);
       for (const name of available) {
-        const active = poolStatus[name]?.active || 0;
+        const status = recordValue(pools[name]);
+        const active = typeof status.active === "number" ? status.active : 0;
         if (active < bestActive) {
           bestActive = active;
           best = name;

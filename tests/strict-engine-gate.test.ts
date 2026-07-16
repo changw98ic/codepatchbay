@@ -7,6 +7,7 @@ import { test } from "node:test";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(import.meta.dirname, "..", "..");
+const stabilizationBaselineDoc = path.join(repoRoot, "docs", "product", "cpb-stabilization-baseline-2026-06-22.md");
 const legacyEngineStrictExclusions = [
 ];
 
@@ -25,6 +26,8 @@ test("strict engine gate is wired to package scripts, CI, and TypeScript", async
   assert.equal(tsconfig.compilerOptions.strict, true);
   const expectedStrictEngineIncludes = [
     "core/engine/adversarial-verdict-events.ts",
+    "core/engine/candidate-artifact.ts",
+    "core/engine/candidate-replay.ts",
     "core/engine/completion-checklist-artifacts.ts",
     "core/engine/completion-gate.ts",
     "core/engine/completion-failure.ts",
@@ -38,14 +41,22 @@ test("strict engine gate is wired to package scripts, CI, and TypeScript", async
     "core/engine/phase-agent-routing.ts",
     "core/engine/phase-artifact-tracker.ts",
     "core/engine/phase-retry.ts",
+    "core/engine/run-job-assurance.ts",
+    "core/engine/run-job-checklist-dag.ts",
+    "core/engine/run-job-execute-dag.ts",
     "core/engine/run-job-planning.ts",
     "core/engine/run-job.ts",
+    "core/engine/run-job-lifecycle.ts",
+    "core/engine/run-job-prepare.ts",
+    "core/engine/run-job-shared.ts",
     "core/engine/run-phase.ts",
     "core/engine/phase-result-events.ts",
     "core/engine/phase-start-events.ts",
+    "core/engine/phase-finalize-events.ts",
     "core/engine/poisoned-session.ts",
     "core/engine/poisoned-session-gate.ts",
     "core/engine/provider-handoff.ts",
+    "core/engine/provider-preflight.ts",
     "core/engine/provider-quota-fallback.ts",
     "core/engine/provider-usage-recorder.ts",
     "core/engine/runtime-artifact-events.ts",
@@ -53,6 +64,7 @@ test("strict engine gate is wired to package scripts, CI, and TypeScript", async
     "core/engine/scope-guard.ts",
     "core/engine/scope-guard-runner.ts",
     "core/engine/session-pin.ts",
+    "core/engine/solver-loop.ts",
     "core/engine/workflow-runner.ts",
     "core/workflow/acceptance-checklist.ts",
   ];
@@ -68,4 +80,19 @@ test("strict engine gate is wired to package scripts, CI, and TypeScript", async
   assert.deepEqual(missingStrictCoverage, [], "new engine modules must be strict-checked or explicitly listed as legacy exclusions");
 
   await execFileAsync("npm", ["run", "typecheck:strict:engine"], { cwd: repoRoot });
+});
+
+test("stabilization baseline latest checkpoint reflects current strict engine closure", async () => {
+  const doc = await readFile(stabilizationBaselineDoc, "utf8");
+  const latestCheckpoint = doc.split("## Remediation Checkpoint 35")[1] || "";
+  const runJobLines = (await readFile(path.join(repoRoot, "core", "engine", "run-job.ts"), "utf8"))
+    .trimEnd()
+    .split("\n")
+    .length;
+
+  assert.ok(latestCheckpoint, "stabilization baseline must include the latest strict-closure checkpoint");
+  assert.match(latestCheckpoint, /\| strict-engine legacy exclusions \| 0 \|/);
+  assert.match(latestCheckpoint, new RegExp(`\\| \`core/engine/run-job\\.ts\` line count \\| ${runJobLines} \\|`));
+  assert.match(latestCheckpoint, /\| type-debt allowlist entries \| 0 \|/);
+  assert.doesNotMatch(latestCheckpoint, /strict mode still excludes `run-job\.ts`/);
 });

@@ -1,3 +1,4 @@
+import type { LooseRecord } from "../../shared/types.js";
 import path from "node:path";
 
 const BOLD = "\x1b[1m";
@@ -7,7 +8,7 @@ const YELLOW = "\x1b[33m";
 const NC = "\x1b[0m";
 
 function parseArgs(args: string[]) {
-  const flags: Record<string, any> = {};
+  const flags: LooseRecord = {};
   const positional: string[] = [];
   for (const arg of args) {
     if (arg.startsWith("--")) {
@@ -24,7 +25,7 @@ function parseArgs(args: string[]) {
   return { positional, flags };
 }
 
-export async function run(args: string[], { cpbRoot }: Record<string, any>) {
+export async function run(args: string[], { cpbRoot }: LooseRecord) {
   const { positional, flags } = parseArgs(args);
   const project = positional[0];
   if (!project) {
@@ -55,7 +56,7 @@ export async function run(args: string[], { cpbRoot }: Record<string, any>) {
   }
 }
 
-async function listMessages(cpbRoot: string, project: string, flags: Record<string, any>) {
+async function listMessages(cpbRoot: string, project: string, flags: LooseRecord) {
   const { listInboxMessages } = await import("../../server/services/hub/hub-queue.js");
 
   const messages = await listInboxMessages(cpbRoot, project);
@@ -111,13 +112,13 @@ async function readMessage(cpbRoot: string, project: string, id: string) {
   }
 }
 
-async function ackMessage(cpbRoot: string, project: string, id: string, flags: Record<string, any>) {
+async function ackMessage(cpbRoot: string, project: string, id: string, flags: LooseRecord) {
   if (!id) {
     console.error("Usage: cpb inbox <project> ack <id> --owner <role>");
     process.exit(1);
   }
 
-  const owner = flags.owner || "";
+  const owner = typeof flags.owner === "string" ? flags.owner : "";
   if (!owner) {
     console.error("Error: --owner <role> is required for ack");
     process.exit(1);

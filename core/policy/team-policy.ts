@@ -1,3 +1,4 @@
+import type { LooseRecord } from "../../shared/types.js";
 const VALID_OPERATIONS = Object.freeze(["write", "shell", "network", "push", "PR", "merge"]);
 const VALID_TOP_LEVEL = new Set(["approvals", "routing", "channels", "protectedOperations"]);
 
@@ -13,7 +14,7 @@ export function defaultPolicy() {
   return { approvals };
 }
 
-export function validatePolicy(policy: Record<string, any>) {
+export function validatePolicy(policy: LooseRecord) {
   if (policy === null || policy === undefined || typeof policy !== "object" || Array.isArray(policy)) {
     return { valid: false, errors: ["policy must be a non-null object"] };
   }
@@ -111,6 +112,6 @@ export function validatePolicy(policy: Record<string, any>) {
   return { valid: errors.length === 0, errors };
 }
 
-export function requiresApproval(policy: Record<string, any>, operation: string) {
+export function requiresApproval(policy: LooseRecord, operation: string) {
   return policy?.approvals?.[operation]?.required === true;
 }

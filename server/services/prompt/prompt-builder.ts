@@ -1,3 +1,4 @@
+import { recordValue, type LooseRecord } from "../../../shared/types.js";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import {
@@ -11,6 +12,14 @@ import { getJob } from "../job/job-store.js";
 import { resolveProjectDataRoot } from "../runtime.js";
 import { buildRetryInputFromVerdict, parseVerdictEnvelope } from "../../../core/workflow/verdict.js";
 import { DISPATCH_FEEDBACK_SCHEMA_VERSION, dispatchFeedbackPath } from "../../../core/workflow/dispatch-feedback.js";
+
+function stringValue(value: unknown, fallback = ""): string {
+  return typeof value === "string" && value ? value : fallback;
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.map(String) : [];
+}
 
 // ── prompt-budget helpers (merged from prompt-budget.ts) ──────────────
 
@@ -105,12 +114,13 @@ export function clipTextByBytes(text: string, maxBytes: number) {
  *   clipped: boolean
  * }}
  */
-export function buildBudgetReport(sections: Record<string, any>[], maxBytes: number) {
-  const report: Record<string, any>[] = [];
+export function buildBudgetReport(sections: LooseRecord[], maxBytes: number) {
+  const report: LooseRecord[] = [];
   let usedBytes = 0;
 
   for (const section of sections) {
-    const sectionBytes = Buffer.byteLength(section.content, "utf8");
+    const sectionContent = String(section.content ?? "");
+    const sectionBytes = Buffer.byteLength(sectionContent, "utf8");
 
     if (section.required) {
       report.push({
@@ -144,7 +154,7 @@ export function buildBudgetReport(sections: Record<string, any>[], maxBytes: num
 
 // ── prompt builder (original prompt-builder.ts) ───────────────────────
 
-async function resolvePromptDataRoot(cpbRoot: string, project: string, options: Record<string, any> = {}) {
+async function resolvePromptDataRoot(cpbRoot: string, project: string, options: LooseRecord = {}) {
   if (options.dataRoot) return path.resolve(options.dataRoot);
   return resolveProjectDataRoot(cpbRoot, project, { hubRoot: options.hubRoot || process.env.CPB_HUB_ROOT });
 }
@@ -163,7 +173,7 @@ async function projectInstructionsSection(wikiDir: string): Promise<string> {
   return `\n\n## Project Instructions\n${content}`;
 }
 
-function parseJsonEnv(name: string): Record<string, unknown> | null {
+function parseJsonEnv(name: string): LooseRecord | null {
   const raw = process.env[name];
   if (!raw) return null;
   try {
@@ -209,12 +219,14 @@ Produce a complete plan with explicit risks, acceptance criteria, and verificati
   return "";
 }
 
-function contextPackPathFromSourceContext(sourceContext: Record<string, any> | null = null): string | null {
+function contextPackPathFromSourceContext(sourceContext: LooseRecord | null = null): string | null {
   if (!sourceContext || typeof sourceContext !== "object") return null;
-  return sourceContext.contextPackPath || sourceContext.contextPack?.path || null;
+  const context = recordValue(sourceContext);
+  const contextPack = recordValue(context.contextPack);
+  return stringValue(context.contextPackPath) || stringValue(contextPack.path) || null;
 }
 
-async function jobSourceContext(cpbRoot: string, project: string, jobId: string, options: Record<string, any> = {}) {
+async function jobSourceContext(cpbRoot: string, project: string, jobId: string, options: LooseRecord = {}) {
   try {
     const dataRoot = await resolvePromptDataRoot(cpbRoot, project, options);
     const job = await getJob(cpbRoot, project, jobId, { dataRoot });
@@ -223,7 +235,7 @@ async function jobSourceContext(cpbRoot: string, project: string, jobId: string,
   return null;
 }
 
-async function resolveContextPackLocator(cpbRoot: string, project: string, jobId: string, options: Record<string, any> = {}) {
+async function resolveContextPackLocator(cpbRoot: string, project: string, jobId: string, options: LooseRecord = {}) {
   const sourceContext = await jobSourceContext(cpbRoot, project, jobId, options);
   const jobPath = contextPackPathFromSourceContext(sourceContext);
   if (jobPath) return { path: jobPath, source: "job" };
@@ -238,7 +250,7 @@ async function resolveContextPackLocator(cpbRoot: string, project: string, jobId
   return null;
 }
 
-export async function buildSkillsSection(executorRoot: string, role: string, context: Record<string, any> = {}, options: Record<string, any> = {}): Promise<string> {
+export async function buildSkillsSection(executorRoot: string, role: string, context: LooseRecord = {}, options: LooseRecord = {}): Promise<string> {
   const selected = await selectProfileSkills(executorRoot, role, context, options);
   const { diagnostics } = await loadProfileSkills(executorRoot, role, options);
 
@@ -288,21 +300,21 @@ const LAYER_DESCRIPTIONS: Record<string, string> = {
   acceptance: "Acceptance and static checks - linting, type checking, and plan acceptance criteria verification.",
 };
 
-function buildSubagentGuidance(phase: string, profile: Record<string, any>): string {
+function buildSubagentGuidance(phase: string, profile: { subagentGuidance?: unknown }): string {
   const wfName = process.env.CPB_WORKFLOW;
   const wf = wfName ? getWorkflow(wfName) : null;
   const wfRequires = wf ? phaseRequiresSubagents(wf, phase) : false;
-  const profileGuidance = profile?.subagentGuidance;
-  const profileRequired = profileGuidance?.required === true;
-  const profilePhases = profileGuidance?.phases;
-  const profileApplies = profileRequired && (!profilePhases || profilePhases.includes(phase));
+  const profileGuidance = recordValue(profile?.subagentGuidance);
+  const profileRequired = profileGuidance.required === true;
+  const profilePhases = stringArray(profileGuidance.phases);
+  const profileApplies = profileRequired && (profilePhases.length === 0 || profilePhases.includes(phase));
 
   if (!wfRequires && !profileApplies) return "";
 
-  const wfConfig = wf ? getSubagentConfig(wf) : null;
-  const maxConcurrency = profileApplies && profileGuidance?.maxConcurrency
+  const wfConfig = recordValue(wf ? getSubagentConfig(wf) : null);
+  const maxConcurrency = profileApplies && typeof profileGuidance.maxConcurrency === "number"
     ? profileGuidance.maxConcurrency
-    : (wfConfig?.maxConcurrency ?? 3);
+    : (typeof wfConfig.maxConcurrency === "number" ? wfConfig.maxConcurrency : 3);
   const isClaudePhase = phase === "execute" || phase === "remediate";
   const runtimeLine = isClaudePhase
     ? "This phase runs under Claude ACP. You MUST use Claude Code native subagents / Task tool for parallel work."
@@ -326,7 +338,7 @@ function buildLayeredVerification() {
   const layers = getVerificationLayers(wf);
   if (!layers) return "";
 
-  const layerList = layers.map((l: string) => `- **${l}**: ${LAYER_DESCRIPTIONS[l] || l}`).join("\n");
+  const layerList = stringArray(layers).map((l) => `- **${l}**: ${LAYER_DESCRIPTIONS[l] || l}`).join("\n");
 
   return `\n## Layered Verification
 Run verification in these distinct layers instead of treating tests as one serial bucket. Use independent subagent lanes for safe parallel execution of non-conflicting layers:
@@ -367,7 +379,7 @@ function headlessEscalationSection() {
   return process.env.CPB_ACP_LAUNCH_PROFILE !== "ui" ? HEADLESS_ESCALATION_CONTRACT : "";
 }
 
-export async function buildPlannerPrompt(executorRoot: string, cpbRoot: string, project: string, task: string, planFile: string, _options: Record<string, any> = {}): Promise<string> {
+export async function buildPlannerPrompt(executorRoot: string, cpbRoot: string, project: string, task: string, planFile: string, _options: LooseRecord = {}): Promise<string> {
   const roleTitle = await readRoleTitle(executorRoot, "planner");
   const skillsSection = await buildSkillsSection(executorRoot, "planner", { phase: "plan", task });
   const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
@@ -420,7 +432,7 @@ Follow handshake-protocol (planner->executor, Phase: plan).
 Use scope-matched step count with concrete acceptance criteria.${await projectInstructionsSection(wikiDir)}`;
 }
 
-export async function buildExecutorPrompt(executorRoot: string, cpbRoot: string, project: string, planId: string, deliverableFile: string, verdictFile: string, _options: Record<string, any> = {}): Promise<string> {
+export async function buildExecutorPrompt(executorRoot: string, cpbRoot: string, project: string, planId: string, deliverableFile: string, verdictFile: string, _options: LooseRecord = {}): Promise<string> {
   const roleTitle = await readRoleTitle(executorRoot, "executor");
   const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
 
@@ -509,7 +521,7 @@ Follow handshake-protocol (executor->verifier, Phase: execute).
 Include plan-ref: ${planId} in the deliverable metadata.${await projectInstructionsSection(wikiDir)}`;
 }
 
-export async function buildExecutorJobPrompt(executorRoot: string, cpbRoot: string, project: string, jobId: string, deliverableFile: string, _options: Record<string, any> = {}): Promise<string> {
+export async function buildExecutorJobPrompt(executorRoot: string, cpbRoot: string, project: string, jobId: string, deliverableFile: string, _options: LooseRecord = {}): Promise<string> {
   const roleTitle = await readRoleTitle(executorRoot, "executor");
   const skillsSection = await buildSkillsSection(executorRoot, "executor");
   const projectDataRoot = await resolvePromptDataRoot(cpbRoot, project, _options);
@@ -634,7 +646,7 @@ ${executionIntensitySection("repair")}
 5. After the repair file is written, stop immediately and return a short completion message.${await projectInstructionsSection(wikiDir)}`;
 }
 
-export async function buildVerifierPrompt(executorRoot: string, cpbRoot: string, project: string, deliverableId: string, verdictFile: string, { planId }: Record<string, any> = {}): Promise<string> {
+export async function buildVerifierPrompt(executorRoot: string, cpbRoot: string, project: string, deliverableId: string, verdictFile: string, { planId }: LooseRecord = {}): Promise<string> {
   const roleTitle = await readRoleTitle(executorRoot, "verifier");
   const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
 
@@ -723,7 +735,7 @@ Every layer MUST be present. Use "not_run" or "skipped" if a layer was not execu
 Keep "reason" and all "detail" fields to ONE sentence each. Do NOT write paragraphs.${await projectInstructionsSection(wikiDir)}`;
 }
 
-export async function buildVerifierJobPrompt(executorRoot: string, cpbRoot: string, project: string, jobId: string, verdictFile: string, options: Record<string, any> = {}): Promise<string> {
+export async function buildVerifierJobPrompt(executorRoot: string, cpbRoot: string, project: string, jobId: string, verdictFile: string, options: LooseRecord = {}): Promise<string> {
   const { planId } = options;
   const roleTitle = await readRoleTitle(executorRoot, "verifier");
   const skillsSection = await buildSkillsSection(executorRoot, "verifier", { phase: "verify" });
@@ -815,7 +827,7 @@ Every layer MUST be present. Use "not_run" or "skipped" if a layer was not execu
 Keep "reason" and all "detail" fields to ONE sentence each. Do NOT write paragraphs.${await projectInstructionsSection(wikiDir)}`;
 }
 
-export async function buildRemediatorPrompt(executorRoot: string, cpbRoot: string, project: string, jobId: string, remediationFile: string, options: Record<string, any> = {}): Promise<string> {
+export async function buildRemediatorPrompt(executorRoot: string, cpbRoot: string, project: string, jobId: string, remediationFile: string, options: LooseRecord = {}): Promise<string> {
   const roleTitle = await readRoleTitle(executorRoot, "remediator");
   const skillsSection = await buildSkillsSection(executorRoot, "remediator", { phase: "remediate" });
   const projectDataRoot = await resolvePromptDataRoot(cpbRoot, project, options);
@@ -874,7 +886,7 @@ REMEDIATION: BLOCKED
 After the first line, include concise findings, changed files, and verification you ran.${await projectInstructionsSection(wikiDir)}`;
 }
 
-export async function buildReviewerReviewPrompt(executorRoot: string, cpbRoot: string, project: string, deliverableId: string, _options: Record<string, any> = {}): Promise<string> {
+export async function buildReviewerReviewPrompt(executorRoot: string, cpbRoot: string, project: string, deliverableId: string, _options: LooseRecord = {}): Promise<string> {
   const roleTitle = await readRoleTitle(executorRoot, "reviewer");
   const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
   const deliverableFile = path.join(wikiDir, "outputs", `deliverable-${deliverableId}.md`);

@@ -1,4 +1,4 @@
-import { AnyRecord } from "../../shared/types.js";
+import { LooseRecord } from "../../shared/types.js";
 import { phasesToDag, validateDag } from "./dag-executor.js";
 import { resolveSquadAgent } from "../agents/registry.js";
 import {
@@ -7,24 +7,25 @@ import {
   resolveEffectiveRouting,
 } from "../agents/routing.js";
 
-type WorkflowNode = AnyRecord & {
+type WorkflowNode = LooseRecord & {
   id: string;
   phase: string;
   role?: string | null;
   agent?: string | null;
-  squad?: string | AnyRecord;
-  _squad?: string | AnyRecord;
+  squad?: string | LooseRecord;
+  _squad?: string | LooseRecord;
   dependsOn?: string[];
 };
-type WorkflowDefinition = AnyRecord & {
+type WorkflowDefinition = LooseRecord & {
   name: string;
   phases: string[];
   roleForPhase: Record<string, string>;
   dispatchForPhase: Record<string, string>;
+  requireSubagents?: Record<string, boolean>;
   nodes?: WorkflowNode[];
   maxConcurrentNodes?: number;
 };
-type WorkflowOptions = { category?: string; routing?: AnyRecord | null };
+type WorkflowOptions = { category?: string; routing?: LooseRecord | null };
 
 const WORKFLOWS: Record<string, WorkflowDefinition> = {
   standard: {
@@ -64,7 +65,7 @@ const WORKFLOWS: Record<string, WorkflowDefinition> = {
 };
 
 // Cache for normalized DAGs
-const _dagCache = new Map<string, AnyRecord>();
+const _dagCache = new Map<string, LooseRecord>();
 
 export function getWorkflow(name: string): WorkflowDefinition {
   return WORKFLOWS[name] ?? WORKFLOWS.standard;
@@ -186,7 +187,7 @@ function normalizeWorkflowWithRouting(name: string, { category, routing = null }
   };
 }
 
-function applyRoutingAgents(nodes: WorkflowNode[], selection: AnyRecord) {
+function applyRoutingAgents(nodes: WorkflowNode[], selection: LooseRecord) {
   return nodes.map((node) => {
     const agent = agentForRoutingPhase(selection, node.phase, node.role);
     return agent ? { ...node, agent } : node;
@@ -209,7 +210,7 @@ function resolveSquadsInNodes(nodes: WorkflowNode[]) {
  * Resolve a node's agent at execution time with current pool status.
  * Supports squad strategies (least-busy, round-robin, leader-first).
  */
-export function resolveNodeAgent(node: WorkflowNode, { poolStatus }: { poolStatus?: AnyRecord } = {}) {
+export function resolveNodeAgent(node: WorkflowNode, { poolStatus }: { poolStatus?: LooseRecord } = {}) {
   if (node._squad) {
     const squadName = typeof node._squad === "string" ? node._squad : String(node._squad);
     const agent = resolveSquadAgent(squadName, { poolStatus });

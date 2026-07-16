@@ -1,3 +1,4 @@
+import { recordValue, type LooseRecord } from "../../shared/types.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { listSetupAgents } from "../setup/agent-catalog.js";
@@ -33,18 +34,20 @@ async function defaultRunCommand(command: string, args: string[] = []) {
     });
     return { ok: true, stdout: result.stdout || "", stderr: result.stderr || "" };
   } catch (error) {
-    return { ok: false, stdout: error.stdout || "", stderr: error.stderr || "", error };
+    const err = recordValue(error);
+    return { ok: false, stdout: err.stdout || "", stderr: err.stderr || "", error };
   }
 }
 
 export function listAuthProviders() {
   const agentProviders = listSetupAgents({ includeOptional: false })
-    .filter((agent: Record<string, any>) => ["codex", "claude", "opencode"].includes(agent.id))
-    .map((agent: Record<string, any>) => ({
+    .map(recordValue)
+    .filter((agent) => ["codex", "claude", "opencode"].includes(String(agent.id)))
+    .map((agent) => ({
       id: agent.id,
       displayName: agent.displayName,
       kind: "agent",
-      auth: agent.auth || {},
+      auth: recordValue(agent.auth),
     }));
 
   return [
@@ -62,24 +65,26 @@ export function listAuthProviders() {
   ];
 }
 
-function errorCode(error: Record<string, any> | null | undefined) {
-  if (!error) return null;
-  return error.code ?? null;
+function errorCode(error: unknown) {
+  const err = recordValue(error);
+  return err.code ?? null;
 }
 
-function exitCode(error: Record<string, any> | null | undefined) {
-  if (!error) return null;
-  return Number.isInteger(error.code) ? error.code : null;
+function exitCode(error: unknown) {
+  const err = recordValue(error);
+  return Number.isInteger(err.code) ? err.code : null;
 }
 
-function errorKind(error: Record<string, any> | null | undefined) {
-  if (!error) return "unknown";
-  if (error.code === "ENOENT") return "missing";
-  if (error.code === "ETIMEDOUT" || error.timedOut || error.killed) return "timeout";
+function errorKind(error: unknown) {
+  const err = recordValue(error);
+  if (Object.keys(err).length === 0) return "unknown";
+  if (err.code === "ENOENT") return "missing";
+  if (err.code === "ETIMEDOUT" || err.timedOut || err.killed) return "timeout";
   return "error";
 }
 
-function providerResult(provider: Record<string, any>, probe: Record<string, any> | null | undefined, statusCommand: string) {
+function providerResult(provider: LooseRecord, probe: LooseRecord | null | undefined, statusCommand: string) {
+  const auth = recordValue(provider.auth);
   const parsed = splitCommand(statusCommand);
   const evidence = {
     command: redact([parsed.command, ...parsed.args].join(" ")),
@@ -94,8 +99,8 @@ function providerResult(provider: Record<string, any>, probe: Record<string, any
       displayName: provider.displayName,
       kind: provider.kind,
       status: "connected",
-      methods: provider.auth?.methods || [],
-      connectCommand: provider.auth?.connectCommand || null,
+      methods: auth.methods || [],
+      connectCommand: auth.connectCommand || null,
       evidence: { ...evidence, kind: "ok", exitCode: 0, code: null },
     };
   }
@@ -105,26 +110,28 @@ function providerResult(provider: Record<string, any>, probe: Record<string, any
     displayName: provider.displayName,
     kind: provider.kind,
     status: evidence.kind === "missing" ? "missing" : "unknown",
-    methods: provider.auth?.methods || [],
-    connectCommand: provider.auth?.connectCommand || null,
+    methods: auth.methods || [],
+    connectCommand: auth.connectCommand || null,
     evidence,
   };
 }
 
-function skippedProvider(provider: Record<string, any>) {
+function skippedProvider(provider: LooseRecord) {
+  const auth = recordValue(provider.auth);
   return {
     id: provider.id,
     displayName: provider.displayName,
     kind: provider.kind,
     status: "skipped",
-    methods: provider.auth?.methods || [],
-    connectCommand: provider.auth?.connectCommand || null,
+    methods: auth.methods || [],
+    connectCommand: auth.connectCommand || null,
     evidence: { reason: "No provider-native status command is configured." },
   };
 }
 
-async function checkProvider(provider: Record<string, any>, runCommand: (command: string, args: string[]) => Promise<Record<string, any>>) {
-  const statusCommand = provider.auth?.statusCommand;
+async function checkProvider(provider: LooseRecord, runCommand: (command: string, args: string[]) => Promise<LooseRecord>) {
+  const auth = recordValue(provider.auth);
+  const statusCommand = typeof auth.statusCommand === "string" ? auth.statusCommand : "";
   if (!statusCommand) return skippedProvider(provider);
 
   const parsed = splitCommand(statusCommand);
@@ -141,7 +148,8 @@ export async function getAuthStatus({
   providers = listAuthProviders(),
   runCommand = defaultRunCommand,
 } = {}) {
-  const entries = await Promise.all(providers.map(async (provider) => {
+  const providerList = Array.isArray(providers) ? providers.map(recordValue) : [];
+  const entries = await Promise.all(providerList.map(async (provider) => {
     return [provider.id, await checkProvider(provider, runCommand)];
   }));
 

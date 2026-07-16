@@ -2,6 +2,7 @@
   "name": "claude",
   "displayName": "Claude Code",
   "command": "claude-agent-acp",
+  "sessionMcpServers": false,
   "fallbackCommand": "npx",
   "fallbackArgs": ["-y", "@agentclientprotocol/claude-agent-acp"],
   "args": [],

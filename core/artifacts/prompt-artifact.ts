@@ -1,3 +1,4 @@
+import type { LooseRecord } from "../../shared/types.js";
 import crypto from "node:crypto";
 import { writeArtifact } from "./artifact-store.js";
 
@@ -29,7 +30,7 @@ export async function writePromptArtifact(cpbRoot: string, { project, jobId, pha
   });
 }
 
-export function withPromptArtifactDiagnostics(diagnostics: Record<string, unknown> | null | undefined, promptArtifact: unknown) {
+export function withPromptArtifactDiagnostics(diagnostics: LooseRecord | null | undefined, promptArtifact: unknown) {
   return {
     ...(diagnostics || {}),
     promptArtifact: promptArtifact || null,

@@ -7,14 +7,14 @@
  * @module core/engine/dag-builder
  */
 
-import { AnyRecord } from "../../shared/types.js";
 import { normalizeWorkflow } from "../workflow/definition.js";
 
-type DagNode = AnyRecord & {
+type DagNode = {
   id: string;
   phase: string;
   role?: string;
   dependsOn?: string[];
+  [key: string]: unknown;
 };
 type DagEdge = { from: string; to: string };
 type WorkflowDag = {
@@ -25,6 +25,10 @@ type WorkflowDag = {
   isDag: boolean;
   source: "runtime_phase_projection";
 };
+
+function nonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value : null;
+}
 
 /**
  * Build a DAG descriptor for a concrete run.
@@ -46,18 +50,21 @@ export function buildWorkflowDag({ workflow, phases, phaseRoleMap }: { workflow:
 
   const nodes: DagNode[] = [];
   for (const existing of baseNodes) {
-    const phase = existing.phase || existing.id;
+    const phase = nonEmptyString(existing.phase) || nonEmptyString(existing.id);
+    if (!phase) continue;
     if (!phaseBudget.has(phase)) continue;
     const remaining = phaseBudget.get(phase) || 0;
     if (remaining <= 0) continue;
     phaseBudget.set(phase, remaining - 1);
+    const id = nonEmptyString(existing.id) || phase;
+    const role = nonEmptyString(existing.role) || phaseRoleMap[phase] || phase;
     nodes.push({
       ...existing,
-      id: existing.id || phase,
+      id,
       phase,
-      role: existing.role || phaseRoleMap[phase] || phase,
+      role,
       dependsOn: Array.isArray(existing.dependsOn)
-        ? [...existing.dependsOn]
+        ? existing.dependsOn.map(String).filter(Boolean)
         : [],
     });
   }
@@ -86,7 +93,7 @@ export function buildWorkflowDag({ workflow, phases, phaseRoleMap }: { workflow:
     edges: normalizedNodes.flatMap((n) =>
       (n.dependsOn || []).map((depId) => ({ from: depId, to: n.id })),
     ),
-    maxConcurrentNodes: base?.maxConcurrentNodes || 1,
+    maxConcurrentNodes: Number(base?.maxConcurrentNodes) || 1,
     isDag: normalizedNodes.length > 0,
     source: "runtime_phase_projection",
   };

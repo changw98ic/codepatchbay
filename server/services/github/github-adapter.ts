@@ -1,6 +1,6 @@
 // Merged from: git-platform-adapter.ts, git-adapters/github.ts, github-triggers.ts, github-events.ts
 
-import { AnyRecord } from "../../../shared/types.js";
+import { recordValue, type LooseRecord } from "../../../shared/types.js";
 import { isValidPlatform, validateGitPlatformAdapter } from "../../../core/contracts/git-platform.js";
 import { BOUNDARY_VERSION, validateTransportResult } from "../../../core/contracts/git-platform.js";
 import { resolveGithubTransport } from "./github-api.js";
@@ -20,7 +20,15 @@ import { DEFAULT_GITHUB_TRIGGERS } from "../hub/hub-registry.js";
 
 const DEFAULT_PLATFORM = "github";
 
-const adapterCache = new Map<string, Record<string, any>>();
+const adapterCache = new Map<string, LooseRecord>();
+
+function stringValue(value: unknown, fallback = ""): string {
+  return typeof value === "string" && value ? value : fallback;
+}
+
+function recordArray(value: unknown): LooseRecord[] {
+  return Array.isArray(value) ? value.map(recordValue) : [];
+}
 
 export function resolveGitPlatform(platformHint?: string | null, options: { platform?: string } = {}) {
   let platform;
@@ -46,9 +54,9 @@ export function clearAdapterCache() {
   adapterCache.clear();
 }
 
-export function registerAdapter(adapter: Record<string, any>) {
+export function registerAdapter(adapter: LooseRecord) {
   const validated = validateGitPlatformAdapter(adapter);
-  adapterCache.set(validated.platform, validated);
+  adapterCache.set(stringValue(validated.platform), validated);
   return validated;
 }
 
@@ -61,48 +69,49 @@ export function createGithubAdapter() {
     boundaryVersion: BOUNDARY_VERSION,
     platform: "github",
 
-    async resolveTransport(hubRoot: string, options: Record<string, any> = {}) {
-      const transport = await resolveGithubTransport(hubRoot, { env: options.env });
+    async resolveTransport(hubRoot: string, options: LooseRecord = {}) {
+      const transport = await resolveGithubTransport(hubRoot, { env: recordValue(options).env });
       return validateTransportResult(transport);
     },
 
-    normalizeWebhookEvent(raw: AnyRecord) {
+    normalizeWebhookEvent(raw: LooseRecord) {
       return normalizeGithubWebhookEvent(raw);
     },
 
-    matchTrigger(event: AnyRecord, rules: AnyRecord[]) {
+    matchTrigger(event: LooseRecord, rules: LooseRecord[]) {
       return matchGithubTrigger(event, rules);
     },
 
-    normalizeIssue(raw: AnyRecord, options: Record<string, any> = {}) {
-      return normalizeGithubIssue(raw, options);
+    normalizeIssue(raw: LooseRecord, options: LooseRecord = {}) {
+      return normalizeGithubIssue(recordValue(raw), recordValue(options));
     },
 
     async readIssues(hubRoot: string) {
       return readGithubIssues(hubRoot);
     },
 
-    async syncIssues(hubRoot: string, options: Record<string, any> = {}) {
+    async syncIssues(hubRoot: string, options: LooseRecord = {}) {
       return syncGithubIssuesFromGh(hubRoot, options);
     },
 
-    buildIssueBranchParts(options: Record<string, any> = {}) {
-      return buildGithubIssueBranchParts(options);
+    buildIssueBranchParts(options: LooseRecord = {}) {
+      return buildGithubIssueBranchParts(recordValue(options));
     },
 
     async loadConfig(hubRoot: string) {
       return loadGithubAppConfig(hubRoot);
     },
 
-    validateConfig(raw: AnyRecord = {}) {
+    validateConfig(raw: LooseRecord = {}) {
       return validateGithubAppConfig(raw);
     },
 
-    resolveWebhookSecret(config: AnyRecord, options: Record<string, any> = {}) {
-      return resolveGithubWebhookSecret(config, options);
+    resolveWebhookSecret(config: LooseRecord, options: LooseRecord = {}) {
+      const env = recordValue(options).env;
+      return resolveGithubWebhookSecret(config, env && typeof env === "object" && !Array.isArray(env) ? { env: env as NodeJS.ProcessEnv } : {});
     },
 
-    verifyWebhookSignature(options: AnyRecord) {
+    verifyWebhookSignature(options: LooseRecord) {
       return verifyGithubWebhookSignature(options);
     },
   };
@@ -114,7 +123,7 @@ export function createGithubAdapter() {
 // github-triggers.ts exports
 // ============================================================
 
-function eventKey(event: AnyRecord) {
+function eventKey(event: LooseRecord) {
   if (!event?.event || !event?.action) return null;
   return `${event.event}.${event.action}`;
 }
@@ -129,13 +138,14 @@ function commandMatches(commandText: unknown, expected: unknown) {
   return prefix !== "" && (command === prefix || command.startsWith(`${prefix} `));
 }
 
-function labelMatches(event: AnyRecord, label: unknown) {
+function labelMatches(event: LooseRecord, label: unknown) {
   const expected = String(label || "").toLowerCase();
   if (!expected) return false;
-  return sameText(event.label, expected) || (event.labels || []).some((name: unknown) => sameText(name, expected));
+  const labels = Array.isArray(event.labels) ? event.labels : [];
+  return sameText(event.label, expected) || labels.some((name: unknown) => sameText(name, expected));
 }
 
-function matchRule(event: AnyRecord, rule: AnyRecord) {
+function matchRule(event: LooseRecord, rule: LooseRecord) {
   if (!event || event.status !== "ok") return null;
   if (rule.event && rule.event !== eventKey(event)) return null;
 
@@ -154,14 +164,14 @@ function matchRule(event: AnyRecord, rule: AnyRecord) {
   return null;
 }
 
-export function matchGithubTrigger(event: AnyRecord, rules: AnyRecord[] = DEFAULT_GITHUB_TRIGGERS) {
+export function matchGithubTrigger(event: LooseRecord, rules: LooseRecord[] = DEFAULT_GITHUB_TRIGGERS) {
   for (const rule of rules || []) {
     const reason = matchRule(event, rule);
     if (!reason) continue;
     return {
       matched: true,
       workflow: rule.workflow || "standard",
-      planMode: (rule as Record<string, unknown>).planMode || null,
+      planMode: rule.planMode || null,
       rule,
       reason,
     };
@@ -187,21 +197,27 @@ function ignored(event: string | null, reason: string) {
   };
 }
 
-function repoFullName(payload: AnyRecord = {}) {
-  return payload.repository?.full_name || payload.repository?.nameWithOwner || payload.repository?.fullName || null;
+function repoFullName(payload: LooseRecord = {}) {
+  const repository = recordValue(payload.repository);
+  return repository.full_name || repository.nameWithOwner || repository.fullName || null;
 }
 
-function actorLogin(payload: AnyRecord = {}) {
-  return payload.sender?.login || payload.actor?.login || payload.sender?.name || null;
+function actorLogin(payload: LooseRecord = {}) {
+  const sender = recordValue(payload.sender);
+  const actor = recordValue(payload.actor);
+  return sender.login || actor.login || sender.name || null;
 }
 
-function issueAuthorAssociation(issue: AnyRecord = {}) {
-  return issue.author_association || issue.authorAssociation || issue.author?.association || null;
+function issueAuthorAssociation(issue: LooseRecord = {}) {
+  const author = recordValue(issue.author);
+  return issue.author_association || issue.authorAssociation || author.association || null;
 }
 
 function baseEnvelope({ event, delivery, projectId, payload, type, issue, url, commandText = null }) {
-  const normalizedIssue = issue ? normalizeGithubIssue(issue, { repo: repoFullName(payload), projectId }) : null;
-  const authorAssociation = issue ? issueAuthorAssociation(issue) : null;
+  const payloadRecord = recordValue(payload);
+  const issueRecord = recordValue(issue);
+  const normalizedIssue = issue ? normalizeGithubIssue(issueRecord, { repo: stringValue(repoFullName(payloadRecord)), projectId: stringValue(projectId) }) : null;
+  const authorAssociation = issue ? issueAuthorAssociation(issueRecord) : null;
   return {
     status: "ok",
     type,
@@ -211,7 +227,7 @@ function baseEnvelope({ event, delivery, projectId, payload, type, issue, url, c
     projectId: projectId || normalizedIssue?.projectId || null,
     issueNumber: normalizedIssue?.number ?? null,
     actor: actorLogin(payload),
-    action: payload.action || null,
+    action: payloadRecord.action || null,
     commandText,
     labels: normalizedIssue?.labels || [],
     url: url || normalizedIssue?.url || null,
@@ -226,35 +242,41 @@ function baseEnvelope({ event, delivery, projectId, payload, type, issue, url, c
 }
 
 function normalizeIssuesEvent({ event, delivery, projectId, payload }) {
-  if (!payload.issue) return ignored(event, "issues payload missing issue");
+  const payloadRecord = recordValue(payload);
+  const issue = recordValue(payloadRecord.issue);
+  const label = recordValue(payloadRecord.label);
+  if (!payloadRecord.issue) return ignored(event, "issues payload missing issue");
   return {
     ...baseEnvelope({
       event,
       delivery,
       projectId,
-      payload,
+      payload: payloadRecord,
       type: "github_issue",
-      issue: payload.issue,
-      url: payload.issue.html_url || payload.issue.url || null,
+      issue,
+      url: issue.html_url || issue.url || null,
     }),
-    label: payload.label?.name || null,
+    label: label.name || null,
   };
 }
 
 function normalizeIssueCommentEvent({ event, delivery, projectId, payload }) {
-  if (!payload.issue) return ignored(event, "issue_comment payload missing issue");
+  const payloadRecord = recordValue(payload);
+  const issue = recordValue(payloadRecord.issue);
+  const comment = recordValue(payloadRecord.comment);
+  if (!payloadRecord.issue) return ignored(event, "issue_comment payload missing issue");
   const result = baseEnvelope({
     event,
     delivery,
     projectId,
-    payload,
+    payload: payloadRecord,
     type: "github_issue_comment",
-    issue: payload.issue,
-    url: payload.comment?.html_url || payload.issue.html_url || payload.issue.url || null,
-    commandText: payload.comment?.body || "",
+    issue,
+    url: comment.html_url || issue.html_url || issue.url || null,
+    commandText: comment.body || "",
   });
   // Use comment author's association (not issue author's) for permission checks
-  const commentAssoc = payload.comment?.author_association || null;
+  const commentAssoc = comment.author_association || null;
   if (commentAssoc) {
     result.authorAssociation = commentAssoc;
     result.raw.authorAssociation = commentAssoc;
@@ -263,6 +285,8 @@ function normalizeIssueCommentEvent({ event, delivery, projectId, payload }) {
 }
 
 function normalizeInstallationEvent({ event, delivery, payload }) {
+  const payloadRecord = recordValue(payload);
+  const installation = recordValue(payloadRecord.installation);
   return {
     status: "ok",
     type: "github_installation",
@@ -271,30 +295,32 @@ function normalizeInstallationEvent({ event, delivery, payload }) {
     repo: null,
     projectId: null,
     issueNumber: null,
-    actor: actorLogin(payload),
-    action: payload.action || null,
+    actor: actorLogin(payloadRecord),
+    action: payloadRecord.action || null,
     commandText: null,
     labels: [],
     url: null,
-    installationId: payload.installation?.id ?? null,
+    installationId: installation.id ?? null,
     repositories: normalizeGithubLabels(
-      (payload.repositories || payload.repositories_added || payload.repositories_removed || [])
-        .map((repo: AnyRecord) => repo.full_name || repo.nameWithOwner || repo.fullName || repo.name),
+      recordArray(payloadRecord.repositories || payloadRecord.repositories_added || payloadRecord.repositories_removed)
+        .map((repo) => repo.full_name || repo.nameWithOwner || repo.fullName || repo.name),
     ),
   };
 }
 
 export function normalizeGithubWebhookEvent(
-  { event, delivery, payload = {}, projectId = null }: AnyRecord = {},
+  { event, delivery, payload = {}, projectId = null }: LooseRecord = {},
 ) {
-  if (event === "issues") {
-    return normalizeIssuesEvent({ event, delivery, projectId, payload });
+  const eventName = stringValue(event);
+  const payloadRecord = recordValue(payload);
+  if (eventName === "issues") {
+    return normalizeIssuesEvent({ event: eventName, delivery, projectId, payload: payloadRecord });
   }
-  if (event === "issue_comment") {
-    return normalizeIssueCommentEvent({ event, delivery, projectId, payload });
+  if (eventName === "issue_comment") {
+    return normalizeIssueCommentEvent({ event: eventName, delivery, projectId, payload: payloadRecord });
   }
-  if (event === "installation" || event === "installation_repositories") {
-    return normalizeInstallationEvent({ event, delivery, payload });
+  if (eventName === "installation" || eventName === "installation_repositories") {
+    return normalizeInstallationEvent({ event: eventName, delivery, payload: payloadRecord });
   }
-  return ignored(event || null, `unsupported event: ${event || "unknown"}`);
+  return ignored(eventName || null, `unsupported event: ${eventName || "unknown"}`);
 }

@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { emitDiagnosticArtifactEvents, writeRuntimeArtifactEvent } from "../core/engine/runtime-artifact-events.js";
 
 test("writeRuntimeArtifactEvent emits the artifact_created event shape used by the artifact index", async () => {
-  const events: Record<string, any>[] = [];
+  const events: Record<string, unknown>[] = [];
 
   await writeRuntimeArtifactEvent({
     cpbRoot: "/tmp/cpb",
@@ -17,7 +17,7 @@ test("writeRuntimeArtifactEvent emits the artifact_created event shape used by t
       id: "artifact-1",
       sha256: "abc123",
     },
-    appendEvent: async (_cpbRoot: string, _project: string, _jobId: string, event: Record<string, any>) => {
+    appendEvent: async (_cpbRoot: string, _project: string, _jobId: string, event: Record<string, unknown>) => {
       events.push(event);
     },
     attemptId: "attempt-1",
@@ -40,7 +40,7 @@ test("writeRuntimeArtifactEvent emits the artifact_created event shape used by t
 });
 
 test("emitDiagnosticArtifactEvents writes only side artifacts and skips the primary phase artifact", async () => {
-  const events: Record<string, any>[] = [];
+  const events: Record<string, unknown>[] = [];
 
   await emitDiagnosticArtifactEvents({
     cpbRoot: "/tmp/cpb",
@@ -73,7 +73,7 @@ test("emitDiagnosticArtifactEvents writes only side artifacts and skips the prim
         scalar: "ignored",
       },
     },
-    appendEvent: async (_cpbRoot: string, _project: string, _jobId: string, event: Record<string, any>) => {
+    appendEvent: async (_cpbRoot: string, _project: string, _jobId: string, event: Record<string, unknown>) => {
       events.push(event);
     },
     attemptId: null,

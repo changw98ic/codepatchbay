@@ -1,3 +1,4 @@
+import { recordValue, type LooseRecord } from "../../shared/types.js";
 import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
@@ -10,7 +11,17 @@ const CAPABILITY_SCHEMA_VERSION = 1;
 const SOURCE_FILE_RE = /\.(?:[cm]?[jt]sx?|mjs|cjs|ts|tsx|py|go|rs|rb|java|swift)$/;
 const TEST_FILE_RE = /(^|\/)(?:tests?|__tests__|test|spec)(\/|$)|(?:\.test|\.spec)\.[^.]+$/;
 
-const HIGH_RISK_AREAS = [
+type HighRiskArea = {
+  domain: string;
+  patterns: RegExp[];
+};
+
+type HighRiskAreaSummary = {
+  domain: string;
+  files: string[];
+};
+
+const HIGH_RISK_AREAS: HighRiskArea[] = [
   { domain: "scheduler", patterns: [/scheduler/i, /orchestrator/i, /queue/i, /claim/i, /dag/i] },
   { domain: "provider_pool", patterns: [/provider/i, /quota/i, /acp/i, /pool/i, /handoff/i] },
   { domain: "worktree", patterns: [/worktree/i, /git/i, /finalizer/i, /branch/i] },
@@ -25,20 +36,21 @@ function toPosixPath(value: unknown) {
   return String(value || "").replace(/\\/g, "/");
 }
 
-function isSourceFile(file: Record<string, any>) {
-  return SOURCE_FILE_RE.test(file.path) && !TEST_FILE_RE.test(file.path);
+function isSourceFile(file: LooseRecord) {
+  const filePath = toPosixPath(file.path);
+  return SOURCE_FILE_RE.test(filePath) && !TEST_FILE_RE.test(filePath);
 }
 
-function isTestFile(file: Record<string, any>) {
-  return TEST_FILE_RE.test(file.path);
+function isTestFile(file: LooseRecord) {
+  return TEST_FILE_RE.test(toPosixPath(file.path));
 }
 
-function topFiles(files: Record<string, unknown>[], predicate: (file: Record<string, unknown>) => boolean, limit: number) {
+function topFiles(files: LooseRecord[], predicate: (file: LooseRecord) => boolean, limit: number) {
   return files
     .filter(predicate)
-    .sort((a: Record<string, any>, b: Record<string, any>) => Number(b.nodeCount || 0) - Number(a.nodeCount || 0) || a.path.localeCompare(b.path))
+    .sort((a: LooseRecord, b: LooseRecord) => Number(b.nodeCount || 0) - Number(a.nodeCount || 0) || toPosixPath(a.path).localeCompare(toPosixPath(b.path)))
     .slice(0, limit)
-    .map((file: Record<string, any>) => file.path);
+    .map((file: LooseRecord) => toPosixPath(file.path));
 }
 
 async function queryCodeGraphFiles(indexFile: string) {
@@ -88,7 +100,7 @@ async function packageScripts(sourcePath: string) {
   }
 }
 
-function languageSummary(files: Record<string, unknown>[]) {
+function languageSummary(files: LooseRecord[]) {
   const counts: Record<string, number> = {};
   for (const file of files) {
     const lang = String(file.language || "unknown");
@@ -97,19 +109,19 @@ function languageSummary(files: Record<string, unknown>[]) {
   return counts;
 }
 
-function highRiskAreas(files: Record<string, unknown>[]) {
-  return HIGH_RISK_AREAS.map((area: Record<string, any>) => ({
+function highRiskAreas(files: LooseRecord[]): HighRiskAreaSummary[] {
+  return HIGH_RISK_AREAS.map((area) => ({
     domain: area.domain,
     files: topFiles(
       files,
-      (file: Record<string, any>) => isSourceFile(file) && area.patterns.some((pattern: RegExp) => pattern.test(file.path)),
+      (file: LooseRecord) => isSourceFile(file) && area.patterns.some((pattern: RegExp) => pattern.test(file.path)),
       20,
     ),
-  })).filter((area: Record<string, any>) => area.files.length > 0);
+  })).filter((area) => area.files.length > 0);
 }
 
-function safetyBoundaries(areas: Record<string, unknown>[]) {
-  const domains = new Set(areas.map((area: Record<string, any>) => area.domain));
+function safetyBoundaries(areas: LooseRecord[]) {
+  const domains = new Set(areas.map((area: LooseRecord) => area.domain));
   const boundaries = [];
   if (domains.has("security")) boundaries.push("secrets", "github_write");
   if (domains.has("provider_pool")) boundaries.push("provider_pool");
@@ -121,11 +133,11 @@ function safetyBoundaries(areas: Record<string, unknown>[]) {
   return [...new Set(boundaries)];
 }
 
-export function projectCapabilityMapGate(project: Record<string, any>) {
-  const metadata = project?.metadata || {};
-  const capabilityMap = metadata.project_capability_map || project?.project_capability_map || metadata.projectCapabilityMap;
+export function projectCapabilityMapGate(project: LooseRecord) {
+  const metadata = recordValue(project?.metadata);
+  const capabilityMap = recordValue(metadata.project_capability_map || project?.project_capability_map || metadata.projectCapabilityMap);
   const confidence = capabilityMap?.confidence || metadata.capabilityMapConfidence || metadata.confidence || null;
-  if (!capabilityMap) {
+  if (Object.keys(capabilityMap).length === 0) {
     return { available: false, reason: "missing_project_capability_map", confidence: null };
   }
   if (confidence !== "high") {
@@ -134,7 +146,7 @@ export function projectCapabilityMapGate(project: Record<string, any>) {
   return { available: true, confidence: "high", generatedAt: capabilityMap.generatedAt || null };
 }
 
-export async function generateProjectCapabilityMaps({ cpbRoot, sourcePath }: Record<string, any> = {}) {
+export async function generateProjectCapabilityMaps({ cpbRoot, sourcePath }: LooseRecord = {}) {
   const readiness = await checkCodeGraphReady({ cpbRoot, sourcePath });
   const files = await queryCodeGraphFiles(readiness.indexFile);
   const generatedAt = new Date().toISOString();

@@ -24,15 +24,17 @@ const gateTests = [
   "dist-tests/tests/dag-node-failure.test.js",
   "dist-tests/tests/phase-agent-routing.test.js",
   "dist-tests/tests/phase-artifact-tracker.test.js",
+  "dist-tests/tests/phase-budget-policy.test.js",
   "dist-tests/tests/phase-result-events.test.js",
   "dist-tests/tests/phase-start-events.test.js",
   "dist-tests/tests/provider-usage-recorder.test.js",
   "dist-tests/tests/runtime-artifact-events.test.js",
   "dist-tests/tests/runtime-failure-recorder.test.js",
   "dist-tests/tests/scope-guard-runner.test.js",
+  "dist-tests/tests/swebench-batch-queue.test.js",
 ];
 
-const flagshipWorkerE2ePattern = "managed worker (default checklist decomposition runs inside the worker path|writes dry-run PR preview after evidence-backed fake ACP run)";
+const flagshipWorkerE2ePattern = "managed worker flagship issue to draft PR dry-run uses default checklist decomposition and evidence";
 
 function commandText(command: string, commandArgs: string[]) {
   return [command, ...commandArgs].join(" ");
@@ -66,13 +68,16 @@ function run(label: string, command: string, commandArgs: string[], options: { e
 if (process.env.CPB_CHECKLIST_DECOMPOSE === "0") {
   console.error(`${FAIL} CPB_CHECKLIST_DECOMPOSE=0 is not allowed for the release gate.`);
   process.exitCode = 1;
+} else if (process.env.CPB_AGENT_ISOLATE_HOME === "0") {
+  console.error(`${FAIL} CPB_AGENT_ISOLATE_HOME=0 is not allowed for the release gate.`);
+  process.exitCode = 1;
 } else {
   const checks = [
     await run("release gate: production checklist and finalizer contract tests", process.execPath, [
       "--test",
       ...gateTests,
     ]),
-    await run("release gate: managed worker default checklist + dry-run PR preview E2E", process.execPath, [
+    await run("release gate: managed worker flagship issue-to-draft-PR E2E", process.execPath, [
       "--test",
       "--test-name-pattern",
       flagshipWorkerE2ePattern,

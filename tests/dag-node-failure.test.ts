@@ -5,9 +5,9 @@ import { FailureKind } from "../core/contracts/failure.js";
 import { handleDagNodeFailure } from "../core/engine/dag-node-failure.js";
 
 test("handleDagNodeFailure records DAG failure, fails the job, reports progress, and returns retry verdict cause", async () => {
-  const events: Record<string, any>[] = [];
-  const failures: Record<string, any>[] = [];
-  const progress: Record<string, any>[] = [];
+  const events: Record<string, unknown>[] = [];
+  const failures: Record<string, unknown>[] = [];
+  const progress: Record<string, unknown>[] = [];
   const phaseResults = [{ phase: "plan", status: "passed" }];
 
   const result = await handleDagNodeFailure({
@@ -35,18 +35,21 @@ test("handleDagNodeFailure records DAG failure, fails the job, reports progress,
             bytes: 123,
             sha256: "abc123",
           },
+          counterexampleDisposition: "scope_expansion",
+          requestedFixScope: ["src/unrelated.ts"],
+          allowedFixScope: ["src/parser.ts"],
           rawOutput: "ignored in retry cause",
         },
       },
     },
     phaseResults,
-    appendEvent: async (_cpbRoot: string, _project: string, _jobId: string, event: Record<string, any>) => {
+    appendEvent: async (_cpbRoot: string, _project: string, _jobId: string, event: Record<string, unknown>) => {
       events.push(event);
     },
-    failJob: async (_cpbRoot: string, _project: string, _jobId: string, failure: Record<string, any>) => {
+    failJob: async (_cpbRoot: string, _project: string, _jobId: string, failure: Record<string, unknown>) => {
       failures.push(failure);
     },
-    onProgress: async (event: Record<string, any>) => {
+    onProgress: async (event: Record<string, unknown>) => {
       progress.push(event);
     },
     now: () => "2026-06-22T00:00:00.000Z",
@@ -84,6 +87,9 @@ test("handleDagNodeFailure records DAG failure, fails the job, reports progress,
           bytes: 123,
           sha256: "abc123",
         },
+        counterexampleDisposition: "scope_expansion",
+        requestedFixScope: ["src/unrelated.ts"],
+        allowedFixScope: ["src/parser.ts"],
         rawOutput: "ignored in retry cause",
       },
       nodeId: "verify",
@@ -118,6 +124,9 @@ test("handleDagNodeFailure records DAG failure, fails the job, reports progress,
           bytes: 123,
           sha256: "abc123",
         },
+        counterexampleDisposition: "scope_expansion",
+        requestedFixScope: ["src/unrelated.ts"],
+        allowedFixScope: ["src/parser.ts"],
       },
     },
     phaseResults,
@@ -125,8 +134,8 @@ test("handleDagNodeFailure records DAG failure, fails the job, reports progress,
 });
 
 test("handleDagNodeFailure uses fatal defaults for malformed failed phase results", async () => {
-  const events: Record<string, any>[] = [];
-  const failures: Record<string, any>[] = [];
+  const events: Record<string, unknown>[] = [];
+  const failures: Record<string, unknown>[] = [];
 
   const result = await handleDagNodeFailure({
     cpbRoot: "/tmp/cpb",
@@ -139,10 +148,10 @@ test("handleDagNodeFailure uses fatal defaults for malformed failed phase result
     dagNode: {},
     phaseResult: { status: "failed" },
     phaseResults: [],
-    appendEvent: async (_cpbRoot: string, _project: string, _jobId: string, event: Record<string, any>) => {
+    appendEvent: async (_cpbRoot: string, _project: string, _jobId: string, event: Record<string, unknown>) => {
       events.push(event);
     },
-    failJob: async (_cpbRoot: string, _project: string, _jobId: string, failure: Record<string, any>) => {
+    failJob: async (_cpbRoot: string, _project: string, _jobId: string, failure: Record<string, unknown>) => {
       failures.push(failure);
     },
     now: () => "2026-06-22T00:00:00.000Z",

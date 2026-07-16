@@ -5,7 +5,7 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { AnyRecord } from "../shared/types.js";
+import type { LooseRecord } from "../core/contracts/types.js";
 
 import { getProject, heartbeatWorker, resolveHubRoot } from "../server/services/hub/hub-registry.js";
 import { claimEligible, listQueue, updateEntry } from "../server/services/hub/hub-queue.js";
@@ -43,7 +43,18 @@ function truncateOutput(output: string, maxLength = 2_000) {
   return `${output.slice(0, maxLength)}\n[truncated ${output.length - maxLength} chars]`;
 }
 
-function runAgentSmoke({ agent, cpbRoot, executorRoot, cwd, timeoutMs }: { agent: string; cpbRoot: string; executorRoot: string; cwd: string; timeoutMs: number }): Promise<Record<string, unknown>> {
+type AgentSmokeResult = {
+  ok: boolean;
+  agent: string;
+  code: number | null;
+  timedOut?: boolean;
+  error?: string;
+  elapsedMs: number;
+  stdout: string;
+  stderr: string;
+};
+
+function runAgentSmoke({ agent, cpbRoot, executorRoot, cwd, timeoutMs }: { agent: string; cpbRoot: string; executorRoot: string; cwd: string; timeoutMs: number }): Promise<AgentSmokeResult> {
   return new Promise((resolve) => {
     const startedAt = Date.now();
     const script = [
@@ -132,8 +143,102 @@ function priorityScore(p: unknown): number {
   return 3;
 }
 
-export function parseArgs(argv: string[]): AnyRecord {
-  const opts: AnyRecord = {
+type ProjectWorkerArgs = {
+  project: string | null;
+  pool: boolean;
+  once: boolean;
+  heartbeatMs: number;
+  pollMs: number;
+  claimTimeoutMs: number;
+  maxActivePerProject: number;
+  requireIssueLink: boolean;
+  agentPreflightRetries: number;
+  agentPreflightBackoffMs: number;
+  agentPreflightTimeoutMs: number;
+  workflow: string;
+  cpbRoot: string;
+  executorRoot: string;
+  hubRoot: string | null;
+  help?: boolean;
+};
+
+type ProjectRecord = LooseRecord & {
+  id: string;
+  sourcePath?: string;
+  projectRuntimeRoot?: string;
+};
+
+type QueueEntry = LooseRecord & {
+  id?: string;
+  projectId?: string;
+  sourcePath?: string | null;
+  sessionId?: string | null;
+  description?: string;
+  priority?: unknown;
+  createdAt?: string;
+  claimedAt?: string | null;
+  claimedBy?: string | null;
+};
+
+type QueueListFilter = NonNullable<Parameters<typeof listQueue>[1]>;
+
+type PipelineResult = {
+  ok?: boolean;
+  code?: number | null;
+  stdout?: string;
+  stderr?: string;
+  error?: string;
+  agentOutage?: boolean;
+  preflight?: AgentAvailabilityResult;
+};
+
+type PipelineRunner = (
+  entry: QueueEntry,
+  sourcePath: string | null,
+  dispatchId: string | null,
+  overrideProjectId: string,
+) => Promise<PipelineResult>;
+
+type AgentHealth = {
+  codex?: boolean;
+  claude?: boolean;
+  checks?: {
+    codex?: AgentSmokeResult;
+    claude?: AgentSmokeResult;
+  } | LooseRecord;
+};
+
+type AgentHealthFn = (opts: {
+  cpbRoot: string;
+  executorRoot: string;
+  cwd: string;
+  timeoutMs: number;
+}) => Promise<AgentHealth>;
+
+type AgentAvailabilityResult = {
+  available: boolean;
+  attempt: number;
+  attempts: number;
+  health: AgentHealth | null;
+};
+
+type WorkerRunResult = {
+  idle?: boolean;
+  stopped?: boolean;
+  reason?: string;
+  entry?: QueueEntry;
+  result?: PipelineResult;
+  preflight?: AgentAvailabilityResult;
+};
+
+function queueListFilter(status: string, projectId?: string | null): QueueListFilter {
+  const filter: QueueListFilter = { status };
+  if (projectId) filter.projectId = projectId;
+  return filter;
+}
+
+export function parseArgs(argv: string[]): ProjectWorkerArgs {
+  const opts: ProjectWorkerArgs = {
     project: null,
     pool: false,
     once: false,
@@ -194,8 +299,8 @@ interface ProjectWorkerOpts {
   agentPreflightTimeoutMs?: unknown;
   workflow?: string;
   assignmentStore?: AssignmentStore | null;
-  runPipelineFn?: ((entry: AnyRecord, sourcePath: string | null, dispatchId: string | null, overrideProjectId: string) => Promise<AnyRecord>) | null;
-  agentHealthFn?: ((opts: { cpbRoot: string; executorRoot: string; cwd: string; timeoutMs: number }) => Promise<Record<string, unknown>>);
+  runPipelineFn?: PipelineRunner | null;
+  agentHealthFn?: AgentHealthFn;
   cpbRoot?: string;
   executorRoot?: string;
   hubRoot?: string;
@@ -219,12 +324,12 @@ export class ProjectWorker {
   agentPreflightTimeoutMs: number;
   workflow: string;
   assignmentStore: AssignmentStore | null;
-  _runPipelineFn: ((entry: AnyRecord, sourcePath: string | null, dispatchId: string | null, overrideProjectId: string) => Promise<AnyRecord>) | null;
-  _agentHealthFn: (opts: { cpbRoot: string; executorRoot: string; cwd: string; timeoutMs: number }) => Promise<Record<string, unknown>>;
+  _runPipelineFn: PipelineRunner | null;
+  _agentHealthFn: AgentHealthFn;
   _heartbeatTimer: NodeJS.Timeout | null;
   _stopRequested: boolean;
   _activeEntryId: string | null;
-  project: AnyRecord | null;
+  project: ProjectRecord | null;
 
   constructor(opts: ProjectWorkerOpts = {}) {
     this.cpbRoot = path.resolve(opts.cpbRoot || CPB_ROOT);
@@ -313,11 +418,10 @@ export class ProjectWorker {
 
   async recoverStaleEntries() {
     if (this.claimTimeoutMs <= 0) return [];
-    const filter: AnyRecord = { status: "in_progress" };
-    if (!this.pool && this.project) filter.projectId = this.project.id;
+    const filter = queueListFilter("in_progress", !this.pool && this.project ? this.project.id : null);
     const inProgress = await listQueue(this.hubRoot, filter);
     const now = Date.now();
-    const recovered: AnyRecord[] = [];
+    const recovered: Array<LooseRecord & { id: string; action: string }> = [];
     for (const entry of inProgress) {
       const claimedAt = entry.claimedAt ? new Date(entry.claimedAt).getTime() : 0;
       if (!Number.isFinite(claimedAt) || now - claimedAt < this.claimTimeoutMs) continue;
@@ -359,8 +463,7 @@ export class ProjectWorker {
   }
 
   async releaseOwnEntries() {
-    const filter: AnyRecord = { status: "in_progress" };
-    if (!this.pool && this.project) filter.projectId = this.project.id;
+    const filter = queueListFilter("in_progress", !this.pool && this.project ? this.project.id : null);
     const inProgress = await listQueue(this.hubRoot, filter);
     const released: string[] = [];
     for (const entry of inProgress) {
@@ -389,8 +492,7 @@ export class ProjectWorker {
   }
 
   async peekNext() {
-    const filter: AnyRecord = { status: "pending" };
-    if (!this.pool && this.project) filter.projectId = this.project.id;
+    const filter = queueListFilter("pending", !this.pool && this.project ? this.project.id : null);
     const pending = await listQueue(this.hubRoot, filter);
     if (pending.length === 0) return null;
 
@@ -429,7 +531,7 @@ export class ProjectWorker {
     return { available: false, attempt: attempts, attempts, health: lastHealth };
   }
 
-  async executeEntry(entry: AnyRecord): Promise<AnyRecord> {
+  async executeEntry(entry: QueueEntry): Promise<PipelineResult> {
     const projectId = this.pool ? entry.projectId : this.project.id;
     const sourcePath = entry.sourcePath || this.project?.sourcePath;
 
@@ -475,7 +577,7 @@ export class ProjectWorker {
     return result;
   }
 
-  async runPipeline(entry: AnyRecord, sourcePath: string | null, dispatchId: string | null, overrideProjectId: string): Promise<AnyRecord> {
+  async runPipeline(entry: QueueEntry, sourcePath: string | null, dispatchId: string | null, overrideProjectId: string): Promise<PipelineResult> {
     if (this._runPipelineFn) return this._runPipelineFn(entry, sourcePath, dispatchId, overrideProjectId);
 
     const projectId = overrideProjectId || entry?.projectId || this.project?.id;
@@ -521,7 +623,7 @@ export class ProjectWorker {
     });
   }
 
-  async poll(): Promise<AnyRecord> {
+  async poll(): Promise<WorkerRunResult> {
     const entry = await this.claimNext();
     if (!entry) return { idle: true };
 
@@ -562,7 +664,7 @@ export class ProjectWorker {
     return { entry, result };
   }
 
-  async run(): Promise<AnyRecord> {
+  async run(): Promise<WorkerRunResult> {
     await this.init();
     this.startHeartbeat();
 

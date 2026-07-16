@@ -24,6 +24,7 @@ import {
   getLineage,
 } from "../server/services/job/job-store.js";
 import { appendEvent, readEvents } from "../server/services/event/event-store.js";
+import { recordValue } from "../shared/types.js";
 import { registerProject } from "../server/services/hub/hub-registry.js";
 
 const root = await mkdtemp(path.join(tmpdir(), "cpb-job-recovery-"));
@@ -387,7 +388,8 @@ assert.equal(freshRetried.sourceContext.retry.forceFreshSession, true,
 const freshEvents = await readEvents(root, project, freshRetried.jobId, { dataRoot });
 const freshRecoveryEvent = freshEvents.find((e) => e.type === "recovery_created");
 assert.ok(freshRecoveryEvent, "should have recovery_created event");
-assert.equal(freshRecoveryEvent.sourceContext.retry.forceFreshSession, true,
+const freshRecoverySourceContext = recordValue(freshRecoveryEvent.sourceContext);
+assert.equal(recordValue(freshRecoverySourceContext.retry).forceFreshSession, true,
   "recovery_created event sourceContext should carry forceFreshSession");
 
 // --- forceFreshSession: default (false) does NOT include forceFreshSession in sourceContext ---

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { recordValue, type LooseRecord } from "../shared/types.js";
 // e2e-npm-pack.js — One-shot E2E: pack → install → doctor → hub → enqueue → verify
 // Usage: node scripts/e2e-npm-pack.js [--keep-state] [--project flow]
 import { execSync } from "node:child_process";
@@ -83,7 +84,20 @@ function shellQuote(value: unknown) {
   return `'${String(value).replace(/'/g, "'\\''")}'`;
 }
 
-function run(cmd: string, opts: Record<string, any> = {}) {
+type ShellRunOptions = {
+  cwd?: string;
+  timeout?: number;
+  silent?: boolean;
+  env?: NodeJS.ProcessEnv;
+  allowFail?: boolean;
+  fatal?: boolean;
+};
+
+function outputText(value: unknown): string {
+  return Buffer.isBuffer(value) ? value.toString("utf8") : String(value || "");
+}
+
+function run(cmd: string, opts: ShellRunOptions = {}) {
   try {
     const result = execSync(cmd, {
       encoding: "utf8",
@@ -94,10 +108,10 @@ function run(cmd: string, opts: Record<string, any> = {}) {
     });
     return { ok: true, stdout: result?.trim() || "" };
   } catch (e) {
-    const error = e as Record<string, any>;
-    if (opts.allowFail) return { ok: false, stdout: error.stdout?.trim() || "", stderr: error.stderr?.trim() || "" };
+    const error = e as LooseRecord;
+    if (opts.allowFail) return { ok: false, stdout: outputText(error.stdout).trim(), stderr: outputText(error.stderr).trim() };
     fail(`${cmd}`);
-    if (error.stderr) console.error(error.stderr.substring(0, 500));
+    if (error.stderr) console.error(outputText(error.stderr).substring(0, 500));
     if (opts.fatal !== false) process.exit(1);
     return { ok: false };
   }
@@ -107,8 +121,9 @@ function wait(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-function assertPackedExecutorFiles(packEntry: Record<string, any>) {
-  const packedPaths = new Set((packEntry.files || []).map((file: Record<string, any>) => file.path).filter(Boolean));
+function assertPackedExecutorFiles(packEntry: LooseRecord) {
+  const files = Array.isArray(packEntry.files) ? packEntry.files : [];
+  const packedPaths = new Set(files.map((file) => recordValue(file).path).filter(Boolean));
   const missing = REQUIRED_EXECUTOR_FILES.filter((required) => !packedPaths.has(required));
   if (missing.length > 0) {
     fail(`Pack is missing executor files: ${missing.join(", ")}`);
@@ -270,10 +285,10 @@ function stepDoctor() {
   try {
     const data = JSON.parse(r.stdout || "{}");
     const agentErrors = (data.checks || []).filter(
-      (c: Record<string, any>) => c.status === "error" && c.category === "agents"
+      (c: LooseRecord) => c.status === "error" && c.category === "agents"
     );
     if (agentErrors.length > 0) {
-      fail(`Critical agent errors: ${agentErrors.map((c: Record<string, any>) => c.message).join(", ")}`);
+      fail(`Critical agent errors: ${agentErrors.map((c: LooseRecord) => c.message).join(", ")}`);
       process.exit(1);
     }
     const summary = data.summary || {};
@@ -383,8 +398,8 @@ function latestGithubQueueEntry() {
     .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")))[0] || null;
 }
 
-function remoteFinalizerComplete(entry: Record<string, any>) {
-  const finalizer = entry?.metadata?.finalizer;
+function remoteFinalizerComplete(entry: LooseRecord) {
+  const finalizer = recordValue(recordValue(entry.metadata).finalizer);
   return Boolean(
     finalizer?.ok === true
     && finalizer.status === "finalized"

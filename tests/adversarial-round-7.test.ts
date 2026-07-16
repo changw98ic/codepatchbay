@@ -27,7 +27,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { AnyRecord } from "../shared/types.js";
+import { LooseRecord } from "../shared/types.js";
 
 import { evaluateCompletionGate } from "../core/engine/completion-gate.js";
 import {
@@ -151,7 +151,7 @@ function passingVerdict(
   };
 }
 
-function evidenceLedger(evidence: AnyRecord[]) {
+function evidenceLedger(evidence: LooseRecord[]) {
   return {
     schemaVersion: 1,
     ledgerId: "evidence-ledger-r7",

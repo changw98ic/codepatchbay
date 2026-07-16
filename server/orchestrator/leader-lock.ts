@@ -1,55 +1,90 @@
-import { mkdir, readFile, writeFile, rm, rename } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { mkdir, open, readFile, rm, rename, stat } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { AnyRecord } from "../../shared/types.js";
+import type { LooseRecord } from "../../shared/types.js";
 import { writeJsonAtomic } from "../../shared/fs-utils.js";
+import {
+  openPinnedHubRedisStateBackend,
+  type HubRedisStateBackend,
+  type RedisLeaderStatus,
+} from "../../shared/hub-state-redis.js";
+import { processLeaderFence, registerProcessLeaderFence } from "../../shared/hub-leader-fence.js";
 
 const DEFAULT_TTL_MS = 60_000;
 const RENEW_INTERVAL_MS = 20_000;
 
+function dateInput(value: unknown): string | number | Date | null {
+  if (typeof value === "string" || typeof value === "number" || value instanceof Date) return value;
+  return null;
+}
+
+function numericPid(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
 export class LeaderLock {
+  hubRoot: string;
   lockDir: string;
   leaderFile: string;
   epochFile: string;
   quarantineDir: string;
   hubId: string;
+  lockToken: string;
   epoch: number;
   _renewTimer: NodeJS.Timeout | null;
   _onLost?: () => void;
+  _redisBackend: HubRedisStateBackend | null | undefined;
 
   constructor(hubRoot: string) {
-    this.lockDir = path.join(hubRoot, "orchestrator", "leader.lock");
+    this.hubRoot = path.resolve(hubRoot);
+    this.lockDir = path.join(this.hubRoot, "orchestrator", "leader.lock");
     this.leaderFile = path.join(this.lockDir, "leader.json");
-    this.epochFile = path.join(hubRoot, "orchestrator", "epoch.json");
-    this.quarantineDir = path.join(hubRoot, "orchestrator", "leader.quarantine");
+    this.epochFile = path.join(this.hubRoot, "orchestrator", "epoch.json");
+    this.quarantineDir = path.join(this.hubRoot, "orchestrator", "leader.quarantine");
     this.hubId = `${os.hostname()}-${process.pid}`;
+    this.lockToken = randomUUID();
     this.epoch = 0;
     this._renewTimer = null;
+    this._redisBackend = undefined;
   }
 
   async acquire() {
+    const redis = await this._redisState();
+    if (redis) {
+      if (processLeaderFence(redis.identityFingerprint)) {
+        throw Object.assign(
+          new Error("this process has a retired Redis leader fence; start a new process before reacquiring leadership"),
+          { code: "HUB_LEADER_PROCESS_RESTART_REQUIRED" },
+        );
+      }
+      const result = await redis.acquireLeader({
+        hubId: this.hubId,
+        lockToken: this.lockToken,
+        host: os.hostname(),
+        pid: process.pid,
+      }, DEFAULT_TTL_MS);
+      if (!result.acquired) {
+        throw new Error(`leader lock held by ${result.leader.hubId || "unknown"} (expires ${result.leader.expiresAt || "unknown"})`);
+      }
+      this.epoch = result.leader.epoch;
+      registerProcessLeaderFence(redis.identityFingerprint, this._fence());
+      return redisLeaderRecord(result.leader);
+    }
+
     const existing = await this._readLeader();
 
     if (existing && !this._isExpired(existing)) {
       throw new Error(`leader lock held by ${existing.hubId} (expires ${existing.expiresAt})`);
     }
 
-    // Steal stale lock atomically: rename to quarantine first
+    // Steal stale lock atomically: rename to quarantine first. A released lock
+    // is no longer needed for forensics and can be removed after the rename.
     if (existing) {
-      await mkdir(this.quarantineDir, { recursive: true });
-      const quarantineName = `stale-${existing.hubId}-${Date.now()}`;
-      try {
-        await rename(this.lockDir, path.join(this.quarantineDir, quarantineName));
-      } catch {
-        // Lock disappeared between read and rename — race lost, another Hub stole it
-        const recheck = await this._readLeader();
-        if (recheck && !this._isExpired(recheck)) {
-          throw new Error(`leader lock stolen by ${recheck.hubId}`);
-        }
-        if (recheck) {
-          throw new Error(`leader lock stale cleanup failed for ${existing.hubId}; refusing unsafe delete`);
-        }
-      }
+      const quarantined = await this._quarantineCurrentLock(existing.releasedAt ? "released" : "stale");
+      if (existing.releasedAt) await rm(quarantined, { recursive: true, force: true });
+    } else {
+      await this._recoverIncompleteLock();
     }
 
     // mkdir as sole atomic acquire primitive
@@ -63,31 +98,55 @@ export class LeaderLock {
       throw err;
     }
 
-    // Lock acquired — now safe to increment epoch (P1-3 fix: epoch only after lock held)
-    this.epoch = await this._incrementEpoch();
-
-    const leader = {
+    const startedAt = new Date().toISOString();
+    const provisional = {
       hubId: this.hubId,
       host: os.hostname(),
       pid: process.pid,
-      epoch: this.epoch,
-      startedAt: new Date().toISOString(),
-      heartbeatAt: new Date().toISOString(),
+      epoch: 0,
+      lockToken: this.lockToken,
+      initializing: true,
+      startedAt,
+      heartbeatAt: startedAt,
       expiresAt: new Date(Date.now() + DEFAULT_TTL_MS).toISOString(),
     };
-    await writeJsonAtomic(this.leaderFile, leader);
-    return leader;
+
+    try {
+      // Publish ownership before any fallible epoch work. If the process dies
+      // after mkdir but before this write, acquire() recovers the incomplete
+      // directory after the same TTL instead of wedging leadership forever.
+      await writeJsonAtomic(this.leaderFile, provisional);
+
+      // Lock acquired — now safe to increment epoch (epoch only after lock held).
+      this.epoch = await this._incrementEpoch();
+      const leader = {
+        ...provisional,
+        epoch: this.epoch,
+        initializing: false,
+        heartbeatAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + DEFAULT_TTL_MS).toISOString(),
+      };
+      if (!await this._writeLeaderGuarded(leader, false)) {
+        throw new Error("leader lock ownership changed before acquisition committed");
+      }
+      return leader;
+    } catch (error) {
+      await this._expireOwnedInitialization(error);
+      throw error;
+    }
   }
 
   async renew() {
+    const redis = await this._redisState();
+    if (redis) return (await redis.renewLeader(this._fence(), DEFAULT_TTL_MS)).renewed;
+
     const current = await this._readLeader();
     if (!this._isCurrentLeader(current)) {
       return false;
     }
     current.heartbeatAt = new Date().toISOString();
     current.expiresAt = new Date(Date.now() + DEFAULT_TTL_MS).toISOString();
-    await writeJsonAtomic(this.leaderFile, current);
-    return true;
+    return this._writeLeaderGuarded(current, true);
   }
 
   /**
@@ -96,7 +155,12 @@ export class LeaderLock {
   startRenewal(onLost: () => void) {
     this._onLost = onLost;
     this._renewTimer = setInterval(async () => {
-      const ok = await this.renew();
+      let ok = false;
+      try {
+        ok = await this.renew();
+      } catch {
+        ok = false;
+      }
       if (!ok) {
         clearInterval(this._renewTimer);
         this._renewTimer = null;
@@ -116,19 +180,58 @@ export class LeaderLock {
   async release() {
     this.stopRenewal();
     try {
-      const current = await this._readLeader();
-      if (this._matchesCurrentIdentity(current)) {
-        await rm(this.lockDir, { recursive: true, force: true });
+      const redis = await this._redisState();
+      if (redis) {
+        const fence = this._fence();
+        // Keep the released fence armed in this process. stop() does not join
+        // in-flight tick/janitor callbacks, so clearing it would let their
+        // later queue mutations silently downgrade to unfenced writes. This
+        // process must exit before another LeaderLock can acquire the backend.
+        return await redis.releaseLeader(fence);
       }
-    } catch { /* already released */ }
+
+      const current = await this._readLeader();
+      if (!this._matchesCurrentIdentity(current)) return false;
+      const releasedAt = new Date().toISOString();
+      return this._writeLeaderGuarded({
+        ...current,
+        releasedAt,
+        heartbeatAt: releasedAt,
+        expiresAt: new Date(Date.now() - 1).toISOString(),
+      }, true);
+    } catch {
+      return false;
+    }
   }
 
   /**
    * Check if this Hub still holds the leader lock (for epoch fencing).
    */
   async stillHeld() {
+    const redis = await this._redisState();
+    if (redis) {
+      const current = await redis.readLeader();
+      return current.alive
+        && current.hubId === this.hubId
+        && current.lockToken === this.lockToken
+        && current.epoch === this.epoch;
+    }
+
     const current = await this._readLeader();
     return this._isCurrentLeader(current);
+  }
+
+  async _redisState() {
+    if (this._redisBackend !== undefined) return this._redisBackend;
+    this._redisBackend = await openPinnedHubRedisStateBackend({
+      configFile: process.env.CPB_HUB_STATE_REDIS_CONFIG_FILE,
+      hubRoot: this.hubRoot,
+    });
+    return this._redisBackend;
+  }
+
+  _fence() {
+    return { hubId: this.hubId, lockToken: this.lockToken, epoch: this.epoch };
   }
 
   async _readLeader() {
@@ -139,21 +242,31 @@ export class LeaderLock {
     }
   }
 
-  _isExpired(leader: AnyRecord | null) {
-    const expiresAt = leader?.expiresAt ? new Date(leader.expiresAt).getTime() : NaN;
+  _isExpired(leader: LooseRecord | null) {
+    const expiresAtValue = dateInput(leader?.expiresAt);
+    const expiresAt = expiresAtValue ? new Date(expiresAtValue).getTime() : NaN;
     return !Number.isFinite(expiresAt) || Date.now() > expiresAt;
   }
 
-  _matchesCurrentIdentity(leader: AnyRecord | null) {
+  _matchesCurrentIdentity(leader: LooseRecord | null) {
     return Boolean(
       leader
       && this.epoch > 0
       && leader.hubId === this.hubId
+      && leader.lockToken === this.lockToken
       && Number(leader.epoch) === this.epoch,
     );
   }
 
-  _isCurrentLeader(leader: AnyRecord | null) {
+  _matchesLockToken(leader: LooseRecord | null) {
+    return Boolean(
+      leader
+      && leader.hubId === this.hubId
+      && leader.lockToken === this.lockToken,
+    );
+  }
+
+  _isCurrentLeader(leader: LooseRecord | null) {
     return this._matchesCurrentIdentity(leader) && !this._isExpired(leader);
   }
 
@@ -169,11 +282,111 @@ export class LeaderLock {
     return next;
   }
 
+  async _quarantineCurrentLock(reason: "stale" | "released" | "incomplete") {
+    await mkdir(this.quarantineDir, { recursive: true });
+    const target = path.join(this.quarantineDir, `${reason}-${Date.now()}-${randomUUID()}`);
+    try {
+      await rename(this.lockDir, target);
+      return target;
+    } catch (error) {
+      throw new Error(`leader lock ${reason} quarantine lost a contention race`, { cause: error });
+    }
+  }
+
+  async _recoverIncompleteLock() {
+    let lockStat;
+    try {
+      lockStat = await stat(this.lockDir);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return false;
+      throw error;
+    }
+
+    const ageMs = Math.max(0, Date.now() - lockStat.mtimeMs);
+    if (ageMs <= DEFAULT_TTL_MS) {
+      throw new Error(`leader lock is initializing (${Math.round(ageMs)}ms old)`);
+    }
+    await this._quarantineCurrentLock("incomplete");
+    return true;
+  }
+
+  async _writeLeaderGuarded(next: LooseRecord, requireEpoch: boolean) {
+    const tempPath = path.join(this.lockDir, `.leader-${this.lockToken}-${randomUUID()}.tmp`);
+    let created = false;
+    try {
+      const handle = await open(tempPath, "wx", 0o600);
+      created = true;
+      try {
+        await handle.writeFile(`${JSON.stringify(next, null, 2)}\n`, "utf8");
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+
+      // The temp file is created before the identity check. If a contender
+      // renames this lock directory at any later point, the temp file moves
+      // with the old directory and rename(tempPath, leaderFile) fails instead
+      // of overwriting the replacement leader at the reused pathname.
+      const current = await this._readLeader();
+      const ownsCurrent = requireEpoch
+        ? this._matchesCurrentIdentity(current)
+        : this._matchesLockToken(current);
+      if (!ownsCurrent) return false;
+
+      try {
+        await rename(tempPath, this.leaderFile);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return false;
+        throw error;
+      }
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return false;
+      throw error;
+    } finally {
+      if (created) await rm(tempPath, { force: true }).catch(() => undefined);
+    }
+  }
+
+  async _expireOwnedInitialization(error: unknown) {
+    try {
+      const current = await this._readLeader();
+      if (!this._matchesLockToken(current)) return false;
+      const failedAt = new Date().toISOString();
+      return this._writeLeaderGuarded({
+        ...current,
+        initializing: false,
+        initializationFailedAt: failedAt,
+        initializationFailure: error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500),
+        heartbeatAt: failedAt,
+        expiresAt: new Date(Date.now() - 1).toISOString(),
+      }, false);
+    } catch {
+      return false;
+    }
+  }
+
   getEpoch() { return this.epoch; }
   getHubId() { return this.hubId; }
 }
 
 export async function readLeaderStatus(hubRoot: string) {
+  const redis = await openPinnedHubRedisStateBackend({
+    configFile: process.env.CPB_HUB_STATE_REDIS_CONFIG_FILE,
+    hubRoot,
+  });
+  if (redis) {
+    const leader = await redis.readLeader();
+    return {
+      status: leader.alive ? "running" : "stopped",
+      hubId: leader.hubId,
+      epoch: leader.epoch,
+      pid: leader.pid,
+      heartbeatAt: leader.heartbeatAt,
+      expiresAt: leader.expiresAt,
+    };
+  }
+
   const lockDir = path.join(hubRoot, "orchestrator", "leader.lock");
   const leaderFile = path.join(lockDir, "leader.json");
   const epochFile = path.join(hubRoot, "orchestrator", "epoch.json");
@@ -191,7 +404,21 @@ export async function readLeaderStatus(hubRoot: string) {
   };
 }
 
-async function readJsonOrNull(file: string): Promise<AnyRecord | null> {
+function redisLeaderRecord(leader: RedisLeaderStatus) {
+  return {
+    hubId: leader.hubId,
+    host: leader.host,
+    pid: leader.pid,
+    epoch: leader.epoch,
+    lockToken: leader.lockToken,
+    initializing: false,
+    startedAt: leader.startedAt,
+    heartbeatAt: leader.heartbeatAt,
+    expiresAt: leader.expiresAt,
+  };
+}
+
+async function readJsonOrNull(file: string): Promise<LooseRecord | null> {
   try {
     return JSON.parse(await readFile(file, "utf8"));
   } catch {
@@ -199,12 +426,20 @@ async function readJsonOrNull(file: string): Promise<AnyRecord | null> {
   }
 }
 
-function isLeaderAlive(leader: AnyRecord | null) {
-  const expiresAt = leader?.expiresAt ? new Date(leader.expiresAt).getTime() : NaN;
-  if (!leader || !Number.isFinite(expiresAt) || Date.now() > expiresAt) return false;
-  if (!leader.pid || leader.host !== os.hostname()) return true;
+function isLeaderAlive(leader: LooseRecord | null) {
+  const expiresAtValue = dateInput(leader?.expiresAt);
+  const expiresAt = expiresAtValue ? new Date(expiresAtValue).getTime() : NaN;
+  if (
+    !leader
+    || leader.initializing
+    || leader.releasedAt
+    || !Number.isFinite(expiresAt)
+    || Date.now() > expiresAt
+  ) return false;
+  const pid = numericPid(leader.pid);
+  if (!pid || leader.host !== os.hostname()) return true;
   try {
-    process.kill(leader.pid, 0);
+    process.kill(pid, 0);
     return true;
   } catch {
     return false;

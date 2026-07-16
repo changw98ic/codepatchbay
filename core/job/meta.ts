@@ -1,3 +1,4 @@
+import type { LooseRecord } from "../../shared/types.js";
 /**
  * Execution boundary metadata normalization.
  * Ensures sessionId, workerId, sourcePath, cwd, executionBoundary are
@@ -11,7 +12,7 @@ export const REQUIRED_EXECUTION_BOUNDARY = "worktree";
  * Normalize execution metadata. Missing optional fields become explicit
  * null rather than silently empty strings.
  */
-export function buildMeta(input: Record<string, any> = {}) {
+export function buildMeta(input: LooseRecord = {}) {
   return {
     projectId: input.projectId || null,
     sourcePath: input.sourcePath || null,
@@ -25,7 +26,7 @@ export function buildMeta(input: Record<string, any> = {}) {
 /**
  * Build an execution_boundary event from normalized meta.
  */
-export function executionBoundaryEvent(meta: Record<string, any>, { jobId, project, ts }: { jobId: string; project: string; ts: string }) {
+export function executionBoundaryEvent(meta: LooseRecord, { jobId, project, ts }: { jobId: string; project: string; ts: string }) {
   return {
     type: "execution_boundary",
     jobId,

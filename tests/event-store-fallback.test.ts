@@ -80,17 +80,20 @@ test("appendEvent writes only to explicit project runtime root and ignores ambie
       ts: "2026-06-11T05:07:00.000Z",
     }, { dataRoot });
 
-    assert.equal(
-      await readFile(path.join(dataRoot, "events", "flow", `${jobId}.jsonl`), "utf8"),
-      JSON.stringify({
-        type: "job_created",
-        jobId,
-        project: "flow",
-        task: "project root job",
-        workflow: "standard",
-        ts: "2026-06-11T05:07:00.000Z",
-      }) + "\n",
-    );
+    const raw = await readFile(path.join(dataRoot, "events", "flow", `${jobId}.jsonl`), "utf8");
+    const lines = raw.trim().split("\n");
+    assert.equal(lines.length, 1);
+    assert.deepEqual(JSON.parse(lines[0]), {
+      type: "job_created",
+      jobId,
+      project: "flow",
+      task: "project root job",
+      workflow: "standard",
+      ts: "2026-06-11T05:07:00.000Z",
+      traceId: jobId,
+      spanId: `job:${jobId}`,
+      parentSpanId: null,
+    });
     await assert.rejects(() => stat(path.join(envRoot, "events")), { code: "ENOENT" });
     await assert.rejects(() => stat(path.join(cpbRoot, "cpb-task")), { code: "ENOENT" });
   } finally {

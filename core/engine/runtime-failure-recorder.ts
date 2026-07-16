@@ -1,13 +1,13 @@
 import { FailureKind } from "../contracts/failure.js";
 
-type LooseRecord = Record<string, unknown>;
+import { recordValue, type LooseRecord } from "../contracts/types.js";
 
 export type RuntimeFailureRef = {
   type: "poisoned_session" | "runjob_panic" | "phase_poisoned_session";
-  attemptId: unknown;
-  phase: unknown;
-  nodeId: unknown;
-  reason: unknown;
+  attemptId: string | null;
+  phase: string | null;
+  nodeId: string | null;
+  reason: string | null;
 };
 
 type CollectRuntimeFailuresInput = {
@@ -25,14 +25,14 @@ type RecordRuntimeFailureEventsInput = {
   now?: () => string;
 };
 
-function recordValue(value: unknown): LooseRecord {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as LooseRecord : {};
+function stringOrNull(value: unknown): string | null {
+  return value === undefined || value === null ? null : String(value);
 }
 
-function poisonedReason(poisonedSession: LooseRecord) {
+function poisonedReason(poisonedSession: LooseRecord): string | null {
   return Array.isArray(poisonedSession.reasons)
     ? poisonedSession.reasons.join(", ")
-    : poisonedSession.reason || null;
+    : stringOrNull(poisonedSession.reason);
 }
 
 export function collectRuntimeFailures({
@@ -47,9 +47,9 @@ export function collectRuntimeFailures({
       runtimeFailures.push({
         type: failure.kind === FailureKind.POISONED_SESSION ? "poisoned_session" : "runjob_panic",
         attemptId,
-        phase: phaseResult.phase || null,
+        phase: stringOrNull(phaseResult.phase),
         nodeId: null,
-        reason: failure.reason || null,
+        reason: stringOrNull(failure.reason),
       });
     }
 
@@ -60,8 +60,8 @@ export function collectRuntimeFailures({
         runtimeFailures.push({
           type: "phase_poisoned_session",
           attemptId,
-          phase: phaseResult.phase || null,
-          nodeId: diagnostics.nodeId || null,
+          phase: stringOrNull(phaseResult.phase),
+          nodeId: stringOrNull(diagnostics.nodeId),
           reason: poisonedReason(poisonedSession),
         });
       }

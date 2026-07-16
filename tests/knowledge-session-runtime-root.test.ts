@@ -123,7 +123,7 @@ test("session prompt context reads runtime memory and ignores legacy cpb-task", 
     sessionId: "sess-001",
     task: "current task",
   });
-  const sessionLayer = composed.layers.find((layer: Record<string, any>) => layer.name === "session-memory");
+  const sessionLayer = composed.layers.find((layer: Record<string, unknown>) => layer.name === "session-memory");
 
   assert.equal(sessionLayer?.content, "runtime memory\n");
   assert.match(composed.assembled, /runtime memory/);
@@ -151,13 +151,14 @@ test("findPromotionCandidates scans runtime sessions and ignores legacy cpb-task
   await writeFile(path.join(sourcePath, "cpb-task", "sessions", "legacy", "memory.md"), "legacy memory\n", "utf8");
 
   const candidates = await findPromotionCandidates(sourcePath, { dataRoot, sessionId: "sess-001" });
+  const candidatePaths = candidates.map((candidate: Record<string, unknown>) => String(candidate.from));
 
   assert.equal(candidates.length, 2);
-  assert.deepEqual(candidates.map((candidate: Record<string, any>) => candidate.from).sort(), [
+  assert.deepEqual(candidatePaths.sort(), [
     path.join(dataRoot, "sessions", "sess-001", "memory.md"),
     path.join(dataRoot, "sessions", "sess-002", "memory.md"),
   ]);
-  assert.equal(candidates.every((candidate: Record<string, any>) => !candidate.from.includes("cpb-task")), true);
+  assert.equal(candidatePaths.every((candidatePath) => !candidatePath.includes("cpb-task")), true);
 
   await assert.rejects(
     findPromotionCandidates(sourcePath),

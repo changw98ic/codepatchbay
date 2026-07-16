@@ -3,7 +3,7 @@ import { isPhasePassed } from "../contracts/phase-result.js";
 import { evaluateScopeGuard, normalizeFixScope } from "./scope-guard.js";
 import type { PhaseResult } from "../../shared/types.js";
 
-type LooseRecord = Record<string, unknown>;
+import { recordValue, type LooseRecord } from "../contracts/types.js";
 
 type ScopeGuardInput = {
   cpbRoot: string;
@@ -31,23 +31,44 @@ type FailedJobResult = {
   phaseResults: LooseRecord[];
 };
 
-function recordValue(value: unknown): LooseRecord {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as LooseRecord : {};
-}
-
 function retryFixScope(sourceContext: unknown) {
   const context = recordValue(sourceContext);
   const retryContext = recordValue(context.retryContext);
   const retry = recordValue(context.retry);
   const retryVerification = recordValue(retry.verification);
-  return normalizeFixScope(
-    retryContext.fixScope
-    || retry.fixScope
-    || retryContext.fix_scope
-    || retry.fix_scope
-    || retryVerification.retryScope
-    || [],
-  ) || [];
+
+  const firstNonEmptyScope = (values: unknown[]) => {
+    for (const value of values) {
+      if (value === undefined || value === null || value === false || value === "") continue;
+      if (Array.isArray(value) && value.length === 0) continue;
+      const scope = normalizeFixScope(value) || [];
+      if (scope.length > 0) return scope;
+    }
+    return [];
+  };
+
+  // Verification feedback distinguishes the narrow requested repair target
+  // (fixScope) from the frozen boundary within which that repair may add
+  // supporting changes such as regression tests (allowedFixScope). Enforce the
+  // frozen boundary when present, and retain the requested scope as the legacy
+  // fallback when no explicit allowed boundary exists.
+  const allowedFixScope = firstNonEmptyScope([
+    retryContext.allowedFixScope,
+    retry.allowedFixScope,
+    retryContext.allowed_fix_scope,
+    retry.allowed_fix_scope,
+    retryVerification.allowedFixScope,
+    retryVerification.allowed_fix_scope,
+  ]);
+  if (allowedFixScope.length > 0) return allowedFixScope;
+
+  return firstNonEmptyScope([
+    retryContext.fixScope,
+    retry.fixScope,
+    retryContext.fix_scope,
+    retry.fix_scope,
+    retryVerification.retryScope,
+  ]);
 }
 
 function rawChangedFiles(result: PhaseResult): unknown[] {

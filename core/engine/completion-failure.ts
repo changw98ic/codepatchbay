@@ -1,7 +1,7 @@
 import { completionGateEvent } from "./completion-gate.js";
 import { mapChecklistRoutingLabel } from "../workflow/acceptance-checklist.js";
 
-type LooseRecord = Record<string, unknown>;
+import { isRecord, type LooseRecord } from "../contracts/types.js";
 
 type FailedJobResult = {
   status: "failed";
@@ -42,17 +42,44 @@ type CompletionGateFailureInput = {
 };
 
 function objectValue(value: unknown): LooseRecord | null {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? value as LooseRecord
-    : null;
+  return isRecord(value) ? value : null;
 }
 
 function stringArray(value: unknown) {
   return Array.isArray(value) ? value.map((item) => String(item || "")).filter(Boolean) : [];
 }
 
+function uniqueStrings(values: string[]) {
+  return [...new Set(values.filter(Boolean))].sort();
+}
+
 function phaseResultNamed(phaseResults: LooseRecord[], phase: string) {
-  return phaseResults.find((result) => result.phase === phase) || null;
+  for (let index = phaseResults.length - 1; index >= 0; index -= 1) {
+    if (phaseResults[index].phase === phase) return phaseResults[index];
+  }
+  return null;
+}
+
+function evidenceRefKey(ref: unknown) {
+  const record = objectValue(ref);
+  if (!record) return "";
+  const ledgerId = typeof record.ledgerId === "string" ? record.ledgerId.trim() : "";
+  const evidenceId = typeof record.evidenceId === "string" ? record.evidenceId.trim() : "";
+  return ledgerId && evidenceId ? `${ledgerId}:${evidenceId}` : "";
+}
+
+function checklistIdsForEvidenceRefs(checklistVerdict: LooseRecord | null | undefined, refs: unknown) {
+  const refKeys = new Set(stringArray((Array.isArray(refs) ? refs : []).map(evidenceRefKey)));
+  if (refKeys.size === 0) return [];
+  const ids: string[] = [];
+  for (const item of Array.isArray(checklistVerdict?.items) ? checklistVerdict.items : []) {
+    const itemRecord = objectValue(item);
+    if (!itemRecord) continue;
+    const hasRef = (Array.isArray(itemRecord.evidenceRefs) ? itemRecord.evidenceRefs : [])
+      .some((ref) => refKeys.has(evidenceRefKey(ref)));
+    if (hasRef) ids.push(...stringArray([itemRecord.checklistId]));
+  }
+  return uniqueStrings(ids);
 }
 
 function extractFixScope(phaseResults: LooseRecord[], riskMap: LooseRecord | null | undefined) {
@@ -169,14 +196,54 @@ export async function handleCompletionGateFailure({
   onProgress = null,
   now = () => new Date().toISOString(),
 }: CompletionGateFailureInput): Promise<FailedJobResult> {
+  const result = buildCompletionGateFailureResult({
+    project,
+    jobId,
+    gateResult,
+    phaseResults,
+    riskMap,
+    checklistVerdict,
+  });
+  const failCause = objectValue(result.failure.cause) || {};
+
+  await reportProgress(onProgress, {
+    type: "completion_gate_blocked",
+    jobId,
+    project,
+    outcome: gateResult.outcome,
+    reason: gateResult.reason,
+  }, now);
+  await failJob(cpbRoot, project, jobId, {
+    reason: gateResult.reason,
+    code: result.failure.kind,
+    phase: "completion_gate",
+    cause: failCause,
+  });
+  return result;
+}
+
+export function buildCompletionGateFailureResult({
+  project,
+  jobId,
+  gateResult,
+  phaseResults,
+  riskMap = null,
+  checklistVerdict = null,
+}: Omit<CompletionGateFailureInput, "cpbRoot" | "failJob" | "onProgress" | "now">): FailedJobResult {
   const adversarialRetryContext = buildAdversarialRetryContext(gateResult, phaseResults, riskMap);
   const gateDetails = objectValue(gateResult.details);
   const checklistResult = objectValue(gateDetails?.checklist);
-  const checklistFixScope = stringArray(checklistResult?.failedFixScope);
-  const targetChecklistIds = [
+  const evidenceProblemChecklistIds = uniqueStrings([
+    ...checklistIdsForEvidenceRefs(checklistVerdict, checklistResult?.mismatchedEvidenceRefs),
+    ...checklistIdsForEvidenceRefs(checklistVerdict, checklistResult?.staleEvidenceRefs),
+    ...checklistIdsForEvidenceRefs(checklistVerdict, checklistResult?.missingEvidenceRefs),
+  ]);
+  const checklistFixScope = uniqueStrings(stringArray(checklistResult?.failedFixScope));
+  const targetChecklistIds = uniqueStrings([
     ...stringArray(checklistResult?.failedChecklistIds),
     ...stringArray(checklistResult?.uncheckedChecklistIds),
-  ];
+    ...evidenceProblemChecklistIds,
+  ]);
   const routing = mapChecklistRoutingLabel(gateResult.outcome, {
     fixScope: checklistFixScope,
     targetChecklistIds,
@@ -196,20 +263,6 @@ export async function handleCompletionGateFailure({
   if (adversarialRetryContext) {
     failCause.retryContext = adversarialRetryContext;
   }
-
-  await reportProgress(onProgress, {
-    type: "completion_gate_blocked",
-    jobId,
-    project,
-    outcome: gateResult.outcome,
-    reason: gateResult.reason,
-  }, now);
-  await failJob(cpbRoot, project, jobId, {
-    reason: gateResult.reason,
-    code: routing.kind,
-    phase: "completion_gate",
-    cause: failCause,
-  });
   return {
     status: "failed",
     jobId,

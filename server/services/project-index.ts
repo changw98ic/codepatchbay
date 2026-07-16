@@ -2,8 +2,8 @@ import { readFile, mkdir, writeFile, rename, readdir, stat } from "node:fs/promi
 import { realpathSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { AnyRecord } from "../../shared/types.js";
-import { loadRegistry, saveRegistry } from "./hub/hub-registry.js";
+import { recordValue, type LooseRecord } from "../../shared/types.js";
+import { loadRegistry, mutateRegistry } from "./hub/hub-registry.js";
 
 const VALID_STATES = new Set(["indexed", "stale", "failed", "indexing", "unmerged"]);
 
@@ -17,9 +17,11 @@ const STATE_NORMALIZE = {
 
 export function normalizeProjectIndex(raw: unknown) {
   if (!raw || typeof raw !== "object") return null;
-  const obj = raw as Record<string, unknown>;
+  const obj = raw as LooseRecord; // retain: dynamic JSON record shape (object guard → indexable)
 
-  const rawState = (obj.state || obj.status || "") as string;
+  const stateCandidate = obj.state || obj.status || "";
+  // Narrow dynamic JSON input: non-string falls through to "" (→ null via STATE_NORMALIZE/VALID_STATES).
+  const rawState = typeof stateCandidate === "string" ? stateCandidate : "";
   const state =
     STATE_NORMALIZE[rawState] ||
     (VALID_STATES.has(rawState) ? rawState : null);
@@ -28,7 +30,9 @@ export function normalizeProjectIndex(raw: unknown) {
 
   const timestamp =
     obj.timestamp || obj.indexedAt || obj.updatedAt || obj.failedAt || null;
-  const gitHead = obj.gitHead as string | null;
+  // Narrow dynamic JSON input: non-string gitHead treated as absent (null).
+  const gitHeadRaw = obj.gitHead;
+  const gitHead = typeof gitHeadRaw === "string" ? gitHeadRaw : null;
   const shortHead = gitHead
     ? gitHead.length > 12
       ? gitHead.slice(0, 12)
@@ -79,7 +83,7 @@ export async function readProjectIndex(hubRoot: string | null, cpbRoot: string |
   return null;
 }
 
-export async function writeProjectIndex(hubRoot: string | null, cpbRoot: string | null, projectId: string, data: Record<string, unknown>) {
+export async function writeProjectIndex(hubRoot: string | null, cpbRoot: string | null, projectId: string, data: LooseRecord) {
   const normalized = normalizeProjectIndex(data);
   if (!normalized) {
     throw new Error("Invalid project index data: cannot normalize");
@@ -99,14 +103,14 @@ export async function writeProjectIndex(hubRoot: string | null, cpbRoot: string 
 
   // Write to Hub registry if available
   if (hubRoot) {
-    const registry = await loadRegistry(hubRoot);
-    const project = registry.projects[projectId];
-    if (project) {
+    const persisted = await mutateRegistry(hubRoot, (registry) => {
+      const project = registry.projects[projectId];
+      if (!project) return false;
       project.metadata = project.metadata || {};
       project.metadata.projectIndex = persistable;
-      await saveRegistry(hubRoot, registry);
-      return returned;
-    }
+      return true;
+    });
+    if (persisted) return returned;
   }
 
   // Fallback: legacy wiki project.json
@@ -118,7 +122,7 @@ export async function writeProjectIndex(hubRoot: string | null, cpbRoot: string 
       projectId,
       "project.json"
     );
-    let existing: Record<string, any> = {};
+    let existing: LooseRecord = {};
     try {
       existing = JSON.parse(await readFile(metaPath, "utf8"));
     } catch {}
@@ -133,7 +137,7 @@ export async function writeProjectIndex(hubRoot: string | null, cpbRoot: string 
   throw new Error("No writable storage: hubRoot or cpbRoot required");
 }
 
-export function formatProjectIndexLine(idx: Record<string, unknown> | null) {
+export function formatProjectIndexLine(idx: LooseRecord | null) {
   if (!idx) return null;
   const parts = [
     `Project index: ${idx.state}`,
@@ -173,12 +177,12 @@ export function isUnderTestPath(filePath: unknown) {
   }
 }
 
-export function classifyProject(project: AnyRecord, { hubRoot, skipPathChecks = false }: AnyRecord = {}) {
+export function classifyProject(project: LooseRecord, { hubRoot, skipPathChecks = false }: LooseRecord = {}) {
   const reasons: string[] = [];
-  const metadata = project.metadata || {};
+  const metadata = recordValue(project.metadata);
 
   // Explicit visibility tags
-  if (TEST_VISIBILITY.has(metadata.visibility)) {
+  if (typeof metadata.visibility === "string" && TEST_VISIBILITY.has(metadata.visibility)) {
     reasons.push(`metadata.visibility=${metadata.visibility}`);
   }
   if (metadata.test === true) reasons.push("metadata.test=true");
@@ -189,7 +193,7 @@ export function classifyProject(project: AnyRecord, { hubRoot, skipPathChecks = 
   }
 
   // Known pollution name patterns (check id AND name independently)
-  const candidates = [project.id, project.name].filter(Boolean);
+  const candidates = [project.id, project.name].filter((value): value is string => typeof value === "string" && value.length > 0);
   for (const { pattern, reason } of POLLUTION_NAME_PATTERNS) {
     if (candidates.some((c) => pattern.test(c))) {
       reasons.push(reason);
@@ -199,15 +203,15 @@ export function classifyProject(project: AnyRecord, { hubRoot, skipPathChecks = 
 
   // Temp-path warning (only when path checks enabled)
   if (!skipPathChecks) {
-    if (isUnderTestPath(project.sourcePath)) {
+    if (isUnderTestPath(typeof project.sourcePath === "string" ? project.sourcePath : "")) {
       reasons.push("sourcePath under tmpdir");
     }
     // projectRuntimeRoot under hubRoot is expected (Hub-managed), not pollution
     const hubResolved = hubRoot ? path.resolve(hubRoot) : null;
-    const rtResolved = project.projectRuntimeRoot ? path.resolve(project.projectRuntimeRoot) : null;
+  const rtResolved = typeof project.projectRuntimeRoot === "string" ? path.resolve(project.projectRuntimeRoot) : null;
     const isHubManaged = hubResolved && rtResolved &&
       (rtResolved.startsWith(hubResolved + path.sep) || rtResolved === hubResolved);
-    if (!isHubManaged && isUnderTestPath(project.projectRuntimeRoot)) {
+    if (!isHubManaged && isUnderTestPath(typeof project.projectRuntimeRoot === "string" ? project.projectRuntimeRoot : "")) {
       reasons.push("projectRuntimeRoot under tmpdir");
     }
   }
@@ -218,7 +222,7 @@ export function classifyProject(project: AnyRecord, { hubRoot, skipPathChecks = 
   };
 }
 
-export function filterVisibleProjects(projects: AnyRecord[], opts: AnyRecord = {}) {
+export function filterVisibleProjects(projects: LooseRecord[], opts: LooseRecord = {}) {
   const { includeTest = false } = opts;
   if (includeTest) return projects;
   const skipPathChecks = opts.skipPathChecks || isUnderTestPath(opts.hubRoot);
@@ -230,8 +234,8 @@ export function filterVisibleProjects(projects: AnyRecord[], opts: AnyRecord = {
 }
 
 export async function scanHubPollution(hubRoot: string) {
-  const candidates: AnyRecord[] = [];
-  const orphanRuntimeDirs: AnyRecord[] = [];
+  const candidates: LooseRecord[] = [];
+  const orphanRuntimeDirs: LooseRecord[] = [];
 
   // Read registry
   let registry;
@@ -241,8 +245,8 @@ export async function scanHubPollution(hubRoot: string) {
     registry = { projects: {} };
   }
 
-  const projects: AnyRecord[] = typeof registry.projects === "object" && registry.projects !== null
-    ? Object.values(registry.projects) as AnyRecord[]
+  const projects: LooseRecord[] = typeof registry.projects === "object" && registry.projects !== null
+    ? Object.values(registry.projects)
     : [];
   const registeredIds = new Set(projects.map((p) => p.id));
 

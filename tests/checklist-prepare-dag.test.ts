@@ -9,14 +9,15 @@ import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
-import { AnyRecord } from "../shared/types.js";
+import { LooseRecord, recordValue } from "../shared/types.js";
 
 import { FailureKind } from "../core/contracts/failure.js";
 import { runJob } from "../core/engine/run-job.js";
+import { registerDagWorkflow } from "../core/workflow/definition.js";
 import { tempRoot } from "./helpers.js";
 
 
-function jsonEnvelope(data: AnyRecord) {
+function jsonEnvelope(data: LooseRecord) {
   return "```json\n" + JSON.stringify(data, null, 2) + "\n```";
 }
 
@@ -85,13 +86,13 @@ test("prepare-time checklist is artifacted before workflow DAG materialization",
   const cpbRoot = await tempRoot("cpb-checklist-prepare");
   const sourcePath = await makeSourceRoot();
   const dataRoot = path.join(cpbRoot, "runtime");
-  const events: AnyRecord[] = [];
+  const events: LooseRecord[] = [];
   let plannerPrompt = "";
   const pool = {
-    async execute(_agent: string, _prompt: string, _cwd: string, _timeoutMs: number, meta: AnyRecord) {
+    async execute(_agent: string, _prompt: string, _cwd: string, _timeoutMs: number, meta: LooseRecord) {
       if (meta.role === "planner") {
         plannerPrompt = _prompt;
-        return { output: jsonEnvelope({ status: "ok", planMarkdown: "## Analysis\n- ok\n\n## Files to modify\n- README.md\n\n## Implementation Steps\n1. edit\n\n## Testing\n- npm test\n\n## Risks\n- none" }), providerKey: "fake", variant: null };
+        return { output: jsonEnvelope({ status: "ok", planMarkdown: "## Analysis\n- ok\n\n## Bounded Handoff\n- Real actors: README documentation fixture\n- Entrypoints: runJob standard workflow\n- Bypass candidates: none\n- Edit files: README.md\n- Verification targets: npm test\n- Blockers: none\n\n## Files to modify\n- README.md\n\n## Implementation Steps\n1. edit\n\n## Testing\n- npm test\n\n## Risks\n- none" }), providerKey: "fake", variant: null };
       }
       if (meta.role === "executor") return { output: jsonEnvelope({ status: "ok", summary: "done", tests: [], risks: [], checklistMapping: [] }), providerKey: "fake", variant: null };
       return { output: jsonEnvelope({ status: "ok", verdict: "pass", reason: "legacy", details: "ok", confidence: 1 }), providerKey: "fake", variant: null };
@@ -118,7 +119,7 @@ test("prepare-time checklist is artifacted before workflow DAG materialization",
     completeJob: async () => ({}),
     failJob: async () => ({}),
     blockJob: async () => ({}),
-    appendEvent: async (_root: string, _project: string, _jobId: string, event: AnyRecord) => { events.push(event); },
+    appendEvent: async (_root: string, _project: string, _jobId: string, event: LooseRecord) => { events.push(event); },
     reportProgress: async () => ({}),
     getPool: () => pool,
   });
@@ -132,19 +133,19 @@ test("prepare-time checklist is artifacted before workflow DAG materialization",
   assert.ok(artifactIndex >= 0, "acceptance-checklist artifact event should exist");
   assert.ok(dagIndex > artifactIndex, "workflow DAG must be materialized after checklist artifact");
   const dag = events[dagIndex].workflowDag;
-  assert.deepEqual(dag.nodes.find((node: AnyRecord) => node.phase === "execute").checklistIds, ["AC-001"]);
-  assert.equal(dag.nodes.find((node: AnyRecord) => node.phase === "execute").checklistBindingSource, "canonical-default");
-  assert.deepEqual(dag.nodes.find((node: AnyRecord) => node.phase === "verify").checklistIds, ["AC-001"]);
+  assert.deepEqual(dag.nodes.find((node: LooseRecord) => node.phase === "execute").checklistIds, ["AC-001"]);
+  assert.equal(dag.nodes.find((node: LooseRecord) => node.phase === "execute").checklistBindingSource, "canonical-default");
+  assert.deepEqual(dag.nodes.find((node: LooseRecord) => node.phase === "verify").checklistIds, ["AC-001"]);
 });
 
 test("prepare-time checklist is persisted when prepareTask provides one", async () => {
   const cpbRoot = await tempRoot("cpb-checklist-auto");
   const sourcePath = await makeSourceRoot();
   const dataRoot = path.join(cpbRoot, "runtime");
-  const events: AnyRecord[] = [];
+  const events: LooseRecord[] = [];
   const pool = {
-    async execute(_agent: string, _prompt: string, _cwd: string, _timeoutMs: number, meta: AnyRecord) {
-      if (meta.role === "planner") return { output: jsonEnvelope({ status: "ok", planMarkdown: "## Analysis\n- ok\n\n## Files to modify\n- README.md\n\n## Implementation Steps\n1. edit\n\n## Testing\n- npm test\n\n## Risks\n- none" }), providerKey: "fake", variant: null };
+    async execute(_agent: string, _prompt: string, _cwd: string, _timeoutMs: number, meta: LooseRecord) {
+      if (meta.role === "planner") return { output: jsonEnvelope({ status: "ok", planMarkdown: "## Analysis\n- ok\n\n## Bounded Handoff\n- Real actors: README documentation fixture\n- Entrypoints: runJob standard workflow\n- Bypass candidates: none\n- Edit files: README.md\n- Verification targets: npm test\n- Blockers: none\n\n## Files to modify\n- README.md\n\n## Implementation Steps\n1. edit\n\n## Testing\n- npm test\n\n## Risks\n- none" }), providerKey: "fake", variant: null };
       if (meta.role === "executor") return { output: jsonEnvelope({ status: "ok", summary: "done", tests: [], risks: [], checklistMapping: [{ checklistId: "AC-001", changedFiles: ["README.md"], executorClaim: "updated", notes: "" }] }), providerKey: "fake", variant: null };
       return { output: jsonEnvelope({ status: "ok", verdict: "pass", reason: "legacy", details: "ok", confidence: 1, checklistVerdict: { schemaVersion: 1, jobId: "job-auto-checklist", status: "pass", items: [{ checklistId: "AC-001", result: "pass", evidenceRefs: [{ ledgerId: "evidence-ledger-job-auto-checklist-0", evidenceId: "EV-001" }], actualResult: "ok", reason: "ok", fixScope: [] }], blocking: [], fixScope: [], reason: "ok" } }), providerKey: "fake", variant: null };
     },
@@ -193,7 +194,7 @@ test("prepare-time checklist is persisted when prepareTask provides one", async 
     completeJob: async () => ({}),
     failJob: async () => ({}),
     blockJob: async () => ({}),
-    appendEvent: async (_root: string, _project: string, _jobId: string, event: AnyRecord) => { events.push(event); },
+    appendEvent: async (_root: string, _project: string, _jobId: string, event: LooseRecord) => { events.push(event); },
     reportProgress: async () => ({}),
     getPool: () => pool,
   });
@@ -208,11 +209,11 @@ test("prepare-time checklist is persisted when prepareTask provides one", async 
   );
 });
 
-test("prepare-time source classification blocks missing acceptance-relevant requirement", async () => {
+test("prepare-time source classification fails retryably for missing generated requirement coverage", async () => {
   const cpbRoot = await tempRoot("cpb-checklist-coverage");
   const sourcePath = await makeSourceRoot();
   const dataRoot = path.join(cpbRoot, "runtime");
-  const events: AnyRecord[] = [];
+  const events: LooseRecord[] = [];
 
   // A checklist that only covers "task:0" but requirementClassification says there are TWO acceptance-relevant requirements
   const result = await runJob({
@@ -243,7 +244,7 @@ test("prepare-time source classification blocks missing acceptance-relevant requ
     completeJob: async () => ({}),
     failJob: async () => ({}),
     blockJob: async () => ({}),
-    appendEvent: async (_root: string, _project: string, _jobId: string, event: AnyRecord) => { events.push(event); },
+    appendEvent: async (_root: string, _project: string, _jobId: string, event: LooseRecord) => { events.push(event); },
     reportProgress: async () => ({}),
     getPool: () => ({
       async execute() { return { output: jsonEnvelope({ status: "ok" }), providerKey: "fake", variant: null }; },
@@ -251,15 +252,18 @@ test("prepare-time source classification blocks missing acceptance-relevant requ
     }),
   });
 
-  // Job should be blocked because source coverage is incomplete
-  assert.equal(result.status, "blocked", "job should be blocked when acceptance-relevant requirements are not covered");
+  // This is a generated-artifact defect, not missing human intent. It must
+  // remain machine-repairable instead of entering an approval wait state.
+  assert.equal(result.status, "failed", "job should fail when generated requirement coverage is incomplete");
+  assert.equal(recordValue(result.failure).kind, "artifact_invalid");
+  assert.equal(recordValue(result.failure).retryable, true);
 });
 
-test("prepare-time source refs must exist in supplied corpus", async () => {
+test("prepare-time generated source refs fail retryably when absent from the supplied corpus", async () => {
   const cpbRoot = await tempRoot("cpb-checklist-sourceref");
   const sourcePath = await makeSourceRoot();
   const dataRoot = path.join(cpbRoot, "runtime");
-  const events: AnyRecord[] = [];
+  const events: LooseRecord[] = [];
 
   // Checklist references a source that does not exist in the task/corpus
   const badChecklist = {
@@ -292,7 +296,7 @@ test("prepare-time source refs must exist in supplied corpus", async () => {
     completeJob: async () => ({}),
     failJob: async () => ({}),
     blockJob: async () => ({}),
-    appendEvent: async (_root: string, _project: string, _jobId: string, event: AnyRecord) => { events.push(event); },
+    appendEvent: async (_root: string, _project: string, _jobId: string, event: LooseRecord) => { events.push(event); },
     reportProgress: async () => ({}),
     getPool: () => ({
       async execute() { return { output: jsonEnvelope({ status: "ok" }), providerKey: "fake", variant: null }; },
@@ -300,14 +304,144 @@ test("prepare-time source refs must exist in supplied corpus", async () => {
     }),
   });
 
-  assert.equal(result.status, "blocked", "job should be blocked when source refs reference missing corpus entries");
+  assert.equal(result.status, "failed", "job should fail when generated source refs reference missing corpus entries");
+  assert.equal(recordValue(result.failure).kind, "artifact_invalid");
+  assert.equal(recordValue(result.failure).retryable, true);
+});
+
+test("prepare-time retryable checklist decomposition failure fails instead of blocking", async () => {
+  const previousDecompose = process.env.CPB_CHECKLIST_DECOMPOSE;
+  const previousRetry = process.env.CPB_CHECKLIST_DECOMPOSE_RETRY_MAX;
+  process.env.CPB_CHECKLIST_DECOMPOSE = "1";
+  process.env.CPB_CHECKLIST_DECOMPOSE_RETRY_MAX = "0";
+  try {
+    const cpbRoot = await tempRoot("cpb-checklist-decompose-retryable");
+    const sourcePath = await makeSourceRoot();
+    const dataRoot = path.join(cpbRoot, "runtime");
+    const blocked: LooseRecord[] = [];
+    const failed: LooseRecord[] = [];
+
+    const result = await runJob({
+      cpbRoot,
+      dataRoot,
+      project: "flow",
+      task: "update README",
+      jobId: "job-decompose-retryable-fail",
+      workflow: "standard",
+      planMode: "full",
+      sourcePath,
+      sourceContext: {},
+      agents: { planner: "fake", executor: "fake", verifier: "fake" },
+      prepareTask: async () => ({
+        riskMap: { riskLevel: "low" },
+      }),
+      createJob: async () => ({ jobId: "job-decompose-retryable-fail" }),
+      startJob: async () => ({}),
+      checkpointJob: async () => ({}),
+      completePhase: async () => ({}),
+      completeJob: async () => ({}),
+      failJob: async (_root: string, _project: string, _jobId: string, payload: LooseRecord) => { failed.push(payload); },
+      blockJob: async (_root: string, _project: string, _jobId: string, payload: LooseRecord) => { blocked.push(payload); },
+      appendEvent: async () => ({}),
+      reportProgress: async () => ({}),
+      getPool: () => ({
+        async execute() { throw new Error("fake planner exited 1: transient transport failure"); },
+        async releaseWorktree() { return true; },
+      }),
+    });
+
+    assert.equal(result.status, "failed");
+    assert.equal(result.failure?.kind, FailureKind.AGENT_EXIT_NONZERO);
+    assert.equal(result.failure?.retryable, true);
+    assert.equal(blocked.length, 0);
+    assert.equal(failed.length, 1);
+  } finally {
+    if (previousDecompose === undefined) delete process.env.CPB_CHECKLIST_DECOMPOSE;
+    else process.env.CPB_CHECKLIST_DECOMPOSE = previousDecompose;
+    if (previousRetry === undefined) delete process.env.CPB_CHECKLIST_DECOMPOSE_RETRY_MAX;
+    else process.env.CPB_CHECKLIST_DECOMPOSE_RETRY_MAX = previousRetry;
+  }
+});
+
+test("prepare-time checklist decomposition receives phase timeout before DAG execution", async () => {
+  const previousDecompose = process.env.CPB_CHECKLIST_DECOMPOSE;
+  const previousRetry = process.env.CPB_CHECKLIST_DECOMPOSE_RETRY_MAX;
+  const previousPhaseTimeout = process.env.CPB_ACP_PHASE_TIMEOUT_MS;
+  process.env.CPB_CHECKLIST_DECOMPOSE = "1";
+  process.env.CPB_CHECKLIST_DECOMPOSE_RETRY_MAX = "0";
+  process.env.CPB_ACP_PHASE_TIMEOUT_MS = "12345";
+  try {
+    const cpbRoot = await tempRoot("cpb-checklist-decompose-timeout");
+    const sourcePath = await makeSourceRoot();
+    const dataRoot = path.join(cpbRoot, "runtime");
+    const plannerTimeouts: number[] = [];
+    const pool = {
+      async execute(_agent: string, _prompt: string, _cwd: string, timeoutMs: number, meta: LooseRecord) {
+        if (meta.role === "planner") {
+          plannerTimeouts.push(timeoutMs);
+          return {
+            output: jsonEnvelope({
+              status: "ok",
+              decomposedItems: [{
+                requirement: "README is updated",
+                predicateId: "readme-updated",
+                verificationMethod: "static",
+                allowedFiles: ["README.md"],
+                sourceRefs: [{ kind: "task_text", locator: "task:0" }],
+              }],
+            }),
+            providerKey: "fake",
+            variant: null,
+          };
+        }
+        if (meta.role === "executor") {
+          return { output: jsonEnvelope({ status: "ok", summary: "done", tests: [], risks: [], checklistMapping: [] }), providerKey: "fake", variant: null };
+        }
+        return { output: jsonEnvelope({ status: "ok", verdict: "pass", reason: "legacy", details: "ok", confidence: 1 }), providerKey: "fake", variant: null };
+      },
+      async releaseWorktree() { return true; },
+    };
+
+    await runJob({
+      cpbRoot,
+      dataRoot,
+      project: "flow",
+      task: "update README",
+      jobId: "job-decompose-timeout",
+      workflow: "standard",
+      planMode: "light",
+      sourcePath,
+      sourceContext: {},
+      agents: { planner: "fake", executor: "fake", verifier: "fake" },
+      prepareTask: async () => ({ riskMap: { riskLevel: "low" } }),
+      createJob: async () => ({ jobId: "job-decompose-timeout" }),
+      startJob: async () => ({}),
+      checkpointJob: async () => ({}),
+      completePhase: async () => ({}),
+      completeJob: async () => ({}),
+      failJob: async () => ({}),
+      blockJob: async () => ({}),
+      appendEvent: async () => ({}),
+      reportProgress: async () => ({}),
+      getPool: () => pool,
+    });
+
+    assert.deepEqual(plannerTimeouts, [12345]);
+  } finally {
+    if (previousDecompose === undefined) delete process.env.CPB_CHECKLIST_DECOMPOSE;
+    else process.env.CPB_CHECKLIST_DECOMPOSE = previousDecompose;
+    if (previousRetry === undefined) delete process.env.CPB_CHECKLIST_DECOMPOSE_RETRY_MAX;
+    else process.env.CPB_CHECKLIST_DECOMPOSE_RETRY_MAX = previousRetry;
+    if (previousPhaseTimeout === undefined) delete process.env.CPB_ACP_PHASE_TIMEOUT_MS;
+    else process.env.CPB_ACP_PHASE_TIMEOUT_MS = previousPhaseTimeout;
+  }
 });
 
 test("prebuilt dynamic agent plan must reference frozen checklist artifact", async () => {
   const cpbRoot = await tempRoot("cpb-checklist-dap");
   const sourcePath = await makeSourceRoot();
   const dataRoot = path.join(cpbRoot, "runtime");
-  const events: AnyRecord[] = [];
+  const events: LooseRecord[] = [];
 
   // Dynamic agent plan that does NOT reference the frozen checklist artifact
   const badDynamicAgentPlan = {
@@ -344,7 +478,7 @@ test("prebuilt dynamic agent plan must reference frozen checklist artifact", asy
     completeJob: async () => ({}),
     failJob: async () => ({}),
     blockJob: async () => ({}),
-    appendEvent: async (_root: string, _project: string, _jobId: string, event: AnyRecord) => { events.push(event); },
+    appendEvent: async (_root: string, _project: string, _jobId: string, event: LooseRecord) => { events.push(event); },
     reportProgress: async () => ({}),
     getPool: () => ({
       async execute() { return { output: jsonEnvelope({ status: "ok" }), providerKey: "fake", variant: null }; },
@@ -368,15 +502,74 @@ test("prebuilt dynamic agent plan must reference frozen checklist artifact", asy
   }
 });
 
+test("execution routing uses materialized dynamic agent plan instead of stale context plan", async () => {
+  const cpbRoot = await tempRoot("cpb-checklist-dap-routing");
+  const sourcePath = await makeSourceRoot();
+  const dataRoot = path.join(cpbRoot, "runtime");
+  const selectedAgents: string[] = [];
+
+  const staleDynamicAgentPlan = {
+    agentConfig: {
+      executor: { agent: "stale-executor" },
+    },
+    riskLevel: "low",
+    source: "source_context",
+  };
+
+  await runJob({
+    cpbRoot,
+    dataRoot,
+    project: "flow",
+    task: "update README",
+    jobId: "job-dap-routing",
+    workflow: "standard",
+    planMode: "full",
+    sourcePath,
+    sourceContext: {},
+    dynamicAgentPlan: staleDynamicAgentPlan,
+    agents: { planner: "fake", executor: "base-executor", verifier: "fake" },
+    prepareTask: async () => ({
+      riskMap: { riskLevel: "low" },
+      acceptanceChecklist: checklist(),
+    }),
+    createJob: async () => ({ jobId: "job-dap-routing" }),
+    startJob: async () => ({}),
+    checkpointJob: async () => ({}),
+    completePhase: async () => ({}),
+    completeJob: async () => ({}),
+    failJob: async () => ({}),
+    blockJob: async () => ({}),
+    appendEvent: async () => ({}),
+    reportProgress: async () => ({}),
+    getPool: () => ({
+      async execute(agent: string, _prompt: string, _cwd: string, _timeoutMs: number, meta: LooseRecord) {
+        if (meta.role === "executor") selectedAgents.push(agent);
+        if (meta.role === "planner") {
+          return { output: jsonEnvelope({ status: "ok", planMarkdown: "## Analysis\n- ok\n\n## Bounded Handoff\n- Real actors: README documentation fixture\n- Entrypoints: runJob standard workflow\n- Bypass candidates: none\n- Edit files: README.md\n- Verification targets: npm test\n- Blockers: none\n\n## Files to modify\n- README.md\n\n## Implementation Steps\n1. edit\n\n## Testing\n- npm test\n\n## Risks\n- none" }), providerKey: "fake", variant: null };
+        }
+        if (meta.role === "executor") {
+          return { output: jsonEnvelope({ status: "ok", summary: "done", tests: [], risks: [], checklistMapping: [] }), providerKey: "fake", variant: null };
+        }
+        return { output: jsonEnvelope({ status: "ok", verdict: "pass", reason: "legacy", details: "ok", confidence: 1 }), providerKey: "fake", variant: null };
+      },
+      async releaseWorktree() { return true; },
+    }),
+  });
+
+  assert.ok(selectedAgents.length > 0, "executor should have been invoked");
+  assert.equal(selectedAgents.includes("stale-executor"), false);
+  assert.deepEqual([...new Set(selectedAgents)], ["base-executor"]);
+});
+
 test("custom mutating DAG node requires explicit checklist binding or neutrality", async () => {
   const cpbRoot = await tempRoot("cpb-checklist-custom-node");
   const sourcePath = await makeSourceRoot();
   const dataRoot = path.join(cpbRoot, "runtime");
-  const events: AnyRecord[] = [];
+  const events: LooseRecord[] = [];
 
   const pool = {
-    async execute(_agent: string, _prompt: string, _cwd: string, _timeoutMs: number, meta: AnyRecord) {
-      if (meta.role === "planner") return { output: jsonEnvelope({ status: "ok", planMarkdown: "## Analysis\n- ok\n\n## Files to modify\n- README.md\n\n## Implementation Steps\n1. edit\n\n## Testing\n- npm test\n\n## Risks\n- none" }), providerKey: "fake", variant: null };
+    async execute(_agent: string, _prompt: string, _cwd: string, _timeoutMs: number, meta: LooseRecord) {
+      if (meta.role === "planner") return { output: jsonEnvelope({ status: "ok", planMarkdown: "## Analysis\n- ok\n\n## Bounded Handoff\n- Real actors: README documentation fixture\n- Entrypoints: runJob standard workflow\n- Bypass candidates: none\n- Edit files: README.md\n- Verification targets: npm test\n- Blockers: none\n\n## Files to modify\n- README.md\n\n## Implementation Steps\n1. edit\n\n## Testing\n- npm test\n\n## Risks\n- none" }), providerKey: "fake", variant: null };
       if (meta.role === "executor") return { output: jsonEnvelope({ status: "ok", summary: "done", tests: [], risks: [], checklistMapping: [] }), providerKey: "fake", variant: null };
       return { output: jsonEnvelope({ status: "ok", verdict: "pass", reason: "legacy", details: "ok", confidence: 1 }), providerKey: "fake", variant: null };
     },
@@ -407,7 +600,7 @@ test("custom mutating DAG node requires explicit checklist binding or neutrality
     completeJob: async () => ({}),
     failJob: async () => ({}),
     blockJob: async () => ({}),
-    appendEvent: async (_root: string, _project: string, _jobId: string, event: AnyRecord) => { events.push(event); },
+    appendEvent: async (_root: string, _project: string, _jobId: string, event: LooseRecord) => { events.push(event); },
     reportProgress: async () => ({}),
     getPool: () => pool,
   });
@@ -416,11 +609,72 @@ test("custom mutating DAG node requires explicit checklist binding or neutrality
   assert.ok(dagEvent, "workflow DAG should be materialized");
 
   // Check that execute and verify nodes have checklist bindings
-  const executeNode = dagEvent.workflowDag.nodes.find((n: AnyRecord) => n.phase === "execute");
-  const verifyNode = dagEvent.workflowDag.nodes.find((n: AnyRecord) => n.phase === "verify");
+  const executeNode = dagEvent.workflowDag.nodes.find((n: LooseRecord) => n.phase === "execute");
+  const verifyNode = dagEvent.workflowDag.nodes.find((n: LooseRecord) => n.phase === "verify");
   assert.ok(executeNode, "execute node should exist");
   assert.ok(verifyNode, "verify node should exist");
   assert.deepEqual(executeNode.checklistIds, ["AC-001"], "execute node should carry checklist ids");
   assert.deepEqual(verifyNode.checklistIds, ["AC-001"], "verify node should carry checklist ids");
   assert.equal(executeNode.checklistBindingSource, "canonical-default");
+});
+
+test("production runJob blocks custom mutating DAG node without checklist binding or neutrality", async () => {
+  const workflowName = `custom-unbound-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  registerDagWorkflow(workflowName, {
+    nodes: [
+      { id: "plan", phase: "plan", role: "planner", dependsOn: [] },
+      { id: "execute", phase: "execute", role: "executor", dependsOn: ["plan"] },
+      { id: "custom-mutate", phase: "execute", role: "executor", custom: true, dependsOn: ["plan"] },
+      { id: "verify", phase: "verify", role: "verifier", dependsOn: ["execute"] },
+    ],
+    maxConcurrentNodes: 1,
+  });
+
+  const cpbRoot = await tempRoot("cpb-checklist-custom-node-block");
+  const sourcePath = await makeSourceRoot();
+  const dataRoot = path.join(cpbRoot, "runtime");
+  const events: LooseRecord[] = [];
+  const blocked: LooseRecord[] = [];
+  let phaseExecutions = 0;
+
+  const result = await runJob({
+    cpbRoot,
+    dataRoot,
+    project: "flow",
+    task: "task",
+    jobId: "job-custom-node-block",
+    workflow: workflowName,
+    planMode: "full",
+    sourcePath,
+    sourceContext: {},
+    agents: { planner: "fake", executor: "fake", verifier: "fake" },
+    prepareTask: async () => ({
+      riskMap: { riskLevel: "low" },
+      acceptanceChecklist: checklist(),
+    }),
+    createJob: async () => ({ jobId: "job-custom-node-block" }),
+    startJob: async () => ({}),
+    checkpointJob: async () => ({}),
+    completePhase: async () => ({}),
+    completeJob: async () => ({}),
+    failJob: async () => ({}),
+    blockJob: async (_root: string, _project: string, _jobId: string, payload: LooseRecord) => { blocked.push(payload); },
+    appendEvent: async (_root: string, _project: string, _jobId: string, event: LooseRecord) => { events.push(event); },
+    reportProgress: async () => ({}),
+    getPool: () => ({
+      async execute() {
+        phaseExecutions += 1;
+        return { output: jsonEnvelope({ status: "ok" }), providerKey: "fake", variant: null };
+      },
+      async releaseWorktree() { return true; },
+    }),
+  });
+
+  assert.equal(result.status, "blocked");
+  assert.equal(result.failure?.kind, FailureKind.ARTIFACT_INVALID);
+  assert.match(String(result.failure?.reason || ""), /DAG coverage invalid/);
+  assert.equal(phaseExecutions, 0, "DAG coverage failure must block before phase execution");
+  assert.equal(blocked.length, 1, "blockJob should be called");
+  const blockedCause = recordValue(blocked[0].cause);
+  assert.equal(recordValue(blockedCause.dagCoverage).outcome, "dag_uncovered");
 });

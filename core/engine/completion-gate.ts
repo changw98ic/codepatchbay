@@ -10,14 +10,14 @@ import { evaluateChecklistCompletion } from "../workflow/acceptance-checklist.js
 
 const VERDICT_RE = /^VERDICT:\s*(PASS|FAIL|PARTIAL)\b/i
 type ParsedVerdict = { status: "pass" | "fail"; raw?: string } | null;
-type LooseRecord = Record<string, unknown>;
+import { recordValue, type LooseRecord } from "../contracts/types.js";
 type CompletionGateJob = {
-  workflow?: string;
-  planMode?: string;
+  workflow?: string | null;
+  planMode?: string | null;
   completedPhases?: string[];
 };
 type WorkflowDag = {
-  nodes?: Array<{ id?: string; phase?: string }>;
+  nodes?: Array<{ id?: string | null; phase?: string | null }>;
 };
 type RiskMap = {
   adversarialRequired?: boolean;
@@ -28,8 +28,8 @@ type EvidenceRef = LooseRecord & {
   attemptId?: string;
 };
 type ChecklistCompletionResult = LooseRecord & {
-  outcome?: string;
-  reason?: string;
+  outcome?: string | null;
+  reason?: string | null;
   attemptId?: string | null;
   failedChecklistIds?: string[];
   uncheckedChecklistIds?: string[];
@@ -37,6 +37,8 @@ type ChecklistCompletionResult = LooseRecord & {
   mismatchedEvidenceRefs?: EvidenceRef[];
   staleEvidenceRefs?: EvidenceRef[];
   poisonedEvidenceRefs?: EvidenceRef[];
+  pollutedEvidenceRefs?: EvidenceRef[];
+  pollutedOracleFiles?: string[];
   runtimeFailureRefs?: EvidenceRef[];
   unmappedChangedFiles?: string[];
 };
@@ -61,6 +63,9 @@ type CompletionGateEventInput = {
   details?: LooseRecord & { checklist?: ChecklistCompletionResult };
   attemptId?: string | null;
 };
+type CompletionGateEventOptions = {
+  completionReport?: LooseRecord | null;
+};
 
 /**
  * Parse a verdict string looking for the canonical `VERDICT: <STATUS>` line.
@@ -71,8 +76,8 @@ type CompletionGateEventInput = {
  */
 export function parseVerdict(verdictText: unknown): ParsedVerdict {
   if (verdictText && typeof verdictText === "object") {
-    const obj = verdictText as Record<string, unknown>;
-    const raw = ((obj.verdict || obj.status || "") as string).toString().toUpperCase()
+    const obj = recordValue(verdictText);
+    const raw = String(obj.verdict || obj.status || "").toUpperCase()
     if (raw === "PASS") return { status: "pass", raw }
     if (raw === "FAIL" || raw === "PARTIAL") return { status: "fail", raw }
   }
@@ -198,7 +203,7 @@ export function evaluateCompletionGate({
       runtimeFailures,
       attemptId,
       multiAttempt,
-    }) as ChecklistCompletionResult;
+    });
     if (checklistResult.outcome !== "complete") {
       return gateResult(checklistResult.outcome || "checklist_invalid", checklistResult.reason || "checklist completion failed", ["checklist"], {
         ...details,
@@ -294,9 +299,14 @@ export function evaluateCompletionGate({
  * @param {{ outcome: string, reason: string, missingGates: string[] }} gateResult
  * @returns {object}
  */
-export function completionGateEvent(jobId: string, project: string, gateResult: CompletionGateEventInput) {
+export function completionGateEvent(
+  jobId: string,
+  project: string,
+  gateResult: CompletionGateEventInput,
+  { completionReport = null }: CompletionGateEventOptions = {},
+) {
   const checklist = gateResult.details?.checklist || {};
-  return {
+  const event = {
     type: "completion_gate_evaluated",
     jobId,
     project,
@@ -311,12 +321,16 @@ export function completionGateEvent(jobId: string, project: string, gateResult: 
     mismatchedEvidenceRefs: checklist.mismatchedEvidenceRefs || [],
     staleEvidenceRefs: checklist.staleEvidenceRefs || [],
     poisonedEvidenceRefs: checklist.poisonedEvidenceRefs || [],
+    pollutedEvidenceRefs: checklist.pollutedEvidenceRefs || [],
+    pollutedOracleFiles: checklist.pollutedOracleFiles || [],
+    pollutedOracleFileCount: Array.isArray(checklist.pollutedOracleFiles) ? checklist.pollutedOracleFiles.length : 0,
     runtimeFailureRefs: checklist.runtimeFailureRefs || [],
     runtimeFailureCount: Array.isArray(checklist.runtimeFailureRefs) ? checklist.runtimeFailureRefs.length : 0,
     unmappedChangedFiles: checklist.unmappedChangedFiles || [],
     unmappedChangedFileCount: Array.isArray(checklist.unmappedChangedFiles) ? checklist.unmappedChangedFiles.length : 0,
     ts: new Date().toISOString(),
   };
+  return completionReport ? { ...event, completionReport } : event;
 }
 
 // ─── Internal ─────────────────────────────────────────────────────────

@@ -9,6 +9,7 @@ import { buildPhaseContextPacket } from "../server/services/phase-context.js";
 import { collectVerifierEvidence } from "../server/services/review/review-dispatch.js";
 import { createJob, completePhase } from "../server/services/job/job-store.js";
 import { registerProject } from "../server/services/hub/hub-registry.js";
+import { recordValue } from "../shared/types.js";
 
 test("phase context and verifier evidence restore from project runtime root, not legacy wiki/events", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "cpb-phase-context-runtime-"));
@@ -67,12 +68,13 @@ test("phase context and verifier evidence restore from project runtime root, not
     });
 
     const packet = await buildPhaseContextPacket(cpbRoot, project, jobId, "execute", { hubRoot });
+    const locators = recordValue(packet.locators);
     assert.equal(packet.task, "runtime task");
-    assert.equal(packet.locators.sourcePath, canonicalSourcePath);
-    assert.equal(packet.locators.wikiDir, path.join(dataRoot, "wiki"));
-    assert.equal(packet.locators.prevArtifactPath, path.join(dataRoot, "wiki", "inbox", "plan-001.md"));
+    assert.equal(locators.sourcePath, canonicalSourcePath);
+    assert.equal(locators.wikiDir, path.join(dataRoot, "wiki"));
+    assert.equal(locators.prevArtifactPath, path.join(dataRoot, "wiki", "inbox", "plan-001.md"));
     assert.ok(!JSON.stringify(packet).includes("legacy task"));
-    assert.ok(!packet.locators.prevArtifactPath.includes(path.join(cpbRoot, "wiki", "projects")));
+    assert.ok(!String(locators.prevArtifactPath).includes(path.join(cpbRoot, "wiki", "projects")));
 
     process.env.CPB_HUB_ROOT = hubRoot;
     const evidence = await collectVerifierEvidence(cpbRoot, project, jobId, { deliverableId: "001" });

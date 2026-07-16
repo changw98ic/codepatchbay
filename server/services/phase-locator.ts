@@ -1,6 +1,6 @@
 import path from "node:path";
 import { readFile, stat } from "node:fs/promises";
-import { AnyRecord } from "../../shared/types.js";
+import { LooseRecord } from "../../shared/types.js";
 import { resolveProjectDataRoot } from "./runtime.js";
 import { getJob } from "./job/job-store.js";
 import { getProject, resolveHubRoot } from "./hub/hub-registry.js";
@@ -38,18 +38,18 @@ export function resolveCachedProjectRuntimeRoot(cpbRoot: string, project: string
   return runtimeRootCache.get(runtimeRootCacheKey(cpbRoot, project)) || null;
 }
 
-function runtimeWikiRoot(cpbRoot: string, project: string, { dataRoot }: AnyRecord = {}) {
+function runtimeWikiRoot(cpbRoot: string, project: string, { dataRoot }: LooseRecord = {}) {
   if (dataRoot) return runtimeWikiDir(dataRoot);
   const cachedRoot = resolveCachedProjectRuntimeRoot(cpbRoot, project);
   if (cachedRoot) return runtimeWikiDir(cachedRoot);
   return wikiProjectDir(cpbRoot, project);
 }
 
-export function inboxDir(cpbRoot: string, project: string, { dataRoot }: AnyRecord = {}) {
+export function inboxDir(cpbRoot: string, project: string, { dataRoot }: LooseRecord = {}) {
   return path.join(runtimeWikiRoot(cpbRoot, project, { dataRoot }), "inbox");
 }
 
-export function outputsDir(cpbRoot: string, project: string, { dataRoot }: AnyRecord = {}) {
+export function outputsDir(cpbRoot: string, project: string, { dataRoot }: LooseRecord = {}) {
   return path.join(runtimeWikiRoot(cpbRoot, project, { dataRoot }), "outputs");
 }
 
@@ -57,11 +57,11 @@ export function projectMetaPath(cpbRoot: string, project: string) {
   return path.join(wikiProjectDir(cpbRoot, project), "project.json");
 }
 
-export function contextPath(cpbRoot: string, project: string, { dataRoot }: AnyRecord = {}) {
+export function contextPath(cpbRoot: string, project: string, { dataRoot }: LooseRecord = {}) {
   return path.join(runtimeWikiRoot(cpbRoot, project, { dataRoot }), "context.md");
 }
 
-export function decisionsPath(cpbRoot: string, project: string, { dataRoot }: AnyRecord = {}) {
+export function decisionsPath(cpbRoot: string, project: string, { dataRoot }: LooseRecord = {}) {
   return path.join(runtimeWikiRoot(cpbRoot, project, { dataRoot }), "decisions.md");
 }
 
@@ -72,7 +72,7 @@ function requireProjectDataRoot(dataRoot: string | null | undefined, label: stri
   return path.resolve(dataRoot);
 }
 
-export function eventLogPath(cpbRoot: string, project: string, jobId: string, { dataRoot }: AnyRecord = {}) {
+export function eventLogPath(cpbRoot: string, project: string, jobId: string, { dataRoot }: LooseRecord = {}) {
   return path.join(requireProjectDataRoot(dataRoot, "phase event log path"), "events", project, `${jobId}.jsonl`);
 }
 
@@ -81,7 +81,7 @@ async function resolveRegisteredProject(cpbRoot: string, project: string, hubRoo
   return getProject(resolvedHubRoot, project);
 }
 
-export async function resolveProjectSourcePath(cpbRoot: string, project: string, { hubRoot, allowLegacyFallback = true }: AnyRecord = {}) {
+export async function resolveProjectSourcePath(cpbRoot: string, project: string, { hubRoot, allowLegacyFallback = true }: LooseRecord = {}) {
   if (process.env.CPB_PROJECT_PATH_OVERRIDE) return path.resolve(process.env.CPB_PROJECT_PATH_OVERRIDE);
   try {
     const registered = await resolveRegisteredProject(cpbRoot, project, hubRoot);
@@ -98,12 +98,12 @@ export async function resolveProjectSourcePath(cpbRoot: string, project: string,
   }
 }
 
-export async function buildLocator(cpbRoot: string, project: string, jobId: string, { phase, executorRoot, hubRoot, dataRoot: explicitDataRoot }: AnyRecord = {}) {
+export async function buildLocator(cpbRoot: string, project: string, jobId: string, { phase, executorRoot, hubRoot, dataRoot: explicitDataRoot }: LooseRecord = {}) {
   validateName(project, "project");
   if (jobId) validateName(jobId, "jobId");
   const effectiveHubRoot = hubRoot || process.env.CPB_HUB_ROOT;
 
-  const locator: AnyRecord = {
+  const locator: LooseRecord = {
     cpbRoot: path.resolve(cpbRoot),
     project,
     jobId: jobId || null,
@@ -186,7 +186,7 @@ export async function reconstructJobState(cpbRoot: string, project: string, jobI
   return buildLocator(cpbRoot, project, jobId, { phase: job.phase, dataRoot });
 }
 
-export function locatorEnvelope(locator: AnyRecord) {
+export function locatorEnvelope(locator: LooseRecord) {
   return {
     cpbRoot: locator.cpbRoot,
     project: locator.project,
@@ -251,17 +251,17 @@ export async function projectExists(cpbRoot: string, project: string) {
   return false;
 }
 
-function resolveArtifactPath(locator: AnyRecord, artifact: string | null) {
+function resolveArtifactPath(locator: LooseRecord, artifact: string | null) {
   if (!artifact || typeof artifact !== "string") return null;
   if (path.isAbsolute(artifact)) return artifact;
   const normalized = artifact.endsWith(".md") ? artifact : `${artifact}.md`;
   const directory = normalized.startsWith("plan-")
-    ? locator.inboxDir
-    : locator.outputsDir;
+    ? String(locator.inboxDir || "")
+    : String(locator.outputsDir || "");
   return path.join(directory, normalized);
 }
 
-export async function buildPhaseLocator(cpbRoot: string, project: string, jobId: string, phase: string, options: AnyRecord = {}) {
+export async function buildPhaseLocator(cpbRoot: string, project: string, jobId: string, phase: string, options: LooseRecord = {}) {
   const locator = await buildLocator(cpbRoot, project, jobId, { ...options, phase });
   if (!locator.jobId) {
     locator.prevPhase = null;
@@ -278,7 +278,7 @@ export async function buildPhaseLocator(cpbRoot: string, project: string, jobId:
 
   locator.prevPhase = phaseIdx > 0 ? workflow.phases[phaseIdx - 1] : null;
   locator.prevArtifact = prevPhaseArtifact;
-  locator.prevArtifactPath = resolveArtifactPath(locator, prevPhaseArtifact);
+  locator.prevArtifactPath = resolveArtifactPath(locator, typeof prevPhaseArtifact === "string" ? prevPhaseArtifact : null);
 
   return locator;
 }

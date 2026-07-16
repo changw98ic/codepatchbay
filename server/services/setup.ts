@@ -7,7 +7,7 @@ import { access } from "node:fs/promises";
 import { appendFile, chmod, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import { AnyRecord } from "../../shared/types.js";
+import { recordValue, type LooseRecord } from "../../shared/types.js";
 
 import { executeInstallPlan } from "../../core/setup/install-plan.js";
 import { buildChildEnv } from "../../core/policy/child-env.js";
@@ -37,22 +37,40 @@ function redact(value: unknown): string {
   return text;
 }
 
-function commandHash(plan: Record<string, any>) {
-  const text = plan.displayCommand || [plan.command, ...(plan.args || [])].join(" ");
+function stringValue(value: unknown, fallback = ""): string {
+  return typeof value === "string" && value ? value : fallback;
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.map(String) : [];
+}
+
+function stringEnv(value: unknown): Record<string, string | undefined> {
+  const record = recordValue(value);
+  const env: Record<string, string | undefined> = {};
+  for (const [key, entry] of Object.entries(record)) {
+    env[key] = entry == null ? undefined : String(entry);
+  }
+  return env;
+}
+
+function commandHash(plan: LooseRecord) {
+  const text = stringValue(plan.displayCommand) || [stringValue(plan.command), ...stringArray(plan.args)].join(" ");
   return crypto.createHash("sha256").update(text).digest("hex");
 }
 
-async function appendSetupEvent(cpbRoot: string, event: Record<string, any>) {
+async function appendSetupEvent(cpbRoot: string, event: LooseRecord) {
   const file = setupEventsPath(cpbRoot);
   await mkdir(path.dirname(file), { recursive: true });
   await appendFile(file, `${JSON.stringify(event)}\n`, "utf8");
 }
 
-function startedEvent(plan: Record<string, any>, startedAt: string) {
+function startedEvent(plan: LooseRecord, startedAt: string) {
+  const agent = recordValue(plan.agent);
   return {
     type: "setup_install_started",
     schemaVersion: 1,
-    agentId: plan.agent.id,
+    agentId: agent.id || stringValue(plan.agent),
     method: plan.method,
     sourceUrl: plan.sourceUrl,
     commandHash: commandHash(plan),
@@ -61,33 +79,37 @@ function startedEvent(plan: Record<string, any>, startedAt: string) {
   };
 }
 
-function finishedEvent(plan: Record<string, any>, startedAt: string, result: Record<string, any>, error: Record<string, any>) {
+function finishedEvent(plan: LooseRecord, startedAt: string, result: unknown, error: unknown) {
   const finishedAt = new Date().toISOString();
   const failed = Boolean(error);
+  const agent = recordValue(plan.agent);
+  const resultRecord = recordValue(result);
+  const errorRecord = recordValue(error);
   return {
     type: "setup_install_finished",
     schemaVersion: 1,
-    agentId: plan.agent.id,
+    agentId: agent.id || stringValue(plan.agent),
     method: plan.method,
     sourceUrl: plan.sourceUrl,
     commandHash: commandHash(plan),
     result: failed ? "failed" : "succeeded",
-    exitCode: failed ? (Number.isInteger(error.code) ? error.code : null) : result.code,
-    error: failed ? { message: redact(error.message), code: Number.isInteger(error.code) ? error.code : null } : null,
+    exitCode: failed ? (Number.isInteger(errorRecord.code) ? errorRecord.code : null) : resultRecord.code,
+    error: failed ? { message: redact(errorRecord.message), code: Number.isInteger(errorRecord.code) ? errorRecord.code : null } : null,
     startedAt,
     finishedAt,
   };
 }
 
-export async function runInstallPlanWithEvents(plan: Record<string, any>, { cpbRoot, stdio = "inherit" }: Record<string, any> = {}) {
+export async function runInstallPlanWithEvents(plan: LooseRecord, { cpbRoot, stdio = "inherit" }: LooseRecord = {}) {
   const startedAt = new Date().toISOString();
-  await appendSetupEvent(cpbRoot, startedEvent(plan, startedAt));
+  const cpbRootPath = stringValue(cpbRoot);
+  await appendSetupEvent(cpbRootPath, startedEvent(plan, startedAt));
   try {
     const result = await executeInstallPlan(plan, { stdio });
-    await appendSetupEvent(cpbRoot, finishedEvent(plan, startedAt, result, null));
+    await appendSetupEvent(cpbRootPath, finishedEvent(plan, startedAt, result, null));
     return result;
   } catch (error) {
-    await appendSetupEvent(cpbRoot, finishedEvent(plan, startedAt, null, error));
+    await appendSetupEvent(cpbRootPath, finishedEvent(plan, startedAt, null, error));
     throw error;
   }
 }
@@ -97,7 +119,7 @@ export async function readSetupEvents(cpbRoot: string) {
   try {
     raw = await readFile(setupEventsPath(cpbRoot), "utf8");
   } catch (error) {
-    if (error.code === "ENOENT") return [];
+    if (recordValue(error).code === "ENOENT") return [];
     throw error;
   }
   return raw
@@ -123,7 +145,7 @@ export function shellQuoteSingle(s: string) {
   return "'" + s.replace(/'/g, "'\\''") + "'";
 }
 
-export function renderLauncher({ executorRoot, runtimeRootDefault }: Record<string, any>) {
+export function renderLauncher({ executorRoot, runtimeRootDefault }: LooseRecord) {
   const quotedRoot = shellQuoteSingle(executorRoot);
   const escapedDefault = runtimeRootDefault;
 
@@ -148,13 +170,15 @@ exec "\${CPB_EXECUTOR_ROOT}/cpb" "$@"
 `;
 }
 
-export async function resolveInstallBinExecutorRoot({ executorRootOption, scriptRoot, env }: Record<string, any>) {
-  if (executorRootOption && executorRootOption !== "current") {
-    return assertExecutorRoot(executorRootOption);
+export async function resolveInstallBinExecutorRoot({ executorRootOption, scriptRoot, env }: LooseRecord) {
+  const option = stringValue(executorRootOption);
+  const envRecord = recordValue(env);
+  if (option && option !== "current") {
+    return assertExecutorRoot(option);
   }
 
-  if (executorRootOption === "current") {
-    const cpbHome = env.CPB_HOME || path.join(env.HOME || "/tmp", ".cpb");
+  if (option === "current") {
+    const cpbHome = stringValue(envRecord.CPB_HOME) || path.join(stringValue(envRecord.HOME, "/tmp"), ".cpb");
     const currentLink = path.join(cpbHome, "current");
     let resolved;
     try {
@@ -176,16 +200,17 @@ export async function resolveInstallBinExecutorRoot({ executorRootOption, script
     return assertExecutorRoot(realPath);
   }
 
-  if (env.CPB_EXECUTOR_ROOT) {
-    return assertExecutorRoot(env.CPB_EXECUTOR_ROOT);
+  const envExecutorRoot = stringValue(envRecord.CPB_EXECUTOR_ROOT);
+  if (envExecutorRoot) {
+    return assertExecutorRoot(envExecutorRoot);
   }
 
-  return assertExecutorRoot(scriptRoot);
+  return assertExecutorRoot(stringValue(scriptRoot));
 }
 
-export async function installBin({ target, executorRoot }: Record<string, any>) {
-  const resolvedExecutorRoot = await assertExecutorRoot(executorRoot);
-  const resolvedTarget = path.resolve(target);
+export async function installBin({ target, executorRoot }: LooseRecord) {
+  const resolvedExecutorRoot = await assertExecutorRoot(stringValue(executorRoot));
+  const resolvedTarget = path.resolve(stringValue(target));
   const runtimeRootDefault = `\${CPB_HOME:-\$HOME/.cpb}`;
 
   const launcherContent = renderLauncher({
@@ -212,10 +237,10 @@ export async function installBin({ target, executorRoot }: Record<string, any>) 
 // ── apply-variant (from apply-variant.ts) ──────────────────────────────────
 
 
-function envFirst(env: AnyRecord, ...names: string[]): string | undefined {
+function envFirst(env: LooseRecord, ...names: string[]): string | undefined {
   for (const name of names) {
     const val = env[name];
-    if (val) return val;
+    if (typeof val === "string" && val) return val;
   }
   return undefined;
 }
@@ -224,7 +249,11 @@ function normalizeVariant(requested: unknown): string {
   return (typeof requested === "string" ? requested : "").trim().toLowerCase();
 }
 
-function resolveVariant(env: AnyRecord = process.env): string {
+function normalizeProviderModel(value: unknown): string {
+  return stringValue(value).replace(/\[[^\]]+\]$/, "");
+}
+
+function resolveVariant(env: LooseRecord = process.env): string {
   const requested =
     env.CPB_CLAUDE_VARIANT ||
     env.CPB_BUILDER_VARIANT ||
@@ -236,11 +265,11 @@ function resolveVariant(env: AnyRecord = process.env): string {
   return "none";
 }
 
-function applyXiaomi(env: AnyRecord = process.env): AnyRecord {
+function applyXiaomi(env: LooseRecord = process.env): LooseRecord {
   const variant = "mimo-v2.5pro";
   const baseUrl = envFirst(env, "XIAOMI_BASE_URL", "MIMO_BASE_URL");
   const authToken = envFirst(env, "XIAOMI_API_KEY", "XIAOMI_AUTH_TOKEN", "MIMO_API_KEY", "MIMO_AUTH_TOKEN");
-  const model = envFirst(env, "XIAOMI_MODEL", "MIMO_MODEL") || "mimo-v2.5pro";
+  const model = normalizeProviderModel(envFirst(env, "XIAOMI_MODEL", "MIMO_MODEL") || "mimo-v2.5-pro");
 
   if (!baseUrl || !authToken) {
     throw new Error(`Missing base URL or API key for variant '${variant}'. Set XIAOMI_BASE_URL + XIAOMI_API_KEY (or MIMO_BASE_URL + MIMO_API_KEY).`);
@@ -249,7 +278,20 @@ function applyXiaomi(env: AnyRecord = process.env): AnyRecord {
   return { variant, displayName: "MiMo v2.5 Pro", baseUrl, authToken, model };
 }
 
-function resolveConfig(env: AnyRecord = process.env): AnyRecord {
+function applyZhipu(env: LooseRecord = process.env): LooseRecord {
+  const variant = "glm";
+  const baseUrl = envFirst(env, "ZHIPU_BASE_URL", "GLM_BASE_URL");
+  const authToken = envFirst(env, "ZHIPU_API_KEY", "ZHIPU_AUTH_TOKEN", "GLM_API_KEY", "GLM_AUTH_TOKEN");
+  const model = normalizeProviderModel(envFirst(env, "ZHIPU_MODEL", "GLM_MODEL"));
+
+  if (!baseUrl || !authToken || !model) {
+    throw new Error(`Missing base URL, API key, or model for variant '${variant}'. Set ZHIPU_BASE_URL + ZHIPU_API_KEY + ZHIPU_MODEL (or GLM_BASE_URL + GLM_API_KEY + GLM_MODEL).`);
+  }
+
+  return { variant, displayName: "GLM", baseUrl, authToken, model };
+}
+
+function resolveConfig(env: LooseRecord = process.env): LooseRecord {
   const normalized = resolveVariant(env);
 
   switch (normalized) {
@@ -265,18 +307,23 @@ function resolveConfig(env: AnyRecord = process.env): AnyRecord {
     case "mimo-v2.5pro":
       return applyXiaomi(env);
 
+    case "zhipu":
+    case "glm":
+    case "glm-compatible":
+      return applyZhipu(env);
+
     default:
-      throw new Error(`Unknown Claude variant: '${normalized}'. Use mimo-v2.5pro, or none.`);
+      throw new Error(`Unknown Claude variant: '${normalized}'. Use mimo-v2.5pro, glm, or none.`);
   }
 }
 
-export function resolveVariantConfig(env: AnyRecord = process.env): AnyRecord {
+export function resolveVariantConfig(env: LooseRecord = process.env): LooseRecord {
   return resolveConfig(env);
 }
 
-export function applyVariantToEnv(env: AnyRecord = process.env, opts: AnyRecord = {}): AnyRecord {
+export function applyVariantToEnv(env: LooseRecord = process.env, opts: LooseRecord = {}): LooseRecord {
   if (opts.variant) {
-    env.CPB_CLAUDE_VARIANT = opts.variant;
+    env.CPB_CLAUDE_VARIANT = stringValue(opts.variant);
   }
   const config = resolveConfig(env);
 
@@ -285,7 +332,11 @@ export function applyVariantToEnv(env: AnyRecord = process.env, opts: AnyRecord 
     return config;
   }
 
-  const { variant, displayName, baseUrl, authToken, model } = config;
+  const variant = stringValue(config.variant);
+  const displayName = stringValue(config.displayName);
+  const baseUrl = stringValue(config.baseUrl);
+  const authToken = stringValue(config.authToken);
+  const model = stringValue(config.model);
 
   env.ANTHROPIC_BASE_URL = baseUrl;
   env.ANTHROPIC_AUTH_TOKEN = authToken;
@@ -297,12 +348,17 @@ export function applyVariantToEnv(env: AnyRecord = process.env, opts: AnyRecord 
   env.ANTHROPIC_DEFAULT_OPUS_MODEL = model;
   env.ANTHROPIC_DEFAULT_HAIKU_MODEL = model;
   env.CLAUDE_CODE_SUBAGENT_MODEL = model;
+  // Claude Code's attribution request path is not supported consistently by
+  // Anthropic-compatible gateways. User HOME settings often disable it, but
+  // isolated agent homes intentionally do not inherit settings.json. Pin the
+  // compatibility contract here so provider behavior does not depend on HOME.
+  env.CLAUDE_CODE_ATTRIBUTION_HEADER = "0";
   env.CPB_ACTIVE_CLAUDE_VARIANT = variant;
 
   return config;
 }
 
-export function applyVariant(opts: AnyRecord = {}) {
+export function applyVariant(opts: LooseRecord = {}) {
   return applyVariantToEnv(process.env, opts);
 }
 
@@ -331,7 +387,7 @@ export async function getDurableTasks(cpbRoot: string, { hubRoot, cacheTtlMs }: 
     hubRoot,
     includeHubProjects: Boolean(hubRoot),
   });
-  return (jobs as Array<Record<string, any>>).map((job) => ({ ...job, ...jobToQueueRow(job) }));
+  return jobs.map((job) => ({ ...job, ...jobToQueueRow(job) }));
 }
 
 // ── executor-root (from executor-root.ts) ──────────────────────────────────
@@ -343,12 +399,18 @@ export const REQUIRED_EXECUTOR_FILES = [
   "bridges/runtime-services.js",
   "core/workflow/definition.js",
   "shared/fs-utils.js",
+  "shared/hub-auth.js",
+  "shared/hub-maintenance.js",
   "shared/logger.js",
   "shared/orchestrator/assignment-store.js",
   "shared/orchestrator/worker-store.js",
+  "server/index.js",
+  "server/services/audit/hub-access-audit.js",
+  "server/services/audit/hub-access-audit-archive.js",
   "server/services/acp/acp-client.js",
   "server/services/engine-runner.js",
   "server/services/event/event-store.js",
+  "server/services/hub/hub-backup.js",
   "server/services/hub/hub-queue.js",
   "server/services/hub/hub-registry.js",
   "server/services/job/job-store.js",
@@ -358,15 +420,17 @@ export const REQUIRED_EXECUTOR_FILES = [
   "runtime/worker/managed-worker.js",
 ];
 
-export function resolveExecutorRoot({ env = process.env, fallbackRoot = process.cwd() }: Record<string, any> = {}) {
-  return path.resolve(env.CPB_EXECUTOR_ROOT || fallbackRoot);
+export function resolveExecutorRoot({ env = process.env, fallbackRoot = process.cwd() }: LooseRecord = {}) {
+  const envRecord = recordValue(env);
+  return path.resolve(stringValue(envRecord.CPB_EXECUTOR_ROOT) || stringValue(fallbackRoot));
 }
 
-export function executorEnv(env = process.env, { cpbRoot, executorRoot, extra }: Record<string, any> = {}) {
-  return buildChildEnv(env, {
-    CPB_ROOT: path.resolve(cpbRoot || env.CPB_ROOT || process.cwd()),
-    CPB_EXECUTOR_ROOT: path.resolve(executorRoot || env.CPB_EXECUTOR_ROOT || cpbRoot || process.cwd()),
-    ...(extra || {}),
+export function executorEnv(env: LooseRecord = process.env, { cpbRoot, executorRoot, extra }: LooseRecord = {}) {
+  const envRecord = recordValue(env);
+  return buildChildEnv(stringEnv(envRecord), {
+    CPB_ROOT: path.resolve(stringValue(cpbRoot) || stringValue(envRecord.CPB_ROOT) || process.cwd()),
+    CPB_EXECUTOR_ROOT: path.resolve(stringValue(executorRoot) || stringValue(envRecord.CPB_EXECUTOR_ROOT) || stringValue(cpbRoot) || process.cwd()),
+    ...stringEnv(extra),
   });
 }
 
@@ -404,9 +468,10 @@ export async function readExecutorPackage(executorRoot: string) {
   }
 }
 
-export async function executorMetadata(executorRoot: string, { codeVersion, env = process.env }: Record<string, any> = {}) {
+export async function executorMetadata(executorRoot: string, { codeVersion, env = process.env }: LooseRecord = {}) {
   const root = await assertExecutorRoot(executorRoot);
   const pkg = await readExecutorPackage(root);
+  const envRecord = recordValue(env);
 
   let releaseId = null;
   let stateFormatVersions = null;
@@ -444,7 +509,7 @@ export async function executorMetadata(executorRoot: string, { codeVersion, env 
     packageName: pkg.name,
     version: pkg.version,
     releaseId,
-    codeVersion: codeVersion || env.CPB_VERSION || pkg.version || null,
+    codeVersion: stringValue(codeVersion) || stringValue(envRecord.CPB_VERSION) || pkg.version || null,
     stateFormatVersions,
   };
 }
