@@ -477,30 +477,19 @@ function sandboxExecProfile(policy: AgentSandboxPolicy) {
   ].filter(Boolean).join("\n");
 }
 
-function rootCoversPath(root: string, candidate: string) {
-  const relative = path.relative(path.resolve(root), path.resolve(candidate));
-  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
-}
-
 function bwrapArgs(policy: AgentSandboxPolicy, command: string, args: string[], cwd: string) {
   const bargs = ["--die-with-parent"];
   const writeRootSet = new Set(policy.writeRoots);
   if (policy.network === "deny") bargs.push("--unshare-net");
   bargs.push("--proc", "/proc", "--dev", "/dev");
-  const systemReadRoots = SYSTEM_READ_ROOTS.filter((root) => root !== "/dev" && !writeRootSet.has(root));
-  for (const root of systemReadRoots) {
+  for (const root of SYSTEM_READ_ROOTS) {
+    if (root === "/dev") continue;
+    if (writeRootSet.has(root)) continue;
     bargs.push("--ro-bind-try", root, root);
   }
-
-  // A system or writable root already exposes all of its descendants. Avoid
-  // duplicate and nested bind mounts: they add no access and make launch
-  // success depend on how the host's user-namespace mount policy handles
-  // redundant mounts (notably hardened bwrap/AppArmor configurations).
-  const coveredRoots = ["/proc", "/dev", ...systemReadRoots, ...policy.writeRoots];
   for (const root of policy.readRoots) {
-    if (coveredRoots.some((coveredRoot) => rootCoversPath(coveredRoot, root))) continue;
+    if (writeRootSet.has(root)) continue;
     bargs.push("--ro-bind-try", root, root);
-    coveredRoots.push(root);
   }
   for (const root of policy.writeRoots) bargs.push("--bind-try", root, root);
   bargs.push("--chdir", cwd || process.cwd(), command, ...args);

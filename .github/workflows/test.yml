@@ -27,7 +27,7 @@ jobs:
       - name: Install integration runtime
         run: |
           sudo apt-get update
-          sudo apt-get install -y bubblewrap redis-server redis-tools
+          sudo apt-get install -y bubblewrap redis-server redis-tools zsh
           bwrap --version
           if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || true)" = "1" ]; then
             sudo tee /etc/apparmor.d/cpb-bwrap >/dev/null <<'EOF'

@@ -15,7 +15,7 @@ const packageJson = path.join(repoRoot, "package.json");
 
 test("CI installs a Linux sandbox provider before ACP tests", async () => {
   const source = await readFile(ciWorkflow, "utf8");
-  assert.match(source, /apt-get install -y bubblewrap redis-server redis-tools/);
+  assert.match(source, /apt-get install -y bubblewrap redis-server redis-tools zsh/);
   assert.match(source, /bwrap --version/);
   assert.match(source, /apparmor_restrict_unprivileged_userns/);
   assert.match(source, /apparmor_parser -r/);
