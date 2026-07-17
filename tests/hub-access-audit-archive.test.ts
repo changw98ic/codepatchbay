@@ -45,6 +45,17 @@ async function exists(filePath: string) {
   }
 }
 
+test("audit archive recovery is a no-op before a new Hub root exists", async () => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "cpb-audit-new-hub-"));
+  const hubRoot = path.join(parent, "hub");
+
+  assert.deepEqual(
+    await recoverHubAccessAuditArchive({ hubRoot }),
+    { recovered: false, outcome: "none" },
+  );
+  assert.equal(await exists(hubRoot), false);
+});
+
 test("offline audit archive publishes a signed verified snapshot before resetting the live log", async () => {
   const hubRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-audit-archive-hub-"));
   const output = path.join(await mkdtemp(path.join(os.tmpdir(), "cpb-audit-archive-out-")), "archive");

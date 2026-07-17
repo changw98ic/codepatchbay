@@ -598,7 +598,11 @@ export async function verifyHubAccessAuditArchive(input: string, options: Verify
 }
 
 export async function recoverHubAccessAuditArchive(options: RecoverArchiveOptions) {
-  const hubRoot = await canonicalHubRoot(options.hubRoot);
+  const requestedHubRoot = path.resolve(options.hubRoot);
+  if (!await pathExists(requestedHubRoot)) {
+    return { recovered: false as const, outcome: "none" as const };
+  }
+  const hubRoot = await canonicalHubRoot(requestedHubRoot);
   if (!await pathExists(auditPaths(hubRoot).journal)) {
     return { recovered: false as const, outcome: "none" as const };
   }
