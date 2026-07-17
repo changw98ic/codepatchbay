@@ -1377,6 +1377,8 @@ export class AcpPool {
     }
     return {
       createdAt: this.createdAt,
+      connectionLeaseRoot: this.leaseRoot,
+      connectionLeaseScope: this.leaseRoot === this.hubRoot ? "hub" : "shared",
       providerProcessReuse,
       connectionLimits: {
         providerDefault: this.providerConnectionLimit,
