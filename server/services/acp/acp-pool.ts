@@ -65,6 +65,7 @@ type EnvRecord = Record<string, string | undefined> & {
   CPB_HUB_ROOT?: string;
   CPB_PROJECT_RUNTIME_ROOT?: string;
   CPB_ACP_PERSISTENT_PROCESS?: string;
+  CPB_ACP_POOL_LEASE_ROOT?: string;
   CPB_ACP_POOL_MAX_REQUESTS?: string;
   CPB_ACP_POOL_MAX_AGE_MS?: string;
   CPB_ACP_POOL_IDLE_MS?: string;
@@ -153,6 +154,7 @@ type AcpPoolOptions = LooseRecord & {
   providerConnectionLimit?: unknown;
   providerConnectionLimits?: Record<string, number>;
   connectionPollMs?: unknown;
+  leaseRoot?: string;
 };
 
 type PoolStatus = ReturnType<AcpPool["status"]>;
@@ -1109,6 +1111,7 @@ function terminateChild(child: SpawnedChild) {
 export class AcpPool {
   cpbRoot: string;
   hubRoot: string;
+  leaseRoot: string;
   env: EnvRecord;
   limits: LooseRecord;
   runner: PoolRunner | null;
@@ -1148,6 +1151,9 @@ export class AcpPool {
       CPB_HUB_ROOT: this.hubRoot,
       ...(parentEnv.CPB_PROJECT_RUNTIME_ROOT ? { CPB_PROJECT_RUNTIME_ROOT: parentEnv.CPB_PROJECT_RUNTIME_ROOT } : {}),
     });
+    this.leaseRoot = path.resolve(
+      opts.leaseRoot || this.env.CPB_ACP_POOL_LEASE_ROOT || this.hubRoot,
+    );
     this.limits = normalizeLimits(opts.limits || opts);
     this.runner = opts.runner || null;
     this.persistentProcesses = !this.runner && booleanOption(
@@ -1498,7 +1504,7 @@ export class AcpPool {
   }
 
   #connectionLeasesDir() {
-    return path.join(this.hubRoot, "providers", "acp-leases");
+    return path.join(this.leaseRoot, "providers", "acp-leases");
   }
 
   #connectionLockDir() {

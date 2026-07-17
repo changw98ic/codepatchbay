@@ -2884,6 +2884,11 @@ async function cpbHighAssurance(
       extraEnv: {
         CPB_CODEGRAPH_INDEX_ONLY_OK: "1",
         CPB_ASSURANCE_MODE: "high",
+        // Each task has its own Hub, so the default ACP lease directory would
+        // only serialize requests inside one task. Share admission state for
+        // all CPB tasks in this run so provider limits actually apply across
+        // the lane and not just within an individual worker process.
+        CPB_ACP_POOL_LEASE_ROOT: path.join(runRoot, "shared-provider-leases"),
         CPB_AGENT_FS_BOUNDARY_JSON: JSON.stringify(boundary),
         ZHIPU_MODEL: options.glmModel,
         GLM_MODEL: options.glmModel,

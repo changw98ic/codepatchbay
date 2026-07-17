@@ -175,6 +175,9 @@ const EXPLICIT_ONLY_CHILD_ENV = new Set([
 ]);
 
 const ACP_POOL_ENV = new Set([
+  // A run may host multiple isolated worker processes. This path lets their
+  // ACP pools coordinate provider leases without sharing project state.
+  "CPB_ACP_POOL_LEASE_ROOT",
   "CPB_ACP_RATE_LIMIT_BACKOFF_MS",
   "CPB_ACP_POOL_PROVIDER_MAX",
   "CPB_ACP_POOL_MAX_REQUESTS",
@@ -225,6 +228,7 @@ function isAcpPoolNumericEntry(key: string, value: unknown): boolean {
 }
 
 function shouldCopyAcpPoolEnvEntry(key: string, value: unknown): boolean {
+  if (key === "CPB_ACP_POOL_LEASE_ROOT") return typeof value === "string" && value.trim().length > 0;
   return isAcpPoolNumericEntry(key, value) || isAllowedChildEnvKey(key);
 }
 

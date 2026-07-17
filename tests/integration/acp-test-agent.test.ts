@@ -1813,6 +1813,58 @@ test("buildAcpPoolEnv preserves GLM Claude-compatible provider credentials", () 
   assert.equal(env.GLM_MODEL, "glm-test-model-alt");
 });
 
+test("buildAcpPoolEnv preserves the shared lease root without exposing it to providers", () => {
+  const leaseRoot = path.join(process.cwd(), ".tmp-shared-acp-leases");
+  const env = buildAcpPoolEnv({
+    CPB_ACP_POOL_LEASE_ROOT: leaseRoot,
+    CPB_ACP_POOL_PROVIDER_MAX: "2",
+  });
+  assert.equal(env.CPB_ACP_POOL_LEASE_ROOT, leaseRoot);
+  assert.equal(buildChildEnv(env, { agent: "codex" }).CPB_ACP_POOL_LEASE_ROOT, undefined);
+});
+
+test("AcpPool coordinates provider leases across isolated Hub roots", async () => {
+  const tmp = await tempRoot("cpb-acp-shared-lease-root");
+  const sharedLeaseRoot = path.join(tmp, "shared-leases");
+  const poolRoots = [0, 1].map((index) => ({
+    cpbRoot: path.join(tmp, `cpb-${index}`),
+    hubRoot: path.join(tmp, `hub-${index}`),
+  }));
+  let runnerStarts = 0;
+  let releaseFirst: (() => void) | null = null;
+  let firstStarted: (() => void) | null = null;
+  const firstStartedPromise = new Promise<void>((resolve) => { firstStarted = resolve; });
+  const runner = async () => {
+    runnerStarts += 1;
+    if (runnerStarts === 1) {
+      firstStarted?.();
+      await new Promise<void>((resolve) => { releaseFirst = resolve; });
+    }
+    return `response-${runnerStarts}`;
+  };
+  const pools = poolRoots.map(({ cpbRoot, hubRoot }) => new AcpPool({
+    cpbRoot,
+    hubRoot,
+    leaseRoot: sharedLeaseRoot,
+    providerConnectionLimit: 1,
+    runner,
+  }));
+
+  try {
+    const first = pools[0].execute("codex", "first", repoRoot, 10_000);
+    await firstStartedPromise;
+    const second = pools[1].execute("codex", "second", repoRoot, 10_000);
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    assert.equal(runnerStarts, 1, "the second pool must wait on the shared file lease");
+    releaseFirst?.();
+    assert.equal((await first).output, "response-1");
+    assert.equal((await second).output, "response-2");
+  } finally {
+    releaseFirst?.();
+    await Promise.all(pools.map((pool) => pool.stop()));
+  }
+});
+
 test("AcpPool one-shot creates runtime roots before spawning the ACP client", async () => {
   const tmp = await tempRoot("cpb-acp-oneshot-roots");
   const cpbRoot = path.join(tmp, "missing-cpb-root");
