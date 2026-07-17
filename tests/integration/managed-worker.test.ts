@@ -97,6 +97,14 @@ function spawnWorker({ workerId, hubRoot, cpbRoot, env = {}, timeoutMs = 30_000,
   return { child, done, get stdout() { return stdout; }, get stderr() { return stderr; } };
 }
 
+function sandboxTempEnv(root: string) {
+  return {
+    TMPDIR: root,
+    TEMP: root,
+    TMP: root,
+  };
+}
+
 async function listJsonFiles(dir) {
   try {
     return (await readdir(dir)).filter((file) => file.endsWith(".json")).sort();
@@ -543,6 +551,7 @@ test("managed worker writes accepted, heartbeat, result, and cleans worktree and
     hubRoot,
     cpbRoot,
     env: {
+      ...sandboxTempEnv(root),
       CPB_ROOT: cpbRoot,
       CPB_HUB_ROOT: hubRoot,
       CPB_EXECUTOR_ROOT: repoRoot,
@@ -675,6 +684,7 @@ test("managed worker default checklist decomposition runs inside the worker path
       hubRoot,
       cpbRoot,
       env: {
+        ...sandboxTempEnv(root),
         CPB_ROOT: cpbRoot,
         CPB_HUB_ROOT: hubRoot,
         CPB_EXECUTOR_ROOT: repoRoot,
@@ -772,6 +782,7 @@ test("managed worker writes dry-run PR preview after evidence-backed fake ACP ru
       hubRoot,
       cpbRoot,
       env: {
+        ...sandboxTempEnv(root),
         CPB_ROOT: cpbRoot,
         CPB_HUB_ROOT: hubRoot,
         CPB_EXECUTOR_ROOT: repoRoot,
@@ -849,6 +860,7 @@ test("managed worker flagship issue to draft PR dry-run uses default checklist d
       hubRoot,
       cpbRoot,
       env: {
+        ...sandboxTempEnv(root),
         CPB_ROOT: cpbRoot,
         CPB_HUB_ROOT: hubRoot,
         CPB_EXECUTOR_ROOT: repoRoot,
@@ -1035,6 +1047,7 @@ test("managed worker stops an active assignment when its cancel control file app
     hubRoot,
     cpbRoot,
     env: {
+      ...sandboxTempEnv(root),
       CPB_ROOT: cpbRoot,
       CPB_HUB_ROOT: hubRoot,
       CPB_EXECUTOR_ROOT: repoRoot,
@@ -1094,6 +1107,7 @@ test("managed worker closes attempt sessions between assignments without requiri
   await writeFile(path.join(sourcePath, "package.json"), `${JSON.stringify({ name: "managed-worker-persistent", private: true }, null, 2)}\n`, "utf8");
   const scenarioPath = await writeWorkerScenario(root);
   const transcriptPath = path.join(root, "persistent-transcript.jsonl");
+  await writeFile(transcriptPath, "", "utf8");
 
   const first = await writeValidAssignment({
     hubRoot,
@@ -1126,10 +1140,12 @@ test("managed worker closes attempt sessions between assignments without requiri
     cpbRoot,
     once: false,
     env: {
+      ...sandboxTempEnv(root),
       CPB_ROOT: cpbRoot,
       CPB_HUB_ROOT: hubRoot,
       CPB_EXECUTOR_ROOT: repoRoot,
       CPB_PROJECT_ROOTS: root,
+      CPB_AGENT_SANDBOX_ALLOW_WRITE: transcriptPath,
       CPB_ACP_PERSISTENT_PROCESS: "1",
       CPB_ACP_FAKE_ACP_COMMAND: process.execPath,
       CPB_ACP_FAKE_ACP_ARGS: JSON.stringify([
@@ -1159,13 +1175,15 @@ test("managed worker closes attempt sessions between assignments without requiri
       secondResult.jobResult.phaseResults[0].diagnostics.conversationKey,
       "different assignment attempts must not share a conversation",
     );
-    await waitFor(async () => {
-      const audits = await Promise.all([
-        readJobAcpAudit(first.project.projectRuntimeRoot, "proj", "job-managed-persistent-one"),
-        readJobAcpAudit(second.project.projectRuntimeRoot, "proj", "job-managed-persistent-two"),
-      ]);
-      return audits.flat().filter((event) => event.event === "session_close").length === 4;
-    }, { timeoutMs: 10_000 });
+    const publishedResultAudits = await Promise.all([
+      readJobAcpAudit(first.project.projectRuntimeRoot, "proj", "job-managed-persistent-one"),
+      readJobAcpAudit(second.project.projectRuntimeRoot, "proj", "job-managed-persistent-two"),
+    ]);
+    assert.equal(
+      publishedResultAudits.flat().filter((event) => event.event === "session_close").length,
+      4,
+      `published attempt results must include completed ACP session-close audits\nworker stderr:\n${worker.stderr}`,
+    );
 
     const transcript = (await readFile(transcriptPath, "utf8"))
       .trim()

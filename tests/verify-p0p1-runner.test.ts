@@ -8,6 +8,7 @@ import { tempRoot } from "./helpers.js";
 
 const repoRoot = path.resolve(import.meta.dirname, "..", "..");
 const execFileAsync = promisify(execFile);
+const runtimeScript = path.join(repoRoot, "dist", "scripts", "verify-p0-p1.js");
 
 test("P0/P1 focused node tests run through run-node-tests for deterministic fake-agent env", async () => {
   const sourcePath = path.join(repoRoot, "scripts", "verify-p0-p1.ts");
@@ -55,15 +56,16 @@ test("P0/P1 verifier stops before spawning checks when focused test files are mi
   const root = await tempRoot("cpb-verify-p0p1-missing");
   const scriptsDir = path.join(root, "scripts");
   await mkdir(scriptsDir, { recursive: true });
-  const source = await readFile(path.join(repoRoot, "scripts", "verify-p0-p1.ts"), "utf8");
+  const source = await readFile(runtimeScript, "utf8");
+  const testScript = path.join(scriptsDir, "verify-p0-p1.js");
   await writeFile(
-    path.join(scriptsDir, "verify-p0-p1.ts"),
+    testScript,
     source.replace("tests/setup-manifest-registry.test.js", "tests/missing-focused.test.js"),
     "utf8",
   );
 
   await assert.rejects(
-    execFileAsync(process.execPath, ["--experimental-strip-types", path.join(scriptsDir, "verify-p0-p1.ts")], {
+    execFileAsync(process.execPath, [testScript], {
       cwd: root,
       timeout: 10_000,
     }),

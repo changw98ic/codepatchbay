@@ -28,6 +28,7 @@ import {
 } from "../../../core/acp/policy.js";
 import { buildChildEnv } from "../../../core/policy/child-env.js";
 import { buildAgentSandboxLaunch } from "../../../core/policy/agent-sandbox.js";
+import { redactSecrets } from "../secret-policy.js";
 import { captureNativeUsageCursor, readNativeUsageDelta } from "./native-usage.js";
 
 type PermissionDecision = LooseRecord & {
@@ -100,6 +101,8 @@ const USAGE_METRIC_KEYS = [
   "toolCalls",
   "functionCalls",
 ] as const;
+const ACP_STDERR_TAIL_LIMIT = 4000;
+const ACP_TERMINAL_AUDIT_TAIL_LIMIT = 1000;
 
 type UsageMetricKey = typeof USAGE_METRIC_KEYS[number];
 type UsageMetricCounts = Record<UsageMetricKey, number>;
@@ -199,7 +202,13 @@ type TerminalEntry = {
   truncated: boolean;
   outputByteLimit: number;
   exitStatus: TerminalExitStatus | null;
+  exitAudit: Promise<void> | null;
   waiters: Array<(status: TerminalExitStatus) => void>;
+};
+
+type AuditTarget = {
+  file: string | null;
+  env: NodeJS.ProcessEnv;
 };
 
 type AuditContextOptions = {
@@ -1308,6 +1317,7 @@ export class AcpClient {
   toolPolicy: Map<string, string> | null;
   outputSink: (chunk: string | Buffer) => void;
   errorSink: (chunk: string | Buffer) => void;
+  stderrTail: string;
   env: NodeJS.ProcessEnv;
   resumeSessionId: string | null;
   reuseSession: boolean;
@@ -1327,6 +1337,7 @@ export class AcpClient {
   executeNoEditIdleTimer: NodeJS.Timeout | null;
   executeNoEditIdleTimeoutMs: number;
   closeSessionTimeoutMs: number;
+  agentHomeInstanceId: string | null;
   auditEnv: NodeJS.ProcessEnv;
   auditFile: string | null;
   activeSessionId: string | null;
@@ -1352,6 +1363,7 @@ export class AcpClient {
     env = process.env,
     resumeSessionId = null,
     reuseSession = false,
+    agentHomeInstanceId = null,
   }: {
     agent: string;
     cwd: string;
@@ -1364,6 +1376,7 @@ export class AcpClient {
     env?: NodeJS.ProcessEnv;
     resumeSessionId?: string | null;
     reuseSession?: boolean;
+    agentHomeInstanceId?: string | null;
   }) {
     this.agent = agent;
     this.cwd = cwd;
@@ -1373,6 +1386,7 @@ export class AcpClient {
     this.toolPolicy = toolPolicy || null;
     this.outputSink = outputSink;
     this.errorSink = errorSink;
+    this.stderrTail = "";
     this.env = { ...env };
     if (cwd) this.env.CPB_ACP_CWD = cwd;
     this.resumeSessionId = resumeSessionId;
@@ -1392,6 +1406,7 @@ export class AcpClient {
     this.executeNoEditIdleTimer = null;
     this.executeNoEditIdleTimeoutMs = executeNoEditIdleTimeoutMs(this.env);
     this.closeSessionTimeoutMs = nonNegativeInteger(this.env.CPB_ACP_CLOSE_SESSION_TIMEOUT_MS, DEFAULT_CLOSE_SESSION_TIMEOUT_MS);
+    this.agentHomeInstanceId = agentHomeInstanceId || this.env.CPB_AGENT_HOME_INSTANCE_ID || null;
     this.auditEnv = { ...this.env };
     this.auditFile = resolveAcpAuditFile(this.auditEnv);
     this.activeSessionId = null;
@@ -1420,9 +1435,10 @@ export class AcpClient {
     if (writeAllowPaths !== undefined) this.writeAllowPaths = writeAllowPaths;
   }
 
-  async recordAudit(event: string, details: LooseRecord = {}) {
-    if (!this.auditFile) return;
-    const auditEnv = this.auditEnv || this.env;
+  async recordAudit(event: string, details: LooseRecord = {}, target?: AuditTarget) {
+    const auditFile = target ? target.file : this.auditFile;
+    if (!auditFile) return;
+    const auditEnv = target?.env || this.auditEnv || this.env;
     const entry = {
       ts: new Date().toISOString(),
       event,
@@ -1433,8 +1449,8 @@ export class AcpClient {
       role: auditEnv.CPB_ACP_ROLE || null,
       ...details,
     };
-    await mkdir(path.dirname(this.auditFile), { recursive: true });
-    await appendFile(this.auditFile, `${JSON.stringify(entry)}\n`, "utf8");
+    await mkdir(path.dirname(auditFile), { recursive: true });
+    await appendFile(auditFile, `${JSON.stringify(entry)}\n`, "utf8");
   }
 
   async start() {
@@ -1466,6 +1482,7 @@ export class AcpClient {
           parentEnv: env,
           dataRoot: homeDataRoot,
           isolateTemp: Boolean(env.CPB_AGENT_FS_BOUNDARY_JSON),
+          instanceId: this.agentHomeInstanceId,
         },
       );
       Object.assign(env, homeEnv);
@@ -1525,6 +1542,7 @@ export class AcpClient {
 
     this.child.stderr.on("data", (chunk: Buffer) => {
       this.markActivity();
+      this.stderrTail = `${this.stderrTail}${chunk.toString()}`.slice(-ACP_STDERR_TAIL_LIMIT);
       this.errorSink(chunk);
     });
 
@@ -1538,7 +1556,9 @@ export class AcpClient {
       this.clearSessionUpdateIdleTimer();
       this.clearExecuteNoEditIdleTimer();
       if (this.pending.size > 0) {
-        this.rejectAll(new Error(`ACP agent exited before completing requests (code=${code}, signal=${signal})`));
+        const stderrTail = String(redactSecrets(this.stderrTail.trim()) || "").slice(-1000);
+        const detail = stderrTail ? `; stderr tail: ${stderrTail}` : "";
+        this.rejectAll(new Error(`ACP agent exited before completing requests (code=${code}, signal=${signal})${detail}`));
       }
     });
 
@@ -1709,9 +1729,13 @@ export class AcpClient {
     this.activeSessionId = null;
     this.activeSessionCwd = null;
     if (!this.child || this.closed || !this.initialized?.agentCapabilities?.sessionCapabilities?.close) return;
+    let closeError: unknown = null;
     const closeRequest = this.request("session/close", { sessionId })
       .then(() => "closed" as const)
-      .catch(() => "error" as const);
+      .catch((error) => {
+        closeError = error;
+        return "error" as const;
+      });
     if (timeoutMs <= 0) {
       closeRequest.catch(() => null);
       await this.recordAudit("session_close_timeout", { sessionId, cwd, reason, timeoutMs });
@@ -1732,7 +1756,15 @@ export class AcpClient {
     if (result === "timeout") {
       closeRequest.catch(() => null);
       await this.recordAudit("session_close_timeout", { sessionId, cwd, reason, timeoutMs });
+      return;
     }
+    const closeErrorMessage = closeError instanceof Error ? closeError.message : String(closeError || "session/close request failed");
+    await this.recordAudit("session_close_error", {
+      sessionId,
+      cwd,
+      reason,
+      error: String(redactSecrets(closeErrorMessage) || "session/close request failed").slice(-1000),
+    });
   }
 
   async run() {
@@ -2215,7 +2247,9 @@ export class AcpClient {
       this.terminateAgentProcessTree("SIGTERM");
       this.rejectAll(new Error(reason));
     }, timeoutMs);
-    this.executeNoEditIdleTimer.unref();
+    // This guard is part of the request's completion contract. Keeping it
+    // referenced guarantees a stalled execute request is rejected and audited
+    // even when no provider or terminal handle remains active.
   }
 
   async enforceExecuteNoEditProgress(sessionId: string | null, summary: LooseRecord) {
@@ -2456,14 +2490,21 @@ export class AcpClient {
     const env = buildChildEnv(this.childEnv || this.env, extraEnv, { agent: this.agent });
     const terminalLaunch = resolveTerminalLaunchCommand(params.command, params.args || [], env);
 
+    const launch = buildAgentSandboxLaunch(terminalLaunch.command, terminalLaunch.args, { env, cwd: terminalCwd });
+    const terminalAuditTarget: AuditTarget = {
+      file: this.auditFile,
+      env: { ...(this.auditEnv || this.env) },
+    };
     await this.recordAudit("terminal_launch", {
+      terminalId,
       cwd: terminalCwd,
       command: params.command,
       launchCommand: terminalLaunch.command,
       rtkEnabled: terminalLaunch.rtkEnabled,
-    });
+      sandboxMode: launch.sandbox?.mode || null,
+      sandboxProvider: launch.sandbox?.provider || null,
+    }, terminalAuditTarget);
 
-    const launch = buildAgentSandboxLaunch(terminalLaunch.command, terminalLaunch.args, { env, cwd: terminalCwd });
     const detached = process.platform !== "win32";
     const child = spawn(launch.command, launch.args, {
       cwd: terminalCwd,
@@ -2480,6 +2521,7 @@ export class AcpClient {
       truncated: false,
       outputByteLimit: params.outputByteLimit || 1048576,
       exitStatus: null,
+      exitAudit: null,
       waiters: [],
     };
 
@@ -2494,10 +2536,26 @@ export class AcpClient {
 
     child.stdout.on("data", append);
     child.stderr.on("data", append);
-    child.on("exit", (exitCode: number | null, signal: NodeJS.Signals | null) => {
+    child.on("close", (exitCode: number | null, signal: NodeJS.Signals | null) => {
       terminal.exitStatus = { exitCode, signal };
-      for (const resolve of terminal.waiters) resolve(terminal.exitStatus);
-      terminal.waiters = [];
+      terminal.exitAudit = this.recordAudit("terminal_exit", {
+        terminalId,
+        cwd: terminalCwd,
+        exitCode,
+        signal,
+        outputTail: String(redactSecrets(terminal.output) || "").slice(-ACP_TERMINAL_AUDIT_TAIL_LIMIT),
+        truncated: terminal.truncated,
+      }, terminalAuditTarget).catch((error) => {
+        try {
+          this.errorSink(`[cpb] failed to record terminal exit audit: ${error instanceof Error ? error.message : String(error)}\n`);
+        } catch {
+          // Terminal waiters must still settle when a diagnostic sink fails.
+        }
+      });
+      void terminal.exitAudit.then(() => {
+        for (const resolve of terminal.waiters) resolve(terminal.exitStatus!);
+        terminal.waiters = [];
+      });
     });
 
     this.terminals.set(terminalId, terminal);
@@ -2513,9 +2571,12 @@ export class AcpClient {
     };
   }
 
-  waitForTerminalExit(params: TerminalIdParams) {
+  async waitForTerminalExit(params: TerminalIdParams) {
     const terminal = this.getTerminal(params.terminalId);
-    if (terminal.exitStatus) return terminal.exitStatus;
+    if (terminal.exitStatus) {
+      await terminal.exitAudit;
+      return terminal.exitStatus;
+    }
     return new Promise<TerminalExitStatus>((resolve) => terminal.waiters.push(resolve));
   }
 

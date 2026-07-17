@@ -83,6 +83,14 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string)
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
+function sandboxTempEnv(root: string) {
+  return {
+    TMPDIR: root,
+    TEMP: root,
+    TMP: root,
+  };
+}
+
 function killProcessTree(pid: number | null | undefined) {
   if (!pid) return;
   try {
@@ -256,6 +264,45 @@ test("ACP client audits codegraph MCP injection and tool call updates", async ()
     ),
     "prompt_usage audit should record per-prompt usage delta",
   );
+});
+
+test("ACP client audits and redacts session-close request errors", async () => {
+  const tmp = await tempRoot("cpb-acp-session-close-error");
+  const auditPath = path.join(tmp, "audit.jsonl");
+  const client = new AcpClient({
+    agent: "fake-acp",
+    cwd: tmp,
+    prompt: "",
+    reuseSession: true,
+    env: {
+      ...process.env,
+      CPB_ACP_AUDIT_FILE: auditPath,
+      CPB_AGENT_ISOLATE_HOME: "0",
+      CPB_AGENT_SANDBOX: "off",
+      CPB_CODEGRAPH_ENABLED: "0",
+      CPB_ACP_FAKE_ACP_COMMAND: process.execPath,
+      CPB_ACP_FAKE_ACP_ARGS: JSON.stringify([testAgent, "--response", "close-error-response"]),
+    },
+  });
+
+  try {
+    await client.start();
+    await client.promptOnce("open a reusable session", tmp);
+    const originalRequest = client.request.bind(client);
+    client.request = async (method, params) => {
+      if (method === "session/close") throw new Error("Authorization: Bearer close-secret-token");
+      return originalRequest(method, params);
+    };
+
+    await client.closeActiveSession("test_close_error", 100);
+    const events = await readJsonl(auditPath);
+    const closeError = events.find((event) => event.event === "session_close_error");
+    assert.equal(closeError?.reason, "test_close_error");
+    assert.match(String(closeError?.error), /\[REDACTED\]/);
+    assert.doesNotMatch(String(closeError?.error), /close-secret-token/);
+  } finally {
+    await client.close();
+  }
 });
 
 test("ACP client does not infer a session-update timeout from task identity", () => {
@@ -558,9 +605,47 @@ test("ACP terminal commands launch through RTK when available", async () => {
 
   const events = await readJsonl(auditPath);
   const launch = events.find((event) => event.event === "terminal_launch");
+  const exit = events.find((event) => event.event === "terminal_exit");
   assert.equal(launch?.command, process.execPath);
   assert.equal(launch?.launchCommand, "rtk");
   assert.equal(launch?.rtkEnabled, true);
+  assert.equal(exit?.terminalId, created.terminalId);
+  assert.equal(exit?.exitCode, 0);
+  assert.equal(exit?.signal, null);
+  assert.match(String(exit?.outputTail || ""), /terminal-ok/);
+});
+
+test("ACP terminal exit audit bounds and redacts captured output", async () => {
+  const tmp = await tempRoot("cpb-acp-terminal-exit-audit");
+  const auditPath = path.join(tmp, "audit.jsonl");
+  const client = new AcpClient({
+    agent: "fake-acp",
+    cwd: tmp,
+    prompt: "",
+    env: {
+      ...process.env,
+      CPB_ACP_AUDIT_FILE: auditPath,
+      CPB_ACP_RTK_ENABLED: "0",
+      CPB_AGENT_ISOLATE_HOME: "0",
+      CPB_CODEGRAPH_ENABLED: "0",
+    },
+  });
+
+  const created = await client.createTerminal({
+    command: process.execPath,
+    args: ["-e", "process.stderr.write('x'.repeat(1200) + ' api_key=test-terminal-secret-value')"],
+    cwd: tmp,
+    outputByteLimit: 4096,
+  });
+  const status = await client.waitForTerminalExit({ terminalId: created.terminalId });
+  assert.deepEqual(status, { exitCode: 0, signal: null });
+
+  const events = await readJsonl(auditPath);
+  const exit = events.find((event) => event.event === "terminal_exit");
+  assert.ok(exit);
+  assert.ok(String(exit.outputTail).length <= 1000);
+  assert.match(String(exit.outputTail), /api_key=\[REDACTED\]/);
+  assert.doesNotMatch(String(exit.outputTail), /test-terminal-secret-value/);
 });
 
 test("ACP terminal denies whole-filesystem find commands", async () => {
@@ -641,7 +726,11 @@ test("ACP terminal denies mutating git commands in read-only phases", async () =
     outputByteLimit: 4096,
   });
   const readOnlyGitStatus = await client.waitForTerminalExit({ terminalId: readOnlyGit.terminalId });
-  assert.deepEqual(readOnlyGitStatus, { exitCode: 0, signal: null });
+  assert.deepEqual(
+    readOnlyGitStatus,
+    { exitCode: 0, signal: null },
+    client.terminalOutput({ terminalId: readOnlyGit.terminalId }).output,
+  );
 
   const allowed = await client.createTerminal({
     command: process.execPath,
@@ -650,7 +739,11 @@ test("ACP terminal denies mutating git commands in read-only phases", async () =
     outputByteLimit: 4096,
   });
   const status = await client.waitForTerminalExit({ terminalId: allowed.terminalId });
-  assert.deepEqual(status, { exitCode: 0, signal: null });
+  assert.deepEqual(
+    status,
+    { exitCode: 0, signal: null },
+    client.terminalOutput({ terminalId: allowed.terminalId }).output,
+  );
 });
 
 test("ACP terminal exact-test policy denies commands outside the allowlist", async () => {
@@ -694,7 +787,11 @@ test("ACP terminal exact-test policy denies commands outside the allowlist", asy
     outputByteLimit: 4096,
   });
   const status = await client.waitForTerminalExit({ terminalId: allowed.terminalId });
-  assert.deepEqual(status, { exitCode: 0, signal: null });
+  assert.deepEqual(
+    status,
+    { exitCode: 0, signal: null },
+    client.terminalOutput({ terminalId: allowed.terminalId }).output,
+  );
 });
 
 test("ACP terminal exact-test policy rejects transformed test commands", async () => {
@@ -768,7 +865,11 @@ test("ACP terminal exact-test policy allows listed diagnostic commands only by e
     outputByteLimit: 4096,
   });
   const status = await client.waitForTerminalExit({ terminalId: allowed.terminalId });
-  assert.deepEqual(status, { exitCode: 0, signal: null });
+  assert.deepEqual(
+    status,
+    { exitCode: 0, signal: null },
+    client.terminalOutput({ terminalId: allowed.terminalId }).output,
+  );
 
   await assert.rejects(
     () => client.createTerminal({
@@ -1033,6 +1134,7 @@ test("ACP session update no-edit idle guard fails configured stalled execute rea
       toolCallId: "call-read-idle",
     },
   });
+  assert.equal(client.executeNoEditIdleTimer?.hasRef(), true, "fail-fast guard must keep the request alive until it settles");
 
   await assert.rejects(
     () => withTimeout(pending, 500, "no-edit idle guard did not fire"),
@@ -2504,6 +2606,7 @@ test("AcpPool persistent ACP reuses one provider process while keeping per-job a
     hubRoot,
     env: {
       ...process.env,
+      ...sandboxTempEnv(tmp),
       CPB_AGENT_ISOLATE_HOME: "0",
       CPB_CODEGRAPH_ENABLED: "0",
       CPB_ACP_RTK_ENABLED: "0",
@@ -2585,6 +2688,7 @@ test("AcpPool closeProvider worktree release frees persistent provider lease", a
     hubRoot,
     env: {
       ...process.env,
+      ...sandboxTempEnv(tmp),
       CPB_AGENT_ISOLATE_HOME: "0",
       CPB_CODEGRAPH_ENABLED: "0",
       CPB_ACP_RTK_ENABLED: "0",
@@ -2632,6 +2736,134 @@ test("AcpPool closeProvider worktree release frees persistent provider lease", a
   }
 });
 
+test("AcpPool job release closes every conversation across replay worktrees", async () => {
+  const tmp = await tempRoot("cpb-acp-persistent-job-release");
+  const cpbRoot = path.join(tmp, "cpb");
+  const hubRoot = path.join(tmp, "hub");
+  const dataRoot = path.join(tmp, "project-runtime");
+  const sourceWorktree = path.join(tmp, "source-worktree");
+  const verifierReplay = path.join(tmp, "verifier-replay");
+  const scenarioPath = path.join(tmp, "scenario.json");
+  const transcriptPath = path.join(tmp, "transcript.jsonl");
+  await mkdir(sourceWorktree, { recursive: true });
+  await mkdir(verifierReplay, { recursive: true });
+  await writeFile(
+    scenarioPath,
+    JSON.stringify({ responses: [{ output: "job-release-response" }] }),
+    "utf8",
+  );
+
+  const pool = new AcpPool({
+    cpbRoot,
+    hubRoot,
+    env: {
+      ...process.env,
+      ...sandboxTempEnv(tmp),
+      CPB_CODEGRAPH_ENABLED: "0",
+      CPB_ACP_RTK_ENABLED: "0",
+      CPB_ACP_PERSISTENT_PROCESS: "1",
+      CPB_PROJECT_RUNTIME_ROOT: dataRoot,
+      CPB_ACP_FAKE_ACP_COMMAND: process.execPath,
+      CPB_ACP_FAKE_ACP_ARGS: JSON.stringify([
+        testAgent,
+        "--scenario-file",
+        scenarioPath,
+        "--transcript-file",
+        transcriptPath,
+      ]),
+    },
+  });
+
+  try {
+    const first = await pool.execute("fake-acp", "source execution", sourceWorktree, 10_000, {
+      projectId: "proj",
+      jobId: "job-release",
+      phase: "execute",
+      role: "executor",
+      conversationKey: "cpb:proj:job-release:attempt-1:executor",
+    });
+    await pool.execute("fake-acp", "independent verification", verifierReplay, 10_000, {
+      projectId: "proj",
+      jobId: "job-release",
+      phase: "verify",
+      role: "verifier",
+      conversationKey: "cpb:proj:job-release:attempt-1:verifier",
+    });
+
+    assert.equal(pool.persistentClients.size, 2);
+    assert.equal(await pool.releaseJob("proj", "job-release", "attempt_complete"), true);
+    assert.equal(pool.persistentClients.size, 0);
+
+    const transcript = await readJsonl(transcriptPath);
+    assert.equal(transcript.filter((event) => event.event === "session/close").length, 2);
+    const audit = await readJsonl(first.acpAuditFile);
+    assert.equal(audit.filter((event) => event.event === "session_close").length, 2);
+    const launches = audit.filter((event) => event.event === "agent_launch");
+    assert.equal(launches.length, 2);
+    assert.notEqual(launches[0]?.agentHome?.home, launches[1]?.agentHome?.home);
+    for (const launch of launches) {
+      assert.match(
+        String(launch?.agentHome?.home || ""),
+        new RegExp(`${path.join(dataRoot, "agent-homes", "fake-acp", "job-release").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/conversation-[a-f0-9]{16}$`),
+      );
+    }
+  } finally {
+    await pool.stop();
+  }
+});
+
+test("AcpPool one-shot ACP scopes isolated homes per conversation", async () => {
+  const tmp = await tempRoot("cpb-acp-oneshot-conversation-homes");
+  const cpbRoot = path.join(tmp, "cpb");
+  const hubRoot = path.join(tmp, "hub");
+  const dataRoot = path.join(tmp, "project-runtime");
+  const sourceWorktree = path.join(tmp, "source-worktree");
+  const verifierReplay = path.join(tmp, "verifier-replay");
+  await mkdir(sourceWorktree, { recursive: true });
+  await mkdir(verifierReplay, { recursive: true });
+
+  const pool = new AcpPool({
+    cpbRoot,
+    hubRoot,
+    persistentProcesses: false,
+    env: {
+      ...process.env,
+      ...sandboxTempEnv(tmp),
+      CPB_CODEGRAPH_ENABLED: "0",
+      CPB_ACP_RTK_ENABLED: "0",
+      CPB_PROJECT_RUNTIME_ROOT: dataRoot,
+      CPB_ACP_FAKE_ACP_COMMAND: process.execPath,
+      CPB_ACP_FAKE_ACP_ARGS: JSON.stringify([testAgent, "--response", "one-shot-response"]),
+    },
+  });
+
+  try {
+    const first = await pool.execute("fake-acp", "source execution", sourceWorktree, 10_000, {
+      projectId: "proj",
+      jobId: "job-one-shot-homes",
+      phase: "execute",
+      role: "executor",
+      conversationKey: "cpb:proj:job-one-shot-homes:attempt-1:executor",
+    });
+    await pool.execute("fake-acp", "independent verification", verifierReplay, 10_000, {
+      projectId: "proj",
+      jobId: "job-one-shot-homes",
+      phase: "verify",
+      role: "verifier",
+      conversationKey: "cpb:proj:job-one-shot-homes:attempt-1:verifier",
+    });
+
+    const launches = (await readJsonl(first.acpAuditFile)).filter((event) => event.event === "agent_launch");
+    assert.equal(launches.length, 2);
+    assert.notEqual(launches[0]?.agentHome?.home, launches[1]?.agentHome?.home);
+    for (const launch of launches) {
+      assert.match(String(launch?.agentHome?.home || ""), /\/job-one-shot-homes\/conversation-[a-f0-9]{16}$/);
+    }
+  } finally {
+    await pool.stop();
+  }
+});
+
 test("AcpPool stop terminates persistent provider when session close hangs", async () => {
   const tmp = await tempRoot("cpb-acp-persistent-close-hang");
   const cpbRoot = path.join(tmp, "cpb");
@@ -2651,6 +2883,7 @@ test("AcpPool stop terminates persistent provider when session close hangs", asy
     hubRoot,
     env: {
       ...process.env,
+      ...sandboxTempEnv(tmp),
       CPB_AGENT_ISOLATE_HOME: "0",
       CPB_CODEGRAPH_ENABLED: "0",
       CPB_ACP_RTK_ENABLED: "0",
@@ -2706,6 +2939,7 @@ test("AcpPool stop terminates active one-shot provider child", async () => {
     hubRoot,
     env: {
       ...process.env,
+      ...sandboxTempEnv(tmp),
       CPB_AGENT_ISOLATE_HOME: "0",
       CPB_CODEGRAPH_ENABLED: "0",
       CPB_ACP_RTK_ENABLED: "0",
@@ -2760,6 +2994,7 @@ test("AcpPool one-shot uses ACP idle timeout before total phase timeout", async 
     hubRoot,
     env: {
       ...process.env,
+      ...sandboxTempEnv(tmp),
       CPB_AGENT_ISOLATE_HOME: "0",
       CPB_CODEGRAPH_ENABLED: "0",
       CPB_ACP_RTK_ENABLED: "0",
@@ -2813,6 +3048,7 @@ test("AcpPool one-shot uses session-update idle timeout despite provider stderr 
     hubRoot,
     env: {
       ...process.env,
+      ...sandboxTempEnv(tmp),
       CPB_AGENT_ISOLATE_HOME: "0",
       CPB_CODEGRAPH_ENABLED: "0",
       CPB_ACP_RTK_ENABLED: "0",
@@ -2897,6 +3133,7 @@ setInterval(() => {}, 1000);
     hubRoot,
     env: {
       ...process.env,
+      ...sandboxTempEnv(tmp),
       CPB_AGENT_ISOLATE_HOME: "0",
       CPB_CODEGRAPH_ENABLED: "0",
       CPB_ACP_PERSISTENT_PROCESS: "0",
@@ -2964,6 +3201,7 @@ test("AcpPool persistent ACP reuses the provider process across isolated worktre
     hubRoot,
     env: {
       ...process.env,
+      ...sandboxTempEnv(tmp),
       CPB_AGENT_ISOLATE_HOME: "0",
       CPB_CODEGRAPH_ENABLED: "0",
       CPB_ACP_PERSISTENT_PROCESS: "1",

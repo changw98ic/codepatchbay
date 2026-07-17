@@ -8,6 +8,7 @@ import path from "node:path";
 const ROOT = path.resolve(import.meta.dirname, "..");
 const CPB = path.join(ROOT, "cli", "cpb.js");
 const HUB_SERVER = path.join(ROOT, "server", "index.js");
+const CI_HUB_BEARER_TOKEN = "ci-hub-bearer-token-with-at-least-32-bytes";
 
 const PASS = "\x1b[0;32mPASS\x1b[0m";
 const FAIL = "\x1b[0;31mFAIL\x1b[0m";
@@ -70,6 +71,7 @@ function startHubProcess(hubRoot: string): Promise<HubProcess> {
         CPB_HUB_ROOT: hubRoot,
         CPB_HOST: "127.0.0.1",
         CPB_PORT: "0",
+        CPB_HUB_BEARER_TOKEN: CI_HUB_BEARER_TOKEN,
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -196,20 +198,24 @@ async function smokeHubLifecycle() {
   try {
     hub = await startHubProcess(hubRoot);
 
-    const response = await fetch(`${hub.url}/api/health`, { signal: AbortSignal.timeout(5_000) });
+    const requestOptions = () => ({
+      headers: { authorization: `Bearer ${CI_HUB_BEARER_TOKEN}` },
+      signal: AbortSignal.timeout(5_000),
+    });
+    const response = await fetch(`${hub.url}/api/health`, requestOptions());
     const health = recordValue(await response.json());
     if (!response.ok || health.ok !== true || health.status !== "ok") {
       throw new Error(`Unexpected Hub health response: ${JSON.stringify(health)}`);
     }
 
-    const projectsResponse = await fetch(`${hub.url}/api/projects`, { signal: AbortSignal.timeout(5_000) });
+    const projectsResponse = await fetch(`${hub.url}/api/projects`, requestOptions());
     const projects = await projectsResponse.json();
     if (!projectsResponse.ok || !Array.isArray(projects)) {
       throw new Error(`Unexpected Hub projects response: ${JSON.stringify(projects)}`);
     }
 
     const running = await run(CPB, ["hub", "status", "--json"], {
-      env: { CPB_HUB_ROOT: hubRoot },
+      env: { CPB_HUB_ROOT: hubRoot, CPB_HUB_BEARER_TOKEN: CI_HUB_BEARER_TOKEN },
     });
     if (running.code !== 0) {
       throw new Error(`cpb hub status failed: ${snippet(running.stderr)}`);
@@ -223,7 +229,7 @@ async function smokeHubLifecycle() {
     await waitForExit(hub.child);
 
     const stopped = await run(CPB, ["hub", "status", "--json"], {
-      env: { CPB_HUB_ROOT: hubRoot },
+      env: { CPB_HUB_ROOT: hubRoot, CPB_HUB_BEARER_TOKEN: CI_HUB_BEARER_TOKEN },
     });
     const stoppedStatus = recordValue(JSON.parse(stopped.stdout));
     if (stopped.code !== 0 || recordValue(stoppedStatus.liveness).alive !== false) {
@@ -254,7 +260,7 @@ async function smokeHubCliLifecycle() {
     CPB_HUB_ROOT: hubRoot,
     CPB_HOST: "0.0.0.0",
     CPB_PORT: "0",
-    CPB_HUB_BEARER_TOKEN: "ci-hub-bearer-token-with-at-least-32-bytes",
+    CPB_HUB_BEARER_TOKEN: CI_HUB_BEARER_TOKEN,
     CPB_HUB_ALLOW_INSECURE_HTTP: "1",
   };
   try {

@@ -41,6 +41,28 @@ test("createAgentHome places isolated homes under explicit dataRoot", async () =
   await assertMissing(path.join(cpbRoot, "cpb-task", "agent-homes"));
 });
 
+test("createAgentHome gives concurrent instances distinct homes beneath one job", async () => {
+  const root = await tempRoot("cpb-agent-home-instance-scope");
+  const cpbRoot = path.join(root, "cpb");
+  const dataRoot = path.join(root, "project-runtime");
+
+  const executor = await createAgentHome(cpbRoot, "codex", "job-1", {
+    dataRoot,
+    parentEnv: { HOME: path.join(root, "user-home") },
+    instanceId: "conversation-executor",
+  });
+  const verifier = await createAgentHome(cpbRoot, "codex", "job-1", {
+    dataRoot,
+    parentEnv: { HOME: path.join(root, "user-home") },
+    instanceId: "../conversation/verifier",
+  });
+  const jobHome = path.join(dataRoot, "agent-homes", "codex", "job-1");
+
+  assert.equal(executor.HOME, path.join(jobHome, "conversation-executor"));
+  assert.equal(verifier.HOME, path.join(jobHome, "conversation-verifier"));
+  assert.notEqual(executor.HOME, verifier.HOME);
+});
+
 test("createAgentHome snapshots Codex auth but excludes version-sensitive user config", async () => {
   const root = await tempRoot("cpb-agent-home-codex-snapshot");
   const userHome = path.join(root, "user-home");
@@ -123,6 +145,43 @@ test("AcpClient.start fails closed for project job env without runtime root", as
       /CPB_PROJECT_RUNTIME_ROOT is required/,
     );
     await assertMissing(path.join(cpbRoot, "cpb-task", "agent-homes"));
+  } finally {
+    await client.close();
+  }
+});
+
+test("AcpClient startup failures retain a bounded redacted stderr tail", async () => {
+  const root = await tempRoot("cpb-acp-client-startup-stderr");
+  const client = new AcpClient({
+    agent: "codex",
+    cwd: root,
+    prompt: "",
+    outputSink: () => {},
+    errorSink: () => {},
+    env: {
+      ...process.env,
+      CPB_AGENT_ISOLATE_HOME: "0",
+      CPB_AGENT_SANDBOX: "off",
+      CPB_CODEGRAPH_ENABLED: "0",
+      CPB_ACP_CODEX_COMMAND: process.execPath,
+      CPB_ACP_CODEX_ARGS: JSON.stringify([
+        "-e",
+        "process.stderr.write('sandbox bootstrap denied token=supersecret123'); process.exit(23)",
+      ]),
+    },
+  });
+
+  try {
+    await assert.rejects(
+      client.start(),
+      (error: any) => {
+        assert.match(error.message, /code=23/);
+        assert.match(error.message, /sandbox bootstrap denied/);
+        assert.match(error.message, /token=\[REDACTED\]/);
+        assert.doesNotMatch(error.message, /supersecret123/);
+        return true;
+      },
+    );
   } finally {
     await client.close();
   }

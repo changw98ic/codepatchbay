@@ -8,8 +8,22 @@ import { test } from "node:test";
 const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(import.meta.dirname, "..", "..");
 const sourceScript = path.join(repoRoot, "scripts", "verify-release-gate.ts");
+const runtimeScript = path.join(repoRoot, "dist", "scripts", "verify-release-gate.js");
+const ciWorkflow = path.join(repoRoot, ".github", "workflows", "test.yml");
 const flagshipGateDoc = path.join(repoRoot, "docs", "product", "cpb-flagship-validation-gate.md");
 const packageJson = path.join(repoRoot, "package.json");
+
+test("CI installs a Linux sandbox provider before ACP tests", async () => {
+  const source = await readFile(ciWorkflow, "utf8");
+  assert.match(source, /apt-get install -y bubblewrap redis-server redis-tools zsh/);
+  assert.match(source, /bwrap --version/);
+  assert.match(source, /apparmor_restrict_unprivileged_userns/);
+  assert.match(source, /apparmor_parser -r/);
+  assert.match(source, /--ro-bind-try \/usr \/usr/);
+  assert.match(source, /--bind-try "\$smoke_root" "\$smoke_root"/);
+  assert.match(source, /\/bin\/zsh -c 'true'/);
+  assert.doesNotMatch(source, /--ro-bind \/ \/|--ro-bind-try \/ \/|--bind \/ \/|--bind-try \/ \/|--dev-bind \/ \/|--dev-bind-try \/ \/|--overlay-src \/(?:\s|$)/);
+});
 
 test("release gate runner refuses decomposition-disabled environments and bypasses run-node-tests", async () => {
   const source = await readFile(sourceScript, "utf8");
@@ -27,7 +41,7 @@ test("release gate runner refuses decomposition-disabled environments and bypass
   assert.match(source, /--test-name-pattern/);
 
   await assert.rejects(
-    execFileAsync(process.execPath, ["--experimental-strip-types", sourceScript], {
+    execFileAsync(process.execPath, [runtimeScript], {
       cwd: repoRoot,
       env: { ...process.env, CPB_CHECKLIST_DECOMPOSE: "0" },
     }),
@@ -44,7 +58,7 @@ test("release gate runner refuses agent-home-isolation-disabled environments", a
   assert.match(source, /CPB_AGENT_ISOLATE_HOME/);
 
   await assert.rejects(
-    execFileAsync(process.execPath, ["--experimental-strip-types", sourceScript], {
+    execFileAsync(process.execPath, [runtimeScript], {
       cwd: repoRoot,
       env: { ...process.env, CPB_CHECKLIST_DECOMPOSE: "1", CPB_AGENT_ISOLATE_HOME: "0" },
     }),
