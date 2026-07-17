@@ -16,6 +16,7 @@ type CreateAgentHomeOptions = {
   parentEnv?: StringRecord;
   dataRoot?: string | null;
   isolateTemp?: boolean;
+  instanceId?: string | null;
 };
 // Authentication is portable across Codex/ACP versions. User-level
 // config.toml is not: model, MCP, plugin, and feature settings can target a
@@ -157,8 +158,14 @@ export async function createAgentHome(cpbRoot: string, agentName: string, jobId:
   parentEnv = {},
   dataRoot = null,
   isolateTemp = false,
+  instanceId = null,
 }: CreateAgentHomeOptions = {}) {
-  const baseDir = path.join(resolveAgentHomeRoot(cpbRoot, { dataRoot, parentEnv }), "agent-homes", agentName, jobId || "default");
+  const jobDir = path.join(resolveAgentHomeRoot(cpbRoot, { dataRoot, parentEnv }), "agent-homes", agentName, jobId || "default");
+  const safeInstanceId = String(instanceId || "")
+    .trim()
+    .replace(/[^A-Za-z0-9_-]/g, "-")
+    .replace(/^-+|-+$/g, "");
+  const baseDir = safeInstanceId ? path.join(jobDir, safeInstanceId) : jobDir;
   await mkdir(baseDir, { recursive: true, mode: 0o700 });
 
   const configDir = path.join(baseDir, ".config");

@@ -20,7 +20,7 @@ import os from "node:os";
 import crypto from "node:crypto";
 import type { LooseRecord } from "../../core/contracts/types.js";
 import chokidar from "chokidar";
-import { poolExhaustedJob, releaseManagedAcpWorktree, stopManagedAcpPool } from "../../bridges/runtime-services.js";
+import { poolExhaustedJob, releaseManagedAcpJob, releaseManagedAcpWorktree, stopManagedAcpPool } from "../../bridges/runtime-services.js";
 import { createLogger } from "../../shared/logger.js";
 import { writeJsonAtomic, writeJsonOnce } from "../../shared/fs-utils.js";
 import { AssignmentStore, type AttemptIdentity } from "../../shared/orchestrator/assignment-store.js";
@@ -310,19 +310,34 @@ export async function main() {
     }
   }
 
-  async function releaseWorkerAcpWorktree(worktreePath: string | null | undefined, jobLog: ReturnType<typeof createLogger> = log) {
-    if (!worktreePath) return true;
+  async function releaseWorkerAcpAttempt({
+    worktreePath,
+    projectId,
+    jobId,
+    jobLog = log,
+  }: {
+    worktreePath: string | null | undefined;
+    projectId: string;
+    jobId: string;
+    jobLog?: ReturnType<typeof createLogger>;
+  }) {
+    if (!worktreePath && (!projectId || !jobId)) return true;
     try {
-      const released = await releaseManagedAcpWorktree({
-        cpbRoot,
-        hubRoot,
-        cwd: worktreePath,
-        closeProvider: true,
-      });
-      if (released) jobLog.info("ACP worktree session released");
+      const releasedJob = projectId && jobId
+        ? await releaseManagedAcpJob({ cpbRoot, hubRoot, projectId, jobId })
+        : false;
+      const releasedWorktree = worktreePath
+        ? await releaseManagedAcpWorktree({
+            cpbRoot,
+            hubRoot,
+            cwd: worktreePath,
+            closeProvider: true,
+          })
+        : false;
+      if (releasedJob || releasedWorktree) jobLog.info("ACP attempt sessions released");
       return true;
     } catch (err: unknown) {
-      jobLog.warn(`ACP worktree session release failed: ${err instanceof Error ? err.message : String(err)}`);
+      jobLog.warn(`ACP attempt session release failed: ${err instanceof Error ? err.message : String(err)}`);
       return false;
     }
   }
@@ -619,7 +634,7 @@ export async function main() {
       let worktreeInfo: WorktreeInfo | null = null;
       let terminalAttemptResult: LooseRecord | null = null;
       let inboxAcked = false;
-      let acpWorktreeReleaseComplete = false;
+      let acpAttemptReleaseComplete = false;
 
       // Run job via bridge (service injection + sourcePath resolution)
       try {
@@ -731,9 +746,14 @@ export async function main() {
           attemptToken: assignment.attemptToken,
           orchestratorEpoch: assignment.orchestratorEpoch,
         });
-        acpWorktreeReleaseComplete = await releaseWorkerAcpWorktree(worktreeInfo?.path, jobLog);
-        if (!acpWorktreeReleaseComplete) {
-          throw new Error("ACP worktree session release failed before result publication");
+        acpAttemptReleaseComplete = await releaseWorkerAcpAttempt({
+          worktreePath: worktreeInfo?.path,
+          projectId: assignment.projectId,
+          jobId,
+          jobLog,
+        });
+        if (!acpAttemptReleaseComplete) {
+          throw new Error("ACP attempt session release failed before result publication");
         }
         await finalizeAndWriteSuccessfulResult({
           cpbRoot,
@@ -784,11 +804,16 @@ export async function main() {
             });
           } catch {}
         }
-        if (!acpWorktreeReleaseComplete) {
-          acpWorktreeReleaseComplete = await releaseWorkerAcpWorktree(worktreeInfo?.path, jobLog);
+        if (!acpAttemptReleaseComplete) {
+          acpAttemptReleaseComplete = await releaseWorkerAcpAttempt({
+            worktreePath: worktreeInfo?.path,
+            projectId: assignment.projectId,
+            jobId,
+            jobLog,
+          });
         }
-        if (!acpWorktreeReleaseComplete) {
-          throw new Error(`ACP worktree session release failed before failure publication: ${errObj.message}`);
+        if (!acpAttemptReleaseComplete) {
+          throw new Error(`ACP attempt session release failed before failure publication: ${errObj.message}`);
         }
         await writeJsonOnce(path.join(attemptDir, "result.json"), {
           assignmentId,
@@ -815,8 +840,13 @@ export async function main() {
         inboxAcked = completion.inboxAcked;
       } finally {
         clearInterval(cancelTimer);
-        if (!acpWorktreeReleaseComplete) {
-          acpWorktreeReleaseComplete = await releaseWorkerAcpWorktree(worktreeInfo?.path, jobLog);
+        if (!acpAttemptReleaseComplete) {
+          acpAttemptReleaseComplete = await releaseWorkerAcpAttempt({
+            worktreePath: worktreeInfo?.path,
+            projectId: assignment.projectId,
+            jobId,
+            jobLog,
+          });
         }
         if (worktreeInfo && assignment.sourcePath) {
           if (shouldCleanupWorkerWorktree(terminalAttemptResult)) {

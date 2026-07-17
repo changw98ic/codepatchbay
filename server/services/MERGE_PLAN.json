@@ -103,7 +103,7 @@
         {
           "name": "acp-pool.ts",
           "mergedFrom": ["acp-pool.ts"],
-          "exports": ["poolClientKey", "readAcpUsageFromAudit", "RateLimitError", "AcpExecutionError", "PoolExhaustedError", "providerKeyForAgent", "envForAgent", "resolvePoolWaitTimeoutMs", "AcpPool", "getPoolRuntime", "getManagedAcpPool", "stopPoolRuntime", "resetPoolRuntime", "stopAllPoolRuntimes", "resetAllPoolRuntimes", "stopManagedAcpPool", "releaseManagedAcpWorktree", "resetManagedAcpPoolsForTests"],
+          "exports": ["poolClientKey", "readAcpUsageFromAudit", "RateLimitError", "AcpExecutionError", "PoolExhaustedError", "providerKeyForAgent", "envForAgent", "resolvePoolWaitTimeoutMs", "AcpPool", "getPoolRuntime", "getManagedAcpPool", "stopPoolRuntime", "resetPoolRuntime", "stopAllPoolRuntimes", "resetAllPoolRuntimes", "stopManagedAcpPool", "releaseManagedAcpWorktree", "releaseManagedAcpJob", "resetManagedAcpPoolsForTests"],
           "estimatedLines": 1452
         }
       ]

@@ -2,6 +2,7 @@ import {
   AcpPool,
   getManagedAcpPool,
   RateLimitError,
+  releaseManagedAcpJob,
   releaseManagedAcpWorktree,
   stopManagedAcpPool,
 } from "../server/services/acp/acp-pool.js";
@@ -52,6 +53,7 @@ export {
   pushIssues,
   RateLimitError,
   rebuildJobsIndex,
+  releaseManagedAcpJob,
   releaseManagedAcpWorktree,
   resolveGithubTransport,
   resolveHubRoot,

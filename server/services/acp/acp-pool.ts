@@ -73,6 +73,7 @@ type EnvRecord = Record<string, string | undefined> & {
   CPB_ACP_POOL_WAIT_TIMEOUT_MS?: string;
   CPB_ACP_CLIENT?: string;
   CPB_ACP_TERMINAL?: string;
+  CPB_AGENT_HOME_INSTANCE_ID?: string;
 };
 
 type UsageRollup = {
@@ -256,6 +257,8 @@ export type ClaudeCliToolAuditEvent = {
 type PersistentClientState = {
   client: AcpClient;
   agent: string;
+  projectId: string;
+  jobId: string;
   conversationKey: string | null;
   sessionKey: string;
   providerKey: string;
@@ -303,6 +306,11 @@ export function poolClientKey(agent: string, options: PoolClientKeyOptions = {})
   return conversationKey
     ? `${baseKey}::conversation:${encodeURIComponent(conversationKey)}`
     : baseKey;
+}
+
+function conversationAgentHomeInstanceId(conversationKey: string | null) {
+  if (!conversationKey) return null;
+  return `conversation-${createHash("sha256").update(conversationKey).digest("hex").slice(0, 16)}`;
 }
 
 const STRING_ARRAY_SCHEMA: JsonSchema = {
@@ -824,6 +832,8 @@ function acpMetadataEnv(options: AcpMetadataOptions = {}) {
   if (options.role) meta.CPB_ACP_ROLE = options.role;
   if (options.poolScope) meta.CPB_ACP_POOL_SCOPE = options.poolScope;
   if (options.controlPlane) meta.CPB_ACP_CONTROL_PLANE = "1";
+  const homeInstanceId = conversationAgentHomeInstanceId(stringValue(options.conversationKey));
+  if (homeInstanceId) meta.CPB_AGENT_HOME_INSTANCE_ID = homeInstanceId;
   return meta;
 }
 
@@ -1245,6 +1255,28 @@ export class AcpPool {
       released = true;
     }
     return released;
+  }
+
+  async releaseJob(projectId: string, jobId: string, reason = "job_release") {
+    const targetProjectId = stringValue(projectId);
+    const targetJobId = stringValue(jobId);
+    if (!targetProjectId || !targetJobId) return false;
+
+    const matches = [...this.persistentClients.entries()].filter(([, persistent]) =>
+      persistent.projectId === targetProjectId && persistent.jobId === targetJobId
+    );
+    if (matches.length === 0) return false;
+
+    // Close every logical session before terminating any provider process.
+    // Process cleanup is intentionally aggressive and must not prevent a peer
+    // conversation from recording its terminal audit event.
+    for (const [, persistent] of matches) {
+      await persistent.client.closeActiveSession(reason).catch(() => null);
+    }
+    for (const [key] of matches) {
+      await this.#closePersistentClient(key);
+    }
+    return true;
   }
 
   async statusAsync() {
@@ -1935,6 +1967,7 @@ export class AcpPool {
         parentEnv: env,
         dataRoot: homeDataRoot,
         isolateTemp: Boolean(env.CPB_AGENT_FS_BOUNDARY_JSON),
+        instanceId: env.CPB_AGENT_HOME_INSTANCE_ID || null,
       },
     );
     Object.assign(env, isolatedHome);
@@ -2698,6 +2731,8 @@ export class AcpPool {
 
   async #runPersistentNow(key: string, agent: string, prompt: string, cwd: string, timeoutMs: number, options: PoolRequestOptions = {}) {
     const persistent = await this.#getPersistentClient(key, agent, cwd, options);
+    persistent.projectId = stringValue(options.projectId);
+    persistent.jobId = stringValue(options.jobId);
     persistent.lastCwd = cwd;
     const client = persistent.client;
     const executionEnv = this.#executionEnv(agent, options);
@@ -2784,10 +2819,13 @@ export class AcpPool {
       env: executionEnv,
       resumeSessionId,
       reuseSession: true,
+      agentHomeInstanceId: conversationAgentHomeInstanceId(conversationKey),
     });
     const meta: PersistentClientState = {
       client,
       agent,
+      projectId: stringValue(options.projectId),
+      jobId: stringValue(options.jobId),
       conversationKey,
       sessionKey: this.#sessionKey(agent, { ...options, cwd }),
       providerKey,
@@ -2976,6 +3014,17 @@ export function releaseManagedAcpWorktree({ cpbRoot, hubRoot, cwd, reason = "wor
   const pool = runtimes.get(roots.key);
   if (!pool) return false;
   return pool.releaseWorktree(cwd, reason, { closeProvider, closePersistent });
+}
+
+export function releaseManagedAcpJob({ cpbRoot, hubRoot, projectId, jobId, reason = "job_release", ...opts }: AcpPoolOptions & {
+  projectId?: string;
+  jobId?: string;
+  reason?: string;
+} = {}) {
+  const roots = resolvePoolRoots(hubRoot, cpbRoot, opts.env || process.env);
+  const pool = runtimes.get(roots.key);
+  if (!pool) return false;
+  return pool.releaseJob(projectId || "", jobId || "", reason);
 }
 
 export const resetManagedAcpPoolsForTests = resetAllPoolRuntimes;

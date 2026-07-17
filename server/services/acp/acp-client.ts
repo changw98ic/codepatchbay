@@ -1337,6 +1337,7 @@ export class AcpClient {
   executeNoEditIdleTimer: NodeJS.Timeout | null;
   executeNoEditIdleTimeoutMs: number;
   closeSessionTimeoutMs: number;
+  agentHomeInstanceId: string | null;
   auditEnv: NodeJS.ProcessEnv;
   auditFile: string | null;
   activeSessionId: string | null;
@@ -1362,6 +1363,7 @@ export class AcpClient {
     env = process.env,
     resumeSessionId = null,
     reuseSession = false,
+    agentHomeInstanceId = null,
   }: {
     agent: string;
     cwd: string;
@@ -1374,6 +1376,7 @@ export class AcpClient {
     env?: NodeJS.ProcessEnv;
     resumeSessionId?: string | null;
     reuseSession?: boolean;
+    agentHomeInstanceId?: string | null;
   }) {
     this.agent = agent;
     this.cwd = cwd;
@@ -1403,6 +1406,7 @@ export class AcpClient {
     this.executeNoEditIdleTimer = null;
     this.executeNoEditIdleTimeoutMs = executeNoEditIdleTimeoutMs(this.env);
     this.closeSessionTimeoutMs = nonNegativeInteger(this.env.CPB_ACP_CLOSE_SESSION_TIMEOUT_MS, DEFAULT_CLOSE_SESSION_TIMEOUT_MS);
+    this.agentHomeInstanceId = agentHomeInstanceId || this.env.CPB_AGENT_HOME_INSTANCE_ID || null;
     this.auditEnv = { ...this.env };
     this.auditFile = resolveAcpAuditFile(this.auditEnv);
     this.activeSessionId = null;
@@ -1478,6 +1482,7 @@ export class AcpClient {
           parentEnv: env,
           dataRoot: homeDataRoot,
           isolateTemp: Boolean(env.CPB_AGENT_FS_BOUNDARY_JSON),
+          instanceId: this.agentHomeInstanceId,
         },
       );
       Object.assign(env, homeEnv);
@@ -1724,9 +1729,13 @@ export class AcpClient {
     this.activeSessionId = null;
     this.activeSessionCwd = null;
     if (!this.child || this.closed || !this.initialized?.agentCapabilities?.sessionCapabilities?.close) return;
+    let closeError: unknown = null;
     const closeRequest = this.request("session/close", { sessionId })
       .then(() => "closed" as const)
-      .catch(() => "error" as const);
+      .catch((error) => {
+        closeError = error;
+        return "error" as const;
+      });
     if (timeoutMs <= 0) {
       closeRequest.catch(() => null);
       await this.recordAudit("session_close_timeout", { sessionId, cwd, reason, timeoutMs });
@@ -1747,7 +1756,15 @@ export class AcpClient {
     if (result === "timeout") {
       closeRequest.catch(() => null);
       await this.recordAudit("session_close_timeout", { sessionId, cwd, reason, timeoutMs });
+      return;
     }
+    const closeErrorMessage = closeError instanceof Error ? closeError.message : String(closeError || "session/close request failed");
+    await this.recordAudit("session_close_error", {
+      sessionId,
+      cwd,
+      reason,
+      error: String(redactSecrets(closeErrorMessage) || "session/close request failed").slice(-1000),
+    });
   }
 
   async run() {

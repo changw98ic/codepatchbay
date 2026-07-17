@@ -41,6 +41,28 @@ test("createAgentHome places isolated homes under explicit dataRoot", async () =
   await assertMissing(path.join(cpbRoot, "cpb-task", "agent-homes"));
 });
 
+test("createAgentHome gives concurrent instances distinct homes beneath one job", async () => {
+  const root = await tempRoot("cpb-agent-home-instance-scope");
+  const cpbRoot = path.join(root, "cpb");
+  const dataRoot = path.join(root, "project-runtime");
+
+  const executor = await createAgentHome(cpbRoot, "codex", "job-1", {
+    dataRoot,
+    parentEnv: { HOME: path.join(root, "user-home") },
+    instanceId: "conversation-executor",
+  });
+  const verifier = await createAgentHome(cpbRoot, "codex", "job-1", {
+    dataRoot,
+    parentEnv: { HOME: path.join(root, "user-home") },
+    instanceId: "../conversation/verifier",
+  });
+  const jobHome = path.join(dataRoot, "agent-homes", "codex", "job-1");
+
+  assert.equal(executor.HOME, path.join(jobHome, "conversation-executor"));
+  assert.equal(verifier.HOME, path.join(jobHome, "conversation-verifier"));
+  assert.notEqual(executor.HOME, verifier.HOME);
+});
+
 test("createAgentHome snapshots Codex auth but excludes version-sensitive user config", async () => {
   const root = await tempRoot("cpb-agent-home-codex-snapshot");
   const userHome = path.join(root, "user-home");
