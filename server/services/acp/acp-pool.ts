@@ -72,6 +72,7 @@ type EnvRecord = Record<string, string | undefined> & {
   CPB_ACP_POOL_PROVIDER_MAX?: string;
   CPB_ACP_POOL_CONNECTION_POLL_MS?: string;
   CPB_ACP_POOL_WAIT_TIMEOUT_MS?: string;
+  CPB_ACP_PROVIDER_FALLBACKS?: string;
   CPB_ACP_CLIENT?: string;
   CPB_ACP_TERMINAL?: string;
   CPB_AGENT_HOME_INSTANCE_ID?: string;
@@ -155,6 +156,14 @@ type AcpPoolOptions = LooseRecord & {
   providerConnectionLimits?: Record<string, number>;
   connectionPollMs?: unknown;
   leaseRoot?: string;
+  providerFallbacks?: unknown;
+};
+
+export type ProviderFallbackCandidate = {
+  providerKey: string;
+  agent: string;
+  variant?: string | null;
+  providerFallback?: boolean;
 };
 
 type PoolStatus = ReturnType<AcpPool["status"]>;
@@ -890,6 +899,80 @@ function providerEnvKey(providerKey: string) {
   return String(providerKey || "unknown").toUpperCase().replace(/[^A-Z0-9]/g, "_");
 }
 
+const DEFAULT_PROVIDER_FALLBACKS: Readonly<Record<string, readonly ProviderFallbackCandidate[]>> = Object.freeze({
+  // GLM is the normal low-cost executor in CPB.  MiMo is an independent
+  // Claude-compatible provider and is therefore safe to use when GLM is
+  // quota-blocked or its transport becomes unavailable.  Keep this mapping
+  // provider-key based so the handoff is auditable and never masquerades as
+  // another GLM request.
+  "claude:glm": Object.freeze([
+    Object.freeze({
+      providerKey: "claude:mimo-v2.5pro",
+      agent: "claude-mimo",
+      variant: "mimo-v2.5pro",
+      providerFallback: true,
+    }),
+  ]),
+});
+
+function parseProviderFallbacks(value: unknown): LooseRecord | null {
+  if (isRecord(value)) return value;
+  if (typeof value !== "string" || !value.trim()) return null;
+  try {
+    const parsed = JSON.parse(value);
+    return isRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function normalizedProviderFallbackCandidate(value: unknown): ProviderFallbackCandidate | null {
+  if (!isRecord(value)) return null;
+  const providerKey = typeof value.providerKey === "string" ? value.providerKey.trim() : "";
+  const agent = typeof value.agent === "string"
+    ? value.agent.trim()
+    : typeof value.name === "string"
+      ? value.name.trim()
+      : "";
+  if (!providerKey || !agent) return null;
+  const variant = typeof value.variant === "string" && value.variant.trim()
+    ? value.variant.trim()
+    : null;
+  return { providerKey, agent, variant, providerFallback: true };
+}
+
+function normalizeProviderFallbacks(value: unknown): Record<string, ProviderFallbackCandidate[]> {
+  const configured = parseProviderFallbacks(value);
+  const entries = configured ? Object.entries(configured) : [];
+  const result: Record<string, ProviderFallbackCandidate[]> = {};
+
+  // The built-in mapping is always present.  Operators may override a key in
+  // CPB_ACP_PROVIDER_FALLBACKS without losing the safe default for unrelated
+  // providers.  An explicitly configured empty array disables that key.
+  for (const [key, candidates] of Object.entries(DEFAULT_PROVIDER_FALLBACKS)) {
+    result[key] = candidates.map((candidate) => ({ ...candidate }));
+  }
+  for (const [rawKey, rawCandidates] of entries) {
+    const key = rawKey.trim();
+    if (!key) continue;
+    if (!Array.isArray(rawCandidates)) {
+      result[key] = [];
+      continue;
+    }
+    result[key] = rawCandidates
+      .map((candidate) => normalizedProviderFallbackCandidate(candidate))
+      .filter((candidate): candidate is ProviderFallbackCandidate => Boolean(candidate));
+  }
+  return result;
+}
+
+function serializableProviderFallbacks(fallbacks: Record<string, ProviderFallbackCandidate[]>) {
+  return Object.fromEntries(Object.entries(fallbacks).map(([key, candidates]) => [
+    key,
+    candidates.map(({ providerKey, agent, variant }) => ({ providerKey, agent, variant })),
+  ]));
+}
+
 function sleep(ms: number) {
   return new Promise<void>((resolve) => setTimeout(resolve, ms));
 }
@@ -1121,6 +1204,7 @@ export class AcpPool {
   sessionIdleMs: number;
   providerConnectionLimit: number;
   providerConnectionLimits: Record<string, number>;
+  providerFallbacks: Record<string, ProviderFallbackCandidate[]>;
   connectionPollMs: number;
   active: Map<string, number>;
   activeProviders: Map<string, number>;
@@ -1177,6 +1261,9 @@ export class AcpPool {
       DEFAULT_PROVIDER_CONNECTION_LIMIT,
     );
     this.providerConnectionLimits = opts.providerConnectionLimits || {};
+    this.providerFallbacks = normalizeProviderFallbacks(
+      opts.providerFallbacks ?? this.env.CPB_ACP_PROVIDER_FALLBACKS,
+    );
     this.connectionPollMs = positiveIntOption(
       opts.connectionPollMs ?? this.env.CPB_ACP_POOL_CONNECTION_POLL_MS,
       CONNECTION_POLL_MS,
@@ -1326,6 +1413,8 @@ export class AcpPool {
     for (const agent of agents) {
       const session = this.sessions.get(agent);
       const persistent = this.persistentClients.get(agent);
+      const agentProviderKey = this.providerKey(agent);
+      const fallbackCandidates = this.fallbackCandidates(agent, null, agentProviderKey);
       const capabilities = [
         "rate-limit-backoff",
         "concurrency-bound",
@@ -1333,12 +1422,14 @@ export class AcpPool {
         "live-requests",
         "session-recycle-policy",
       ];
+      if (fallbackCandidates.length > 0) capabilities.push("provider-fallback");
       if (providerProcessReuse) capabilities.push("provider-process-reuse");
       pools[agent] = {
-        providerKey: this.providerKey(agent),
-        limit: this.#providerConnectionLimit(this.providerKey(agent)),
+        providerKey: agentProviderKey,
+        limit: this.#providerConnectionLimit(agentProviderKey),
         active: this.active.get(agent) || 0,
-        queued: this.pending.get(`provider:${this.providerKey(agent)}`)?.length || 0,
+        queued: this.pending.get(`provider:${agentProviderKey}`)?.length || 0,
+        fallbackProviders: fallbackCandidates.map((candidate) => candidate.providerKey),
         activeRequests: allLive.filter((r) => r.requestId.startsWith(`${agent}-`)),
         requestCount: this.requestCount.get(agent) || 0,
         sessionRequestCount: session?.requestCount || 0,
@@ -1383,6 +1474,7 @@ export class AcpPool {
       connectionLimits: {
         providerDefault: this.providerConnectionLimit,
       },
+      providerFallbacks: serializableProviderFallbacks(this.providerFallbacks),
       pools,
     };
   }
@@ -1503,6 +1595,34 @@ export class AcpPool {
 
   providerKey(agent: string, variant: string | null = null) {
     return providerKeyForAgent(agent, this.env, variant);
+  }
+
+  /**
+   * Return provider-level handoff candidates for a failed agent/provider.
+   *
+   * Candidates are deliberately provider-key based.  A fallback therefore
+   * changes both the launched agent and the audited provider identity instead
+   * of relabelling a request to the exhausted provider.  The optional config
+   * is merged at construction time and can be inspected through status().
+   */
+  fallbackCandidates(
+    agent: string,
+    currentVariant: string | null | undefined = null,
+    excludeKey: string | null | undefined = null,
+  ): ProviderFallbackCandidate[] {
+    const currentProviderKey = this.providerKey(agent, currentVariant || null);
+    const keys = [currentProviderKey, agent].filter((key, index, all) => Boolean(key) && all.indexOf(key) === index);
+    const result: ProviderFallbackCandidate[] = [];
+    const seen = new Set<string>();
+    for (const key of keys) {
+      for (const candidate of this.providerFallbacks[key] || []) {
+        if (candidate.providerKey === currentProviderKey || candidate.providerKey === excludeKey) continue;
+        if (seen.has(candidate.providerKey)) continue;
+        seen.add(candidate.providerKey);
+        result.push({ ...candidate });
+      }
+    }
+    return result;
   }
 
   #connectionLeasesDir() {

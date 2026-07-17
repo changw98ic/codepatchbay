@@ -184,6 +184,7 @@ const ACP_POOL_ENV = new Set([
   "CPB_ACP_POOL_MAX_AGE_MS",
   "CPB_ACP_POOL_IDLE_MS",
   "CPB_ACP_POOL_CONNECTION_POLL_MS",
+  "CPB_ACP_PROVIDER_FALLBACKS",
 ]);
 
 function isDynamicAllowedEnvKey(key: string): boolean {
@@ -229,6 +230,7 @@ function isAcpPoolNumericEntry(key: string, value: unknown): boolean {
 
 function shouldCopyAcpPoolEnvEntry(key: string, value: unknown): boolean {
   if (key === "CPB_ACP_POOL_LEASE_ROOT") return typeof value === "string" && value.trim().length > 0;
+  if (key === "CPB_ACP_PROVIDER_FALLBACKS") return typeof value === "string" && value.trim().length > 0;
   return isAcpPoolNumericEntry(key, value) || isAllowedChildEnvKey(key);
 }
 

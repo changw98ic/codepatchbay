@@ -1823,6 +1823,53 @@ test("buildAcpPoolEnv preserves the shared lease root without exposing it to pro
   assert.equal(buildChildEnv(env, { agent: "codex" }).CPB_ACP_POOL_LEASE_ROOT, undefined);
 });
 
+test("buildAcpPoolEnv keeps provider fallback policy in the pool boundary", () => {
+  const env = buildAcpPoolEnv({
+    CPB_ACP_PROVIDER_FALLBACKS: JSON.stringify({ "claude:glm": [] }),
+  });
+  assert.equal(env.CPB_ACP_PROVIDER_FALLBACKS, JSON.stringify({ "claude:glm": [] }));
+  assert.equal(buildChildEnv(env, { agent: "claude-glm" }).CPB_ACP_PROVIDER_FALLBACKS, undefined);
+});
+
+test("AcpPool exposes MiMo as the GLM provider fallback without relabelling the provider", () => {
+  const pool = new AcpPool({
+    cpbRoot: path.join(process.cwd(), ".tmp-cpb-mimo-fallback"),
+    hubRoot: path.join(process.cwd(), ".tmp-cpb-mimo-fallback-hub"),
+  });
+
+  assert.deepEqual(pool.fallbackCandidates("claude-glm", null, "claude:glm"), [{
+    providerKey: "claude:mimo-v2.5pro",
+    agent: "claude-mimo",
+    variant: "mimo-v2.5pro",
+    providerFallback: true,
+  }]);
+  assert.deepEqual(pool.fallbackCandidates("claude-mimo", null, "claude:mimo-v2.5pro"), []);
+  assert.deepEqual(pool.status().providerFallbacks, {
+    "claude:glm": [{
+      providerKey: "claude:mimo-v2.5pro",
+      agent: "claude-mimo",
+      variant: "mimo-v2.5pro",
+    }],
+  });
+});
+
+test("AcpPool provider fallback configuration can disable or replace the built-in MiMo handoff", () => {
+  const pool = new AcpPool({
+    providerFallbacks: {
+      "claude:glm": [],
+      "fake:primary": [{ agent: "fake-secondary", providerKey: "fake:secondary", variant: null }],
+    },
+  });
+
+  assert.deepEqual(pool.fallbackCandidates("claude-glm"), []);
+  assert.deepEqual(pool.fallbackCandidates("fake", "primary"), [{
+    agent: "fake-secondary",
+    providerKey: "fake:secondary",
+    variant: null,
+    providerFallback: true,
+  }]);
+});
+
 test("AcpPool coordinates provider leases across isolated Hub roots", async () => {
   const tmp = await tempRoot("cpb-acp-shared-lease-root");
   const sharedLeaseRoot = path.join(tmp, "shared-leases");

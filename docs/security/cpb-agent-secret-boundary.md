@@ -120,7 +120,12 @@ builds an allowlisted snapshot containing:
 - child-process runtime/provider keys from the same allowlist above
 - ACP pool controls such as `CPB_ACP_POOL_*`,
   `CPB_ACP_POOL_MAX_REQUESTS`, `CPB_ACP_POOL_MAX_AGE_MS`,
-  `CPB_ACP_POOL_IDLE_MS`, and `CPB_ACP_RATE_LIMIT_BACKOFF_MS`
+  `CPB_ACP_POOL_IDLE_MS`, `CPB_ACP_RATE_LIMIT_BACKOFF_MS`, and the
+  pool-only `CPB_ACP_PROVIDER_FALLBACKS` handoff policy
+
+The default handoff maps `claude:glm` to the independently audited
+`claude:mimo-v2.5pro` provider. An override is parsed by the pool only and is
+never copied into a provider child environment.
 
 Later mutations to the host process environment do not change an existing
 pool's client path, provider credentials, terminal/tool policy, write allow

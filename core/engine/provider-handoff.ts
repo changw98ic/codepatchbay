@@ -41,11 +41,13 @@ type FallbackCandidate = {
   providerKey: string;
   agent: string;
   variant?: string | null;
+  providerFallback?: boolean;
 };
 
 export type ProviderPreflightResult = {
   available: boolean;
   switched: boolean;
+  providerFallback?: boolean;
   selectedAgent: ProviderAgent;
   selectedProviderKey: string | null;
   reason: string | null;
@@ -162,6 +164,7 @@ export async function preflightProvider({
       return {
         available: true,
         switched: false,
+        providerFallback: false,
         selectedAgent: agents?.[role] || agent,
         selectedProviderKey: providerKey,
         reason: null,
@@ -191,6 +194,7 @@ export async function preflightProvider({
       return {
         available: true,
         switched: candidate.providerKey !== providerKey,
+        providerFallback: candidate.providerFallback === true,
         selectedAgent,
         selectedProviderKey: candidate.providerKey,
         reason: `fallback from ${providerKey}`,
@@ -204,6 +208,7 @@ export async function preflightProvider({
   return {
     available: false,
     switched: false,
+    providerFallback: false,
     selectedAgent: null,
     selectedProviderKey: null,
     reason: normalizedAllowedAgents !== null

@@ -56,6 +56,7 @@ test("preflightProvider selects a fallback candidate when the preferred provider
   assert.equal(result?.from, "claude:sonnet");
   assert.equal(result?.selectedProviderKey, "codex");
   assert.equal(result?.selectedAgent, "codex");
+  assert.equal(result?.providerFallback, false);
   assert.equal(result?.reason, "fallback from claude:sonnet");
 });
 

@@ -61,7 +61,11 @@ export async function runProviderPreflight(input: RunProviderPreflightInput): Pr
     allowedAgents,
   }).catch((): null => null);
   if (preflight?.switched) {
-    if (dynamicAgent?.required) {
+    // A required high-assurance role may not silently switch to an arbitrary
+    // agent, but an explicitly declared provider fallback is the recovery
+    // contract for quota/transport outages.  Keep this distinction explicit
+    // so normal dynamic-agent policy remains fail-closed.
+    if (dynamicAgent?.required && !preflight.providerFallback) {
       const result = phaseFailed({
         phase,
         failure: failure({
@@ -111,6 +115,7 @@ export async function runProviderPreflight(input: RunProviderPreflightInput): Pr
       role,
       from: preflight.from,
       to: preflight.selectedProviderKey,
+      handoffKind: preflight.providerFallback ? "provider_fallback" : "agent_fallback",
       reason: preflight.reason,
       ts: now(),
     });
@@ -122,6 +127,7 @@ export async function runProviderPreflight(input: RunProviderPreflightInput): Pr
       role,
       from: preflight.from,
       to: preflight.selectedProviderKey,
+      handoffKind: preflight.providerFallback ? "provider_fallback" : "agent_fallback",
       reason: preflight.reason,
     });
     return null;
