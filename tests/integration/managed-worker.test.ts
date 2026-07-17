@@ -1173,13 +1173,15 @@ test("managed worker closes attempt sessions between assignments without requiri
       secondResult.jobResult.phaseResults[0].diagnostics.conversationKey,
       "different assignment attempts must not share a conversation",
     );
-    await waitFor(async () => {
-      const audits = await Promise.all([
-        readJobAcpAudit(first.project.projectRuntimeRoot, "proj", "job-managed-persistent-one"),
-        readJobAcpAudit(second.project.projectRuntimeRoot, "proj", "job-managed-persistent-two"),
-      ]);
-      return audits.flat().filter((event) => event.event === "session_close").length === 4;
-    }, { timeoutMs: 10_000 });
+    const publishedResultAudits = await Promise.all([
+      readJobAcpAudit(first.project.projectRuntimeRoot, "proj", "job-managed-persistent-one"),
+      readJobAcpAudit(second.project.projectRuntimeRoot, "proj", "job-managed-persistent-two"),
+    ]);
+    assert.equal(
+      publishedResultAudits.flat().filter((event) => event.event === "session_close").length,
+      4,
+      "published attempt results must include completed ACP session-close audits",
+    );
 
     const transcript = (await readFile(transcriptPath, "utf8"))
       .trim()

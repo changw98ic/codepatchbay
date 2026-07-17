@@ -2230,7 +2230,9 @@ export class AcpClient {
       this.terminateAgentProcessTree("SIGTERM");
       this.rejectAll(new Error(reason));
     }, timeoutMs);
-    this.executeNoEditIdleTimer.unref();
+    // This guard is part of the request's completion contract. Keeping it
+    // referenced guarantees a stalled execute request is rejected and audited
+    // even when no provider or terminal handle remains active.
   }
 
   async enforceExecuteNoEditProgress(sessionId: string | null, summary: LooseRecord) {

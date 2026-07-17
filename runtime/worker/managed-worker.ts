@@ -311,7 +311,7 @@ export async function main() {
   }
 
   async function releaseWorkerAcpWorktree(worktreePath: string | null | undefined, jobLog: ReturnType<typeof createLogger> = log) {
-    if (!worktreePath) return;
+    if (!worktreePath) return true;
     try {
       const released = await releaseManagedAcpWorktree({
         cpbRoot,
@@ -320,8 +320,10 @@ export async function main() {
         closeProvider: true,
       });
       if (released) jobLog.info("ACP worktree session released");
+      return true;
     } catch (err: unknown) {
       jobLog.warn(`ACP worktree session release failed: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
     }
   }
 
@@ -617,6 +619,7 @@ export async function main() {
       let worktreeInfo: WorktreeInfo | null = null;
       let terminalAttemptResult: LooseRecord | null = null;
       let inboxAcked = false;
+      let acpWorktreeReleaseComplete = false;
 
       // Run job via bridge (service injection + sourcePath resolution)
       try {
@@ -728,6 +731,10 @@ export async function main() {
           attemptToken: assignment.attemptToken,
           orchestratorEpoch: assignment.orchestratorEpoch,
         });
+        acpWorktreeReleaseComplete = await releaseWorkerAcpWorktree(worktreeInfo?.path, jobLog);
+        if (!acpWorktreeReleaseComplete) {
+          throw new Error("ACP worktree session release failed before result publication");
+        }
         await finalizeAndWriteSuccessfulResult({
           cpbRoot,
           hubRoot,
@@ -777,6 +784,12 @@ export async function main() {
             });
           } catch {}
         }
+        if (!acpWorktreeReleaseComplete) {
+          acpWorktreeReleaseComplete = await releaseWorkerAcpWorktree(worktreeInfo?.path, jobLog);
+        }
+        if (!acpWorktreeReleaseComplete) {
+          throw new Error(`ACP worktree session release failed before failure publication: ${errObj.message}`);
+        }
         await writeJsonOnce(path.join(attemptDir, "result.json"), {
           assignmentId,
           attempt: attemptNum,
@@ -802,7 +815,9 @@ export async function main() {
         inboxAcked = completion.inboxAcked;
       } finally {
         clearInterval(cancelTimer);
-        await releaseWorkerAcpWorktree(worktreeInfo?.path, jobLog);
+        if (!acpWorktreeReleaseComplete) {
+          acpWorktreeReleaseComplete = await releaseWorkerAcpWorktree(worktreeInfo?.path, jobLog);
+        }
         if (worktreeInfo && assignment.sourcePath) {
           if (shouldCleanupWorkerWorktree(terminalAttemptResult)) {
             try {

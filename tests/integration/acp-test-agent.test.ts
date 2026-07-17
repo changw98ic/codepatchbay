@@ -1087,6 +1087,7 @@ test("ACP session update no-edit idle guard fails configured stalled execute rea
       toolCallId: "call-read-idle",
     },
   });
+  assert.equal(client.executeNoEditIdleTimer?.hasRef(), true, "fail-fast guard must keep the request alive until it settles");
 
   await assert.rejects(
     () => withTimeout(pending, 500, "no-edit idle guard did not fire"),
