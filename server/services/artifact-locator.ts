@@ -1,10 +1,23 @@
-import { mkdir, readdir, writeFile, stat } from "node:fs/promises";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { mkdir, open, readdir } from "node:fs/promises";
 import path from "node:path";
+import { withDurableDirectoryLock } from "../../core/runtime/durable-directory-lock.js";
 import { projectRuntimePath } from "./runtime.js";
 
 export { buildArtifactIndex } from "./job/job-projection.js";
 
 const SAFE_NAME = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
+
+export type ArtifactLocatorTestHooks = {
+  syncFile?: (filePath: string) => void | Promise<void>;
+  syncDirectory?: (directory: string) => void | Promise<void>;
+};
+
+const artifactLocatorTestHookStorage = new AsyncLocalStorage<ArtifactLocatorTestHooks>();
+
+export function withArtifactLocatorTestHooks<T>(hooks: ArtifactLocatorTestHooks, action: () => T): T {
+  return artifactLocatorTestHookStorage.run(hooks, action);
+}
 
 function validateName(value: unknown, label: string) {
   if (typeof value !== "string" || !/^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$/.test(value)) {
@@ -12,27 +25,63 @@ function validateName(value: unknown, label: string) {
   }
 }
 
+async function syncArtifactDirectory(directory: string, hooks: ArtifactLocatorTestHooks) {
+  if (hooks.syncDirectory) {
+    await hooks.syncDirectory(directory);
+    return;
+  }
+  let handle: Awaited<ReturnType<typeof open>> | null = null;
+  let primaryError: unknown = null;
+  try {
+    handle = await open(directory, "r");
+    await handle.sync();
+  } catch (error) {
+    primaryError = error;
+  }
+  let closeError: unknown = null;
+  if (handle) {
+    try { await handle.close(); } catch (error) { closeError = error; }
+  }
+  if (primaryError) {
+    if (!closeError) throw primaryError;
+    throw new AggregateError([primaryError, closeError], `artifact directory sync and close failed: ${directory}`, {
+      cause: primaryError,
+    });
+  }
+  if (closeError) throw closeError;
+}
+
+function artifactIdCommittedAmbiguity(
+  artifactId: string,
+  artifactPath: string,
+  directory: string,
+  errors: unknown[],
+) {
+  const primaryError = errors[0];
+  const cause = errors.length === 1
+    ? primaryError
+    : new AggregateError(errors, `artifact placeholder durability failed: ${artifactPath}`, {
+      cause: primaryError,
+    });
+  return Object.assign(new Error(`artifact ID ${artifactId} committed with ambiguous durability`, { cause }), {
+    code: "ARTIFACT_ID_COMMITTED_AMBIGUOUS",
+    artifactId,
+    artifactPath,
+    committed: true,
+    committedPath: artifactPath,
+    recoveryPaths: [artifactPath, directory],
+    primaryError,
+    cleanupErrors: errors.slice(1),
+  });
+}
+
 export async function allocateArtifactId(dir: string, prefix: string) {
   validateName(prefix, "prefix");
   await mkdir(dir, { recursive: true });
+  const hooks = artifactLocatorTestHookStorage.getStore() || {};
 
   const lockDir = path.join(dir, ".cpb-id.lock");
-  let acquired = false;
-  for (let attempt = 0; attempt < 100; attempt++) {
-    try {
-      await mkdir(lockDir);
-      acquired = true;
-      break;
-    } catch (err) {
-      if (err.code !== "EEXIST") throw err;
-      await new Promise((r) => setTimeout(r, 100));
-    }
-  }
-  if (!acquired) {
-    try { await mkdir(lockDir); } catch { /* force through stale lock */ }
-  }
-
-  try {
+  return withDurableDirectoryLock(lockDir, async () => {
     const entries = await readdir(dir);
     const pattern = new RegExp(`^${prefix}-(\\d+)\\.md$`);
     let last = 0;
@@ -41,15 +90,32 @@ export async function allocateArtifactId(dir: string, prefix: string) {
       if (match) last = Math.max(last, parseInt(match[1], 10));
     }
     const newId = String(last + 1).padStart(3, "0");
-    // Placeholder to prevent collision while holding lock
-    await writeFile(path.join(dir, `${prefix}-${newId}.md`), "", "utf8");
-    return newId;
-  } finally {
+    const artifactPath = path.join(dir, `${prefix}-${newId}.md`);
+    const handle = await open(artifactPath, "wx", 0o600);
+    let primaryError: unknown = null;
     try {
-      const { rmdir } = await import("node:fs/promises");
-      await rmdir(lockDir);
-    } catch {}
-  }
+      if (hooks.syncFile) await hooks.syncFile(artifactPath);
+      else await handle.sync();
+    } catch (error) {
+      primaryError = error;
+    }
+    let closeError: unknown = null;
+    try {
+      await handle.close();
+    } catch (error) {
+      closeError = error;
+    }
+    const fileErrors = [primaryError, closeError].filter((error) => error !== null);
+    if (fileErrors.length > 0) {
+      throw artifactIdCommittedAmbiguity(newId, artifactPath, dir, fileErrors);
+    }
+    try {
+      await syncArtifactDirectory(dir, hooks);
+    } catch (error) {
+      throw artifactIdCommittedAmbiguity(newId, artifactPath, dir, [error]);
+    }
+    return newId;
+  }, { ttlMs: 30_000, waitMs: 10_000, retryMs: 50 });
 }
 
 // --- Wiki artifact path helpers ---
@@ -110,15 +176,6 @@ export function legacyOutputsDir(cpbRoot: string, projectId: string) {
   return path.join(legacyWikiDir(cpbRoot, projectId), "outputs");
 }
 
-async function dirExists(dirPath: string) {
-  try {
-    const s = await stat(dirPath);
-    return s.isDirectory();
-  } catch {
-    return false;
-  }
-}
-
 function hasHubRoot(hubRoot: unknown) {
   return typeof hubRoot === "string" && hubRoot.trim().length > 0;
 }
@@ -127,27 +184,21 @@ export async function resolveWikiDir(hubRoot: unknown, cpbRoot: string, projectI
   if (hasHubRoot(hubRoot)) {
     return runtimeWikiDir(hubRoot as string, projectId);
   }
-  const legDir = legacyWikiDir(cpbRoot, projectId);
-  if (await dirExists(legDir)) return legDir;
-  return legDir;
+  return legacyWikiDir(cpbRoot, projectId);
 }
 
 export async function resolveInboxDir(hubRoot: unknown, cpbRoot: string, projectId: string) {
   if (hasHubRoot(hubRoot)) {
     return runtimeInboxDir(hubRoot as string, projectId);
   }
-  const legDir = legacyInboxDir(cpbRoot, projectId);
-  if (await dirExists(legDir)) return legDir;
-  return legDir;
+  return legacyInboxDir(cpbRoot, projectId);
 }
 
 export async function resolveOutputsDir(hubRoot: unknown, cpbRoot: string, projectId: string) {
   if (hasHubRoot(hubRoot)) {
     return runtimeOutputsDir(hubRoot as string, projectId);
   }
-  const legDir = legacyOutputsDir(cpbRoot, projectId);
-  if (await dirExists(legDir)) return legDir;
-  return legDir;
+  return legacyOutputsDir(cpbRoot, projectId);
 }
 
 function validateRelativePath(relativePath: string) {

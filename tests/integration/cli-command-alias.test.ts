@@ -64,6 +64,12 @@ test("removed commands are reported as unknown", async () => {
   assert.match(verdict.stderr, /Unknown command: verdict/);
 });
 
+test("internal orchestrator route is not exposed as a top-level command", async () => {
+  const result = await runCli(["hub-orch", "start"]);
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /Unknown command: hub-orch/);
+});
+
 test("alias relationships resolve to the same exit behavior", async () => {
   // `run`/`pipeline` and `cancel`/`redirect` resolve to the same module, so
   // invoking either alias with no required args produces the same usage error

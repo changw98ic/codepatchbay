@@ -71,6 +71,8 @@ test("package exposes stabilization verifier entrypoint", async () => {
     pkg.scripts["verify:enterprise-gate"],
     "npm run build && npm run build:tests && node dist/scripts/verify-enterprise-gate.js",
   );
+  assert.equal(pkg.scripts["test:node"], "node dist-tests/scripts/run-node-tests.js");
+  assert.doesNotMatch(pkg.scripts["build:tests"], /dist\/tests/);
   assert.equal(
     pkg.scripts["verify:dependency-audit"],
     "npm audit --omit=dev --audit-level=moderate && npm audit --audit-level=high",
@@ -118,6 +120,15 @@ test("manual E2E cleanup requires an explicit disposable-root capability", async
   assert.equal(result.status, 1);
   assert.match(result.stdout, /CPB_E2E_ALLOW_DESTRUCTIVE=1/);
   assert.equal(await readFile(sentinel, "utf8"), "preserved\n");
+});
+
+test("manual shell E2E delegates to the canonical disposable-target safety gate", async () => {
+  const source = await readFile(path.join(repoRoot, "scripts", "e2e-test.sh"), "utf8");
+  assert.match(source, /dist\/scripts\/e2e-npm-pack\.js/);
+  assert.doesNotMatch(source, /\brm\s+-rf\b/);
+  assert.doesNotMatch(source, /git\s+(?:worktree\s+prune|branch\s+-D)/);
+  assert.doesNotMatch(source, /\bgh\s+(?:api|issue|pr|repo)\b/);
+  assert.doesNotMatch(source, /\bcpb\s+hub\b/);
 });
 
 test("interactive review rejection cannot run repository-wide destructive git commands", async () => {

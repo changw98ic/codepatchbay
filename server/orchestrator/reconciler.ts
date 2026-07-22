@@ -1,4 +1,5 @@
 import { execFile as execFileCallback } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -8,6 +9,24 @@ import { writeJsonAtomic } from "../../shared/fs-utils.js";
 import { createLogger } from "../../shared/logger.js";
 import { recordValue, type LooseRecord } from "../../core/contracts/types.js";
 import { selectFailureRecovery } from "../../core/contracts/failure-recovery.js";
+import { isProcessIdentityAlive, type ProcessIdentity } from "../../core/runtime/process-tree.js";
+import { readBoundedRegularFileNoFollow } from "../../core/runtime/durable-directory-lock.js";
+import {
+  finalizerResultMatchesCandidate,
+  verifyFinalizerCandidateCommit,
+  verifyFinalizerCandidateObject,
+  validatedFinalizerCandidate,
+} from "../../shared/orchestrator/finalizer-candidate.js";
+import { verifiedCanonicalReviewBundlePath } from "../../shared/orchestrator/review-bundle-path.js";
+import {
+  finalizerMutationFenceDigest,
+  validateFinalizerMutationReceipt,
+} from "../services/finalizer-contract.js";
+import {
+  finalizerJournalDigest,
+  readFinalizerJournal,
+} from "../services/finalizer-journal.js";
+import { resolveProjectDataRoot } from "../services/runtime.js";
 
 type ReconcilerRecord = LooseRecord & {
   assignmentId?: string;
@@ -67,6 +86,8 @@ type ReconcilerRecord = LooseRecord & {
   gitStatus?: string | null;
   gitStatusError?: string;
   pid?: number | null;
+  processIdentity?: ReconcilerRecord | ProcessIdentity | null;
+  host?: string | null;
   lastHeartbeatAt?: string | null;
   currentAssignmentId?: string | null;
   waitUseful?: boolean;
@@ -131,6 +152,7 @@ type ReconcilerOptions = {
   leaderLock: { stillHeld: () => Promise<boolean> };
   failureRouter: FailureRouter | ReconcilerRecord;
   hubRoot?: string;
+  cpbRoot?: string;
   progressInfoMs?: unknown;
   progressWarnMs?: unknown;
   progressErrorMs?: unknown;
@@ -140,6 +162,14 @@ type ReconcilerOptions = {
 
 const execFile = promisify(execFileCallback);
 const HEARTBEAT_STALE_MS = 60_000;
+const ATTEMPT_RESULT_MAX_BYTES = 16 * 1024 * 1024;
+const FINALIZER_RECOVERY_SCHEMA = "cpb.finalizer-recovery.v1";
+const FINALIZER_HANDOFF_SCHEMA = "cpb.finalizer-handoff.v1";
+const FINALIZER_HANDOFF_EVIDENCE_SCHEMA = "cpb.finalizer-handoff-evidence.v1";
+const FINALIZER_READ_ONLY_RECOVERY_LIMIT = 3;
+const FINALIZER_MUTATION_RECOVERY_LIMIT = 2;
+const FINALIZER_RECOVERY_BACKOFF_BASE_MS = 5_000;
+const FINALIZER_RECOVERY_BACKOFF_MAX_MS = 60_000;
 const ASSIGN_ACCEPT_TTL_MS = 120_000;
 const DEFAULT_PROGRESS_INFO_MS = 5 * 60_000;
 const DEFAULT_PROGRESS_WARN_MS = 15 * 60_000;
@@ -329,6 +359,663 @@ function boolOrNull(value: unknown): boolean | null {
   return typeof value === "boolean" ? value : null;
 }
 
+function finalizerCommittedTriState(value: unknown): boolean | null {
+  return typeof value === "boolean" ? value : null;
+}
+
+function expectedFinalizeMode(metadata: ReconcilerRecord): string {
+  const nestedFinalize = recordValue(metadata.finalize);
+  const nestedFinalizer = recordValue(metadata.finalizer);
+  const requested = metadata.finalizeMode
+    ?? metadata.finalizerMode
+    ?? nestedFinalize.mode
+    ?? nestedFinalizer.mode;
+  const normalized = String(requested || "dry-run").trim().toLowerCase().replace(/_/g, "-");
+  const liveAllowed = metadata.allowLiveFinalize === true
+    || metadata.liveFinalize === true
+    || nestedFinalize.allowLive === true
+    || nestedFinalizer.allowLive === true;
+  if (["dry-run", "dryrun", "preview", "pr-preview"].includes(normalized)) return "dry-run";
+  if (liveAllowed && ["local", "remote", "pr"].includes(normalized)) return normalized;
+  return "dry-run";
+}
+
+function canonicalFinalizerPrincipal(value: unknown): ReconcilerRecord | null {
+  const principal = recordValue(value);
+  const stableId = textOrNull(principal.stableId);
+  const login = textOrNull(principal.login)?.toLowerCase() || null;
+  if ((principal.kind !== "github_app" && principal.kind !== "gh_user") || !stableId || !login) return null;
+  return { kind: principal.kind, stableId, login };
+}
+
+function canonicalFinalizerOperation(value: unknown, operation: string): boolean {
+  const receipt = recordValue(value);
+  return receipt.operation === operation
+    && receipt.attempted === true
+    && receipt.committed === true
+    && Boolean(textOrNull(receipt.observedAt))
+    && Boolean(textOrNull(receipt.eventId));
+}
+
+function sameCanonicalRecord(left: unknown, right: unknown): boolean {
+  const canonical = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(canonical);
+    if (!value || typeof value !== "object") return value;
+    return Object.fromEntries(Object.entries(value as LooseRecord)
+      .sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey))
+      .map(([key, nested]) => [key, canonical(nested)]));
+  };
+  return JSON.stringify(canonical(left)) === JSON.stringify(canonical(right));
+}
+
+function canonicalFinalizerDigest(value: unknown): string {
+  const canonical = (nested: unknown): unknown => {
+    if (Array.isArray(nested)) return nested.map(canonical);
+    if (!nested || typeof nested !== "object") return nested;
+    return Object.fromEntries(Object.entries(nested as LooseRecord)
+      .sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey))
+      .map(([key, child]) => [key, canonical(child)]));
+  };
+  return createHash("sha256").update(JSON.stringify(canonical(value)), "utf8").digest("hex");
+}
+
+function normalizedFinalizerHandoffEvidence(value: unknown): ReconcilerRecord {
+  const evidence = recordValue(value);
+  return {
+    schema: evidence.schema,
+    previousAssignmentId: evidence.previousAssignmentId,
+    previousAttempt: evidence.previousAttempt,
+    previousAttemptTokenDigest: evidence.previousAttemptTokenDigest,
+    previousOrchestratorEpoch: evidence.previousOrchestratorEpoch,
+    previousJobId: evidence.previousJobId,
+    previousResultStatus: evidence.previousResultStatus,
+    previousCommitted: evidence.previousCommitted,
+    finalizationId: evidence.finalizationId,
+    journalGeneration: evidence.journalGeneration,
+    previousClaimId: evidence.previousClaimId,
+    previousOwnerDigest: evidence.previousOwnerDigest,
+    journalStage: evidence.journalStage,
+    journalDigest: evidence.journalDigest,
+    commit: evidence.commit,
+    tree: evidence.tree,
+  };
+}
+
+function safePartialFinalizerContinuation(mode: string, finalizeResultValue: unknown): boolean {
+  const finalizeResult = recordValue(finalizeResultValue);
+  const intent = recordValue(finalizeResult.remoteIntent);
+  const receipts = recordValue(intent.receipts);
+  const reconciliation = recordValue(finalizeResult.reconciliation);
+  const proof = recordValue(finalizeResult.safeContinuation);
+  const matrix: Record<string, { operation: string; readbackKey: string; readback: unknown }> = mode === "remote"
+    ? {
+        claimed: { operation: "repository.push", readbackKey: "journal", readback: reconciliation.journal },
+        "repository.push.intent": { operation: "repository.push", readbackKey: "push", readback: reconciliation.push },
+        "repository.push.receipt": { operation: "repository.push", readbackKey: "receipts.push", readback: receipts.push },
+        "issue.close.intent": { operation: "issue.close", readbackKey: "issueClose", readback: reconciliation.issueClose },
+        "issue.close.receipt": { operation: "issue.close", readbackKey: "receipts.issueClose", readback: receipts.issueClose },
+        "remote.complete": { operation: "issue.close", readbackKey: "receipts.issueClose", readback: receipts.issueClose },
+      }
+    : mode === "pr"
+      ? {
+          claimed: { operation: "pull_request.push", readbackKey: "journal", readback: reconciliation.journal },
+          "pull_request.push.intent": { operation: "pull_request.push", readbackKey: "push", readback: reconciliation.push },
+          "pull_request.push.receipt": { operation: "pull_request.push", readbackKey: "receipts.branchPush", readback: receipts.branchPush },
+          "pull_request.create.intent": { operation: "pull_request.create", readbackKey: "pullRequestCreate", readback: reconciliation.pullRequestCreate },
+          "pull_request.create.receipt": { operation: "pull_request.create", readbackKey: "receipts.pullRequestCreate", readback: receipts.pullRequestCreate },
+          "pr_opened.publish.intent": { operation: "pr_opened.publish", readbackKey: "prEvent", readback: reconciliation.prEvent },
+          "pr_opened.publish.receipt": { operation: "pr_opened.publish", readbackKey: "receipts.prEvent", readback: receipts.prEvent },
+        }
+      : {};
+  const expected = matrix[String(intent.stage || "")];
+  const readback = recordValue(expected?.readback);
+  if (!expected
+    || proof.schema !== "cpb.finalizer-safe-continuation.v1"
+    || proof.finalizationId !== intent.finalizationId
+    || proof.journalDigest !== canonicalFinalizerDigest(intent)
+    || proof.journalGeneration !== intent.generation
+    || proof.stage !== intent.stage
+    || proof.operation !== expected.operation
+    || proof.readbackKey !== expected.readbackKey
+    || proof.readbackDigest !== canonicalFinalizerDigest(expected.readback)
+    || typeof proof.decision !== "boolean") return false;
+  if (intent.stage === "claimed") {
+    return proof.decision === false && readback.remoteMutationStarted === false;
+  }
+  if (String(expected.readbackKey).startsWith("receipts.")) {
+    return proof.decision === true && canonicalFinalizerOperation(expected.readback, expected.operation);
+  }
+  if (intent.stage === "pull_request.create.intent" && proof.decision !== true) return false;
+  return typeof readback.committed === "boolean" && readback.committed === proof.decision;
+}
+
+export function persistedFinalizerSuccessContractValid(
+  assignment: ReconcilerRecord,
+  result: ReconcilerRecord,
+  attempt: ReconcilerRecord = {},
+): boolean {
+  const metadata = recordValue(assignment.metadata);
+  if (metadata.autoFinalize !== true) return true;
+  const finalization = recordValue(result.finalization);
+  const finalizeResult = recordValue(result.finalizeResult);
+  const jobResult = recordValue(result.jobResult);
+  const expectedMode = expectedFinalizeMode(metadata);
+  const jobId = textOrNull(jobResult.jobId);
+  if (result.status !== "completed"
+    || finalization.required !== true
+    || finalization.ok !== true
+    || finalizeResult.ok !== true
+    || !jobId
+    || finalizeResult.jobId !== jobId) return false;
+
+  if (expectedMode === "dry-run") {
+    if (finalizeResult.mode === "review_bundle") {
+      const audit = recordValue(finalizeResult.audit);
+      return finalizeResult.status === "review_bundle"
+        && finalizeResult.committed === true
+        && finalizeResult.eventRecorded === true
+        && audit.eventType === "review_bundle_created"
+        && audit.jobId === jobId
+        && audit.project === assignment.projectId
+        && audit.bundlePath === finalizeResult.bundlePath;
+    }
+    return finalizeResult.mode === "dry-run"
+      && finalizeResult.status === "dry-run"
+      && finalizeResult.committed === false
+      && recordValue(finalizeResult.pr).status === "dry-run";
+  }
+  if (finalizeResult.mode !== expectedMode || finalizeResult.committed !== true) return false;
+  const candidate = validatedFinalizerCandidate(jobResult);
+  if (!finalizerResultMatchesCandidate(finalizeResult, candidate)) return false;
+  const recovery = recordValue(metadata.finalizerRecovery);
+  const ownerProof = recordValue(recovery.priorAttemptProof);
+  const ownerEvidence = recordValue(ownerProof.evidence);
+  const recoveryBinding = recordValue(ownerProof.journalBinding);
+  const recoveredSource = recordValue(recoveryBinding.source);
+  const cleanupBinding = recordValue(recordValue(recordValue(result.cleanup).worktree).binding);
+  const recoveryActive = recovery.schema === FINALIZER_RECOVERY_SCHEMA && recovery.required === true;
+  const durableBaseCommit = recoveryActive
+    ? textOrNull(recoveredSource.head)
+    : textOrNull(cleanupBinding.baseCommit);
+  const originJobId = recoveryActive ? textOrNull(ownerEvidence.previousJobId) : jobId;
+  if (!candidate || !durableBaseCommit || !originJobId || candidate.baseSha !== durableBaseCommit.toLowerCase()) return false;
+  if (expectedMode === "local") {
+    const sourceSync = recordValue(finalizeResult.sourceSync);
+    return finalizeResult.status === "finalized"
+      && !recoveryActive
+      && sourceSync.committed === true
+      && sourceSync.clean === true;
+  }
+
+  const sourceContext = recordValue(assignment.sourceContext);
+  const capability = Object.keys(recordValue(metadata.remoteCapability)).length > 0
+    ? recordValue(metadata.remoteCapability)
+    : recordValue(sourceContext.remoteCapability);
+  const intent = recordValue(finalizeResult.remoteIntent);
+  if (recoveryActive && recovery.originJobId !== originJobId) return false;
+  const sourceBranch = textOrNull(recoveredSource.branch)
+    || textOrNull(cleanupBinding.baseBranch)
+    || textOrNull(sourceContext.sourceBranch)
+    || textOrNull(metadata.sourceBranch)
+    || textOrNull(capability.defaultBranch);
+  const sourceHead = textOrNull(recoveredSource.head)
+    || textOrNull(cleanupBinding.baseCommit)
+    || textOrNull(sourceContext.sourceHead)
+    || textOrNull(metadata.sourceHead);
+  const heartbeat = recordValue(attempt.heartbeat);
+  const processIdentity = recordValue(heartbeat.processIdentity);
+  const mutationFence = {
+    assignmentId: assignment.assignmentId,
+    entryId: assignment.entryId,
+    attemptToken: attempt.attemptToken,
+    orchestratorEpoch: attempt.orchestratorEpoch,
+    workerId: attempt.workerId,
+    workerIncarnation: heartbeat.workerIncarnation,
+    processIdentity: {
+      pid: processIdentity.pid,
+      startTimeTicks: processIdentity.startTimeTicks,
+    },
+  };
+  const readOnlyRecovery = recovery.schema === FINALIZER_RECOVERY_SCHEMA
+    && recovery.required === true
+    && recovery.allowMutation === false;
+  const binding: ReconcilerRecord = {
+    project: assignment.projectId,
+    entryId: assignment.entryId,
+    jobId,
+    originJobId,
+    capability,
+    principal: finalizeResult.principal,
+    source: { branch: sourceBranch, head: sourceHead },
+    targetBranch: textOrNull(recoveryBinding.targetBranch)
+      || (expectedMode === "remote" ? sourceBranch : textOrNull(intent.targetBranch)),
+    preRemoteHead: Object.hasOwn(recoveryBinding, "preRemoteHead")
+      ? recoveryBinding.preRemoteHead
+      : expectedMode === "remote" ? sourceHead : null,
+    mutationFence,
+    candidate,
+    ...(readOnlyRecovery ? {
+      claimPolicy: "durable-observation",
+      acceptedOwnerDigest: ownerProof.acceptedOwnerDigest,
+    } : {}),
+  };
+  const validation = validateFinalizerMutationReceipt(finalizeResult, {
+    mode: expectedMode as "remote" | "pr",
+    binding,
+  });
+  return validation.ok === true;
+}
+
+async function persistedReviewBundleFileValid(
+  hubRoot: string,
+  assignment: ReconcilerRecord,
+  result: ReconcilerRecord,
+): Promise<boolean> {
+  const finalizeResult = recordValue(result.finalizeResult);
+  if (finalizeResult.mode !== "review_bundle") return true;
+  const jobId = textOrNull(recordValue(result.jobResult).jobId);
+  const project = textOrNull(assignment.projectId);
+  if (!jobId || !project) return false;
+  let expectedPath: string;
+  try {
+    expectedPath = await verifiedCanonicalReviewBundlePath(path.resolve(hubRoot), project, jobId);
+  } catch {
+    return false;
+  }
+  if (path.resolve(String(finalizeResult.bundlePath || "")) !== expectedPath) return false;
+  try {
+    const content = await readBoundedRegularFileNoFollow(expectedPath, { maxBytes: ATTEMPT_RESULT_MAX_BYTES });
+    const bytes = Buffer.byteLength(content, "utf8");
+    const digest = createHash("sha256").update(content, "utf8").digest("hex");
+    return finalizeResult.bundleBytes === bytes && finalizeResult.bundleSha256 === digest;
+  } catch {
+    return false;
+  }
+}
+
+export async function persistedFinalizerGitReadbackValid(
+  assignment: ReconcilerRecord,
+  result: ReconcilerRecord,
+): Promise<boolean> {
+  const mode = expectedFinalizeMode(recordValue(assignment.metadata));
+  if (mode !== "local" && mode !== "remote" && mode !== "pr") return true;
+  const sourcePath = textOrNull(assignment.sourcePath);
+  const finalizeResult = recordValue(result.finalizeResult);
+  const sourceSync = recordValue(finalizeResult.sourceSync);
+  const candidate = validatedFinalizerCandidate(recordValue(result.jobResult));
+  if (!sourcePath || !candidate) return false;
+  if (mode === "pr") {
+    const intent = recordValue(finalizeResult.remoteIntent);
+    const targetBranch = textOrNull(intent.targetBranch);
+    return Boolean(targetBranch) && await verifyFinalizerCandidateObject({
+      repositoryPath: sourcePath,
+      result: finalizeResult,
+      candidate,
+      expectedRef: `refs/heads/${targetBranch}`,
+    });
+  }
+  if (!textOrNull(sourceSync.actualBranch) || !textOrNull(sourceSync.actualHead)) return false;
+  return String(sourceSync.actualHead).toLowerCase() === String(finalizeResult.commit || "").toLowerCase()
+    && await verifyFinalizerCandidateCommit({
+      repositoryPath: sourcePath,
+      result: finalizeResult,
+      candidate,
+      expectedBranch: String(sourceSync.actualBranch),
+    });
+}
+
+export async function persistedFinalizerJournalValid(
+  cpbRoot: string | null,
+  hubRoot: string,
+  assignment: ReconcilerRecord,
+  result: ReconcilerRecord,
+  {
+    resolveDataRoot = resolveProjectDataRoot,
+    readJournal = readFinalizerJournal,
+  }: {
+    resolveDataRoot?: typeof resolveProjectDataRoot;
+    readJournal?: typeof readFinalizerJournal;
+  } = {},
+): Promise<boolean> {
+  const mode = expectedFinalizeMode(recordValue(assignment.metadata));
+  if (mode !== "remote" && mode !== "pr") return true;
+  const project = textOrNull(assignment.projectId);
+  const entryId = textOrNull(assignment.entryId);
+  const intent = recordValue(recordValue(result.finalizeResult).remoteIntent);
+  if (!cpbRoot || !path.isAbsolute(cpbRoot) || !path.isAbsolute(hubRoot) || !project || !entryId || Object.keys(intent).length === 0) {
+    return false;
+  }
+  try {
+    const requestedDataRoot = textOrNull(assignment.dataRoot)
+      || textOrNull(assignment.projectRuntimeRoot)
+      || textOrNull(recordValue(assignment.metadata).dataRoot)
+      || textOrNull(recordValue(assignment.metadata).projectRuntimeRoot)
+      || undefined;
+    const dataRoot = await resolveDataRoot(cpbRoot, project, {
+      hubRoot,
+      ...(requestedDataRoot ? { dataRoot: requestedDataRoot } : {}),
+    });
+    const snapshot = await readJournal(cpbRoot, project, entryId, { dataRoot });
+    const expectedStage = mode === "remote" ? "local.complete" : "event.complete";
+    return !snapshot.invalidReason
+      && Boolean(snapshot.record)
+      && snapshot.record?.stage === expectedStage
+      && finalizerJournalDigest(snapshot.record!) === finalizerJournalDigest(intent);
+  } catch {
+    return false;
+  }
+}
+
+function finalizerHandoffEvidence(
+  assignment: ReconcilerRecord,
+  attempt: ReconcilerRecord,
+  result: ReconcilerRecord,
+  finalizeResult: ReconcilerRecord,
+  jobId: string,
+): ReconcilerRecord | null {
+  const intent = recordValue(finalizeResult.remoteIntent);
+  const claim = recordValue(intent.claim);
+  const heartbeat = recordValue(attempt.heartbeat);
+  const processIdentity = recordValue(heartbeat.processIdentity);
+  const previousClaimId = textOrNull(claim.claimId);
+  const previousOwnerDigest = textOrNull(claim.ownerDigest);
+  const previousAssignmentId = textOrNull(assignment.assignmentId);
+  const previousAttempt = Number(attempt.attempt);
+  const previousAttemptToken = textOrNull(attempt.attemptToken);
+  const previousOrchestratorEpoch = Number(attempt.orchestratorEpoch);
+  const finalizationId = textOrNull(intent.finalizationId);
+  const journalGeneration = Number(intent.generation);
+  const commit = textOrNull(intent.commit);
+  const tree = textOrNull(intent.tree);
+  const journalSource = recordValue(intent.source);
+  const journalSourceBranch = textOrNull(journalSource.branch);
+  const journalSourceHead = textOrNull(journalSource.head);
+  const journalTargetBranch = textOrNull(intent.targetBranch);
+  const journalPreRemoteHead = intent.preRemoteHead === null ? null : textOrNull(intent.preRemoteHead);
+  const previousWorkerId = textOrNull(attempt.workerId);
+  const previousWorkerIncarnation = textOrNull(heartbeat.workerIncarnation);
+  const previousProcessStartTime = textOrNull(processIdentity.startTimeTicks);
+  const previousProcessPid = Number(processIdentity.pid);
+  const expectedOwnerDigest = finalizerMutationFenceDigest({
+    assignmentId: previousAssignmentId,
+    entryId: assignment.entryId,
+    attemptToken: previousAttemptToken,
+    orchestratorEpoch: previousOrchestratorEpoch,
+    workerId: previousWorkerId,
+    workerIncarnation: previousWorkerIncarnation,
+    processIdentity: {
+      pid: previousProcessPid,
+      startTimeTicks: previousProcessStartTime,
+    },
+  });
+  if (!previousClaimId || !/^[a-f0-9]{64}$/.test(previousClaimId)
+    || !previousOwnerDigest || !/^[a-f0-9]{64}$/.test(previousOwnerDigest)
+    || expectedOwnerDigest !== previousOwnerDigest
+    || !previousAssignmentId
+    || !Number.isSafeInteger(previousAttempt) || previousAttempt < 1
+    || !previousAttemptToken
+    || !Number.isSafeInteger(previousOrchestratorEpoch) || previousOrchestratorEpoch < 1
+    || !previousWorkerId || heartbeat.workerId !== previousWorkerId
+    || !previousWorkerIncarnation
+    || !Number.isSafeInteger(previousProcessPid) || previousProcessPid < 1
+    || !previousProcessStartTime
+    || !finalizationId || !/^[a-f0-9]{64}$/.test(finalizationId)
+    || intent.originJobId !== jobId
+    || !Number.isSafeInteger(journalGeneration) || journalGeneration < 1
+    || !commit || !/^[a-f0-9]{40,64}$/.test(commit)
+    || !tree || !/^[a-f0-9]{40,64}$/.test(tree)
+    || !journalSourceBranch
+    || !journalSourceHead || !/^[a-f0-9]{40,64}$/.test(journalSourceHead)
+    || !journalTargetBranch
+    || (journalPreRemoteHead !== null && !/^[a-f0-9]{40,64}$/.test(journalPreRemoteHead))) {
+    return null;
+  }
+  const previousAttemptTokenDigest = createHash("sha256")
+    .update(previousAttemptToken, "utf8")
+    .digest("hex");
+  const evidence = {
+    schema: FINALIZER_HANDOFF_EVIDENCE_SCHEMA,
+    previousAssignmentId,
+    previousAttempt,
+    previousAttemptTokenDigest,
+    previousOrchestratorEpoch,
+    previousJobId: jobId,
+    previousResultStatus: textOrNull(result.status),
+    previousCommitted: finalizerCommittedTriState(finalizeResult.committed),
+    finalizationId,
+    journalGeneration,
+    previousClaimId,
+    previousOwnerDigest,
+    journalStage: textOrNull(intent.stage),
+    journalDigest: canonicalFinalizerDigest(intent),
+    commit,
+    tree,
+  };
+  const evidenceId = createHash("sha256")
+    .update(JSON.stringify(normalizedFinalizerHandoffEvidence(evidence)), "utf8")
+    .digest("hex");
+  const observedAt = textOrNull(attempt.completedAt)
+    || textOrNull(assignment.resultWrittenAt)
+    || new Date().toISOString();
+  return {
+    schema: FINALIZER_HANDOFF_SCHEMA,
+    kind: "explicit-handoff",
+    previousClaimId,
+    evidenceId,
+    observedAt,
+    acceptedOwnerDigest: previousOwnerDigest,
+    journalBinding: {
+      source: { branch: journalSourceBranch, head: journalSourceHead },
+      targetBranch: journalTargetBranch,
+      preRemoteHead: journalPreRemoteHead,
+    },
+    evidence,
+  };
+}
+
+function carriedFinalizerOwnerProof(
+  currentRecovery: ReconcilerRecord,
+  finalizeResult: ReconcilerRecord,
+): ReconcilerRecord | null {
+  const proof = recordValue(currentRecovery.priorAttemptProof);
+  const evidence = recordValue(proof.evidence);
+  const intent = recordValue(finalizeResult.remoteIntent);
+  const claim = recordValue(intent.claim);
+  const binding = recordValue(proof.journalBinding);
+  const evidenceId = textOrNull(proof.evidenceId);
+  if (proof.schema !== FINALIZER_HANDOFF_SCHEMA
+    || proof.kind !== "explicit-handoff"
+    || !evidenceId || !/^[a-f0-9]{64}$/.test(evidenceId)
+    || evidenceId !== createHash("sha256")
+      .update(JSON.stringify(normalizedFinalizerHandoffEvidence(evidence)), "utf8")
+      .digest("hex")
+    || proof.previousClaimId !== claim.claimId
+    || proof.acceptedOwnerDigest !== claim.ownerDigest
+    || evidence.previousClaimId !== claim.claimId
+    || evidence.previousOwnerDigest !== claim.ownerDigest
+    || currentRecovery.originJobId !== intent.originJobId
+    || evidence.previousJobId !== intent.originJobId
+    || evidence.journalDigest !== canonicalFinalizerDigest(intent)
+    || !sameCanonicalRecord(binding.source, intent.source)
+    || binding.targetBranch !== intent.targetBranch
+    || binding.preRemoteHead !== intent.preRemoteHead) return null;
+  return proof;
+}
+
+function finalizerObservationProof(
+  assignment: ReconcilerRecord,
+  attempt: ReconcilerRecord,
+  result: ReconcilerRecord,
+  finalizeResult: ReconcilerRecord,
+  jobId: string,
+): ReconcilerRecord | null {
+  const intent = recordValue(finalizeResult.remoteIntent);
+  const claim = recordValue(intent.claim);
+  const attemptToken = textOrNull(attempt.attemptToken);
+  const attemptNumber = Number(attempt.attempt);
+  const orchestratorEpoch = Number(attempt.orchestratorEpoch);
+  const heartbeat = recordValue(attempt.heartbeat);
+  const processIdentity = recordValue(heartbeat.processIdentity);
+  const workerId = textOrNull(attempt.workerId);
+  const workerIncarnation = textOrNull(heartbeat.workerIncarnation);
+  const pid = Number(processIdentity.pid);
+  const startTimeTicks = textOrNull(processIdentity.startTimeTicks);
+  const claimId = textOrNull(claim.claimId);
+  const ownerDigest = textOrNull(claim.ownerDigest);
+  if (!textOrNull(assignment.assignmentId)
+    || !attemptToken
+    || !Number.isSafeInteger(attemptNumber) || attemptNumber < 1
+    || !Number.isSafeInteger(orchestratorEpoch) || orchestratorEpoch < 1
+    || !workerId || heartbeat.workerId !== workerId
+    || !workerIncarnation
+    || !Number.isSafeInteger(pid) || pid < 1
+    || !startTimeTicks
+    || !claimId || !/^[a-f0-9]{64}$/.test(claimId)
+    || !ownerDigest || !/^[a-f0-9]{64}$/.test(ownerDigest)) return null;
+  const evidence = {
+    schema: "cpb.finalizer-observation-evidence.v1",
+    assignmentId: assignment.assignmentId,
+    attempt: attemptNumber,
+    attemptTokenDigest: createHash("sha256").update(attemptToken, "utf8").digest("hex"),
+    orchestratorEpoch,
+    workerId,
+    workerIncarnation,
+    processIdentity: { pid, startTimeTicks },
+    jobId,
+    resultStatus: textOrNull(result.status),
+    committed: finalizerCommittedTriState(finalizeResult.committed),
+    claimId,
+    ownerDigest,
+    journalDigest: canonicalFinalizerDigest(intent),
+    finalizeResultDigest: canonicalFinalizerDigest(finalizeResult),
+  };
+  return {
+    schema: "cpb.finalizer-observation-proof.v1",
+    evidence,
+    evidenceId: canonicalFinalizerDigest(evidence),
+    observedAt: textOrNull(attempt.completedAt)
+      || textOrNull(assignment.resultWrittenAt)
+      || new Date().toISOString(),
+  };
+}
+
+export function buildFinalizerOnlyRecoveryPlan(
+  assignment: ReconcilerRecord,
+  attempt: ReconcilerRecord,
+  result: ReconcilerRecord,
+): ReconcilerRecord | null {
+  const finalization = recordValue(result.finalization);
+  const finalizeResult = recordValue(result.finalizeResult);
+  const failure = recordValue(recordValue(result.jobResult).failure);
+  const currentRecovery = recordValue(recordValue(assignment.metadata).finalizerRecovery);
+  const mode = textOrNull(finalizeResult.mode);
+  const jobId = textOrNull(finalizeResult.jobId) || textOrNull(recordValue(result.jobResult).jobId);
+  const intentOriginJobId = textOrNull(recordValue(finalizeResult.remoteIntent).originJobId);
+  const finalizerFailed = finalization.required === true
+    && finalization.ok !== true
+    || failure.kind === "finalizer_failed";
+  if (!finalizerFailed || finalizeResult.ok === true || (mode !== "remote" && mode !== "pr") || !jobId || !intentOriginJobId) {
+    return null;
+  }
+
+  const committed = finalizerCommittedTriState(finalizeResult.committed);
+  const priorGeneration = Number(currentRecovery.generation);
+  const generation = Number.isSafeInteger(priorGeneration) && priorGeneration > 0
+    ? priorGeneration + 1
+    : 1;
+  const priorWasFinalizerOnly = currentRecovery.schema === FINALIZER_RECOVERY_SCHEMA
+    && currentRecovery.required === true;
+  if ((!priorWasFinalizerOnly && intentOriginJobId !== jobId)
+    || (priorWasFinalizerOnly && currentRecovery.originJobId !== intentOriginJobId)) return null;
+  const priorReadOnlyObservations = priorWasFinalizerOnly
+    && Number.isSafeInteger(Number(currentRecovery.readOnlyObservations))
+    ? Math.max(0, Number(currentRecovery.readOnlyObservations))
+    : 0;
+  const priorMutationAttempts = priorWasFinalizerOnly
+    && Number.isSafeInteger(Number(currentRecovery.mutationAttempts))
+    ? Math.max(0, Number(currentRecovery.mutationAttempts))
+    : 0;
+  const safePartialContinuation = safePartialFinalizerContinuation(mode, finalizeResult);
+  const allowMutation = safePartialContinuation;
+  const readOnlyObservations = priorReadOnlyObservations + (allowMutation ? 0 : 1);
+  const mutationAttempts = priorMutationAttempts + (allowMutation ? 1 : 0);
+  if ((!allowMutation && readOnlyObservations > FINALIZER_READ_ONLY_RECOVERY_LIMIT)
+    || (allowMutation && mutationAttempts > FINALIZER_MUTATION_RECOVERY_LIMIT)) return null;
+  const priorAttemptProof = finalizerHandoffEvidence(assignment, attempt, result, finalizeResult, jobId)
+    || (priorWasFinalizerOnly ? carriedFinalizerOwnerProof(currentRecovery, finalizeResult) : null);
+  const lastObservationProof = finalizerObservationProof(
+    assignment,
+    attempt,
+    result,
+    finalizeResult,
+    jobId,
+  );
+  if (!priorAttemptProof || !lastObservationProof) return null;
+  const takeover = allowMutation
+    ? {
+        schema: FINALIZER_HANDOFF_SCHEMA,
+        kind: "explicit-handoff",
+        previousClaimId: priorAttemptProof.previousClaimId,
+        evidenceId: priorAttemptProof.evidenceId,
+        observedAt: priorAttemptProof.observedAt,
+        evidence: priorAttemptProof.evidence,
+      }
+    : null;
+  // A new worker claim is not sufficient to steal a durable finalizer journal.
+  // Mutation recovery requires a stable handoff bound to the exact terminal
+  // attempt and the claim recorded by that attempt.
+  if (allowMutation && !takeover) return null;
+  const requestedAt = new Date();
+  const retryOrdinal = allowMutation ? mutationAttempts : readOnlyObservations;
+  const backoffMs = priorWasFinalizerOnly
+    ? Math.min(
+        FINALIZER_RECOVERY_BACKOFF_MAX_MS,
+        FINALIZER_RECOVERY_BACKOFF_BASE_MS * (2 ** Math.max(0, retryOrdinal - 2)),
+      )
+    : 0;
+
+  return {
+    schema: FINALIZER_RECOVERY_SCHEMA,
+    required: true,
+    generation,
+    mode,
+    allowMutation,
+    committed,
+    safePartialContinuation,
+    readOnlyObservations,
+    mutationAttempts,
+    limits: {
+      readOnlyObservations: FINALIZER_READ_ONLY_RECOVERY_LIMIT,
+      mutationAttempts: FINALIZER_MUTATION_RECOVERY_LIMIT,
+    },
+    originAssignmentId: textOrNull(currentRecovery.originAssignmentId)
+      || textOrNull(assignment.assignmentId),
+    originAttempt: Number.isSafeInteger(Number(currentRecovery.originAttempt))
+      ? Number(currentRecovery.originAttempt)
+      : Number(attempt.attempt),
+    originJobId: intentOriginJobId,
+    previousAssignmentId: textOrNull(assignment.assignmentId),
+    previousAttempt: Number(attempt.attempt),
+    previousJobId: jobId,
+    priorAttemptProof,
+    lastObservationProof,
+    ...(takeover ? {
+      previousClaimId: takeover.previousClaimId,
+      takeover,
+    } : {}),
+    requestedAt: requestedAt.toISOString(),
+    ...(backoffMs > 0 ? {
+      retryBackoffMs: backoffMs,
+      nextEligibleAt: new Date(requestedAt.getTime() + backoffMs).toISOString(),
+    } : {}),
+    reason: allowMutation
+      ? safePartialContinuation
+        ? "durable journal receipts authorize continuation from the next unapplied stage under a fresh fenced claim"
+        : "finalizer mutation was not committed; resume under a fresh fenced claim"
+      : "finalizer mutation truth is ambiguous or partially committed; reconcile read-only first",
+  };
+}
+
 function previousFailureCount(assignment: ReconcilerRecord, base: ReconcilerRecord) {
   const candidates = [
     assignment?.metadata?.failureCount,
@@ -431,6 +1118,7 @@ export function buildRetrySourceContext(assignment: ReconcilerRecord, attempt: R
 
 export class Reconciler {
   hubRoot: string;
+  cpbRoot: string | null;
   assignments: ReconcilerStore;
   workers: WorkerStore;
   workerSupervisor: WorkerSupervisor | null;
@@ -451,6 +1139,7 @@ export class Reconciler {
     leaderLock,
     failureRouter,
     hubRoot: _hr,
+    cpbRoot = null,
     progressInfoMs,
     progressWarnMs,
     progressErrorMs,
@@ -458,6 +1147,7 @@ export class Reconciler {
     progressStaleMs,
   }: ReconcilerOptions) {
     this.hubRoot = hubRoot;
+    this.cpbRoot = cpbRoot;
     this.assignments = assignmentStore;
     this.workers = workerStore;
     this.workerSupervisor = workerSupervisor || null;
@@ -507,10 +1197,19 @@ export class Reconciler {
     for (const worker of workers) {
       if (worker.status === "exited") continue;
 
-      if (worker.pid && (!worker.host || worker.host === "local" || worker.host === os.hostname())) {
-        try { process.kill(worker.pid, 0); } catch {
-          this.log.info(`worker ${worker.workerId} pid ${worker.pid} marked exited (dead PID)`);
+      if (worker.pid && this._isLocalWorker(worker)) {
+        const liveness = this._workerProcessAlive(worker);
+        if (liveness === false) {
+          this.log.info(`worker ${worker.workerId} process identity ${this._workerProcessIdentity(worker)?.incarnation || "unknown"} marked exited (dead process)`);
           await this.workers.updateWorker(worker.workerId, { status: "exited" });
+          continue;
+        }
+        if (liveness === null) {
+          this.log.warn(`worker ${worker.workerId} missing process identity; marked unhealthy instead of probing bare pid`);
+          await this.workers.updateWorker(worker.workerId, {
+            status: "unhealthy",
+            recoveryError: "missing_process_identity",
+          });
           continue;
         }
       }
@@ -804,7 +1503,8 @@ export class Reconciler {
     const pid = heartbeat.pid || worker?.pid || null;
     const workerHost = worker?.host || heartbeat.host || null;
     const localWorker = workerHost === "local" || workerHost === os.hostname();
-    const pidAlive = localWorker ? this._pidAlive(pid) : null;
+    const processIdentity = this._workerProcessIdentity(worker) || this._workerProcessIdentity(heartbeat);
+    const pidAlive = localWorker ? this._processIdentityAlive(processIdentity) : null;
     probe.worker = {
       workerId,
       found: Boolean(worker),
@@ -812,6 +1512,7 @@ export class Reconciler {
       host: workerHost,
       pid,
       pidAlive,
+      processIdentity: processIdentity || null,
       currentAssignmentId: worker?.currentAssignmentId || null,
       lastHeartbeatAt: worker?.lastHeartbeatAt || null,
     };
@@ -826,7 +1527,9 @@ export class Reconciler {
         this._addProbeFailure(probe, "worker_assignment_mismatch");
       }
     }
-    if (pid && pidAlive === false) {
+    if (pid && localWorker && !processIdentity) {
+      this._addProbeFailure(probe, "worker_process_identity_missing");
+    } else if (pid && pidAlive === false) {
       this._addProbeFailure(probe, "worker_pid_dead");
     }
 
@@ -872,14 +1575,50 @@ export class Reconciler {
     probe.reason = probe.failureSignals.join(", ");
   }
 
-  _pidAlive(pid: unknown): boolean | null {
-    const numPid = Number(pid);
-    if (!Number.isInteger(numPid) || numPid <= 0) return null;
+  _isLocalWorker(worker: ReconcilerRecord | null | undefined): boolean {
+    return !worker?.host || worker.host === "local" || worker.host === os.hostname();
+  }
+
+  _workerProcessIdentity(worker: ReconcilerRecord | null | undefined): ProcessIdentity | null {
+    const identity = worker?.processIdentity;
+    if (!identity || typeof identity !== "object" || Array.isArray(identity)) return null;
+    const record = identity as ReconcilerRecord;
+    const pid = Number(record.pid);
+    const birthId = typeof record.birthId === "string" ? record.birthId : "";
+    const capturedAt = typeof record.capturedAt === "string" ? record.capturedAt : "";
+    const processGroupId = Number(record.processGroupId);
+    if (
+      !Number.isSafeInteger(pid)
+      || pid <= 0
+      || !birthId
+      || record.incarnation !== `${pid}:${birthId}`
+      || !capturedAt
+      || !Number.isFinite(Date.parse(capturedAt))
+      || new Date(Date.parse(capturedAt)).toISOString() !== capturedAt
+      || record.birthIdPrecision !== "exact"
+      || (record.processGroupId !== undefined
+        && (!Number.isSafeInteger(processGroupId) || processGroupId <= 0))
+    ) return null;
+    return {
+      pid,
+      birthId,
+      incarnation: record.incarnation,
+      capturedAt,
+      birthIdPrecision: "exact",
+      ...(record.processGroupId === undefined ? {} : { processGroupId }),
+    };
+  }
+
+  _workerProcessAlive(worker: ReconcilerRecord | null | undefined): boolean | null {
+    return this._processIdentityAlive(this._workerProcessIdentity(worker));
+  }
+
+  _processIdentityAlive(identity: ProcessIdentity | null): boolean | null {
+    if (!identity) return null;
     try {
-      process.kill(numPid, 0);
-      return true;
+      return isProcessIdentityAlive(identity);
     } catch {
-      return false;
+      return null;
     }
   }
 
@@ -938,7 +1677,9 @@ export class Reconciler {
         // No attempt info — cannot finalize queue, skip
         return;
       }
-      const result = await this._readAttemptResult(assignment.assignmentId, attempt.attempt);
+      const result = await this._readAttemptResult(assignment.assignmentId, attempt.attempt, {
+        allowCommittedFile: Boolean(assignment.resultWrittenAt),
+      });
       if (!result) {
         // No result — cannot finalize queue, skip (worker may still be writing)
         return;
@@ -958,11 +1699,20 @@ export class Reconciler {
   async _finalizeQueue(assignment: ReconcilerRecord, attempt: ReconcilerRecord, result: ReconcilerRecord): Promise<void> {
     await this._guardLeader();
     const { updateEntry } = await import("../services/hub/hub-queue.js");
+    const persistedHeartbeat = Object.keys(recordValue(attempt.heartbeat)).length > 0
+      ? recordValue(attempt.heartbeat)
+      : await this._readHeartbeat(assignment.assignmentId, Number(attempt.attempt)) || {};
+    const durableAttempt = { ...attempt, heartbeat: persistedHeartbeat };
     const finalization = recordValue(result?.finalization);
     const finalizeResult = recordValue(result?.finalizeResult);
+    const finalizerContractValid = persistedFinalizerSuccessContractValid(assignment, result, durableAttempt)
+      && await persistedReviewBundleFileValid(this.hubRoot, assignment, result)
+      && await persistedFinalizerGitReadbackValid(assignment, result)
+      && await persistedFinalizerJournalValid(this.cpbRoot, this.hubRoot, assignment, result);
     const finalizerRejected = result?.status === "completed" && (
       (finalization.required === true && finalization.ok !== true)
       || finalizeResult.ok === false
+      || !finalizerContractValid
     );
     const effectiveResult = finalizerRejected
       ? {
@@ -974,15 +1724,43 @@ export class Reconciler {
             failure: {
               kind: "finalizer_failed",
               phase: "finalize",
-              reason: String(finalizeResult.reason || finalizeResult.code || finalization.code || "finalizer failed"),
+              reason: String(
+                finalizeResult.reason
+                || finalizeResult.code
+                || finalization.code
+                || (!finalizerContractValid ? "persisted finalizer success contract is invalid" : "finalizer failed"),
+              ),
               retryable: finalizeResult.retryable === true,
               cause: { finalizer: finalizeResult, finalization },
             },
           },
         }
       : result;
+    const finalizerRecovery = buildFinalizerOnlyRecoveryPlan(assignment, durableAttempt, effectiveResult);
 
-    if (effectiveResult && effectiveResult.status === "completed") {
+    if (finalizerRecovery) {
+      this.log.info(`entry ${assignment.entryId} scheduling finalizer-only recovery (mutation=${finalizerRecovery.allowMutation === true ? "allowed-with-fresh-claim" : "read-only"})`);
+      await updateEntry(this.hubRoot, assignment.entryId, {
+        status: "pending",
+        claimedBy: null,
+        claimedAt: null,
+        workerId: null,
+        reason: null,
+        metadata: {
+          finalizerRecovery,
+          sourceContext: assignment.sourceContext || null,
+          retryDecision: finalizerRecovery.nextEligibleAt
+            ? {
+                action: "wait_for_finalizer_reconciliation",
+                reason: finalizerRecovery.reason,
+                retryable: true,
+                retryAt: String(finalizerRecovery.requestedAt),
+                untilTs: finalizerRecovery.nextEligibleAt,
+              }
+            : null,
+        },
+      });
+    } else if (effectiveResult && effectiveResult.status === "completed") {
       this.log.info(`entry ${assignment.entryId} completed`);
       await updateEntry(this.hubRoot, assignment.entryId, {
         status: "completed",
@@ -1173,8 +1951,10 @@ export class Reconciler {
     if (!workerId || !this.workerSupervisor?.stopWorker) return;
     try {
       await this.workerSupervisor.stopWorker(workerId, reason || "restart_worker_and_retry");
-    } catch (err) {
-      this.log.warn(`worker ${workerId} restart stop failed: ${err.message}`);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.log.warn(`worker ${workerId} restart stop failed: ${message}`);
+      throw err;
     }
   }
 
@@ -1248,17 +2028,26 @@ export class Reconciler {
     }
   }
 
-  async _readAttemptResult(assignmentId: string, attemptNum: number): Promise<ReconcilerRecord | null> {
+  async _readAttemptResult(
+    assignmentId: string,
+    attemptNum: number,
+    { allowCommittedFile = false }: { allowCommittedFile?: boolean } = {},
+  ): Promise<ReconcilerRecord | null> {
+    const attempt = await this.assignments.getActiveAttempt(assignmentId);
+    if (Number(attempt?.attempt) !== attemptNum) return null;
+    const committedResult = recordValue(attempt?.result);
+    if (Object.keys(committedResult).length > 0) return committedResult as ReconcilerRecord;
+    if (!allowCommittedFile) return null;
     try {
-      return JSON.parse(await readFile(
+      const parsed = JSON.parse(await readBoundedRegularFileNoFollow(
         path.join(this._attemptDir(assignmentId, attemptNum), "result.json"),
-        "utf8",
+        { maxBytes: ATTEMPT_RESULT_MAX_BYTES },
       ));
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? parsed as ReconcilerRecord
+        : null;
     } catch {
-      const attempt = await this.assignments.getActiveAttempt(assignmentId);
-      if (Number(attempt?.attempt) !== attemptNum) return null;
-      const result = recordValue(attempt?.result);
-      return Object.keys(result).length > 0 ? result as ReconcilerRecord : null;
+      return null;
     }
   }
 

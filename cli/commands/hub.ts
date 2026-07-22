@@ -1,4 +1,59 @@
 import type { LooseRecord } from "../../shared/types.js";
+import path from "node:path";
+
+type LeaderStatusDiagnostic = LooseRecord & {
+  status: string;
+  ready: boolean;
+  blocked: boolean;
+  reason?: string;
+  error?: LooseRecord;
+};
+
+function leaderStatusErrorCode(error: unknown): string {
+  if (error instanceof SyntaxError) return "HUB_LEADER_STATE_INVALID";
+  if (error && typeof error === "object" && "code" in error) {
+    const code = (error as { code?: unknown }).code;
+    if (typeof code === "string" && code.length > 0) return code;
+  }
+  return "HUB_LEADER_STATUS_UNAVAILABLE";
+}
+
+function leaderStatusErrorReason(code: string): string {
+  if (code === "HUB_LEADER_EPOCH_INVALID") return "leader_epoch_invalid";
+  if (code.startsWith("HUB_LEADER_")) return "leader_state_invalid";
+  return "leader_status_unavailable";
+}
+
+function leaderStatusErrorMessage(error: unknown, code: string): string {
+  if (code.startsWith("HUB_LEADER_") && error instanceof Error && !(error instanceof SyntaxError)) {
+    return error.message.slice(0, 500);
+  }
+  if (error instanceof SyntaxError) return "Leader state contains malformed JSON";
+  return "Leader status is unavailable; leader acquisition and mutations remain blocked";
+}
+
+export async function readLeaderStatusDiagnostic(hubRoot: string): Promise<LeaderStatusDiagnostic> {
+  const { readLeaderStatus } = await import("../../server/orchestrator/leader-lock.js");
+  try {
+    return {
+      ...await readLeaderStatus(hubRoot),
+      blocked: false,
+    } as LeaderStatusDiagnostic;
+  } catch (error) {
+    const code = leaderStatusErrorCode(error);
+    return {
+      status: "blocked",
+      ready: false,
+      blocked: true,
+      reason: leaderStatusErrorReason(code),
+      error: {
+        code,
+        message: leaderStatusErrorMessage(error, code),
+        leaderPath: path.join(hubRoot, "orchestrator", "leader.lock", "leader.json"),
+      },
+    };
+  }
+}
 
 function recordValue(value: unknown): LooseRecord {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as LooseRecord : {};
@@ -33,7 +88,6 @@ export async function run(args: string[], { cpbRoot, executorRoot }: LooseRecord
   const hubRoot = resolveHubRoot(cpbRoot);
 
   if (sub === "status") {
-    const { readLeaderStatus } = await import("../../server/orchestrator/leader-lock.js");
     const { WorkerStore, summarizeWorkers } = await import("../../shared/orchestrator/worker-store.js");
     const { queueStatus } = await import("../../server/services/hub/hub-queue.js");
     const { getManagedAcpPool } = await import("../../server/services/acp/acp-pool.js");
@@ -44,15 +98,18 @@ export async function run(args: string[], { cpbRoot, executorRoot }: LooseRecord
     const [status, liveness, orchestrator, queue, workers, poolLeases] = await Promise.all([
       hubStatus(hubRoot),
       readHubLiveness(hubRoot),
-      readLeaderStatus(hubRoot),
+      readLeaderStatusDiagnostic(hubRoot),
       queueStatus(hubRoot),
       workerStore.listWorkers(),
       pool.connectionLeaseStatus().catch(() => ({ total: 0, providers: {} })),
     ]);
     const leaseStatus = poolLeases as LooseRecord;
     const managedWorkers = summarizeWorkers(workers);
+    const blocked = orchestrator.blocked === true;
     if (json) {
       console.log(JSON.stringify({
+        ok: !blocked,
+        blocked,
         hubRoot: status.hubRoot,
         registryPath: status.registryPath,
         projectCount: status.projectCount,
@@ -66,7 +123,10 @@ export async function run(args: string[], { cpbRoot, executorRoot }: LooseRecord
       }, null, 2));
     } else {
       const liveTag = liveness.alive ? "alive" : `down (${liveness.reason})`;
-      const orchestratorTag = orchestrator.status === "running"
+      const orchestratorError = recordValue(orchestrator.error);
+      const orchestratorTag = blocked
+        ? `blocked (${orchestratorError.code || orchestrator.reason || "leader_status_unavailable"})`
+        : orchestrator.status === "running"
         ? `running pid:${orchestrator.pid || "-"} epoch:${orchestrator.epoch || 0}`
         : `stopped${orchestrator.hubId ? ` hubId:${orchestrator.hubId}` : ""}`;
       console.log(`Hub: ${status.hubRoot}`);
@@ -89,6 +149,7 @@ export async function run(args: string[], { cpbRoot, executorRoot }: LooseRecord
       const noLease = poolParts.length === 0 ? ` 0/${defaultLimit}` : "";
       console.log(`ACP Pool: ${poolParts.join(" ")}${noLease}`);
     }
+    return blocked ? 1 : 0;
   } else if (sub === "projects") {
     const projects = await listProjects(hubRoot);
     if (json) {
@@ -208,11 +269,26 @@ export async function run(args: string[], { cpbRoot, executorRoot }: LooseRecord
       } catch {}
     }
     if (!eqProject) {
-      console.error("Usage: cpb hub enqueue-issues <project> [--dry-run] [--sync-first] [--json]");
+      console.error("Usage: cpb hub enqueue-issues <project> [--issue NUMBER] [--github-write-capability BASE64URL] [--dry-run] [--sync-first] [--json]");
       process.exit(1);
     }
     const dryRun = args.includes("--dry-run");
     const syncFirst = args.includes("--sync-first");
+    const exactIssueNumber = optionValue(args, "--issue");
+    if (exactIssueNumber !== null && !/^[1-9][0-9]*$/.test(exactIssueNumber)) {
+      throw new Error("--issue requires one positive issue number");
+    }
+    const encodedRemoteCapability = optionValue(args, "--github-write-capability");
+    if (encodedRemoteCapability !== null && exactIssueNumber === null) {
+      throw new Error("--github-write-capability requires --issue NUMBER");
+    }
+    const remoteCapability = encodedRemoteCapability === null
+      ? null
+      : (await import("../../server/services/github/github-remote-capability.js"))
+          .decodeGithubRemoteCapability(encodedRemoteCapability);
+    if (remoteCapability && String(remoteCapability.issueNumber) !== exactIssueNumber) {
+      throw new Error("GitHub write capability issue does not match --issue");
+    }
 
     if (syncFirst) {
       const { syncGithubIssuesFromGh } = await import("../../server/services/github/github-issues.js");
@@ -228,12 +304,18 @@ export async function run(args: string[], { cpbRoot, executorRoot }: LooseRecord
     }
 
     const { autoEnqueueSyncedIssues } = await import("../../server/services/hub/hub-queue.js");
-    const result = await autoEnqueueSyncedIssues(hubRoot, cpbRoot, eqProject, { dryRun });
+    const result = await autoEnqueueSyncedIssues(hubRoot, cpbRoot, eqProject, {
+      dryRun,
+      exactIssueNumber,
+      remoteCapability,
+    });
+    if (result.error) throw new Error(String(result.error));
     if (json) {
       console.log(JSON.stringify(result, null, 2));
     } else {
       const prefix = dryRun ? "[DRY RUN] " : "";
-      console.log(`${prefix}Auto-enqueue for '${eqProject}': ${result.enqueued} enqueued, ${result.skipped} skipped, ${result.duplicates} already queued (of ${result.total} open issues)`);
+      const selection = exactIssueNumber ? `exact issue #${exactIssueNumber}` : `${result.total} open issues`;
+      console.log(`${prefix}Auto-enqueue for '${eqProject}': ${result.enqueued} enqueued, ${result.skipped} skipped, ${result.duplicates} already queued (${selection})`);
       if (dryRun && result.matched?.length) {
         console.log("\nMatched issues:");
         for (const m of result.matched) {

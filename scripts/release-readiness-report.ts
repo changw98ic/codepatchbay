@@ -8,6 +8,7 @@ import {
   formatProductGateViolations,
   verifyProductGateEvidenceFile,
 } from "./verify-product-gate.js";
+import { verifyLiveReleaseEvidenceFile } from "./verify-live-release-evidence.js";
 
 const PRODUCT_GATE_EVIDENCE_FILE = "docs/product/cpb-flagship-product-validation.json";
 
@@ -18,7 +19,7 @@ function gitStatus(root: string) {
   });
 }
 
-async function productGateStatus(root: string) {
+async function productGateStatus(root: string, referenceTime: Date | string | number) {
   const evidencePath = path.resolve(root, PRODUCT_GATE_EVIDENCE_FILE);
   const raw = await readFile(evidencePath, "utf8").catch((error: unknown) => {
     const code = error && typeof error === "object" && "code" in error ? error.code : null;
@@ -59,7 +60,7 @@ async function productGateStatus(root: string) {
       ],
     };
   }
-  const result = await verifyProductGateEvidenceFile(evidence, { root });
+  const result = await verifyProductGateEvidenceFile(evidence, { root, referenceTime });
   return {
     ok: result.ok,
     evidenceFile: PRODUCT_GATE_EVIDENCE_FILE,
@@ -70,9 +71,18 @@ async function productGateStatus(root: string) {
   };
 }
 
-export async function buildReleaseReadinessReport({ root = process.cwd() } = {}) {
+export async function buildReleaseReadinessReport({
+  root = process.cwd(),
+  referenceTime = new Date(),
+}: {
+  root?: string;
+  referenceTime?: Date | string | number;
+} = {}) {
   const patchIntegrity = verifyPatchIntegrityStatus(gitStatus(root));
-  const productGate = await productGateStatus(root);
+  const [productGate, liveReleaseEvidence] = await Promise.all([
+    productGateStatus(root, referenceTime),
+    verifyLiveReleaseEvidenceFile({ root, referenceTime }),
+  ]);
   const remaining = [];
   if (!patchIntegrity.ok) {
     remaining.push({
@@ -91,6 +101,16 @@ export async function buildReleaseReadinessReport({ root = process.cwd() } = {})
       violations: productGate.violations,
     });
   }
+  if (!liveReleaseEvidence.ok) {
+    remaining.push({
+      gate: "live-release-evidence",
+      reason: liveReleaseEvidence.missingEvidence
+        ? "missing mandatory live provider and disposable draft-PR rehearsal evidence"
+        : "live release evidence does not satisfy the fail-closed contract",
+      evidenceFile: liveReleaseEvidence.evidenceFile,
+      violations: liveReleaseEvidence.violations,
+    });
+  }
 
   return {
     schemaVersion: 1,
@@ -106,6 +126,7 @@ export async function buildReleaseReadinessReport({ root = process.cwd() } = {})
         untrackedImplementationFiles: patchIntegrity.untrackedImplementationFiles,
       },
       productGate,
+      liveReleaseEvidence,
     },
     ready: remaining.length === 0,
     remaining,
@@ -116,7 +137,9 @@ async function main() {
   const report = await buildReleaseReadinessReport();
   console.log(JSON.stringify(report, null, 2));
   if (!report.ready) {
-    console.error(formatProductGateViolations(report.gates.productGate.violations));
+    const productViolations = formatProductGateViolations(report.gates.productGate.violations);
+    if (productViolations) console.error(productViolations);
+    console.error(JSON.stringify(report.remaining, null, 2));
     process.exitCode = 1;
   }
 }

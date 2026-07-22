@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createConnection, createServer, type Socket } from "node:net";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import test, { type TestContext } from "node:test";
+import nodeTest, { type TestContext } from "node:test";
 
 import {
   loadRegistry,
@@ -22,7 +23,11 @@ import { LeaderLock, readLeaderStatus } from "../../server/orchestrator/leader-l
 import { WorkerSupervisor } from "../../server/orchestrator/worker-supervisor.js";
 import { claimEligible, enqueue, listQueue, updateEntry } from "../../server/services/hub/hub-queue.js";
 import { WorkerStore } from "../../shared/orchestrator/worker-store.js";
-import { AssignmentStore } from "../../shared/orchestrator/assignment-store.js";
+import {
+  AssignmentStore,
+  withAssignmentStoreTestHooksForTests,
+  type AssignmentStoreTestHooks,
+} from "../../shared/orchestrator/assignment-store.js";
 import { WorkerBrokerClient } from "../../shared/orchestrator/worker-broker-client.js";
 import { Reconciler } from "../../server/orchestrator/reconciler.js";
 import { acquireLease, readLease, releaseLease, renewLease } from "../../server/services/infra.js";
@@ -36,15 +41,51 @@ import {
   verifyRedisHubAccessAuditExport,
 } from "../../server/services/audit/hub-access-audit-redis-export.js";
 import {
+  _internalWithHubRedisMigrationTestHooksForTests,
   buildLocalRedisMigrationSnapshot,
+  hubRedisMigrationJournalPath,
   migrateLocalHubToRedis,
   recoverHubRedisMigration,
 } from "../../server/services/hub/hub-redis-migration.js";
-import { hubRestoreJournalPath } from "../../shared/hub-maintenance.js";
+import { hubMaintenanceLockPath, hubRestoreJournalPath } from "../../shared/hub-maintenance.js";
+import { queueBatchAssignmentAtomically } from "../../scripts/queue-swebench-batch.js";
+
+const assignmentStoreTestHookScope = new AsyncLocalStorage<AssignmentStoreTestHooks>();
+const __assignmentStoreTestHooks = new Proxy({} as AssignmentStoreTestHooks, {
+  get(_target, property) {
+    return Reflect.get(assignmentStoreTestHookScope.getStore() || {}, property);
+  },
+  set(_target, property, value) {
+    const hooks = assignmentStoreTestHookScope.getStore();
+    if (!hooks) throw new Error("assignment store test hook mutation requires a scoped test");
+    return Reflect.set(hooks, property, value);
+  },
+  deleteProperty(_target, property) {
+    const hooks = assignmentStoreTestHookScope.getStore();
+    if (!hooks) return true;
+    return Reflect.deleteProperty(hooks, property);
+  },
+});
+
+function test(name: string, fn: (context: TestContext) => void | Promise<void>) {
+  return nodeTest(name, (context) => {
+    const hooks: AssignmentStoreTestHooks = {};
+    return assignmentStoreTestHookScope.run(
+      hooks,
+      () => withAssignmentStoreTestHooksForTests(hooks, () => fn(context)),
+    );
+  });
+}
 
 const REDIS_CONFIG_ENV = "CPB_HUB_STATE_REDIS_CONFIG_FILE";
 const repoRoot = path.resolve(import.meta.dirname, "..", "..");
 const managedWorkerScript = path.join(repoRoot, "runtime", "worker", "managed-worker.js");
+
+function codeOf(error: unknown) {
+  return error && typeof error === "object" && "code" in error
+    ? String((error as { code?: unknown }).code)
+    : "";
+}
 
 async function reservePort() {
   const server = createServer();
@@ -212,6 +253,71 @@ async function redisFixture(t: TestContext) {
   };
 }
 
+async function migrationCommitMetadataFixture(
+  fixture: NonNullable<Awaited<ReturnType<typeof redisFixture>>>,
+  name: string,
+) {
+  const cpbRoot = path.join(fixture.root, name);
+  const hubRoot = path.join(cpbRoot, "hub");
+  const projectsPath = path.join(hubRoot, "projects.json");
+  const registry = `${JSON.stringify({
+    version: 1,
+    revision: 1,
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    projects: {},
+  })}\n`;
+  await mkdir(hubRoot, { recursive: true });
+  await writeFile(projectsPath, registry, "utf8");
+
+  const configFile = path.join(cpbRoot, "redis-migration.json");
+  const baseConfig = JSON.parse(await readFile(fixture.configFile, "utf8"));
+  await writeFile(configFile, `${JSON.stringify({
+    ...baseConfig,
+    registryKey: `cpb:{migration-${randomUUID()}}:registry`,
+  })}\n`, { mode: 0o600 });
+  await chmod(configFile, 0o600);
+
+  const output = path.join(await realpath(cpbRoot), "migration-output");
+  const recoveryPaths = {
+    journal: hubRedisMigrationJournalPath(hubRoot),
+    snapshot: path.join(output, "redis-logical-snapshot.json"),
+    backup: path.join(output, "hub-backup"),
+    output,
+    result: path.join(output, "migration-result.json"),
+  };
+  return {
+    cpbRoot,
+    hubRoot,
+    projectsPath,
+    registry,
+    configFile,
+    output,
+    recoveryPaths,
+    backupSigningKey: "migration-backup-signing-key-1234567890",
+  };
+}
+
+function isCommittedRedisMigrationFailure(
+  error: unknown,
+  expectedCode: string | null,
+  recoveryPaths: Record<"journal" | "snapshot" | "backup" | "output" | "result", string>,
+  committedPath: string | null = null,
+) {
+  if (!error || typeof error !== "object") return false;
+  const typed = error as {
+    code?: unknown;
+    committed?: unknown;
+    committedPath?: unknown;
+    redisCommitted?: unknown;
+    recoveryPaths?: Record<string, unknown>;
+  };
+  return (expectedCode === null || typed.code === expectedCode)
+    && typed.committed === true
+    && typed.committedPath === committedPath
+    && typed.redisCommitted === true
+    && Object.entries(recoveryPaths).every(([key, value]) => typed.recoveryPaths?.[key] === value);
+}
+
 async function runChild(script: string, args: string[]) {
   await new Promise<void>((resolve, reject) => {
     const child = spawn(process.execPath, ["--input-type=module", "-e", script, ...args], {
@@ -243,6 +349,239 @@ async function runRedisCli(port: number, args: string[]) {
     child.once("exit", (code) => code === 0 ? resolve(output.trim()) : reject(new Error(`redis-cli failed: ${output}`)));
   });
 }
+
+test("Redis SWE-bench batch enqueue saga compensates project assignment and inbox on abort", async (t) => {
+  const fixture = await redisFixture(t);
+  if (!fixture) return;
+  const sourcePath = await mkdtemp(path.join(os.tmpdir(), "cpb-hub-redis-saga-source-"));
+  t.after(() => rm(sourcePath, { recursive: true, force: true }));
+  const abort = new AbortController();
+  const input = {
+    entryId: "redis-saga-entry",
+    projectId: "redis-saga-project",
+    task: "redis saga abort",
+    sourcePath,
+    workflow: "standard" as const,
+    planMode: "full" as const,
+    sourceContext: {},
+    metadata: {},
+  };
+
+  await assert.rejects(
+    () => queueBatchAssignmentAtomically({
+      hubRoot: fixture.hubRoot,
+      workerId: "worker-redis-saga",
+      input,
+      sourcePath,
+      metadata: { productValidation: true },
+      skipCodeGraphGate: true,
+      signal: abort.signal,
+      hooks: {
+        afterEnqueue: () => abort.abort(new DOMException("redis saga abort", "AbortError")),
+      },
+    }),
+    /redis saga abort/,
+  );
+
+  const registry = await loadRegistry(fixture.hubRoot);
+  assert.equal(Object.hasOwn(registry.projects, "redis-saga-project"), false);
+  const assignmentStore = new AssignmentStore(fixture.hubRoot);
+  await assignmentStore.init();
+  assert.equal(await assignmentStore.getAssignment("a-redis-saga-entry"), null);
+  const workerStore = new WorkerStore(fixture.hubRoot);
+  await workerStore.init();
+  assert.deepEqual(await workerStore.readInbox("worker-redis-saga"), []);
+});
+
+test("Redis SWE-bench batch enqueue returns stable inbox ref without fake path", async (t) => {
+  const fixture = await redisFixture(t);
+  if (!fixture) return;
+  const sourcePath = await mkdtemp(path.join(os.tmpdir(), "cpb-hub-redis-contract-source-"));
+  t.after(() => rm(sourcePath, { recursive: true, force: true }));
+  const input = {
+    entryId: "redis-contract-entry",
+    projectId: "redis-contract-project",
+    task: "redis contract enqueue",
+    sourcePath,
+    workflow: "standard" as const,
+    planMode: "full" as const,
+    sourceContext: {},
+    metadata: {},
+  };
+
+  const queued = await queueBatchAssignmentAtomically({
+    hubRoot: fixture.hubRoot,
+    workerId: "worker-redis-contract",
+    input,
+    sourcePath,
+    metadata: { productValidation: true },
+    skipCodeGraphGate: true,
+  });
+
+  assert.equal(queued.inboxBackend, "redis");
+  assert.equal(queued.inboxPath, null);
+  assert.match(queued.inboxRef, /^workerInbox:/);
+  const workerStore = new WorkerStore(fixture.hubRoot);
+  await workerStore.init();
+  const inbox = await workerStore.readInbox("worker-redis-contract");
+  assert.equal(inbox.length, 1);
+  assert.equal(inbox[0].assignmentId, "a-redis-contract-entry");
+});
+
+test("Redis assignment and inbox receipts normalize JSON, freeze evidence, and fence same-value successors", async (t) => {
+  const fixture = await redisFixture(t);
+  if (!fixture) return;
+  const backend = await openHubRedisStateBackend({ configFile: fixture.configFile, hubRoot: fixture.hubRoot });
+  const assignmentStore = new AssignmentStore(fixture.hubRoot);
+  const workerStore = new WorkerStore(fixture.hubRoot);
+  await assignmentStore.init();
+  await workerStore.init();
+
+  const normalizedAssignment = await assignmentStore.enqueueWithReceipt({
+    entryId: "redis-json-normalized",
+    projectId: fixture.projectId,
+    task: "normalize assignment",
+    sourcePath: fixture.sourcePath,
+    metadata: { kept: true, omitted: undefined },
+  }, { workerId: "worker-redis-json", orchestratorEpoch: 1 });
+  assert.equal(Object.hasOwn(normalizedAssignment.assignment.metadata as object, "omitted"), false);
+  assert.equal(Object.isFrozen(normalizedAssignment), true);
+  assert.equal(Object.isFrozen(normalizedAssignment.committedDocument), true);
+  assert.equal(await assignmentStore.compensateEnqueueReceipt(normalizedAssignment), true);
+  assert.equal(await assignmentStore.getAssignment("a-redis-json-normalized"), null);
+
+  const fencedAssignment = await assignmentStore.enqueueWithReceipt({
+    entryId: "redis-same-value",
+    projectId: fixture.projectId,
+    task: "same value assignment",
+    sourcePath: fixture.sourcePath,
+  }, { workerId: "worker-redis-json", orchestratorEpoch: 1 });
+  if (fencedAssignment.writeFence.backend !== "redis") throw new Error("expected Redis assignment fence");
+  const assignmentField = assignmentStore._assignmentField(fencedAssignment.assignmentId);
+  const assignmentSnapshot = await backend.readStateRecord(assignmentField);
+  assert.equal(assignmentSnapshot.revision, fencedAssignment.writeFence.revision);
+  const assignmentSuccessor = await backend.compareAndSwapStateRecord(
+    assignmentField,
+    assignmentSnapshot.revision,
+    assignmentSnapshot.data,
+  );
+  assert.equal(assignmentSuccessor.committed, true);
+  await assert.rejects(
+    () => assignmentStore.compensateEnqueueReceipt(fencedAssignment),
+    (error: unknown) => Boolean(error && typeof error === "object" && "code" in error
+      && error.code === "HUB_ASSIGNMENT_COMPENSATION_CONFLICT"),
+  );
+  assert.equal((await assignmentStore.getAssignment(fencedAssignment.assignmentId))?.task, "same value assignment");
+
+  const normalizedInbox = await workerStore.writeInboxWithReceipt("worker-redis-json", {
+    assignmentId: "a-redis-inbox-normalized",
+    attempt: 1,
+    attemptToken: "redis-normalized-token",
+    metadata: { kept: true, omitted: undefined },
+  });
+  const normalizedPayload = normalizedInbox.committedRecord.payload as Record<string, unknown>;
+  assert.equal(Object.hasOwn(normalizedPayload.metadata as object, "omitted"), false);
+  assert.equal(Object.isFrozen(normalizedInbox), true);
+  assert.equal(Object.isFrozen(normalizedPayload), true);
+  assert.equal(await workerStore.compensateInboxReceipt(normalizedInbox), true);
+
+  const fencedInbox = await workerStore.writeInboxWithReceipt("worker-redis-json", {
+    assignmentId: "a-redis-inbox-same-value",
+    attempt: 1,
+    attemptToken: "redis-same-value-token",
+  });
+  if (fencedInbox.writeFence.backend !== "redis") throw new Error("expected Redis inbox fence");
+  const inboxSnapshot = await backend.readStateRecord(fencedInbox.ref);
+  assert.equal(inboxSnapshot.revision, fencedInbox.writeFence.revision);
+  const inboxSuccessor = await backend.compareAndSwapStateRecord(
+    fencedInbox.ref,
+    inboxSnapshot.revision,
+    inboxSnapshot.data,
+  );
+  assert.equal(inboxSuccessor.committed, true);
+  await assert.rejects(
+    () => workerStore.compensateInboxReceipt(fencedInbox),
+    (error: unknown) => Boolean(error && typeof error === "object" && "code" in error
+      && error.code === "HUB_WORKER_INBOX_COMPENSATION_CONFLICT"),
+  );
+
+  await assert.rejects(
+    () => assignmentStore.enqueueWithReceipt({
+      entryId: "redis-uncloneable",
+      projectId: fixture.projectId,
+      task: "uncloneable assignment",
+      sourcePath: fixture.sourcePath,
+      metadata: { callback: () => true },
+    }, { workerId: "worker-redis-json", orchestratorEpoch: 1 }),
+    (error: unknown) => Boolean(error && typeof error === "object" && "code" in error
+      && error.code === "HUB_ASSIGNMENT_JSON_INVALID"),
+  );
+  assert.equal(await assignmentStore.getAssignment("a-redis-uncloneable"), null);
+  await assert.rejects(
+    () => workerStore.writeInboxWithReceipt("worker-redis-json", {
+      assignmentId: "a-redis-inbox-uncloneable",
+      attempt: 1,
+      attemptToken: "redis-uncloneable-token",
+      callback: () => true,
+    }),
+    (error: unknown) => Boolean(error && typeof error === "object" && "code" in error
+      && error.code === "HUB_WORKER_INBOX_PAYLOAD_INVALID"),
+  );
+  assert.equal(
+    (await workerStore.readInbox("worker-redis-json")).some((entry) => entry.assignmentId === "a-redis-inbox-uncloneable"),
+    false,
+  );
+});
+
+test("Redis assignment cancellation checks abort boundaries and returns a post-commit linearization", async (t) => {
+  const fixture = await redisFixture(t);
+  if (!fixture) return;
+  const store = new AssignmentStore(fixture.hubRoot);
+  await store.init();
+  const receipt = await store.enqueueWithReceipt({
+    entryId: "redis-cancel-boundary",
+    projectId: fixture.projectId,
+    task: "cancel boundary",
+    sourcePath: fixture.sourcePath,
+  }, { workerId: "worker-redis-cancel", orchestratorEpoch: 1 });
+
+  const preAborted = new AbortController();
+  preAborted.abort(new DOMException("Redis cancel pre-abort", "AbortError"));
+  await assert.rejects(
+    () => store.writeCancel(receipt.assignmentId, 1, "must not persist", { signal: preAborted.signal }),
+    /Redis cancel pre-abort/,
+  );
+  assert.equal(await store.readCancel(receipt.assignmentId, 1), null);
+
+  const afterRead = new AbortController();
+  __assignmentStoreTestHooks.afterRedisCancelRead = () => {
+    afterRead.abort(new DOMException("Redis cancel after read", "AbortError"));
+  };
+  try {
+    await assert.rejects(
+      () => store.writeCancel(receipt.assignmentId, 1, "must not pass CAS", { signal: afterRead.signal }),
+      /Redis cancel after read/,
+    );
+  } finally {
+    __assignmentStoreTestHooks.afterRedisCancelRead = undefined;
+  }
+  assert.equal(await store.readCancel(receipt.assignmentId, 1), null);
+
+  const postCommit = new AbortController();
+  __assignmentStoreTestHooks.afterRedisCancelCommit = () => {
+    postCommit.abort(new DOMException("Redis cancel post-commit", "AbortError"));
+  };
+  try {
+    assert.equal(
+      await store.writeCancel(receipt.assignmentId, 1, "persisted Redis cancellation", { signal: postCommit.signal }),
+      true,
+    );
+  } finally {
+    __assignmentStoreTestHooks.afterRedisCancelCommit = undefined;
+  }
+  assert.equal(postCommit.signal.aborted, true);
+  assert.equal((await store.readCancel(receipt.assignmentId, 1))?.reason, "persisted Redis cancellation");
+});
 
 test("Redis registry CAS lets a successor commit while an old transaction is paused", async (t) => {
   const fixture = await redisFixture(t);
@@ -873,6 +1212,304 @@ test("local authority inventory builds a complete Redis-restorable migration sna
   assert.equal(JSON.parse(String(await migratedBackend.readRegistry())).projects["local-project"].id, "local-project");
   assert.equal((await migratedBackend.scanStateRecords("assignment:")).length, 1);
   assert.equal((await migratedBackend.readJobEvents(jobField)).length, 2);
+});
+
+test("Redis migration reports committed metadata when local authority changes after Redis commit", async (t) => {
+  const fixture = await redisFixture(t);
+  if (!fixture) return;
+  const migration = await migrationCommitMetadataFixture(fixture, "migration-authority-change");
+  const displacedProjects = `${migration.projectsPath}.before-commit`;
+
+  await assert.rejects(
+    migrateLocalHubToRedis({
+      cpbRoot: migration.cpbRoot,
+      hubRoot: migration.hubRoot,
+      configFile: migration.configFile,
+      output: migration.output,
+      dryRun: false,
+      backupSigningKey: migration.backupSigningKey,
+      afterRedisCommit: async () => {
+        await rename(migration.projectsPath, displacedProjects);
+        await writeFile(migration.projectsPath, migration.registry, "utf8");
+      },
+    }),
+    (error: unknown) => isCommittedRedisMigrationFailure(
+      error,
+      "HUB_REDIS_MIGRATION_AUTHORITY_CHANGED",
+      migration.recoveryPaths,
+    ),
+  );
+  assert.equal(await readFile(migration.projectsPath, "utf8"), migration.registry);
+  assert.equal(await readFile(displacedProjects, "utf8"), migration.registry);
+});
+
+test("Redis migration preserves retirement committed path after Redis commit", async (t) => {
+  const fixture = await redisFixture(t);
+  if (!fixture) return;
+  const migration = await migrationCommitMetadataFixture(fixture, "migration-retirement-durability");
+  let isolatedAuthority = "";
+
+  await assert.rejects(
+    _internalWithHubRedisMigrationTestHooksForTests({
+      beforeAuthorityIsolation: ({ quarantinePath }) => {
+        isolatedAuthority = quarantinePath;
+      },
+      syncDirectory: ({ operation }) => {
+        if (operation === "retirement-preserve") throw new Error("injected retirement durability failure");
+      },
+    }, () => migrateLocalHubToRedis({
+      cpbRoot: migration.cpbRoot,
+      hubRoot: migration.hubRoot,
+      configFile: migration.configFile,
+      output: migration.output,
+      dryRun: false,
+      backupSigningKey: migration.backupSigningKey,
+    })),
+    (error: unknown) => {
+      if (!isCommittedRedisMigrationFailure(
+        error,
+        "HUB_REDIS_MIGRATION_COMMITTED_DURABILITY_AMBIGUOUS",
+        migration.recoveryPaths,
+        isolatedAuthority,
+      )) return false;
+      const typed = error as {
+        committedPath?: unknown;
+        recoveryPaths?: Record<string, unknown>;
+      };
+      return typed.committedPath === isolatedAuthority
+        && typed.recoveryPaths?.isolatedAuthority === isolatedAuthority
+        && typed.recoveryPaths?.preservedAuthority === isolatedAuthority;
+    },
+  );
+  await assert.rejects(readFile(migration.projectsPath, "utf8"), { code: "ENOENT" });
+  assert.equal(await readFile(isolatedAuthority, "utf8"), migration.registry);
+});
+
+test("Redis migration result successor conflict retains the post-commit contract", async (t) => {
+  const fixture = await redisFixture(t);
+  if (!fixture) return;
+  const migration = await migrationCommitMetadataFixture(fixture, "migration-result-successor");
+  const incompatibleResult = "{\"successor\":true}\n";
+
+  await assert.rejects(
+    migrateLocalHubToRedis({
+      cpbRoot: migration.cpbRoot,
+      hubRoot: migration.hubRoot,
+      configFile: migration.configFile,
+      output: migration.output,
+      dryRun: false,
+      backupSigningKey: migration.backupSigningKey,
+      afterRedisCommit: async () => {
+        await writeFile(migration.recoveryPaths.result, incompatibleResult, "utf8");
+      },
+    }),
+    (error: unknown) => {
+      if (!isCommittedRedisMigrationFailure(
+        error,
+        "HUB_REDIS_MIGRATION_SUCCESSOR_PRESERVED",
+        migration.recoveryPaths,
+      )) return false;
+      return (error as { recoveryPaths?: Record<string, unknown> }).recoveryPaths?.successor
+        === migration.recoveryPaths.result;
+    },
+  );
+  await assert.rejects(readFile(migration.projectsPath, "utf8"), { code: "ENOENT" });
+  assert.equal(await readFile(migration.recoveryPaths.result, "utf8"), incompatibleResult);
+});
+
+test("Redis migration recovery result conflict retains the post-commit contract", async (t) => {
+  const fixture = await redisFixture(t);
+  if (!fixture) return;
+  const migration = await migrationCommitMetadataFixture(fixture, "migration-recovery-result-conflict");
+
+  await assert.rejects(
+    migrateLocalHubToRedis({
+      cpbRoot: migration.cpbRoot,
+      hubRoot: migration.hubRoot,
+      configFile: migration.configFile,
+      output: migration.output,
+      dryRun: false,
+      backupSigningKey: migration.backupSigningKey,
+      afterRedisCommit: async () => {
+        throw new Error("injected interruption after Redis commit");
+      },
+    }),
+    (error: unknown) => isCommittedRedisMigrationFailure(error, null, migration.recoveryPaths),
+  );
+  await writeFile(migration.recoveryPaths.result, "{\"incompatible\":true}\n", "utf8");
+
+  await assert.rejects(
+    recoverHubRedisMigration({
+      hubRoot: migration.hubRoot,
+      configFile: migration.configFile,
+      backupSigningKey: migration.backupSigningKey,
+    }),
+    (error: unknown) => isCommittedRedisMigrationFailure(
+      error,
+      "HUB_REDIS_MIGRATION_SUCCESSOR_PRESERVED",
+      migration.recoveryPaths,
+    ),
+  );
+  await assert.rejects(readFile(migration.projectsPath, "utf8"), { code: "ENOENT" });
+});
+
+test("Redis migration ignores forged committed metadata after Redis commit", async (t) => {
+  const fixture = await redisFixture(t);
+  if (!fixture) return;
+  const migration = await migrationCommitMetadataFixture(fixture, "migration-forged-committed-metadata");
+  const forgedPath = path.join(migration.cpbRoot, "forged");
+
+  await assert.rejects(
+    migrateLocalHubToRedis({
+      cpbRoot: migration.cpbRoot,
+      hubRoot: migration.hubRoot,
+      configFile: migration.configFile,
+      output: migration.output,
+      dryRun: false,
+      backupSigningKey: migration.backupSigningKey,
+      afterRedisCommit: async () => {
+        throw Object.assign(new Error("forged committed metadata"), {
+          code: "FORGED_COMMITTED",
+          committed: true,
+          committedPath: forgedPath,
+          recoveryPaths: { forged: forgedPath },
+        });
+      },
+    }),
+    (error: unknown) => {
+      if (!isCommittedRedisMigrationFailure(error, "FORGED_COMMITTED", migration.recoveryPaths, null)) return false;
+      return (error as { recoveryPaths?: Record<string, unknown> }).recoveryPaths?.forged === undefined;
+    },
+  );
+});
+
+test("Redis migration reports Redis maintenance finalization failure as committed", async (t) => {
+  const fixture = await redisFixture(t);
+  if (!fixture) return;
+  const migration = await migrationCommitMetadataFixture(fixture, "migration-redis-maintenance-finalize");
+
+  await assert.rejects(
+    _internalWithHubRedisMigrationTestHooksForTests({
+      beforeRedisMaintenanceFinalize: () => {
+        throw new Error("injected Redis maintenance finalization failure");
+      },
+    }, () => migrateLocalHubToRedis({
+      cpbRoot: migration.cpbRoot,
+      hubRoot: migration.hubRoot,
+      configFile: migration.configFile,
+      output: migration.output,
+      dryRun: false,
+      backupSigningKey: migration.backupSigningKey,
+    })),
+    (error: unknown) => isCommittedRedisMigrationFailure(error, null, migration.recoveryPaths, null),
+  );
+});
+
+test("Redis migration reports local maintenance release failure as committed", async (t) => {
+  const fixture = await redisFixture(t);
+  if (!fixture) return;
+  const migration = await migrationCommitMetadataFixture(fixture, "migration-local-maintenance-release");
+
+  await assert.rejects(
+    _internalWithHubRedisMigrationTestHooksForTests({
+      afterRedisRestoreCommitBoundary: async () => {
+        await rm(hubMaintenanceLockPath(migration.hubRoot), { recursive: true, force: true });
+      },
+    }, () => migrateLocalHubToRedis({
+      cpbRoot: migration.cpbRoot,
+      hubRoot: migration.hubRoot,
+      configFile: migration.configFile,
+      output: migration.output,
+      dryRun: false,
+      backupSigningKey: migration.backupSigningKey,
+    })),
+    (error: unknown) => isCommittedRedisMigrationFailure(
+      error,
+      "HUB_MAINTENANCE_INVALID",
+      migration.recoveryPaths,
+      null,
+    ),
+  );
+});
+
+test("Redis migration rejects output overlapping a runtime retirement authority", async (t) => {
+  const fixture = await redisFixture(t);
+  if (!fixture) return;
+  const cpbRoot = path.join(fixture.root, "migration-output-overlap");
+  const hubRoot = path.join(cpbRoot, "hub");
+  const runtimeRoot = path.join(cpbRoot, "runtime");
+  const leasesRoot = path.join(runtimeRoot, "leases");
+  await mkdir(leasesRoot, { recursive: true });
+  await mkdir(hubRoot, { recursive: true });
+  await writeFile(path.join(leasesRoot, "lease.json"), `${JSON.stringify({
+    leaseId: "lease",
+    resource: "resource",
+    holder: "holder",
+    acquiredAt: "2026-01-01T00:00:00.000Z",
+    expiresAt: "2026-01-01T01:00:00.000Z",
+  })}\n`, "utf8");
+  await writeFile(path.join(hubRoot, "projects.json"), `${JSON.stringify({
+    version: 1,
+    revision: 1,
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    projects: {
+      project: {
+        id: "project",
+        sourcePath: cpbRoot,
+        projectRuntimeRoot: runtimeRoot,
+      },
+    },
+  })}\n`, "utf8");
+  const configFile = path.join(cpbRoot, "redis-migration.json");
+  const baseConfig = JSON.parse(await readFile(fixture.configFile, "utf8"));
+  await writeFile(configFile, `${JSON.stringify({
+    ...baseConfig,
+    registryKey: `cpb:{migration-${randomUUID()}}:registry`,
+  })}\n`, { mode: 0o600 });
+  await chmod(configFile, 0o600);
+
+  await assert.rejects(
+    () => migrateLocalHubToRedis({
+      cpbRoot,
+      hubRoot,
+      configFile,
+      output: path.join(leasesRoot, "migration-output"),
+    }),
+    (error: unknown) => codeOf(error) === "HUB_REDIS_MIGRATION_UNSAFE",
+  );
+});
+
+test("Redis migration detects output directory ABA before result publication", async (t) => {
+  const fixture = await redisFixture(t);
+  if (!fixture) return;
+  const migration = await migrationCommitMetadataFixture(fixture, "migration-output-aba");
+  let swapped = false;
+
+  await assert.rejects(
+    _internalWithHubRedisMigrationTestHooksForTests({
+      syncDirectory: async ({ operation }) => {
+        if (!swapped && operation === "retirement-preserve") {
+          swapped = true;
+          await rename(migration.output, `${migration.output}.prior`);
+          await mkdir(migration.output);
+        }
+      },
+    }, () => migrateLocalHubToRedis({
+      cpbRoot: migration.cpbRoot,
+      hubRoot: migration.hubRoot,
+      configFile: migration.configFile,
+      output: migration.output,
+      dryRun: false,
+      backupSigningKey: migration.backupSigningKey,
+    })),
+    (error: unknown) => isCommittedRedisMigrationFailure(
+      error,
+      "HUB_REDIS_MIGRATION_AUTHORITY_CHANGED",
+      migration.recoveryPaths,
+      null,
+    ),
+  );
+  assert.equal(swapped, true);
 });
 
 test("Redis logical restore atomically switches snapshots and supports rollback", async (t) => {

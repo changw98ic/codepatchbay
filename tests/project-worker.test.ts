@@ -1,13 +1,19 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test, { describe, beforeEach, afterEach } from "node:test";
 
-import { ProjectWorker, parseArgs } from "../bridges/project-worker.js";
+import { ProjectWorker, parseArgs, runAgentSmoke } from "../bridges/project-worker.js";
 import { registerProject, heartbeatWorker, getProject, loadRegistry, saveRegistry } from "../server/services/hub/hub-registry.js";
 import { enqueue, listQueue, queueStatus } from "../server/services/hub/hub-queue.js";
 import { listDispatches } from "../server/services/dispatch/dispatch.js";
+import {
+  captureProcessIdentity,
+  isProcessIdentityAlive,
+  killTree,
+  type ProcessIdentity,
+} from "../core/runtime/process-tree.js";
 
 type ProjectWorkerOptions = NonNullable<ConstructorParameters<typeof ProjectWorker>[0]>;
 type ProjectWorkerTestOptions = ProjectWorkerOptions & {
@@ -464,6 +470,85 @@ describe("ProjectWorker", () => {
     const dispatches = await listDispatches(hubRoot);
     assert.equal(dispatches.length, 0);
   });
+});
+
+test("agent smoke timeout waits for identity-bound process-tree cleanup and close", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "cpb-agent-smoke-timeout-"));
+  const executorRoot = root;
+  const fakeAgent = path.join(root, "fake-agent.mjs");
+  const rootPidFile = path.join(root, "agent.pid");
+  const childPidFile = path.join(root, "agent-child.pid");
+  const previousGrace = process.env.CPB_KILL_GRACE_MS;
+  const observedPids: number[] = [];
+  const observedIdentities: ProcessIdentity[] = [];
+  t.after(async () => {
+    if (previousGrace === undefined) delete process.env.CPB_KILL_GRACE_MS;
+    else process.env.CPB_KILL_GRACE_MS = previousGrace;
+    for (const identity of observedIdentities) {
+      if (isProcessIdentityAlive(identity)) {
+        await killTree(identity.pid, 0, { expectedRootIdentity: identity, forceVerifyMs: 500 });
+      }
+    }
+    await rm(root, { recursive: true, force: true });
+  });
+
+  await writeFile(fakeAgent, [
+    'import { spawn } from "node:child_process";',
+    'import { writeFileSync } from "node:fs";',
+    `writeFileSync(${JSON.stringify(rootPidFile)}, String(process.pid));`,
+    "const child = spawn(process.execPath, ['-e', `process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);`], { stdio: 'ignore' });",
+    `writeFileSync(${JSON.stringify(childPidFile)}, String(child.pid));`,
+    "process.on('SIGTERM', () => {});",
+    "setInterval(() => {}, 1000);",
+  ].join("\n"), "utf8");
+  process.env.CPB_KILL_GRACE_MS = "25";
+
+  const smoke = runAgentSmoke({
+    agent: "codex",
+    cpbRoot: root,
+    executorRoot,
+    cwd: root,
+    timeoutMs: 250,
+    termGraceMs: 25,
+    forceVerifyMs: 1_000,
+    closeGraceMs: 1_000,
+    spawnSpec: {
+      command: process.execPath,
+      args: [fakeAgent],
+      env: { ...process.env },
+    },
+  });
+  const pidDeadline = Date.now() + 2_000;
+  while (Date.now() < pidDeadline && observedPids.length === 0) {
+    try {
+      observedPids.push(
+        Number((await readFile(rootPidFile, "utf8")).trim()),
+        Number((await readFile(childPidFile, "utf8")).trim()),
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+  if (observedPids.length !== 2) {
+    const earlyResult = await smoke;
+    assert.fail(`fake agent process tree did not publish both pids: ${JSON.stringify(earlyResult)}`);
+  }
+  for (const pid of observedPids) {
+    const identity = captureProcessIdentity(pid, { strict: true });
+    assert.ok(identity, `process identity should be capturable for ${pid}`);
+    observedIdentities.push(identity);
+  }
+  const result = await smoke;
+
+  assert.equal(result.ok, false);
+  assert.equal(result.timedOut, true);
+  assert.ok(result.elapsedMs >= 250, "timeout must not resolve before its cleanup path runs");
+  for (const pid of observedPids) {
+    assert.throws(() => process.kill(pid, 0), (error: unknown) => (
+      (error as NodeJS.ErrnoException).code === "ESRCH"
+    ));
+  }
 });
 
 describe("parseArgs", () => {

@@ -1,33 +1,20 @@
 import { readFile } from "node:fs/promises";
 import {
-  isRecord,
   recordValue,
   text,
 } from "./checklist-shared.js";
 import type { LooseRecord } from "../contracts/types.js";
-
-type ArtifactEntry = LooseRecord & {
-  kind?: unknown;
-  id?: unknown;
-  attemptId?: unknown;
-  phase?: unknown;
-  exists?: unknown;
-  broken?: unknown;
-  reason?: unknown;
-  sha256?: unknown;
-  path?: unknown;
-  createdAt?: unknown;
-};
+import { isBrokerArtifactEntry, type BrokerArtifactIndex, type BrokerArtifactEntry } from "../../shared/orchestrator/artifact-index.js";
 
 type ArtifactIndexInput = {
-  artifactIndex?: unknown;
+  artifactIndex?: BrokerArtifactIndex | null;
   attemptId?: unknown;
   requiredKinds?: unknown;
 };
 
-function artifactEntries(artifactIndex: unknown): ArtifactEntry[] {
+function artifactEntries(artifactIndex: BrokerArtifactIndex | null | undefined): BrokerArtifactEntry[] {
   const entries = recordValue(artifactIndex).entries;
-  return Array.isArray(entries) ? entries.filter(isRecord) : [];
+  return Array.isArray(entries) ? entries.filter(isBrokerArtifactEntry) : [];
 }
 
 function artifactKinds(requiredKinds: unknown): string[] {
@@ -44,14 +31,14 @@ function nullableText(value: unknown) {
   return text(value) || null;
 }
 
-function artifactTimestamp(entry: ArtifactEntry) {
+function artifactTimestamp(entry: BrokerArtifactEntry) {
   const value = entry.createdAt;
   if (typeof value !== "string" && typeof value !== "number") return 0;
   const parsed = Date.parse(String(value));
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function hasReadablePath(entry: ArtifactEntry): entry is ArtifactEntry & { path: string } {
+function hasReadablePath(entry: BrokerArtifactEntry): entry is BrokerArtifactEntry & { path: string } {
   return Boolean(entry.exists) && typeof entry.path === "string" && entry.path.length > 0;
 }
 
@@ -125,7 +112,7 @@ export async function readActiveChecklistArtifacts({
     });
 
     // For multi-attempt jobs, match attemptId strictly — fail-closed on ambiguity.
-    let selected: (ArtifactEntry & { path: string }) | undefined;
+    let selected: (BrokerArtifactEntry & { path: string }) | undefined;
     if (activeAttemptId) {
       const matched = sortedCandidates.find((entry) => entry.attemptId === activeAttemptId);
       if (!matched) {
@@ -141,6 +128,15 @@ export async function readActiveChecklistArtifacts({
     } else {
       // Single-attempt job: take the latest readable artifact (newest-first).
       selected = sortedCandidates[0];
+    }
+
+    if (!selected) {
+      return {
+        ok: false,
+        outcome: "artifact_invalid",
+        reason: `required artifact ${kind} is missing from index`,
+        kind,
+      };
     }
 
     let content;
@@ -175,7 +171,7 @@ export async function readChecklistArtifactHistory({
 }: {
   artifactIndex?: unknown;
 }) {
-  const entries = artifactEntries(artifactIndex);
+  const entries = artifactEntries(recordValue(artifactIndex) as BrokerArtifactIndex);
 
   const history: LooseRecord = {};
   for (const entry of entries) {

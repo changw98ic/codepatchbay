@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, symlink, utimes, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 
@@ -12,8 +12,32 @@ import {
   planFilePath,
   reviewFilePath,
   verdictFilePath,
+  withArtifactLocatorTestHooks,
 } from "../server/services/artifact-locator.js";
 import { tempRoot } from "./helpers.js";
+
+function codedLocatorError(error: unknown, code: string): (Error & {
+  code?: string;
+  committed?: boolean;
+  recoveryPaths?: string[];
+}) | null {
+  const seen = new Set<unknown>();
+  const visit = (value: unknown): ReturnType<typeof codedLocatorError> => {
+    if (!value || typeof value !== "object" || seen.has(value)) return null;
+    seen.add(value);
+    const candidate = value as Error & { code?: string; cause?: unknown; errors?: unknown[] };
+    if (candidate.code === code) return candidate;
+    for (const nested of [
+      ...(candidate instanceof AggregateError ? candidate.errors : []),
+      candidate.cause,
+    ]) {
+      const found = visit(nested);
+      if (found) return found;
+    }
+    return null;
+  };
+  return visit(error);
+}
 
 test("artifact index returns schema envelope and required entry fields", async () => {
   const root = await tempRoot("cpb-artifact-index-fields");
@@ -107,3 +131,65 @@ test("artifact locator keeps legacy path helpers and re-exports buildArtifactInd
   const second = await allocateArtifactId(dir, "plan");
   assert.ok(first < second);
 });
+
+test("artifact ID allocation is unique under concurrent contenders", async () => {
+  const root = await tempRoot("cpb-artifact-id-concurrent");
+  const dir = path.join(root, "ids");
+  const ids = await Promise.all(Array.from({ length: 12 }, () => allocateArtifactId(dir, "plan")));
+  assert.equal(new Set(ids).size, 12);
+  assert.deepEqual([...ids].sort(), Array.from({ length: 12 }, (_, index) => String(index + 1).padStart(3, "0")));
+});
+
+test("artifact ID allocation recovers an old incomplete legacy lock", async () => {
+  const root = await tempRoot("cpb-artifact-id-stale");
+  const dir = path.join(root, "ids");
+  const lockDir = path.join(dir, ".cpb-id.lock");
+  await mkdir(lockDir, { recursive: true });
+  const old = new Date(0);
+  await utimes(lockDir, old, old);
+
+  assert.equal(await allocateArtifactId(dir, "plan"), "001");
+});
+
+test("artifact ID allocation rejects a symlink lock without touching its target", async () => {
+  const root = await tempRoot("cpb-artifact-id-link");
+  const dir = path.join(root, "ids");
+  const external = await tempRoot("cpb-artifact-id-link-target");
+  const sentinel = path.join(external, "sentinel.txt");
+  await mkdir(dir, { recursive: true });
+  await writeFile(sentinel, "preserve\n");
+  await symlink(external, path.join(dir, ".cpb-id.lock"));
+
+  await assert.rejects(allocateArtifactId(dir, "plan"), { code: "DIRECTORY_LOCK_UNSAFE" });
+  assert.equal(await readFile(sentinel, "utf8"), "preserve\n");
+});
+
+for (const fault of ["file-sync", "directory-sync"] as const) {
+  test(`artifact ID allocation reports committed ambiguity after ${fault} failure`, async () => {
+    const root = await tempRoot(`cpb-artifact-id-${fault}`);
+    const dir = path.join(root, "ids");
+    const artifactPath = path.join(dir, "plan-001.md");
+    const syncFailure = Object.assign(new Error(`${fault} failed`), {
+      code: fault === "directory-sync" ? "ENOTSUP" : "EIO",
+    });
+
+    const hooks = fault === "file-sync"
+      ? { syncFile: async () => { throw syncFailure; } }
+      : { syncDirectory: async () => { throw syncFailure; } };
+    await assert.rejects(
+      withArtifactLocatorTestHooks(hooks, () => allocateArtifactId(dir, "plan")),
+      (error) => {
+        assert.equal((error as { committed?: boolean }).committed, true);
+        assert.ok((error as { recoveryPaths?: string[] }).recoveryPaths?.includes(artifactPath));
+        const ambiguity = codedLocatorError(error, "ARTIFACT_ID_COMMITTED_AMBIGUOUS");
+        assert.ok(ambiguity);
+        assert.equal(ambiguity.committed, true);
+        assert.ok(ambiguity.recoveryPaths?.includes(artifactPath));
+        assert.ok(ambiguity.recoveryPaths?.includes(dir));
+        return true;
+      },
+    );
+    assert.equal(await readFile(artifactPath, "utf8"), "");
+    assert.equal(await allocateArtifactId(dir, "plan"), "002");
+  });
+}

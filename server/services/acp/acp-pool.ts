@@ -1,6 +1,8 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { createHash } from "node:crypto";
-import { appendFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { constants } from "node:fs";
+import { appendFile, lstat, mkdir, open, readFile, readdir, rename, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,9 +14,9 @@ import {
   resolveAcpRuntimeGuards,
   resolveWriteAllowPaths,
 } from "./acp-client.js";
-import { applyVariantToEnv, resolveVariantConfig } from "../setup.js";
+import { applyVariantToEnv, resolveVariantConfig } from "../apply-variant.js";
 import { saveSessionId, loadSessionId, clearSessionId } from "../../../core/agents/session-cache.js";
-import { createAgentHome } from "../../../core/agents/isolation.js";
+import { createAgentHome, resolveAgentHomeRuntimeRoot } from "../../../core/agents/isolation.js";
 import { buildAcpPoolEnv, buildChildEnv } from "../../../core/policy/child-env.js";
 import { buildAgentSandboxLaunch } from "../../../core/policy/agent-sandbox.js";
 import { codexSandboxModeForExecution } from "../../../core/acp/policy.js";
@@ -29,6 +31,15 @@ import {
   classifyQuotaFailure,
 } from "../provider-quota.js";
 import { getProviderAdapter } from "../provider-adapters.js";
+import {
+  captureProcessIdentity,
+  captureSpawnProcessIdentity,
+  killTree,
+  sameProcessIdentity,
+  type ProcessIdentity,
+  type ProcessTreeSystem,
+} from "../../../core/runtime/process-tree.js";
+import type { BoundedRegularFileReadHooks } from "../../../core/runtime/durable-directory-lock.js";
 
 type AgentDescriptor = LooseRecord & {
   poolLimit?: number;
@@ -53,6 +64,7 @@ type AgentRegistryModule = {
 type PoolClientKeyOptions = LooseRecord & {
   projectId?: string;
   workspaceId?: string;
+  dataRoot?: string | null;
   processCwd?: string;
   policyHash?: string;
   variant?: string | null;
@@ -117,7 +129,7 @@ type ProgressReporter = (event: LooseRecord) => Promise<unknown> | unknown;
 type AcpMetadataOptions = LooseRecord & {
   projectId?: string;
   jobId?: string;
-  dataRoot?: string;
+  dataRoot?: string | null;
   phase?: string;
   role?: string;
   poolScope?: string;
@@ -131,6 +143,7 @@ type PoolRequestOptions = PoolClientKeyOptions & AcpMetadataOptions & {
   waitTimeoutMs?: unknown;
   bypass?: boolean;
   onProgress?: ProgressReporter | null;
+  signal?: AbortSignal;
 };
 
 type PoolRunnerOptions = {
@@ -138,6 +151,7 @@ type PoolRunnerOptions = {
   prompt: string;
   cwd: string;
   timeoutMs: number;
+  signal?: AbortSignal;
 };
 
 type PoolRunner = (opts: PoolRunnerOptions) => Promise<string>;
@@ -157,6 +171,7 @@ type AcpPoolOptions = LooseRecord & {
   connectionPollMs?: unknown;
   leaseRoot?: string;
   providerFallbacks?: unknown;
+  connectionLockFsHooks?: ConnectionLockFsHooks;
 };
 
 export type ProviderFallbackCandidate = {
@@ -192,9 +207,12 @@ type ProviderQuotaErrorWithMetadata = ProviderQuotaError & {
   acpAuditFile?: string | null;
 };
 
-type SpawnedChild = ChildProcessWithoutNullStreams & {
+export type AcpPoolSpawnedChild = ChildProcessWithoutNullStreams & {
   detached?: boolean;
+  processIdentity?: ProcessIdentity | null;
 };
+
+type SpawnedChild = AcpPoolSpawnedChild;
 
 type JsonSchema = Record<string, unknown>;
 
@@ -209,7 +227,11 @@ type PendingPoolRequest = {
   reject: (error: Error) => void;
   agent: string;
   providerKey: string;
+  signal?: AbortSignal;
+  aborted?: boolean;
   _timer?: NodeJS.Timeout;
+  _warnTimer?: NodeJS.Timeout;
+  _abortCleanup?: () => void;
 };
 
 type LivePoolRequest = {
@@ -234,7 +256,10 @@ type PoolSession = {
 
 type ConnectionLease = {
   leaseId?: string;
+  ownerToken?: string;
+  generation?: string;
   pid?: number | string;
+  processIdentity?: ProcessIdentity | null;
   agent?: string;
   providerKey?: string;
   phase?: string | null;
@@ -244,6 +269,103 @@ type ConnectionLease = {
   acquiredAt?: string;
   filePath?: string;
 };
+
+type ConnectionLockOwner = {
+  format: typeof CONNECTION_LOCK_OWNER_FORMAT;
+  binding: "pending" | "bound";
+  ownerToken: string;
+  generation: string;
+  pid: number;
+  host: string;
+  acquiredAt: string;
+  processIdentity: ProcessIdentity;
+  identity: ConnectionLockGeneration | null;
+};
+
+const CONNECTION_LOCK_OWNER_FORMAT = "cpb-acp-connection-lock/v1";
+const CONNECTION_LOCK_PENDING_PADDING_BYTES = 1024;
+
+type ConnectionLockGeneration = {
+  dev: number;
+  ino: number;
+  size: number;
+  mtimeMs: number;
+  ctimeMs: number;
+  birthtimeMs: number;
+};
+
+type ConnectionLockFsPhase =
+  | "acquire-publish"
+  | "recover-isolation"
+  | "recover-rename"
+  | "release-isolation"
+  | "release-rename"
+  | "lease-release-rename";
+
+type ConnectionLockDirectorySyncStage =
+  | "after-open"
+  | "before-sync"
+  | "after-sync"
+  | "after-primary-close"
+  | "after-fallback-close";
+
+type ConnectionLockMovedPhase = "recover" | "release";
+
+type ConnectionLockRenameDurability = {
+  durabilityVerified: boolean;
+  isolationDirectoryDurable: boolean;
+  parentDirectoryDurable: boolean;
+  failures: Array<{
+    directory: string;
+    phase: ConnectionLockFsPhase;
+    error: unknown;
+  }>;
+};
+
+type ConnectionLockBoundedReadHooks = BoundedRegularFileReadHooks & {
+  afterVerifiedRead?: (context: {
+    filePath: string;
+    totalBytes: number;
+    identity: ConnectionLockGeneration;
+  }) => Promise<void> | void;
+};
+
+type ConnectionLockFsHooks = {
+  syncDirectory?: (directory: string, phase: ConnectionLockFsPhase) => Promise<void> | void;
+  directorySyncFault?: (details: {
+    directory: string;
+    phase: ConnectionLockFsPhase;
+    stage: ConnectionLockDirectorySyncStage;
+  }) => Promise<void> | void;
+  boundedRead?: ConnectionLockBoundedReadHooks;
+  durableWriteFault?: (details: {
+    operation: "connection-owner" | "connection-lease";
+    stage:
+      | "after-open"
+      | "after-primary-close"
+      | "after-fallback-close"
+      | "after-publish"
+      | "before-temp-cleanup"
+      | "after-temp-validation";
+    filePath: string;
+    tempPath: string;
+  }) => Promise<void> | void;
+  afterMove?: (details: {
+    phase: ConnectionLockMovedPhase;
+    lockDir: string;
+    movedDir: string;
+    owner: ConnectionLockOwner | null;
+  }) => Promise<void> | void;
+  beforeMove?: (details: {
+    phase: ConnectionLockMovedPhase;
+    lockDir: string;
+    owner: ConnectionLockOwner | null;
+  }) => Promise<void> | void;
+};
+
+const connectionLockBoundedReadHooksStorage = new AsyncLocalStorage<
+  ConnectionLockBoundedReadHooks | undefined
+>();
 
 export type ClaudeApiRetryEvent = {
   attempt: number;
@@ -270,6 +392,7 @@ type PersistentClientState = {
   agent: string;
   projectId: string;
   jobId: string;
+  dataRoot: string | null;
   conversationKey: string | null;
   sessionKey: string;
   providerKey: string;
@@ -303,16 +426,20 @@ let _registryLoadPromise: Promise<AgentRegistryModule | null> | null = null;
  * reuse the same ACP provider process across sequential jobs. Launch-time
  * permission lanes remain isolated: a read-only planning process must never be
  * reused for execution, and a workspace-write process must never leak into
- * verification. Agents with launch-scoped MCP config can opt into processCwd.
+ * verification. Runtime data roots are also isolated so a live process cannot
+ * carry session or environment state across project-runtime boundaries. Agents
+ * with launch-scoped MCP config can opt into processCwd.
  */
 export function poolClientKey(agent: string, options: PoolClientKeyOptions = {}) {
   const projectId = options.projectId || "";
   const workspaceId = options.workspaceId || "";
+  const requestedDataRoot = stringValue(options.dataRoot);
+  const dataRoot = requestedDataRoot ? path.resolve(requestedDataRoot) : "";
   const processCwd = options.processCwd || "";
   const policyHash = options.policyHash || "";
   const variant = options.variant || "";
   const launchPermissionLane = options.launchPermissionLane || "";
-  const baseKey = [agent, projectId, workspaceId, processCwd, policyHash, variant, launchPermissionLane].join("::");
+  const baseKey = [agent, projectId, workspaceId, dataRoot, processCwd, policyHash, variant, launchPermissionLane].join("::");
   const conversationKey = stringValue(options.conversationKey);
   return conversationKey
     ? `${baseKey}::conversation:${encodeURIComponent(conversationKey)}`
@@ -557,7 +684,6 @@ async function getRegistry(): Promise<AgentRegistryModule | null> {
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DEFAULT_TIMEOUT_MS = Number(process.env.CPB_ACP_POOL_TIMEOUT_MS || 0);
 // One-shot pool children are acp-client wrappers. On SIGTERM the wrapper runs
 // AcpClient.close(), which closes its own detached provider process and waits up
 // to roughly 2s. Killing the wrapper after 500ms interrupts that cleanup and can
@@ -573,7 +699,6 @@ const ONE_SHOT_CLOSE_GRACE_MS = 3_000;
 const DEFAULT_PROVIDER_CONNECTION_LIMIT = 3;
 const CONNECTION_LOCK_TTL_MS = 30_000;
 const CONNECTION_POLL_MS = 50;
-const DEFAULT_POOL_WAIT_TIMEOUT_MS = resolvePoolWaitTimeoutMs();
 const POOL_WAIT_WARN_INTERVAL_MS = 30_000;
 
 function resolveHubRootFromEnv(cpbRoot: string, env: EnvRecord = {}) {
@@ -848,6 +973,19 @@ function acpMetadataEnv(options: AcpMetadataOptions = {}) {
   return meta;
 }
 
+function childEnvWithoutControlPlaneAuditPath(env: NodeJS.ProcessEnv) {
+  const childEnv = { ...env };
+  delete childEnv.CPB_ACP_AUDIT_FILE;
+  delete childEnv.CPB_ACP_AUDIT;
+  if (childEnv.CPB_ACP_CONTROL_PLANE === "1") {
+    delete childEnv.CPB_PROJECT_RUNTIME_ROOT;
+    delete childEnv.CPB_ACP_PROJECT;
+    delete childEnv.CPB_ACP_JOB_ID;
+    delete childEnv.CPB_PROVIDER_PREFLIGHT_NONCE;
+  }
+  return childEnv;
+}
+
 // Re-export from provider-quota (redaction unified there)
 export { sanitizeProviderReason } from "../provider-quota.js";
 
@@ -880,7 +1018,7 @@ function numericOption(value: unknown, fallback: number) {
   return Number.isFinite(n) ? n : fallback;
 }
 
-export function resolvePoolWaitTimeoutMs(value = process.env.CPB_ACP_POOL_WAIT_TIMEOUT_MS) {
+export function resolvePoolWaitTimeoutMs(value: unknown = "") {
   return numericOption(value, 0);
 }
 
@@ -973,8 +1111,69 @@ function serializableProviderFallbacks(fallbacks: Record<string, ProviderFallbac
   ]));
 }
 
-function sleep(ms: number) {
-  return new Promise<void>((resolve) => setTimeout(resolve, ms));
+function createAbortError(message = "ACP pool request aborted") {
+  const error = new Error(message) as Error & { code?: string };
+  error.name = "AbortError";
+  error.code = "ABORT_ERR";
+  return error;
+}
+
+function abortErrorForSignal(signal: AbortSignal | undefined, message?: string) {
+  const reason = signal?.reason;
+  if (reason instanceof Error && reason.name === "AbortError") return reason;
+  return createAbortError(message || (reason ? String(reason) : undefined));
+}
+
+function isAbortError(error: unknown) {
+  return error instanceof Error && error.name === "AbortError";
+}
+
+function throwIfAborted(signal: AbortSignal | undefined, message?: string) {
+  if (signal?.aborted) throw abortErrorForSignal(signal, message);
+}
+
+function addAbortHandler(signal: AbortSignal | undefined, onAbort: () => void) {
+  if (!signal) return () => {};
+  signal.addEventListener("abort", onAbort, { once: true });
+  return () => signal.removeEventListener("abort", onAbort);
+}
+
+function cleanupPendingPoolRequest(entry: PendingPoolRequest) {
+  if (entry._timer) clearTimeout(entry._timer);
+  if (entry._warnTimer) clearInterval(entry._warnTimer);
+  entry._abortCleanup?.();
+  entry._timer = undefined;
+  entry._warnTimer = undefined;
+  entry._abortCleanup = undefined;
+}
+
+function sleep(ms: number, signal?: AbortSignal) {
+  throwIfAborted(signal);
+  return new Promise<void>((resolve, reject) => {
+    let timer: NodeJS.Timeout | null = null;
+    const cleanup = addAbortHandler(signal, () => {
+      if (timer) clearTimeout(timer);
+      reject(abortErrorForSignal(signal));
+    });
+    timer = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, ms);
+  });
+}
+
+async function raceWithAbort<T>(work: Promise<T>, signal?: AbortSignal) {
+  throwIfAborted(signal);
+  if (!signal) return work;
+  let abortCleanup: (() => void) | undefined;
+  const aborted = new Promise<never>((_, reject) => {
+    abortCleanup = addAbortHandler(signal, () => reject(abortErrorForSignal(signal)));
+  });
+  try {
+    return await Promise.race([work, aborted]);
+  } finally {
+    abortCleanup?.();
+  }
 }
 
 export function normalizeClaudeApiRetryEvent(value: unknown): ClaudeApiRetryEvent | null {
@@ -1080,16 +1279,29 @@ export function resolveClaudePlanningMaxTurns({
   structuredOutput: boolean;
   toolCallBudget: number;
 }) {
-  const derivedDiscoveryTurns = Math.min(32, Math.max(8, Math.ceil(Math.max(0, toolCallBudget) / 3) + 4));
-  const fallback = repositoryDiscovery ? derivedDiscoveryTurns : structuredOutput ? 4 : 2;
-  return Math.min(64, positiveIntOption(configured, fallback));
+  // A configured positive value is an explicit test/operator cap. With no
+  // explicit value, omit --max-turns entirely so the provider can spend the
+  // time and tool calls needed to produce a correct plan.
+  const explicit = positiveIntOption(configured, 0);
+  if (explicit > 0) return explicit;
+  if (configured !== undefined && configured !== null && String(configured).trim() !== "") return 0;
+  void repositoryDiscovery;
+  void structuredOutput;
+  void toolCallBudget;
+  return 0;
 }
 
 function connectionLeaseFrom(value: unknown, filePath: string): ConnectionLease | null {
   if (!isRecord(value)) return null;
+  const pid = typeof value.pid === "number" || typeof value.pid === "string" ? Number(value.pid) : NaN;
+  const processIdentity = processIdentityFrom(value.processIdentity, pid);
+  if (!Number.isInteger(pid) || pid <= 0 || !processIdentity) return null;
   return {
     leaseId: typeof value.leaseId === "string" ? value.leaseId : undefined,
-    pid: typeof value.pid === "number" || typeof value.pid === "string" ? value.pid : undefined,
+    ownerToken: typeof value.ownerToken === "string" ? value.ownerToken : undefined,
+    generation: typeof value.generation === "string" ? value.generation : undefined,
+    pid,
+    processIdentity,
     agent: typeof value.agent === "string" ? value.agent : undefined,
     providerKey: typeof value.providerKey === "string" ? value.providerKey : undefined,
     phase: typeof value.phase === "string" ? value.phase : null,
@@ -1101,94 +1313,949 @@ function connectionLeaseFrom(value: unknown, filePath: string): ConnectionLease 
   };
 }
 
-function signalChild(child: SpawnedChild, signal: NodeJS.Signals) {
-  if (!child?.pid) return;
+function acpPoolError(message: string, code: string, cause?: unknown) {
+  return Object.assign(new Error(message, cause === undefined ? undefined : { cause }), { code });
+}
+
+function acpErrorCode(error: unknown) {
+  return (error as NodeJS.ErrnoException | undefined)?.code || "";
+}
+
+function acpErrorCauseCode(error: unknown) {
+  return acpErrorCode((error as Error | undefined)?.cause);
+}
+
+function processIdentityFrom(value: unknown, expectedPid?: number): ProcessIdentity | null {
+  if (!isRecord(value)) return null;
+  const pid = Number(value.pid);
+  const capturedAt = typeof value.capturedAt === "string" ? value.capturedAt : "";
+  const processGroupId = Number(value.processGroupId);
+  if (!Number.isSafeInteger(pid) || pid <= 0) return null;
+  if (expectedPid !== undefined && (!Number.isSafeInteger(expectedPid) || pid !== expectedPid)) return null;
+  if (typeof value.birthId !== "string" || !value.birthId) return null;
+  if (value.incarnation !== `${pid}:${value.birthId}`) return null;
+  if (value.birthIdPrecision !== "exact") return null;
+  if (
+    !capturedAt
+    || Number.isNaN(new Date(capturedAt).getTime())
+    || new Date(Date.parse(capturedAt)).toISOString() !== capturedAt
+  ) return null;
+  if (value.processGroupId !== undefined && (!Number.isSafeInteger(processGroupId) || processGroupId <= 0)) return null;
+  return {
+    pid,
+    birthId: value.birthId,
+    incarnation: value.incarnation,
+    capturedAt,
+    birthIdPrecision: "exact",
+    ...(value.processGroupId === undefined ? {} : { processGroupId }),
+  };
+}
+
+function exactProcessIdentity(identity: ProcessIdentity | null): ProcessIdentity | null {
+  if (!identity || identity.birthIdPrecision !== "exact") return null;
+  return identity;
+}
+
+let cachedCurrentExactProcessIdentity: ProcessIdentity | null = null;
+
+function captureCurrentExactProcessIdentity() {
+  if (!cachedCurrentExactProcessIdentity) {
+    cachedCurrentExactProcessIdentity = exactProcessIdentity(captureProcessIdentity(process.pid, { strict: true }));
+  }
+  return cachedCurrentExactProcessIdentity ? { ...cachedCurrentExactProcessIdentity } : null;
+}
+
+function samePersistedProcessIdentity(
+  expected: ProcessIdentity | null | undefined,
+  actual: ProcessIdentity | null | undefined,
+) {
+  return sameProcessIdentity(expected, actual)
+    && expected?.birthId === actual?.birthId
+    && expected?.capturedAt === actual?.capturedAt
+    && expected?.birthIdPrecision === actual?.birthIdPrecision
+    && expected?.processGroupId === actual?.processGroupId;
+}
+
+function sameConnectionLeaseAuthority(expected: ConnectionLease, actual: ConnectionLease | null) {
+  return Boolean(actual
+    && actual.leaseId === expected.leaseId
+    && actual.ownerToken === expected.ownerToken
+    && actual.generation === expected.generation
+    && actual.pid === expected.pid
+    && actual.agent === expected.agent
+    && actual.providerKey === expected.providerKey
+    && actual.phase === expected.phase
+    && actual.role === expected.role
+    && actual.poolScope === expected.poolScope
+    && actual.controlPlane === expected.controlPlane
+    && actual.acquiredAt === expected.acquiredAt
+    && samePersistedProcessIdentity(actual.processIdentity, expected.processIdentity));
+}
+
+function sameConnectionLockDirectoryAuthority(
+  expected: ConnectionLockGeneration,
+  actual: ConnectionLockGeneration,
+) {
+  return expected.dev === actual.dev
+    && expected.ino === actual.ino
+    && expected.birthtimeMs === actual.birthtimeMs;
+}
+
+async function syncDirectory(
+  directory: string,
+  options: {
+    phase?: ConnectionLockFsPhase;
+    fault?: ConnectionLockFsHooks["directorySyncFault"];
+  } = {},
+) {
+  let handle: Awaited<ReturnType<typeof open>> | null = null;
+  let primaryError: unknown = null;
+  const closeErrors: unknown[] = [];
+  const invokeFault = async (stage: ConnectionLockDirectorySyncStage) => {
+    if (options.phase) {
+      await options.fault?.({ directory, phase: options.phase, stage });
+    }
+  };
   try {
-    if (child.detached && process.platform !== "win32") {
-      process.kill(-child.pid, signal);
-    } else {
-      child.kill(signal);
+    if (
+      typeof constants.O_DIRECTORY !== "number"
+      || constants.O_DIRECTORY === 0
+      || typeof constants.O_NOFOLLOW !== "number"
+      || constants.O_NOFOLLOW === 0
+    ) {
+      throw acpPoolError(
+        `ACP strict directory sync flags are unavailable: ${directory}`,
+        "ACP_POOL_STATE_UNSAFE",
+      );
     }
-  } catch {
-    try { child.kill(signal); } catch {}
+    const before = await lstat(directory);
+    if (!before.isDirectory() || before.isSymbolicLink()) {
+      throw acpPoolError(`ACP directory sync target is not a real directory: ${directory}`, "ACP_POOL_STATE_UNSAFE");
+    }
+    const beforeGeneration = connectionLockGeneration(before);
+    const flags = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
+    handle = await open(directory, flags);
+    const opened = await handle.stat();
+    if (!opened.isDirectory()
+      || !sameConnectionLockDirectoryAuthority(beforeGeneration, connectionLockGeneration(opened))) {
+      throw acpPoolError(`ACP directory sync target changed while opening: ${directory}`, "ACP_POOL_STATE_UNVERIFIED");
+    }
+    const openedGeneration = connectionLockGeneration(opened);
+    const openedPath = await lstat(directory);
+    if (!openedPath.isDirectory()
+      || openedPath.isSymbolicLink()
+      || !sameConnectionLockDirectoryAuthority(openedGeneration, connectionLockGeneration(openedPath))) {
+      throw acpPoolError(`ACP directory sync path changed while opening: ${directory}`, "ACP_POOL_STATE_UNVERIFIED");
+    }
+    await invokeFault("after-open");
+    await invokeFault("before-sync");
+    await handle.sync();
+    await invokeFault("after-sync");
+    const afterDescriptor = await handle.stat();
+    const afterPath = await lstat(directory);
+    if (!afterDescriptor.isDirectory()
+      || !afterPath.isDirectory()
+      || afterPath.isSymbolicLink()
+      || !sameConnectionLockDirectoryAuthority(openedGeneration, connectionLockGeneration(afterDescriptor))
+      || !sameConnectionLockDirectoryAuthority(openedGeneration, connectionLockGeneration(afterPath))) {
+      throw acpPoolError(`ACP directory sync target changed during sync: ${directory}`, "ACP_POOL_STATE_UNVERIFIED");
+    }
+  } catch (error) {
+    primaryError = error;
   }
-}
-
-function descendantPids(rootPid: number) {
-  if (process.platform === "win32" || !rootPid) return [];
-  const result = spawnSync("ps", ["-eo", "pid=,ppid="], { encoding: "utf8" });
-  if (result.error || typeof result.stdout !== "string") return [];
-
-  const children = new Map<number, number[]>();
-  for (const line of result.stdout.split("\n")) {
-    const match = line.trim().match(/^(\d+)\s+(\d+)$/);
-    if (!match) continue;
-    const pid = Number(match[1]);
-    const ppid = Number(match[2]);
-    if (!Number.isInteger(pid) || !Number.isInteger(ppid) || pid <= 0 || ppid <= 0) continue;
-    const siblings = children.get(ppid) || [];
-    siblings.push(pid);
-    children.set(ppid, siblings);
-  }
-
-  const descendants: number[] = [];
-  const pending = [...(children.get(rootPid) || [])];
-  const seen = new Set<number>();
-  while (pending.length > 0) {
-    const pid = pending.shift();
-    if (!pid || seen.has(pid)) continue;
-    seen.add(pid);
-    descendants.push(pid);
-    pending.push(...(children.get(pid) || []));
-  }
-  return descendants;
-}
-
-function signalDetachedDescendants(pids: number[], signal: NodeJS.Signals) {
-  for (const pid of [...pids].reverse()) {
+  if (handle) {
     try {
-      process.kill(-pid, signal);
-    } catch {
-      try { process.kill(pid, signal); } catch {}
+      await handle.close();
+      handle = null;
+      await invokeFault("after-primary-close");
+    } catch (error) {
+      closeErrors.push(error);
     }
   }
+  if (handle) {
+    try {
+      await handle.close();
+      handle = null;
+      await invokeFault("after-fallback-close");
+    } catch (error) {
+      closeErrors.push(error);
+    }
+  }
+  if (primaryError && closeErrors.length > 0) {
+    throw Object.assign(new AggregateError(
+      [primaryError, ...closeErrors],
+      `ACP directory sync and close failed: ${directory}`,
+      { cause: primaryError },
+    ), {
+      code: acpErrorCode(primaryError) || "ACP_DIRECTORY_SYNC_FAILED",
+      primaryError,
+      closeError: closeErrors[0],
+      closeErrors,
+      directory,
+      phase: options.phase,
+    });
+  }
+  if (primaryError) throw primaryError;
+  if (closeErrors.length === 1) {
+    throw Object.assign(acpPoolError(
+      `ACP directory close failed: ${directory}`,
+      acpErrorCode(closeErrors[0]) || "ACP_DIRECTORY_CLOSE_FAILED",
+      closeErrors[0],
+    ), {
+      closeError: closeErrors[0],
+      closeErrors,
+      directory,
+      phase: options.phase,
+    });
+  }
+  if (closeErrors.length > 1) {
+    throw Object.assign(new AggregateError(
+      closeErrors,
+      `ACP directory close attempts failed: ${directory}`,
+      { cause: closeErrors[0] },
+    ), {
+      code: acpErrorCode(closeErrors[0]) || "ACP_DIRECTORY_CLOSE_FAILED",
+      closeError: closeErrors[0],
+      closeErrors,
+      directory,
+      phase: options.phase,
+    });
+  }
+}
+
+async function readRegularJsonNoFollow(filePath: string, label: string) {
+  return (await readRegularJsonNoFollowWithIdentity(filePath, label))?.value ?? null;
+}
+
+function connectionLockGeneration(info: {
+  dev: number;
+  ino: number;
+  size: number;
+  mtimeMs: number;
+  ctimeMs: number;
+  birthtimeMs: number;
+}): ConnectionLockGeneration {
+  return {
+    dev: info.dev,
+    ino: info.ino,
+    size: info.size,
+    mtimeMs: info.mtimeMs,
+    ctimeMs: info.ctimeMs,
+    birthtimeMs: info.birthtimeMs,
+  };
+}
+
+function connectionLockGenerationFrom(value: unknown): ConnectionLockGeneration | null {
+  if (!isRecord(value)) return null;
+  const generation = {
+    dev: Number(value.dev),
+    ino: Number(value.ino),
+    size: Number(value.size),
+    mtimeMs: Number(value.mtimeMs),
+    ctimeMs: Number(value.ctimeMs),
+    birthtimeMs: Number(value.birthtimeMs),
+  };
+  if (!Object.values(generation).every(Number.isFinite)
+    || !Number.isSafeInteger(generation.dev)
+    || !Number.isSafeInteger(generation.ino)
+    || !Number.isSafeInteger(generation.size)
+    || generation.size < 0) return null;
+  return generation;
+}
+
+function sameConnectionLockGeneration(
+  expected: ConnectionLockGeneration,
+  actual: ConnectionLockGeneration,
+) {
+  return expected.dev === actual.dev
+    && expected.ino === actual.ino
+    && expected.size === actual.size
+    && expected.mtimeMs === actual.mtimeMs
+    && expected.ctimeMs === actual.ctimeMs
+    && expected.birthtimeMs === actual.birthtimeMs;
+}
+
+// A directory rename may update ctime while preserving the directory object.
+// Capture a new full baseline immediately after the rename, and use these
+// immutable fields only to prove that baseline came from the canonical object.
+function sameConnectionLockAcrossRename(
+  canonical: ConnectionLockGeneration,
+  moved: ConnectionLockGeneration,
+) {
+  return canonical.dev === moved.dev
+    && canonical.ino === moved.ino
+    && canonical.size === moved.size
+    && canonical.mtimeMs === moved.mtimeMs
+    && canonical.birthtimeMs === moved.birthtimeMs;
+}
+
+function sameConnectionLockOwner(
+  expected: ConnectionLockOwner | null,
+  actual: ConnectionLockOwner | null,
+) {
+  if (!expected || !actual) return expected === actual;
+  return expected.format === actual.format
+    && expected.binding === actual.binding
+    && expected.ownerToken === actual.ownerToken
+    && expected.generation === actual.generation
+    && expected.pid === actual.pid
+    && expected.host === actual.host
+    && expected.acquiredAt === actual.acquiredAt
+    && samePersistedProcessIdentity(expected.processIdentity, actual.processIdentity)
+    && (
+      expected.identity && actual.identity
+        ? sameConnectionLockGeneration(expected.identity, actual.identity)
+        : expected.identity === actual.identity
+    );
+}
+
+async function rewriteRegularJsonNoFollow(filePath: string, value: unknown, label: string) {
+  if (typeof constants.O_NOFOLLOW !== "number") {
+    throw acpPoolError(`${label} cannot be rewritten without no-follow support: ${filePath}`, "ACP_POOL_STATE_UNSAFE");
+  }
+  const before = await lstat(filePath);
+  if (!before.isFile() || before.isSymbolicLink()) {
+    throw acpPoolError(`${label} is not a real regular file: ${filePath}`, "ACP_POOL_STATE_UNSAFE");
+  }
+  const beforeGeneration = connectionLockGeneration(before);
+  let handle: Awaited<ReturnType<typeof open>> | null = null;
+  let primaryError: unknown = null;
+  try {
+    handle = await open(filePath, constants.O_RDWR | constants.O_NOFOLLOW);
+    const opened = await handle.stat();
+    if (!opened.isFile()
+      || !sameConnectionLockGeneration(beforeGeneration, connectionLockGeneration(opened))) {
+      throw acpPoolError(`${label} changed while opening for rewrite: ${filePath}`, "ACP_POOL_STATE_UNVERIFIED");
+    }
+    const serialized = Buffer.from(`${JSON.stringify(value, null, 2)}\n`, "utf8");
+    if (serialized.length > opened.size) {
+      throw acpPoolError(
+        `${label} bound payload exceeds its preallocated pending record: ${filePath}`,
+        "ACP_POOL_STATE_UNVERIFIED",
+      );
+    }
+    // Keep the preallocated file size stable and replace the small record in
+    // place. Trailing JSON whitespace is valid; avoiding truncate removes the
+    // empty/partial-file window visible to concurrent lock contenders.
+    const payload = Buffer.alloc(opened.size, 0x20);
+    serialized.copy(payload);
+    let offset = 0;
+    while (offset < payload.length) {
+      const { bytesWritten } = await handle.write(payload, offset, payload.length - offset, offset);
+      if (bytesWritten <= 0) {
+        throw acpPoolError(`${label} rewrite made no progress: ${filePath}`, "ACP_POOL_STATE_UNVERIFIED");
+      }
+      offset += bytesWritten;
+    }
+    await handle.sync();
+    const afterDescriptor = await handle.stat();
+    const afterPath = await lstat(filePath);
+    if (!afterDescriptor.isFile()
+      || !afterPath.isFile()
+      || afterPath.isSymbolicLink()
+      || !sameConnectionLockGeneration(
+        connectionLockGeneration(afterDescriptor),
+        connectionLockGeneration(afterPath),
+      )) {
+      throw acpPoolError(`${label} path changed during rewrite: ${filePath}`, "ACP_POOL_STATE_UNVERIFIED");
+    }
+  } catch (error) {
+    primaryError = error;
+  }
+  let closeError: unknown = null;
+  if (handle) {
+    try {
+      await handle.close();
+    } catch (error) {
+      closeError = error;
+    }
+  }
+  if (primaryError && closeError) {
+    throw Object.assign(new AggregateError(
+      [primaryError, closeError],
+      `${label} rewrite and close failed: ${filePath}`,
+      { cause: primaryError },
+    ), {
+      code: acpErrorCode(primaryError) || "ACP_POOL_STATE_UNVERIFIED",
+      primaryError,
+      closeError,
+    });
+  }
+  if (primaryError) throw primaryError;
+  if (closeError) throw closeError;
+}
+
+type BoundedReadFailureCode =
+  | "BOUNDED_FILE_UNSAFE"
+  | "BOUNDED_FILE_TOO_LARGE"
+  | "BOUNDED_FILE_CHANGED"
+  | "BOUNDED_FILE_READ_FAILED";
+
+function boundedReadFailure(message: string, code: BoundedReadFailureCode, cause?: unknown) {
+  return Object.assign(new Error(message, cause === undefined ? undefined : { cause }), { code });
+}
+
+async function readBoundedRegularFileNoFollowWithIdentity(
+  filePath: string,
+  maxBytes: number,
+  hooks: ConnectionLockBoundedReadHooks | undefined,
+  invokeAfterVerifiedRead: boolean,
+) {
+  if (typeof constants.O_NOFOLLOW !== "number" || constants.O_NOFOLLOW === 0) {
+    throw boundedReadFailure(
+      `no-follow file opens are unavailable for bounded read: ${filePath}`,
+      "BOUNDED_FILE_UNSAFE",
+    );
+  }
+  const before = await lstat(filePath);
+  if (!before.isFile() || before.isSymbolicLink()) {
+    throw boundedReadFailure(`bounded read requires a regular file: ${filePath}`, "BOUNDED_FILE_UNSAFE");
+  }
+  if (before.size > maxBytes) {
+    throw boundedReadFailure(`file exceeds ${maxBytes} byte limit: ${filePath}`, "BOUNDED_FILE_TOO_LARGE");
+  }
+
+  let handle: Awaited<ReturnType<typeof open>> | null = null;
+  let value = "";
+  let identity: ConnectionLockGeneration | null = null;
+  let primaryError: unknown = null;
+  try {
+    try {
+      handle = await open(filePath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    } catch (error) {
+      if (["ELOOP", "EMLINK"].includes(acpErrorCode(error))) {
+        throw boundedReadFailure(
+          `symbolic-link file rejected during bounded read: ${filePath}`,
+          "BOUNDED_FILE_UNSAFE",
+          error,
+        );
+      }
+      throw error;
+    }
+    const opened = await handle.stat();
+    const openedIdentity = connectionLockGeneration(opened);
+    if (!opened.isFile()
+      || !sameConnectionLockGeneration(connectionLockGeneration(before), openedIdentity)) {
+      throw boundedReadFailure(`file changed while opening for bounded read: ${filePath}`, "BOUNDED_FILE_CHANGED");
+    }
+    await hooks?.afterOpen?.({ filePath, size: opened.size });
+
+    const chunks: Buffer[] = [];
+    let totalBytes = 0;
+    while (true) {
+      const remaining = maxBytes + 1 - totalBytes;
+      if (remaining <= 0) {
+        throw boundedReadFailure(`file exceeds ${maxBytes} byte limit: ${filePath}`, "BOUNDED_FILE_TOO_LARGE");
+      }
+      const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, remaining));
+      const { bytesRead } = await handle.read(chunk, 0, chunk.length, totalBytes);
+      if (bytesRead === 0) break;
+      totalBytes += bytesRead;
+      if (totalBytes > maxBytes) {
+        throw boundedReadFailure(`file exceeds ${maxBytes} byte limit: ${filePath}`, "BOUNDED_FILE_TOO_LARGE");
+      }
+      if (totalBytes > opened.size) {
+        throw boundedReadFailure(`file grew during bounded read: ${filePath}`, "BOUNDED_FILE_CHANGED");
+      }
+      chunks.push(chunk.subarray(0, bytesRead));
+      await hooks?.afterChunk?.({ filePath, bytesRead, totalBytes });
+      const observed = await handle.stat();
+      if (!observed.isFile()
+        || !sameConnectionLockGeneration(openedIdentity, connectionLockGeneration(observed))) {
+        throw boundedReadFailure(`file changed during bounded read: ${filePath}`, "BOUNDED_FILE_CHANGED");
+      }
+    }
+
+    const afterDescriptor = await handle.stat();
+    if (!afterDescriptor.isFile()
+      || !sameConnectionLockGeneration(openedIdentity, connectionLockGeneration(afterDescriptor))) {
+      throw boundedReadFailure(`file changed after bounded descriptor read: ${filePath}`, "BOUNDED_FILE_CHANGED");
+    }
+    await hooks?.beforePathGenerationCheck?.({ filePath, totalBytes });
+    let afterPath;
+    try {
+      afterPath = await lstat(filePath);
+    } catch (error) {
+      throw boundedReadFailure(`file path disappeared after bounded read: ${filePath}`, "BOUNDED_FILE_CHANGED", error);
+    }
+    const verifiedIdentity = connectionLockGeneration(afterPath);
+    if (!afterPath.isFile()
+      || afterPath.isSymbolicLink()
+      || !sameConnectionLockGeneration(openedIdentity, verifiedIdentity)) {
+      throw boundedReadFailure(`file path changed after bounded read: ${filePath}`, "BOUNDED_FILE_CHANGED");
+    }
+    value = Buffer.concat(chunks, totalBytes).toString("utf8");
+    identity = verifiedIdentity;
+    if (invokeAfterVerifiedRead) {
+      await hooks?.afterVerifiedRead?.({ filePath, totalBytes, identity: { ...verifiedIdentity } });
+    }
+  } catch (error) {
+    primaryError = error;
+  }
+
+  let closeError: unknown = null;
+  if (handle) {
+    try {
+      await handle.close();
+    } catch (error) {
+      closeError = error;
+    }
+  }
+  if (primaryError && closeError) {
+    throw Object.assign(new AggregateError(
+      [primaryError, closeError],
+      `bounded file read and close failed: ${filePath}`,
+      { cause: primaryError },
+    ), {
+      code: acpErrorCode(primaryError) || "BOUNDED_FILE_READ_FAILED",
+      primaryError,
+      closeError,
+    });
+  }
+  if (primaryError) throw primaryError;
+  if (closeError) {
+    throw boundedReadFailure(`bounded file close failed: ${filePath}`, "BOUNDED_FILE_READ_FAILED", closeError);
+  }
+  if (!identity) {
+    throw boundedReadFailure(`bounded file generation unavailable after read: ${filePath}`, "BOUNDED_FILE_READ_FAILED");
+  }
+  return { value, identity };
+}
+
+async function readRegularJsonNoFollowWithIdentity(
+  filePath: string,
+  label: string,
+  { invokeAfterVerifiedRead = true }: { invokeAfterVerifiedRead?: boolean } = {},
+) {
+  try {
+    const bounded = await readBoundedRegularFileNoFollowWithIdentity(
+      filePath,
+      1024 * 1024,
+      connectionLockBoundedReadHooksStorage.getStore(),
+      invokeAfterVerifiedRead,
+    );
+    return {
+      value: JSON.parse(bounded.value) as unknown,
+      identity: bounded.identity,
+    };
+  } catch (error) {
+    if (acpErrorCode(error) === "ENOENT") return null;
+    if (["BOUNDED_FILE_UNSAFE", "BOUNDED_FILE_TOO_LARGE"].includes(acpErrorCode(error))) {
+      throw acpPoolError(`${label} is not a safe bounded regular file: ${filePath}`, "ACP_POOL_STATE_UNSAFE", error);
+    }
+    if (acpErrorCode(error).startsWith("BOUNDED_FILE_")) {
+      throw acpPoolError(`${label} changed while reading: ${filePath}`, "ACP_POOL_STATE_UNVERIFIED", error);
+    }
+    throw acpPoolError(`${label} is not valid JSON or cannot be inspected safely: ${filePath}`, "ACP_POOL_STATE_UNVERIFIED", error);
+  }
+}
+
+async function assertSafeDirectoryNoFollow(directory: string, label: string) {
+  let info;
+  try {
+    info = await lstat(directory);
+  } catch (error) {
+    if (acpErrorCode(error) === "ENOENT") return null;
+    throw acpPoolError(`${label} cannot be inspected safely: ${directory}`, "ACP_POOL_STATE_UNVERIFIED", error);
+  }
+  if (!info.isDirectory() || info.isSymbolicLink()) {
+    throw acpPoolError(`${label} is not a real directory: ${directory}`, "ACP_POOL_STATE_UNSAFE");
+  }
+  return connectionLockGeneration(info);
+}
+
+async function writeJsonDurable(
+  filePath: string,
+  value: unknown,
+  {
+    operation,
+    syncParent = () => syncDirectory(path.dirname(filePath)),
+    fault,
+  }: {
+    operation: "connection-owner" | "connection-lease";
+    syncParent?: () => Promise<void>;
+    fault?: ConnectionLockFsHooks["durableWriteFault"];
+  },
+) {
+  await mkdir(path.dirname(filePath), { recursive: true });
+  const tempPath = `${filePath}.tmp-${process.pid}-${randomUUID()}`;
+  let handle: Awaited<ReturnType<typeof open>> | null = null;
+  let tempIdentity: ConnectionLockGeneration | null = null;
+  let tempCreated = false;
+  let published = false;
+  let tempEvidencePath: string | null = null;
+  let tempAuthorityPreserved = false;
+  let tempAuthorityVerified = false;
+  let evidenceIdentity: ConnectionLockGeneration | null = null;
+  let residualPath: string | null = null;
+  let residualIdentity: ConnectionLockGeneration | null = null;
+  let primaryError: unknown = null;
+  const closeErrors: unknown[] = [];
+  try {
+    handle = await open(tempPath, "wx", 0o600);
+    tempCreated = true;
+    tempIdentity = connectionLockGeneration(await handle.stat());
+    await fault?.({ operation, stage: "after-open", filePath, tempPath });
+    await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`, "utf8");
+    await handle.sync();
+    tempIdentity = connectionLockGeneration(await handle.stat());
+    try {
+      await handle.close();
+      handle = null;
+      await fault?.({ operation, stage: "after-primary-close", filePath, tempPath });
+    } catch (error) {
+      closeErrors.push(error);
+      throw error;
+    }
+    try {
+      await lstat(filePath);
+      throw acpPoolError(`ACP durable JSON target already exists: ${filePath}`, "EEXIST");
+    } catch (error) {
+      if (acpErrorCode(error) !== "ENOENT") throw error;
+    }
+    await rename(tempPath, filePath);
+    published = true;
+    await fault?.({ operation, stage: "after-publish", filePath, tempPath });
+    await syncParent();
+  } catch (error) {
+    primaryError = error;
+  }
+
+  if (handle) {
+    try {
+      await handle.close();
+      handle = null;
+      await fault?.({ operation, stage: "after-fallback-close", filePath, tempPath });
+    } catch (error) {
+      closeErrors.push(error);
+    }
+  }
+
+  const cleanupErrors: unknown[] = [];
+  if (!published && tempCreated) {
+    const inspectResidual = async (candidatePath: string) => {
+      try {
+        return await readBoundedRegularFileNoFollowWithIdentity(
+          candidatePath,
+          1024 * 1024,
+          undefined,
+          false,
+        );
+      } catch (error) {
+        if (acpErrorCode(error) === "ENOENT") return null;
+        cleanupErrors.push(error);
+        return null;
+      }
+    };
+    const recordPreservedCandidate = async (candidatePath: string, acrossRename: boolean) => {
+      const candidate = await inspectResidual(candidatePath);
+      if (!candidate) return;
+      const matchesExpected = tempIdentity && (
+        acrossRename
+          ? sameConnectionLockAcrossRename(tempIdentity, candidate.identity)
+          : sameConnectionLockGeneration(tempIdentity, candidate.identity)
+      );
+      if (matchesExpected) {
+        tempEvidencePath = candidatePath;
+        tempAuthorityPreserved = true;
+        tempAuthorityVerified = true;
+        evidenceIdentity = candidate.identity;
+        residualPath = candidatePath;
+        residualIdentity = candidate.identity;
+        return;
+      }
+      residualPath = candidatePath;
+      residualIdentity = candidate.identity;
+    };
+
+    try {
+      await fault?.({ operation, stage: "before-temp-cleanup", filePath, tempPath });
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+
+    let validatedIdentity: ConnectionLockGeneration | null = null;
+    try {
+      const tempInfo = await lstat(tempPath);
+      const currentIdentity = connectionLockGeneration(tempInfo);
+      if (!tempInfo.isFile()
+        || tempInfo.isSymbolicLink()
+        || !tempIdentity
+        || !sameConnectionLockGeneration(tempIdentity, currentIdentity)) {
+        throw acpPoolError(`ACP durable JSON temp changed before retirement: ${tempPath}`, "ACP_POOL_STATE_UNVERIFIED");
+      }
+      validatedIdentity = currentIdentity;
+    } catch (error) {
+      cleanupErrors.push(error);
+      await recordPreservedCandidate(tempPath, false);
+    }
+
+    if (validatedIdentity) {
+      try {
+        await fault?.({ operation, stage: "after-temp-validation", filePath, tempPath });
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+      let afterHookIdentity: ConnectionLockGeneration | null = null;
+      try {
+        const afterHook = await lstat(tempPath);
+        const currentIdentity = connectionLockGeneration(afterHook);
+        if (!afterHook.isFile()
+          || afterHook.isSymbolicLink()
+          || !sameConnectionLockGeneration(validatedIdentity, currentIdentity)) {
+          throw acpPoolError(`ACP durable JSON temp changed after retirement hook: ${tempPath}`, "ACP_POOL_STATE_UNVERIFIED");
+        }
+        afterHookIdentity = currentIdentity;
+      } catch (error) {
+        cleanupErrors.push(error);
+        await recordPreservedCandidate(tempPath, false);
+      }
+
+      if (afterHookIdentity) {
+        const isolatedPath = `${tempPath}.failed-${randomUUID()}`;
+        let renamed = false;
+        try {
+          await rename(tempPath, isolatedPath);
+          renamed = true;
+          const movedInfo = await lstat(isolatedPath);
+          const movedIdentity = connectionLockGeneration(movedInfo);
+          if (!movedInfo.isFile()
+            || movedInfo.isSymbolicLink()
+            || !sameConnectionLockAcrossRename(afterHookIdentity, movedIdentity)) {
+            throw acpPoolError(
+              `ACP durable JSON temp retirement moved an unexpected generation: ${isolatedPath}`,
+              "ACP_POOL_STATE_UNVERIFIED",
+            );
+          }
+          const pinned = await readBoundedRegularFileNoFollowWithIdentity(
+            isolatedPath,
+            1024 * 1024,
+            undefined,
+            false,
+          );
+          if (!sameConnectionLockGeneration(movedIdentity, pinned.identity)) {
+            throw acpPoolError(
+              `ACP durable JSON retired temp changed during verification: ${isolatedPath}`,
+              "ACP_POOL_STATE_UNVERIFIED",
+            );
+          }
+          try {
+            await syncParent();
+          } catch (error) {
+            cleanupErrors.push(error);
+          }
+          try {
+            const finalPinned = await readBoundedRegularFileNoFollowWithIdentity(
+              isolatedPath,
+              1024 * 1024,
+              undefined,
+              false,
+            );
+            if (!sameConnectionLockGeneration(pinned.identity, finalPinned.identity)) {
+              throw acpPoolError(
+                `ACP durable JSON retired temp changed after directory sync: ${isolatedPath}`,
+                "ACP_POOL_STATE_UNVERIFIED",
+              );
+            }
+            tempEvidencePath = isolatedPath;
+            tempAuthorityPreserved = true;
+            tempAuthorityVerified = true;
+            evidenceIdentity = finalPinned.identity;
+            residualPath = isolatedPath;
+            residualIdentity = finalPinned.identity;
+          } catch (error) {
+            cleanupErrors.push(error);
+            await recordPreservedCandidate(isolatedPath, true);
+          }
+        } catch (error) {
+          cleanupErrors.push(error);
+          await recordPreservedCandidate(renamed ? isolatedPath : tempPath, renamed);
+        }
+      }
+    }
+  }
+
+  const cleanupError = cleanupErrors.length === 0
+    ? null
+    : cleanupErrors.length === 1
+      ? cleanupErrors[0]
+      : new AggregateError(cleanupErrors, `ACP durable JSON temp retirement failed: ${tempPath}`, {
+        cause: cleanupErrors[0],
+      });
+  if (!primaryError && closeErrors.length === 0 && !cleanupError) return;
+  const causes = [primaryError, ...closeErrors, cleanupError]
+    .filter((error, index, all) => error !== null && all.indexOf(error) === index);
+  const cause = causes.length === 1
+    ? causes[0]
+    : new AggregateError(causes, `ACP durable JSON write failed: ${filePath}`, {
+      cause: primaryError ?? causes[0],
+    });
+  if (published) {
+    throw Object.assign(acpPoolError(
+      `ACP durable JSON publish committed with ambiguous directory durability: ${filePath}`,
+      "ACP_DURABLE_JSON_COMMITTED_DURABILITY_AMBIGUOUS",
+      cause,
+    ), {
+      committed: true,
+      phase: `${operation}-publish`,
+      path: filePath,
+      committedPath: filePath,
+      recoveryPaths: { committed: filePath, parent: path.dirname(filePath) },
+      primaryError,
+      closeErrors,
+    });
+  }
+  const failure = causes.length === 1
+    ? acpPoolError(`ACP durable JSON write failed: ${filePath}`, "ACP_DURABLE_JSON_WRITE_FAILED", causes[0])
+    : cause;
+  throw Object.assign(failure, {
+    code: "ACP_DURABLE_JSON_WRITE_FAILED",
+    primaryCode: acpErrorCode(primaryError) || null,
+    committed: false,
+    path: filePath,
+    tempPath,
+    tempEvidencePath,
+    tempAuthorityPreserved,
+    tempAuthorityVerified,
+    evidenceIdentity,
+    residualPath,
+    residualIdentity,
+    recoveryPaths: {
+      target: filePath,
+      ...(tempEvidencePath ? { evidence: tempEvidencePath } : {}),
+      ...(residualPath && residualPath !== tempEvidencePath ? { residual: residualPath } : {}),
+      parent: path.dirname(filePath),
+    },
+    primaryError,
+    closeErrors,
+    cleanupError,
+  });
+}
+
+function connectionOwnerAlive(identity: ProcessIdentity) {
+  try {
+    process.kill(identity.pid, 0);
+  } catch (error) {
+    if (acpErrorCode(error) === "ESRCH") return false;
+    throw error;
+  }
+  const current = identity.pid === process.pid
+    ? captureCurrentExactProcessIdentity()
+    : captureProcessIdentity(identity.pid, { strict: true });
+  return sameProcessIdentity(identity, current);
+}
+
+export interface AcpPoolChildTerminationOptions {
+  system?: ProcessTreeSystem;
+  graceMs?: number;
+  forceVerifyMs?: number;
+}
+
+export interface AcpPoolChildCleanupResult {
+  attempted: boolean;
+  cleanupVerified: boolean;
+  rootIdentity: ProcessIdentity | null;
+}
+
+function processIdentityUnavailable(message: string) {
+  return Object.assign(new Error(message), { code: "PROCESS_IDENTITY_UNAVAILABLE" });
+}
+
+function captureSpawnedChildIdentity(child: SpawnedChild) {
+  if (!child.pid) {
+    child.processIdentity = null;
+    return null;
+  }
+  const identity = captureSpawnProcessIdentity(child);
+  if (!identity) {
+    throw processIdentityUnavailable(`ACP pool child process identity unavailable after spawn pid=${child.pid}`);
+  }
+  child.processIdentity = identity;
+  return identity;
+}
+
+export async function terminateAcpPoolChild(
+  child: AcpPoolSpawnedChild,
+  {
+    system,
+    graceMs = CHILD_TERM_GRACE_MS,
+    forceVerifyMs = CHILD_KILL_GRACE_MS,
+  }: AcpPoolChildTerminationOptions = {},
+): Promise<AcpPoolChildCleanupResult> {
+  if (!child?.pid || child.exitCode !== null || child.signalCode !== null) {
+    return {
+      attempted: false,
+      cleanupVerified: true,
+      rootIdentity: child?.processIdentity || null,
+    };
+  }
+  const rootIdentity = child.processIdentity;
+  if (!rootIdentity) {
+    throw processIdentityUnavailable(`ACP pool child teardown requires captured process identity pid=${child.pid}`);
+  }
+  await killTree(child.pid, graceMs, {
+    expectedRootIdentity: rootIdentity,
+    requireDescendantScan: true,
+    forceVerifyMs,
+    ...(system ? { system } : {}),
+  });
+  return { attempted: true, cleanupVerified: true, rootIdentity };
 }
 
 function terminateChild(child: SpawnedChild) {
-  return new Promise<void>((resolve) => {
-    if (!child?.pid || child.exitCode !== null || child.signalCode !== null) {
-      resolve();
-      return;
-    }
-    // A sandboxed wrapper may spawn its provider into a separate process group.
-    // Capture those descendants before signalling the wrapper: once it exits,
-    // detached providers are re-parented and can no longer be discovered from
-    // the wrapper PID. The parent control plane remains outside the sandbox and
-    // can therefore terminate them even when the wrapper cannot signal across
-    // sandbox process-group boundaries.
-    const detachedDescendants = descendantPids(child.pid);
-    let done = false;
-    const finish = () => {
-      if (done) return;
-      done = true;
-      clearTimeout(termTimer);
-      clearTimeout(killTimer);
-      child.removeListener("close", finish);
-      resolve();
-    };
-    const termTimer = setTimeout(() => {
-      signalChild(child, "SIGTERM");
-      signalDetachedDescendants(detachedDescendants, "SIGTERM");
-    }, 0);
-    const killTimer = setTimeout(() => {
-      signalChild(child, "SIGKILL");
-      signalDetachedDescendants(detachedDescendants, "SIGKILL");
-      setTimeout(finish, CHILD_KILL_GRACE_MS).unref();
-    }, CHILD_TERM_GRACE_MS);
-    termTimer.unref();
-    killTimer.unref();
-    child.once("close", finish);
-  });
+  return terminateAcpPoolChild(child);
+}
+
+function asExecutionError(error: unknown) {
+  return error instanceof Error ? error : new Error(String(error));
+}
+
+function primaryWithCleanupErrors(primary: unknown, cleanupErrors: Error[]) {
+  const primaryError = asExecutionError(primary);
+  if (cleanupErrors.length === 0) return primaryError;
+  return Object.assign(
+    new AggregateError([primaryError, ...cleanupErrors], primaryError.message, { cause: primaryError }),
+    {
+      code: (primaryError as NodeJS.ErrnoException).code,
+      primaryError,
+      cleanupErrors,
+      cleanupVerified: false,
+    },
+  );
+}
+
+async function failureAfterCleanup(primary: unknown, cleanup: Promise<unknown>[]) {
+  const settled = await Promise.allSettled(cleanup);
+  const cleanupErrors = settled
+    .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+    .map((result) => asExecutionError(result.reason));
+  return primaryWithCleanupErrors(primary, cleanupErrors);
+}
+
+function rejectAfterCleanup(
+  reject: (error: Error) => void,
+  primary: unknown,
+  cleanup: Promise<unknown>[],
+) {
+  void failureAfterCleanup(primary, cleanup).then(reject);
+}
+
+function collectedCleanupError(message: string, cleanupErrors: Error[]) {
+  if (cleanupErrors.length === 1) {
+    const error = cleanupErrors[0] as Error & { cleanupErrors?: Error[]; cleanupVerified?: boolean };
+    if (!error.cleanupErrors) error.cleanupErrors = cleanupErrors;
+    error.cleanupVerified = false;
+    return error;
+  }
+  return Object.assign(
+    new AggregateError(cleanupErrors, message),
+    { code: "ACP_POOL_CLEANUP_FAILED", cleanupErrors, cleanupVerified: false },
+  );
+}
+
+function throwCollectedCleanupErrors(message: string, errors: unknown[]) {
+  const cleanupErrors = errors.map(asExecutionError);
+  if (cleanupErrors.length > 0) throw collectedCleanupError(message, cleanupErrors);
 }
 
 export class AcpPool {
@@ -1221,13 +2288,17 @@ export class AcpPool {
   oneShotChildren: Set<SpawnedChild>;
   lastRecycleReason: Map<string, string>;
   toolPolicyPromise: Promise<Map<string, string> | null> | null;
+  connectionLockFsHooks: ConnectionLockFsHooks | null;
   _seq: number;
   stopped: boolean;
   createdAt: number;
 
   constructor(opts: AcpPoolOptions = {}) {
     const parentEnv = opts.env || process.env;
-    this.cpbRoot = path.resolve(opts.cpbRoot || parentEnv.CPB_ROOT || path.join(__dirname, ".."));
+    this.cpbRoot = resolveAgentHomeRuntimeRoot(
+      opts.cpbRoot || parentEnv.CPB_ROOT || path.join(__dirname, ".."),
+      "CPB_ROOT",
+    );
     this.hubRoot = path.resolve(opts.hubRoot || resolveHubRootFromEnv(this.cpbRoot, parentEnv));
     this.env = buildAcpPoolEnv(parentEnv, {
       CPB_ROOT: this.cpbRoot,
@@ -1283,6 +2354,7 @@ export class AcpPool {
     this.oneShotChildren = new Set();
     this.lastRecycleReason = new Map();
     this.toolPolicyPromise = null;
+    this.connectionLockFsHooks = opts.connectionLockFsHooks || null;
     this._seq = 0;
     this.stopped = false;
     this.createdAt = Date.now();
@@ -1309,6 +2381,8 @@ export class AcpPool {
     for (const queue of this.pending.values()) {
       while (queue.length) {
         const item = queue.shift();
+        if (!item) continue;
+        cleanupPendingPoolRequest(item);
         item.reject(new Error("ACP pool stopped"));
       }
     }
@@ -1329,6 +2403,7 @@ export class AcpPool {
     const closeProvider = Boolean(options.closeProvider || options.closePersistent);
     const target = path.resolve(cwd);
     let released = false;
+    const cleanupErrors: unknown[] = [];
     for (const [key, persistent] of [...this.persistentClients.entries()]) {
       const clientCwd = persistent.client?.activeSessionCwd
         ? path.resolve(persistent.client.activeSessionCwd)
@@ -1336,17 +2411,35 @@ export class AcpPool {
       const launchCwd = persistent.launchCwd ? path.resolve(persistent.launchCwd) : null;
       const lastCwd = persistent.lastCwd ? path.resolve(persistent.lastCwd) : null;
       const activeMatches = clientCwd === target;
-      const terminalCleanupCount = await persistent.client.cleanupTerminalsForCwd(target, { reason: releaseReason }).catch(() => 0);
+      let terminalCleanupCount = 0;
+      try {
+        terminalCleanupCount = await persistent.client.cleanupTerminalsForCwd(target, { reason: releaseReason });
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
 
       if (persistent.launchScopedMcp || closeProvider) {
         if (!activeMatches && launchCwd !== target && lastCwd !== target && terminalCleanupCount === 0) continue;
-        await this.#closePersistentClient(key);
+        try {
+          await this.#closePersistentClient(key);
+        } catch (error) {
+          cleanupErrors.push(error);
+          continue;
+        }
       } else {
-        if (activeMatches) await persistent.client.closeActiveSession(releaseReason).catch(() => null);
+        if (activeMatches) {
+          try {
+            await persistent.client.closeActiveSession(releaseReason);
+          } catch (error) {
+            cleanupErrors.push(error);
+            continue;
+          }
+        }
         if (!activeMatches && terminalCleanupCount === 0) continue;
       }
       released = true;
     }
+    throwCollectedCleanupErrors("ACP pool worktree release cleanup failed", cleanupErrors);
     return released;
   }
 
@@ -1363,12 +2456,18 @@ export class AcpPool {
     // Close every logical session before terminating any provider process.
     // Process cleanup is intentionally aggressive and must not prevent a peer
     // conversation from recording its terminal audit event.
-    for (const [, persistent] of matches) {
-      await persistent.client.closeActiveSession(reason).catch(() => null);
-    }
-    for (const [key] of matches) {
-      await this.#closePersistentClient(key);
-    }
+    const sessionResults = await Promise.allSettled(
+      matches.map(([, persistent]) => persistent.client.closeActiveSession(reason)),
+    );
+    const providerResults = await Promise.allSettled(
+      matches.map(([key]) => this.#closePersistentClient(key)),
+    );
+    throwCollectedCleanupErrors(
+      "ACP pool job release cleanup failed",
+      [...sessionResults, ...providerResults]
+        .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+        .map((result) => result.reason),
+    );
     return true;
   }
 
@@ -1494,15 +2593,27 @@ export class AcpPool {
     const launchPermissionLane = agent === "codex"
       ? codexSandboxModeForExecution(this.#executionEnv(agent, options))
       : "";
-    return poolClientKey(agent, { ...options, processCwd, launchPermissionLane });
+    const dataRoot = this.#requestDataRoot(options);
+    return poolClientKey(agent, {
+      ...options,
+      dataRoot: dataRoot || null,
+      processCwd,
+      launchPermissionLane,
+    });
   }
 
   #conversationKey(options: PoolRequestOptions = {}) {
     return stringValue(options.conversationKey);
   }
 
+  #requestDataRoot(options: PoolRequestOptions = {}, persistent: PersistentClientState | null = null) {
+    return stringValue(options.dataRoot)
+      || persistent?.dataRoot
+      || stringValue(this.env.CPB_PROJECT_RUNTIME_ROOT);
+  }
+
   #sessionKey(agent: string, options: PoolRequestOptions = {}) {
-    return this.#conversationKey(options)
+    return this.#conversationKey(options) || this.#requestDataRoot(options)
       ? this.#persistentClientKey(agent, options)
       : agent;
   }
@@ -1516,6 +2627,9 @@ export class AcpPool {
   }
 
   acquire(agent: string, options: PoolRequestOptions = {}) {
+    if (options.signal?.aborted) {
+      return Promise.reject(abortErrorForSignal(options.signal));
+    }
     const providerKey = this.#providerKeyForRequest(agent, options);
     const limit = this.#providerConnectionLimit(providerKey);
     // Count all agents sharing the same provider key
@@ -1527,33 +2641,44 @@ export class AcpPool {
       this.liveRequests.set(requestId, { agent, startedAt: Date.now(), providerKey });
       return Promise.resolve({ agent, requestId, release: () => this.release(agent, requestId) });
     }
-    const timeoutMs = numericOption(options.waitTimeoutMs, DEFAULT_POOL_WAIT_TIMEOUT_MS);
+    const timeoutMs = this.#poolWaitTimeoutMs(options.waitTimeoutMs);
     const start = Date.now();
-    let warnTimer = null;
     return new Promise<AcquiredPoolSlot>((resolve, reject) => {
       // Queue under provider key (not agent name) so cross-agent waits are shared
       const queueKey = `provider:${providerKey}`;
       const queue = this.pending.get(queueKey) || [];
-      const entry: PendingPoolRequest = { resolve, reject, agent, providerKey };
+      const entry: PendingPoolRequest = { resolve, reject, agent, providerKey, signal: options.signal };
+      const removeFromQueue = () => {
+        const currentQueue = this.pending.get(queueKey) || queue;
+        const idx = currentQueue.indexOf(entry);
+        if (idx !== -1) currentQueue.splice(idx, 1);
+        if (currentQueue.length === 0) this.pending.delete(queueKey);
+      };
+      entry._abortCleanup = addAbortHandler(options.signal, () => {
+        if (entry.aborted) return;
+        entry.aborted = true;
+        cleanupPendingPoolRequest(entry);
+        removeFromQueue();
+        reject(abortErrorForSignal(options.signal));
+      });
       queue.push(entry);
       this.pending.set(queueKey, queue);
 
       // 30-second warn log
-      warnTimer = setInterval(() => {
+      entry._warnTimer = setInterval(() => {
         const elapsed = Date.now() - start;
         const currentActive = this.#providerActiveCount(providerKey);
         process.stderr.write(
           `[acp-pool] warn: ACP pool wait: ${agent}/${providerKey} waiting ${Math.round(elapsed / 1000)}s for provider slot (${currentActive}/${limit})\n`,
         );
       }, POOL_WAIT_WARN_INTERVAL_MS);
-      warnTimer.unref();
+      entry._warnTimer.unref();
 
       // Timeout
       if (timeoutMs > 0) {
         const timer = setTimeout(() => {
-          clearInterval(warnTimer);
-          const idx = queue.indexOf(entry);
-          if (idx !== -1) queue.splice(idx, 1);
+          cleanupPendingPoolRequest(entry);
+          removeFromQueue();
           const elapsed = Date.now() - start;
           reject(new PoolExhaustedError(agent, providerKey, elapsed));
         }, timeoutMs);
@@ -1581,16 +2706,24 @@ export class AcpPool {
     // Drain from provider-keyed queue (cross-agent sharing)
     const queueKey = `provider:${providerKey}`;
     const queue = this.pending.get(queueKey) || [];
-    const next = queue.shift();
-    if (!next) return;
-    if (next._timer) clearTimeout(next._timer);
-    const nextAgent = next.agent || agent;
-    const nextProviderKey = next.providerKey || this.providerKey(nextAgent);
-    const nextId = this._nextId(nextAgent);
-    this.active.set(nextAgent, (this.active.get(nextAgent) || 0) + 1);
-    this.activeProviders.set(nextProviderKey, (this.activeProviders.get(nextProviderKey) || 0) + 1);
-    this.liveRequests.set(nextId, { agent: nextAgent, startedAt: Date.now(), providerKey: nextProviderKey });
-    next.resolve({ agent: nextAgent, requestId: nextId, release: () => this.release(nextAgent, nextId) });
+    while (queue.length) {
+      const next = queue.shift();
+      if (!next) continue;
+      cleanupPendingPoolRequest(next);
+      if (next.aborted || next.signal?.aborted) {
+        next.reject(abortErrorForSignal(next.signal));
+        continue;
+      }
+      const nextAgent = next.agent || agent;
+      const nextProviderKey = next.providerKey || this.providerKey(nextAgent);
+      const nextId = this._nextId(nextAgent);
+      this.active.set(nextAgent, (this.active.get(nextAgent) || 0) + 1);
+      this.activeProviders.set(nextProviderKey, (this.activeProviders.get(nextProviderKey) || 0) + 1);
+      this.liveRequests.set(nextId, { agent: nextAgent, startedAt: Date.now(), providerKey: nextProviderKey });
+      next.resolve({ agent: nextAgent, requestId: nextId, release: () => this.release(nextAgent, nextId) });
+      break;
+    }
+    if (queue.length === 0) this.pending.delete(queueKey);
   }
 
   providerKey(agent: string, variant: string | null = null) {
@@ -1639,52 +2772,675 @@ export class AcpPool {
     return positiveIntOption(specific, this.providerConnectionLimit);
   }
 
-  async #connectionLockIsStale(lockDir: string) {
+  async #withConnectionLock<T>(callback: () => Promise<T>, signal?: AbortSignal, allowStopped = false) {
+    return connectionLockBoundedReadHooksStorage.run(this.connectionLockFsHooks?.boundedRead, async () => {
+      const dir = this.#connectionLeasesDir();
+      const lockDir = this.#connectionLockDir();
+      const ownerFile = path.join(lockDir, "owner.json");
+      const ownerToken = randomUUID();
+      const generation = randomUUID();
+      const processIdentity = captureCurrentExactProcessIdentity();
+      if (!processIdentity) throw acpPoolError("ACP connection lock process identity unavailable", "ACP_POOL_STATE_UNVERIFIED");
+      await mkdir(dir, { recursive: true });
+      await assertSafeDirectoryNoFollow(dir, "ACP connection lease directory");
+
+      let acquired = false;
+      while (!this.stopped || allowStopped) {
+        throwIfAborted(signal);
+        try {
+          await mkdir(lockDir);
+          const ownerBase = {
+            format: CONNECTION_LOCK_OWNER_FORMAT,
+            ownerToken,
+            generation,
+            pid: process.pid,
+            host: os.hostname(),
+            acquiredAt: new Date().toISOString(),
+            processIdentity,
+          };
+          await writeJsonDurable(ownerFile, {
+            ...ownerBase,
+            binding: "pending",
+            padding: " ".repeat(CONNECTION_LOCK_PENDING_PADDING_BYTES),
+          }, {
+            operation: "connection-owner",
+            syncParent: async () => {
+              await syncDirectory(lockDir);
+              await this.#syncConnectionLockParent(lockDir, "acquire-publish");
+            },
+            fault: this.connectionLockFsHooks?.durableWriteFault,
+          });
+          const identity = connectionLockGeneration(await lstat(lockDir));
+          await rewriteRegularJsonNoFollow(ownerFile, {
+            ...ownerBase,
+            binding: "bound",
+            identity,
+          }, "ACP connection lock owner");
+          const afterOwnerRewrite = connectionLockGeneration(await lstat(lockDir));
+          if (!sameConnectionLockGeneration(identity, afterOwnerRewrite)) {
+            throw acpPoolError(
+              `ACP connection lock changed while binding its persisted owner: ${lockDir}`,
+              "ACP_POOL_STATE_UNVERIFIED",
+            );
+          }
+          const owner = await this.#readConnectionLockOwner(lockDir, ownerFile);
+          if (!owner
+            || owner.binding !== "bound"
+            || !owner.identity
+            || owner.ownerToken !== ownerToken
+            || owner.generation !== generation
+            || !samePersistedProcessIdentity(owner.processIdentity, processIdentity)
+            || !sameConnectionLockGeneration(owner.identity, identity)) {
+            throw acpPoolError(`ACP connection lock owner commit is ambiguous: ${ownerFile}`, "ACP_POOL_STATE_UNVERIFIED");
+          }
+          acquired = true;
+          break;
+        } catch (err) {
+          if (acpErrorCode(err) !== "EEXIST") throw err;
+          if (await this.#recoverConnectionLock(lockDir, ownerFile)) continue;
+          await sleep(10, signal);
+        }
+      }
+
+      let result!: T;
+      let primaryError: unknown;
+      let hasPrimaryError = false;
+      try {
+        throwIfAborted(signal);
+        if (!acquired) throw new Error("ACP pool stopped");
+        throwIfAborted(signal);
+        if (this.stopped && !allowStopped) throw new Error("ACP pool stopped");
+        result = await callback();
+      } catch (error) {
+        primaryError = error;
+        hasPrimaryError = true;
+      }
+
+      let releaseError: unknown;
+      if (acquired) {
+        try {
+          await this.#releaseConnectionLock(lockDir, ownerFile, ownerToken, generation);
+        } catch (error) {
+          releaseError = error;
+        }
+      }
+      if (hasPrimaryError && releaseError) {
+        throw this.#connectionLockOperationAndReleaseFailure(primaryError, releaseError);
+      }
+      if (hasPrimaryError) throw primaryError;
+      if (releaseError) throw releaseError;
+      return result;
+    });
+  }
+
+  async #readConnectionLockOwner(
+    lockDir: string,
+    ownerFile: string,
+    expectedPersistedIdentity?: ConnectionLockGeneration,
+  ): Promise<ConnectionLockOwner | null> {
+    let info;
     try {
-      const info = await stat(lockDir);
-      return Date.now() - info.mtimeMs >= CONNECTION_LOCK_TTL_MS;
-    } catch {
-      return false;
+      info = await lstat(lockDir);
+    } catch (error) {
+      if (acpErrorCode(error) === "ENOENT") return null;
+      throw acpPoolError(`ACP connection lock cannot be inspected safely: ${lockDir}`, "ACP_POOL_STATE_UNVERIFIED", error);
+    }
+    if (info.isSymbolicLink() || !info.isDirectory()) {
+      throw acpPoolError(`ACP connection lock is not a real directory: ${lockDir}`, "ACP_POOL_STATE_UNSAFE");
+    }
+    const beforeGeneration = connectionLockGeneration(info);
+    let raw;
+    try {
+      raw = await readRegularJsonNoFollow(ownerFile, "ACP connection lock owner");
+    } catch (error) {
+      if (acpErrorCauseCode(error) === "BOUNDED_FILE_CHANGED") {
+        try {
+          const afterFailure = await lstat(lockDir);
+          if (!sameConnectionLockGeneration(
+            beforeGeneration,
+            connectionLockGeneration(afterFailure),
+          )) {
+            throw acpPoolError(
+              `ACP connection lock generation changed while reading owner: ${lockDir}`,
+              "ACP_CONNECTION_LOCK_RETRY",
+              error,
+            );
+          }
+          throw acpPoolError(
+            `ACP connection lock owner publication changed during read: ${ownerFile}`,
+            "ACP_CONNECTION_LOCK_RETRY",
+            error,
+          );
+        } catch (afterError) {
+          if (acpErrorCode(afterError) === "ENOENT") {
+            throw acpPoolError(
+              `ACP connection lock moved while reading owner: ${lockDir}`,
+              "ACP_CONNECTION_LOCK_RETRY",
+              error,
+            );
+          }
+          throw afterError;
+        }
+      }
+      throw error;
+    }
+    let after;
+    try {
+      after = await lstat(lockDir);
+    } catch (error) {
+      if (acpErrorCode(error) === "ENOENT") {
+        throw acpPoolError(
+          `ACP connection lock moved after reading owner: ${lockDir}`,
+          "ACP_CONNECTION_LOCK_RETRY",
+          error,
+        );
+      }
+      throw error;
+    }
+    const afterGeneration = connectionLockGeneration(after);
+    if (!after.isDirectory()
+      || after.isSymbolicLink()
+      || !sameConnectionLockGeneration(beforeGeneration, afterGeneration)) {
+      throw acpPoolError(
+        `ACP connection lock generation changed after reading owner: ${lockDir}`,
+        "ACP_CONNECTION_LOCK_RETRY",
+      );
+    }
+    if (raw === null) return null;
+    if (!isRecord(raw)
+      || raw.format !== CONNECTION_LOCK_OWNER_FORMAT
+      || !["pending", "bound"].includes(String(raw.binding || ""))
+      || typeof raw.ownerToken !== "string" || !raw.ownerToken
+      || typeof raw.generation !== "string" || !raw.generation
+      || !Number.isInteger(Number(raw.pid))
+      || typeof raw.host !== "string"
+      || typeof raw.acquiredAt !== "string") {
+      throw acpPoolError(`ACP connection lock owner is malformed: ${ownerFile}`, "ACP_POOL_STATE_UNVERIFIED");
+    }
+    const processIdentity = processIdentityFrom(raw.processIdentity, Number(raw.pid));
+    if (!processIdentity) {
+      throw acpPoolError(`ACP connection lock owner lacks process identity: ${ownerFile}`, "ACP_POOL_STATE_UNVERIFIED");
+    }
+    if (raw.binding === "pending") {
+      return {
+        format: CONNECTION_LOCK_OWNER_FORMAT,
+        binding: "pending",
+        ownerToken: raw.ownerToken,
+        generation: raw.generation,
+        pid: Number(raw.pid),
+        host: raw.host,
+        acquiredAt: raw.acquiredAt,
+        processIdentity,
+        identity: null,
+      };
+    }
+    const persistedIdentity = connectionLockGenerationFrom(raw.identity);
+    if (!persistedIdentity
+      || !sameConnectionLockGeneration(
+        expectedPersistedIdentity || beforeGeneration,
+        persistedIdentity,
+      )) {
+      throw acpPoolError(`ACP connection lock owner is malformed: ${ownerFile}`, "ACP_POOL_STATE_UNVERIFIED");
+    }
+    return {
+      format: CONNECTION_LOCK_OWNER_FORMAT,
+      binding: "bound",
+      ownerToken: raw.ownerToken,
+      generation: raw.generation,
+      pid: Number(raw.pid),
+      host: raw.host,
+      acquiredAt: raw.acquiredAt,
+      processIdentity,
+      identity: persistedIdentity,
+    };
+  }
+
+  #connectionLockOwnerDead(owner: ConnectionLockOwner | null, lockDir: string) {
+    if (!owner) return false;
+    if (owner.host !== os.hostname()) return false;
+    try {
+      return !connectionOwnerAlive(owner.processIdentity);
+    } catch (error) {
+      throw acpPoolError(`ACP connection lock owner liveness is unverified: ${lockDir}`, "ACP_POOL_STATE_UNVERIFIED", error);
     }
   }
 
-  async #withConnectionLock<T>(callback: () => Promise<T>) {
-    const dir = this.#connectionLeasesDir();
-    const lockDir = this.#connectionLockDir();
-    await mkdir(dir, { recursive: true });
+  async #assertCanonicalConnectionLockGeneration(
+    lockDir: string,
+    ownerFile: string,
+    expectedOwner: ConnectionLockOwner | null,
+    expectedIdentity: ConnectionLockGeneration,
+    phase: ConnectionLockMovedPhase,
+  ) {
+    const before = await lstat(lockDir);
+    if (!before.isDirectory()
+      || before.isSymbolicLink()
+      || !sameConnectionLockGeneration(expectedIdentity, connectionLockGeneration(before))) {
+      throw acpPoolError(
+        `ACP canonical connection lock changed before ${phase}: ${lockDir}`,
+        "ACP_POOL_STATE_UNVERIFIED",
+      );
+    }
+    const observedOwner = await this.#readConnectionLockOwner(lockDir, ownerFile);
+    const after = await lstat(lockDir);
+    if (!after.isDirectory()
+      || after.isSymbolicLink()
+      || !sameConnectionLockGeneration(expectedIdentity, connectionLockGeneration(after))
+      || !sameConnectionLockOwner(expectedOwner, observedOwner)) {
+      throw acpPoolError(
+        `ACP canonical connection lock owner or generation changed before ${phase}: ${lockDir}`,
+        "ACP_POOL_STATE_UNVERIFIED",
+      );
+    }
+  }
 
-    let acquired = false;
-    while (!this.stopped) {
-      try {
-        await mkdir(lockDir);
-        acquired = true;
-        break;
-      } catch (err) {
-        if (!err || err.code !== "EEXIST") throw err;
-        if (await this.#connectionLockIsStale(lockDir)) {
-          await rm(lockDir, { recursive: true, force: true });
-          continue;
+  async #assertMovedConnectionLockGeneration(
+    movedDir: string,
+    expectedOwner: ConnectionLockOwner | null,
+    expectedCanonicalIdentity: ConnectionLockGeneration,
+    expectedMovedIdentity: ConnectionLockGeneration,
+    phase: ConnectionLockMovedPhase,
+  ) {
+    const before = await lstat(movedDir);
+    const beforeGeneration = connectionLockGeneration(before);
+    if (!before.isDirectory()
+      || before.isSymbolicLink()
+      || !sameConnectionLockGeneration(expectedMovedIdentity, beforeGeneration)
+      || !sameConnectionLockAcrossRename(expectedCanonicalIdentity, beforeGeneration)) {
+      throw acpPoolError(
+        `ACP connection lock directory changed during ${phase}: ${movedDir}`,
+        "ACP_POOL_STATE_UNVERIFIED",
+      );
+    }
+    const observedOwner = await this.#readConnectionLockOwner(
+      movedDir,
+      path.join(movedDir, "owner.json"),
+      expectedOwner?.identity || undefined,
+    );
+    const after = await lstat(movedDir);
+    const afterGeneration = connectionLockGeneration(after);
+    if (!after.isDirectory()
+      || after.isSymbolicLink()
+      || !sameConnectionLockGeneration(expectedMovedIdentity, afterGeneration)) {
+      throw acpPoolError(
+        `ACP connection lock directory changed while validating ${phase}: ${movedDir}`,
+        "ACP_POOL_STATE_UNVERIFIED",
+      );
+    }
+    if (!expectedOwner) {
+      if (observedOwner) {
+        throw acpPoolError(
+          `ACP incomplete connection lock gained an owner during ${phase}: ${movedDir}`,
+          "ACP_POOL_STATE_UNVERIFIED",
+        );
+      }
+      return;
+    }
+    if (!sameConnectionLockOwner(expectedOwner, observedOwner)) {
+      throw acpPoolError(
+        `ACP connection lock owner changed during ${phase}: ${movedDir}`,
+        "ACP_POOL_STATE_UNVERIFIED",
+      );
+    }
+  }
+
+  async #syncConnectionLockDirectory(directory: string, phase: ConnectionLockFsPhase) {
+    if (this.connectionLockFsHooks?.syncDirectory) {
+      await this.connectionLockFsHooks.syncDirectory(directory, phase);
+      return;
+    }
+    await syncDirectory(directory, {
+      phase,
+      fault: this.connectionLockFsHooks?.directorySyncFault,
+    });
+  }
+
+  async #syncConnectionLockParent(lockDir: string, phase: ConnectionLockFsPhase) {
+    await this.#syncConnectionLockDirectory(path.dirname(lockDir), phase);
+  }
+
+  async #syncConnectionLockRenameDurability(
+    lockDir: string,
+    movedDir: string,
+    phase: ConnectionLockMovedPhase,
+  ): Promise<ConnectionLockRenameDurability> {
+    const failures: Array<{
+      directory: string;
+      phase: ConnectionLockFsPhase;
+      error: unknown;
+    }> = [];
+    const isolationPhase: ConnectionLockFsPhase = phase === "release"
+      ? "release-isolation"
+      : "recover-isolation";
+    const parentPhase: ConnectionLockFsPhase = phase === "release"
+      ? "release-rename"
+      : "recover-rename";
+    let isolationDirectoryDurable = false;
+    let parentDirectoryDurable = false;
+    try {
+      await this.#syncConnectionLockDirectory(movedDir, isolationPhase);
+      isolationDirectoryDurable = true;
+    } catch (error) {
+      failures.push({ directory: movedDir, phase: isolationPhase, error });
+    }
+    try {
+      await this.#syncConnectionLockParent(lockDir, parentPhase);
+      parentDirectoryDurable = true;
+    } catch (error) {
+      failures.push({ directory: path.dirname(lockDir), phase: parentPhase, error });
+    }
+    return {
+      durabilityVerified: isolationDirectoryDurable && parentDirectoryDurable,
+      isolationDirectoryDurable,
+      parentDirectoryDurable,
+      failures,
+    };
+  }
+
+  #connectionLockFailure(message: string, errors: unknown[], extra: LooseRecord = {}) {
+    const causes = errors.filter((error) => error !== undefined && error !== null);
+    const cause = causes.length === 1 ? causes[0] : new AggregateError(causes, message);
+    return Object.assign(new Error(message, { cause }), {
+      code: "ACP_POOL_STATE_UNVERIFIED",
+      errors: causes,
+      ...extra,
+    });
+  }
+
+  #connectionLockOperationAndReleaseFailure(primaryError: unknown, releaseError: unknown) {
+    const releaseDetails = releaseError && typeof releaseError === "object"
+      ? releaseError as LooseRecord
+      : {};
+    const releaseTruth: LooseRecord = {};
+    for (const key of [
+      "committed",
+      "renameCommitted",
+      "removalCommitted",
+      "canonicalRemovalCommitted",
+      "phase",
+      "committedPath",
+      "residualPath",
+      "quarantinePreserved",
+      "successorPreserved",
+      "successorGeneration",
+      "durabilityVerified",
+      "isolationDirectoryDurable",
+      "parentDirectoryDurable",
+      "failedPhases",
+      "durabilityFailures",
+      "recoveryPaths",
+    ]) {
+      if (releaseDetails[key] !== undefined) releaseTruth[key] = releaseDetails[key];
+    }
+    return Object.assign(new AggregateError(
+      [primaryError, releaseError],
+      "ACP connection lock operation and release both failed",
+      { cause: primaryError },
+    ), {
+      ...releaseTruth,
+      code: "ACP_CONNECTION_LOCK_OPERATION_AND_RELEASE_FAILED",
+      primaryCode: acpErrorCode(primaryError) || null,
+      releaseCode: acpErrorCode(releaseError) || null,
+      primaryError,
+      releaseError,
+    });
+  }
+
+  async #connectionLockCommittedAmbiguity(
+    message: string,
+    movedPhase: ConnectionLockMovedPhase,
+    lockDir: string,
+    movedDir: string,
+    errors: unknown[],
+    durability: ConnectionLockRenameDurability,
+  ) {
+    const preservation = await this.#movedConnectionLockPreservedFailure(
+      lockDir,
+      movedDir,
+      movedPhase,
+      [...errors],
+    );
+    const preservationDetails = preservation as unknown as LooseRecord;
+    const causes = Array.isArray(preservationDetails.errors)
+      ? preservationDetails.errors as unknown[]
+      : [...errors];
+    const cause = causes[0];
+    const failure = causes.length > 1
+      ? new AggregateError(causes, message, { cause })
+      : new Error(message, cause === undefined ? undefined : { cause });
+    const failedPhases = durability.failures.map((failure) => failure.phase);
+    const phase = failedPhases.length === 1 ? failedPhases[0] : `${movedPhase}-durability`;
+    return Object.assign(failure, {
+      ...preservationDetails,
+      code: "ACP_CONNECTION_LOCK_RENAME_COMMITTED_DURABILITY_AMBIGUOUS",
+      committed: true,
+      renameCommitted: true,
+      removalCommitted: false,
+      canonicalRemovalCommitted: true,
+      phase,
+      committedPath: movedDir,
+      residualPath: movedDir,
+      durabilityVerified: false,
+      isolationDirectoryDurable: durability.isolationDirectoryDurable,
+      parentDirectoryDurable: durability.parentDirectoryDurable,
+      failedPhases,
+      durabilityFailures: durability.failures.map((failure) => ({
+        directory: failure.directory,
+        phase: failure.phase,
+        code: acpErrorCode(failure.error) || null,
+        message: failure.error instanceof Error ? failure.error.message : String(failure.error),
+      })),
+      errors: causes,
+      recoveryPaths: { canonical: lockDir, moved: movedDir },
+    });
+  }
+
+  async #movedConnectionLockPreservedFailure(
+    lockDir: string,
+    movedDir: string,
+    phase: ConnectionLockMovedPhase,
+    errors: unknown[],
+  ) {
+    let successorPreserved: boolean | null = false;
+    let successorGeneration: string | undefined;
+    let movedPathPresent: boolean | null = false;
+    try {
+      await lstat(movedDir);
+      movedPathPresent = true;
+    } catch (error) {
+      if (acpErrorCode(error) !== "ENOENT") {
+        movedPathPresent = null;
+        errors.push(error);
+      }
+    }
+    try {
+      const canonicalInfo = await lstat(lockDir);
+      successorPreserved = true;
+      if (canonicalInfo.isDirectory() && !canonicalInfo.isSymbolicLink()) {
+        try {
+          successorGeneration = (await this.#readConnectionLockOwner(lockDir, path.join(lockDir, "owner.json")))?.generation;
+        } catch (error) {
+          errors.push(error);
         }
-        await sleep(10);
+      }
+    } catch (error) {
+      if (acpErrorCode(error) !== "ENOENT") {
+        successorPreserved = null;
+        errors.push(error);
+      }
+    }
+    const quarantinePreserved = movedPathPresent;
+    return this.#connectionLockFailure(
+      successorPreserved && quarantinePreserved === true
+        ? `ACP connection lock ${phase} failed; successor and moved lock were preserved: ${lockDir}`
+        : quarantinePreserved === true
+          ? `ACP connection lock ${phase} failed; moved lock was preserved for recovery: ${lockDir}`
+          : `ACP connection lock ${phase} failed; moved lock state requires recovery: ${lockDir}`,
+      errors,
+      {
+        committed: true,
+        renameCommitted: true,
+        removalCommitted: false,
+        phase: `${phase}-preserved`,
+        successorPreserved,
+        quarantinePreserved,
+        ...(successorGeneration ? { successorGeneration } : {}),
+        residualPath: movedDir,
+        recoveryPaths: { canonical: lockDir, moved: movedDir },
+      },
+    );
+  }
+
+  async #finalizeMovedConnectionLock(
+    lockDir: string,
+    movedDir: string,
+    owner: ConnectionLockOwner | null,
+    canonicalIdentity: ConnectionLockGeneration,
+    phase: ConnectionLockMovedPhase,
+  ) {
+    const errors: unknown[] = [];
+    let movedIdentity: ConnectionLockGeneration | null = null;
+    try {
+      const movedInfo = await lstat(movedDir);
+      const observedMovedIdentity = connectionLockGeneration(movedInfo);
+      if (!movedInfo.isDirectory()
+        || movedInfo.isSymbolicLink()
+        || !sameConnectionLockAcrossRename(canonicalIdentity, observedMovedIdentity)) {
+        throw acpPoolError(
+          `ACP connection lock ${phase} moved an unexpected generation: ${movedDir}`,
+          "ACP_POOL_STATE_UNVERIFIED",
+        );
+      }
+      movedIdentity = observedMovedIdentity;
+    } catch (error) {
+      errors.push(error);
+    }
+
+    const durability = await this.#syncConnectionLockRenameDurability(
+      lockDir,
+      movedDir,
+      phase,
+    );
+    errors.push(...durability.failures.map((failure) => failure.error));
+
+    try {
+      await this.connectionLockFsHooks?.afterMove?.({ phase, lockDir, movedDir, owner });
+    } catch (error) {
+      errors.push(error);
+    }
+
+    if (movedIdentity) {
+      try {
+        await this.#assertMovedConnectionLockGeneration(
+          movedDir,
+          owner,
+          canonicalIdentity,
+          movedIdentity,
+          phase,
+        );
+      } catch (error) {
+        errors.push(error);
       }
     }
 
-    if (!acquired) throw new Error("ACP pool stopped");
-    try {
-      if (this.stopped) throw new Error("ACP pool stopped");
-      return await callback();
-    } finally {
-      await rm(lockDir, { recursive: true, force: true });
+    if (errors.length === 0) return;
+    if (!durability.durabilityVerified) {
+      throw await this.#connectionLockCommittedAmbiguity(
+        `ACP connection lock ${phase} rename is committed but directory durability is ambiguous: ${lockDir}`,
+        phase,
+        lockDir,
+        movedDir,
+        errors,
+        durability,
+      );
     }
+    throw await this.#movedConnectionLockPreservedFailure(
+      lockDir,
+      movedDir,
+      phase,
+      errors,
+    );
+  }
+
+  async #recoverConnectionLock(lockDir: string, ownerFile: string) {
+    let before;
+    try {
+      before = await lstat(lockDir);
+    } catch (error) {
+      if (acpErrorCode(error) === "ENOENT") return true;
+      throw error;
+    }
+    let owner;
+    try {
+      owner = await this.#readConnectionLockOwner(lockDir, ownerFile);
+    } catch (error) {
+      if (acpErrorCode(error) === "ACP_CONNECTION_LOCK_RETRY") return true;
+      throw error;
+    }
+    let info;
+    try {
+      info = await lstat(lockDir);
+    } catch (error) {
+      if (acpErrorCode(error) === "ENOENT") return true;
+      throw error;
+    }
+    const beforeIdentity = connectionLockGeneration(before);
+    const identity = connectionLockGeneration(info);
+    if (!sameConnectionLockGeneration(beforeIdentity, identity)) return true;
+    const incomplete = !owner && Date.now() - info.mtimeMs >= CONNECTION_LOCK_TTL_MS;
+    if (!incomplete && !this.#connectionLockOwnerDead(owner, lockDir)) return false;
+    const quarantine = `${lockDir}.stale-${owner?.generation || "incomplete"}-${randomUUID()}`;
+    await this.connectionLockFsHooks?.beforeMove?.({ phase: "recover", lockDir, owner });
+    try {
+      await this.#assertCanonicalConnectionLockGeneration(lockDir, ownerFile, owner, identity, "recover");
+    } catch (error) {
+      if (["ENOENT", "ACP_CONNECTION_LOCK_RETRY"].includes(acpErrorCode(error))) return true;
+      throw error;
+    }
+    try {
+      await rename(lockDir, quarantine);
+    } catch (error) {
+      if (acpErrorCode(error) === "ENOENT") return true;
+      throw error;
+    }
+    await this.#finalizeMovedConnectionLock(lockDir, quarantine, owner, identity, "recover");
+    // Keep the uniquely named, fully validated quarantine as durable recovery
+    // evidence; no later pathname operation can affect a successor.
+    return true;
+  }
+
+  async #releaseConnectionLock(lockDir: string, ownerFile: string, ownerToken: string, generation: string) {
+    const owner = await this.#readConnectionLockOwner(lockDir, ownerFile);
+    if (!owner
+      || owner.binding !== "bound"
+      || !owner.identity
+      || owner.ownerToken !== ownerToken
+      || owner.generation !== generation) return;
+    const identity = owner.identity;
+    const released = `${lockDir}.released-${generation}-${randomUUID()}`;
+    await this.connectionLockFsHooks?.beforeMove?.({ phase: "release", lockDir, owner });
+    try {
+      await this.#assertCanonicalConnectionLockGeneration(lockDir, ownerFile, owner, identity, "release");
+    } catch (error) {
+      if (["ENOENT", "ACP_CONNECTION_LOCK_RETRY"].includes(acpErrorCode(error))) return;
+      throw error;
+    }
+    try {
+      await rename(lockDir, released);
+    } catch (error) {
+      if (acpErrorCode(error) === "ENOENT") return;
+      throw error;
+    }
+    await this.#finalizeMovedConnectionLock(lockDir, released, owner, identity, "release");
+    // Preserve the exact released generation as evidence; see recovery above.
   }
 
   #leaseAlive(lease: ConnectionLease | null | undefined) {
-    if (!lease?.pid) return false;
+    if (!lease?.processIdentity) throw acpPoolError("ACP connection lease lacks process identity", "ACP_POOL_STATE_UNVERIFIED");
     try {
-      process.kill(Number(lease.pid), 0);
-      return true;
-    } catch {
-      return false;
+      return connectionOwnerAlive(lease.processIdentity);
+    } catch (error) {
+      throw acpPoolError(`ACP connection lease liveness is unverified: ${lease.filePath || lease.leaseId || "unknown"}`, "ACP_POOL_STATE_UNVERIFIED", error);
     }
   }
 
@@ -1693,30 +3449,132 @@ export class AcpPool {
     const leases: ConnectionLease[] = [];
     let files = [];
     try {
+      await assertSafeDirectoryNoFollow(dir, "ACP connection lease directory");
       files = await readdir(dir);
-    } catch {
-      return leases;
-    }
-
+      } catch (error) {
+        if (acpErrorCode(error) === "ENOENT") return leases;
+        throw error;
+      }
     for (const file of files) {
       if (!file.endsWith(".json")) continue;
       const filePath = path.join(dir, file);
-      try {
-        const lease = connectionLeaseFrom(JSON.parse(await readFile(filePath, "utf8")), filePath);
-        if (!lease) {
-          await rm(filePath, { force: true });
-          continue;
-        }
-        if (this.#leaseAlive(lease)) {
-          leases.push(lease);
-        } else {
-          await rm(filePath, { force: true });
-        }
-      } catch {
-        await rm(filePath, { force: true }).catch(() => null);
+      const raw = await readRegularJsonNoFollow(filePath, "ACP connection lease");
+      if (raw === null) continue;
+      const lease = connectionLeaseFrom(raw, filePath);
+      if (!lease?.leaseId || !lease.ownerToken || !lease.generation || !lease.providerKey) {
+        throw acpPoolError(`ACP connection lease is malformed: ${filePath}`, "ACP_POOL_STATE_UNVERIFIED");
+      }
+      if (this.#leaseAlive(lease)) {
+        leases.push(lease);
+      } else {
+        await this.#retireConnectionLeaseFile(lease);
       }
     }
     return leases;
+  }
+
+  async #retireConnectionLeaseFile(lease: ConnectionLease) {
+    if (!lease.filePath || !lease.ownerToken || !lease.generation || !lease.processIdentity) return;
+    const observed = await readRegularJsonNoFollowWithIdentity(lease.filePath, "ACP connection lease");
+    if (observed === null) return;
+    const current = connectionLeaseFrom(observed.value, lease.filePath);
+    if (!sameConnectionLeaseAuthority(lease, current)) {
+      throw acpPoolError(`ACP connection lease changed during retirement: ${lease.filePath}`, "ACP_POOL_STATE_UNVERIFIED");
+    }
+    const retiredPath = `${lease.filePath}.released-${lease.generation}-${randomUUID()}`;
+    await rename(lease.filePath, retiredPath);
+    const authorityFailure = (message: string, cause?: unknown) => Object.assign(acpPoolError(
+      message,
+      "ACP_POOL_STATE_UNVERIFIED",
+      cause,
+    ), {
+      committed: true,
+      releaseCommitted: true,
+      retirementCommitted: false,
+      renameCommitted: true,
+      authorityVerified: false,
+      phase: "lease-release-rename",
+      candidatePath: retiredPath,
+      recoveryPaths: { canonical: lease.filePath, candidate: retiredPath },
+    });
+    const revalidateEvidence = async (expectedIdentity: ConnectionLockGeneration) => {
+      const pinned = await readRegularJsonNoFollowWithIdentity(
+        retiredPath,
+        "ACP released connection lease",
+        { invokeAfterVerifiedRead: false },
+      );
+      const pinnedLease = connectionLeaseFrom(pinned?.value, retiredPath);
+      if (!pinned
+        || !sameConnectionLockGeneration(expectedIdentity, pinned.identity)
+        || !sameConnectionLeaseAuthority(lease, pinnedLease)) {
+        throw authorityFailure(`ACP connection lease retired evidence authority changed: ${retiredPath}`);
+      }
+      return pinned;
+    };
+    let movedInfo: Awaited<ReturnType<typeof lstat>>;
+    try {
+      movedInfo = await lstat(retiredPath);
+    } catch (error) {
+      throw authorityFailure(`ACP connection lease retired path cannot be inspected: ${retiredPath}`, error);
+    }
+    const movedIdentity = connectionLockGeneration(movedInfo);
+    if (!movedInfo.isFile()
+      || movedInfo.isSymbolicLink()
+      || !sameConnectionLockAcrossRename(observed.identity, movedIdentity)) {
+      throw authorityFailure(`ACP connection lease release moved an unexpected generation: ${retiredPath}`);
+    }
+    let moved: { value: unknown; identity: ConnectionLockGeneration };
+    try {
+      moved = await revalidateEvidence(movedIdentity);
+    } catch (error) {
+      if ((error as LooseRecord | undefined)?.authorityVerified === false) throw error;
+      throw authorityFailure(`ACP connection lease retired evidence cannot be validated: ${retiredPath}`, error);
+    }
+    let syncError: unknown = null;
+    try {
+      await this.#syncConnectionLockDirectory(path.dirname(lease.filePath), "lease-release-rename");
+    } catch (error) {
+      syncError = error;
+    }
+    let finalEvidence;
+    try {
+      finalEvidence = await revalidateEvidence(moved.identity);
+    } catch (error) {
+      if ((error as LooseRecord | undefined)?.authorityVerified === false) throw error;
+      throw authorityFailure(
+        `ACP connection lease retired evidence could not be revalidated: ${retiredPath}`,
+        error,
+      );
+    }
+    if (syncError) {
+      throw Object.assign(acpPoolError(
+        `ACP connection lease retirement rename committed with ambiguous directory durability: ${lease.filePath}`,
+        "ACP_CONNECTION_LEASE_RENAME_COMMITTED_DURABILITY_AMBIGUOUS",
+        syncError,
+      ), {
+        committed: true,
+        releaseCommitted: true,
+        retirementCommitted: true,
+        renameCommitted: true,
+        authorityVerified: true,
+        phase: "lease-release-rename",
+        committedPath: retiredPath,
+        evidencePath: retiredPath,
+        residualPath: retiredPath,
+        evidenceIdentity: finalEvidence.identity,
+        recoveryPaths: { canonical: lease.filePath, evidence: retiredPath },
+      });
+    }
+  }
+
+  async #readConnectionLeaseFile(filePath: string) {
+    const raw = await readRegularJsonNoFollow(filePath, "ACP connection lease");
+    if (raw === null) return null;
+    const lease = connectionLeaseFrom(raw, filePath);
+    if (!lease?.leaseId || !lease.ownerToken || !lease.generation || !lease.providerKey) {
+      throw acpPoolError(`ACP connection lease is malformed: ${filePath}`, "ACP_POOL_STATE_UNVERIFIED");
+    }
+    return lease;
   }
 
   async #tryAcquireConnectionLease(agent: string, providerKey: string, options: PoolRequestOptions = {}) {
@@ -1728,9 +3586,14 @@ export class AcpPool {
         return null;
       }
 
+      const processIdentity = captureCurrentExactProcessIdentity();
+      if (!processIdentity) throw acpPoolError("ACP connection lease process identity unavailable", "ACP_POOL_STATE_UNVERIFIED");
       const lease = {
         leaseId: `${Date.now()}-${process.pid}-${++this._seq}`,
+        ownerToken: randomUUID(),
+        generation: randomUUID(),
         pid: process.pid,
+        processIdentity,
         agent,
         providerKey,
         phase: options.phase || null,
@@ -1740,17 +3603,32 @@ export class AcpPool {
         acquiredAt: new Date().toISOString(),
       };
       const filePath = path.join(this.#connectionLeasesDir(), `${lease.leaseId}.json`);
-      await writeFile(filePath, `${JSON.stringify(lease, null, 2)}\n`, "utf8");
-      return { ...lease, filePath };
-    });
+      await writeJsonDurable(filePath, lease, {
+        operation: "connection-lease",
+        fault: this.connectionLockFsHooks?.durableWriteFault,
+      });
+      const published = await this.#readConnectionLeaseFile(filePath);
+      if (!published
+        || published.ownerToken !== lease.ownerToken
+        || published.generation !== lease.generation
+        || !samePersistedProcessIdentity(published.processIdentity, processIdentity)) {
+        throw acpPoolError(`ACP connection lease commit is ambiguous: ${filePath}`, "ACP_POOL_STATE_UNVERIFIED");
+      }
+      return published;
+    }, options.signal);
   }
 
   async #acquireConnectionLease(agent: string, providerKey: string, options: PoolRequestOptions = {}) {
-    const timeoutMs = numericOption(options.waitTimeoutMs, DEFAULT_POOL_WAIT_TIMEOUT_MS);
+    const timeoutMs = this.#poolWaitTimeoutMs(options.waitTimeoutMs);
     const start = Date.now();
     let lastWarnAt = start;
     while (!this.stopped) {
+      throwIfAborted(options.signal);
       const lease = await this.#tryAcquireConnectionLease(agent, providerKey, options);
+      if (options.signal?.aborted) {
+        await this.#releaseConnectionLease(lease);
+        throw abortErrorForSignal(options.signal);
+      }
       if (lease) return lease;
       const elapsed = Date.now() - start;
       if (timeoutMs > 0 && elapsed >= timeoutMs) {
@@ -1764,27 +3642,25 @@ export class AcpPool {
         );
         lastWarnAt = Date.now();
       }
-      await sleep(this.connectionPollMs);
+      await sleep(this.connectionPollMs, options.signal);
     }
     throw new Error("ACP pool stopped");
   }
 
   async #countProviderLeases(providerKey: string) {
-    try {
-      const leases = await this.#withConnectionLock(() => this.#listLiveConnectionLeasesLocked());
-      return leases.filter((lease) => lease.providerKey === providerKey).length;
-    } catch {
-      return -1;
-    }
+    const leases = await this.#withConnectionLock(() => this.#listLiveConnectionLeasesLocked());
+    return leases.filter((lease) => lease.providerKey === providerKey).length;
   }
 
   async #releaseConnectionLease(lease: ConnectionLease | null | undefined) {
     if (!lease?.filePath) return;
-    await rm(lease.filePath, { force: true }).catch(() => null);
+    await this.#withConnectionLock(async () => {
+      await this.#retireConnectionLeaseFile(lease);
+    }, undefined, true);
   }
 
   #executionEnv(agent: string, options: PoolRequestOptions = {}): EnvRecord {
-    const projectRuntimeRoot = options.dataRoot || this.env.CPB_PROJECT_RUNTIME_ROOT;
+    const projectRuntimeRoot = this.#requestDataRoot(options);
     return buildChildEnv(
       envForAgent(agent, this.env, options.variant),
       {
@@ -1794,6 +3670,7 @@ export class AcpPool {
         ...(projectRuntimeRoot ? { CPB_PROJECT_RUNTIME_ROOT: projectRuntimeRoot } : {}),
         ...acpMetadataEnv(options),
         ...(isRecord(options.env) ? options.env as EnvRecord : {}),
+        ...(projectRuntimeRoot ? { CPB_PROJECT_RUNTIME_ROOT: projectRuntimeRoot } : {}),
         ...(typeof options.cwd === "string" && options.cwd ? { CPB_PROJECT_PATH_OVERRIDE: options.cwd } : {}),
       },
       { agent },
@@ -1806,7 +3683,7 @@ export class AcpPool {
    */
   /**
    * Return the effective connection limit for a provider key.
-   * Matches the internal #providerConnectionLimit() resolver.
+   * Matches the internal provider-limit resolver used by lease acquisition.
    */
   getProviderLimit(providerKey: string) {
     return this.#providerConnectionLimit(providerKey);
@@ -1828,25 +3705,24 @@ export class AcpPool {
   }
 
   async connectionLeaseStatus() {
-    const dir = this.#connectionLeasesDir();
     const counts: Record<string, number> = {};
-    let files = [];
     try {
-      files = await readdir(dir);
-    } catch {
-      return { total: 0, providers: {} };
-    }
-    for (const file of files) {
-      if (!file.endsWith(".json")) continue;
-      try {
-        const lease = JSON.parse(await readFile(path.join(dir, file), "utf8"));
-        if (!this.#leaseAlive(lease)) {
-          await rm(path.join(dir, file), { force: true }).catch(() => null);
-          continue;
-        }
+      const leases = await this.#withConnectionLock(() => this.#listLiveConnectionLeasesLocked());
+      for (const lease of leases) {
         const key = lease.providerKey || "unknown";
         counts[key] = (counts[key] || 0) + 1;
-      } catch {}
+      }
+    } catch (error) {
+      if (acpErrorCode(error) === "ENOENT") {
+        return { total: 0, providers: {} };
+      }
+      if (acpErrorCode(error) === "ACP_POOL_STATE_UNVERIFIED" || acpErrorCode(error) === "ACP_POOL_STATE_UNSAFE") {
+        throw error;
+      }
+      if (this.stopped) {
+        return { total: 0, providers: {} };
+      }
+      throw error;
     }
     const total = Object.values(counts).reduce((a, b) => a + Number(b), 0);
     return { total, providers: counts };
@@ -1904,11 +3780,12 @@ export class AcpPool {
       const desc = reg?.getDescriptor(agent);
       if (desc?.lifecycle === "cached") {
         await saveSessionId(this.cpbRoot, agent, session.sessionId, {
+          dataRoot: this.#requestDataRoot(options),
           ...(session.conversationKey ? { conversationKey: session.conversationKey } : {}),
         }).catch(() => null);
       }
     }
-    const persistentKey = this.#conversationKey(options)
+    const persistentKey = this.#conversationKey(options) || this.#requestDataRoot(options)
       ? this.#persistentClientKey(agent, options)
       : agent;
     await this.#closePersistentClient(persistentKey);
@@ -1929,8 +3806,19 @@ export class AcpPool {
     if (!this.runner) this.lastSpawnAt.set(agent, Date.now());
   }
 
-  async execute(agent: string, prompt: string, cwd = this.cpbRoot, timeoutMs = DEFAULT_TIMEOUT_MS, options: PoolRequestOptions = {}) {
+  #defaultTimeoutMs() {
+    return numericOption(this.env.CPB_ACP_POOL_TIMEOUT_MS, 0);
+  }
+
+  #poolWaitTimeoutMs(value: unknown = undefined) {
+    return value === undefined || value === null || value === ""
+      ? resolvePoolWaitTimeoutMs(this.env.CPB_ACP_POOL_WAIT_TIMEOUT_MS ?? "")
+      : numericOption(value, 0);
+  }
+
+  async execute(agent: string, prompt: string, cwd = this.cpbRoot, timeoutMs = this.#defaultTimeoutMs(), options: PoolRequestOptions = {}) {
     const scopedOptions: PoolRequestOptions = { ...options, cwd };
+    throwIfAborted(scopedOptions.signal);
     if (options.bypass) {
       const output = await this.#run(agent, prompt, cwd, timeoutMs, scopedOptions);
       return { output, providerKey: null, agent, variant: null };
@@ -1951,17 +3839,18 @@ export class AcpPool {
     }
 
     const session = await this.acquire(agent, scopedOptions);
-    const lifecycle = await this.#prepareSession(agent, scopedOptions);
-    if (session.requestId) {
-      const entry = this.liveRequests.get(session.requestId);
-      if (entry) {
-        const promptText = String(prompt);
-        entry.promptSnippet = promptText.slice(0, 80);
-        entry.promptBytes = Buffer.byteLength(promptText, "utf8");
-        if (scopedOptions.phase) entry.phase = scopedOptions.phase;
-      }
-    }
     try {
+      throwIfAborted(scopedOptions.signal);
+      const lifecycle = await this.#prepareSession(agent, scopedOptions);
+      if (session.requestId) {
+        const entry = this.liveRequests.get(session.requestId);
+        if (entry) {
+          const promptText = String(prompt);
+          entry.promptSnippet = promptText.slice(0, 80);
+          entry.promptBytes = Buffer.byteLength(promptText, "utf8");
+          if (scopedOptions.phase) entry.phase = scopedOptions.phase;
+        }
+      }
       if (this.runner || !this.persistentProcesses) this.#noteSpawn(agent);
       const output = await this.#run(agent, prompt, cwd, timeoutMs, scopedOptions);
       const usage = await readAcpUsageFromAudit(acpAuditFile, {
@@ -1989,6 +3878,7 @@ export class AcpPool {
       });
       if (usage) execError.usage = usage;
       if (acpAuditFile) execError.acpAuditFile = acpAuditFile;
+      if (isAbortError(execError)) throw execError;
       this.errorCount.set(agent, (this.errorCount.get(agent) || 0) + 1);
 
       // Classify via provider-quota (replaces old is429 + noteRateLimit)
@@ -2049,10 +3939,15 @@ export class AcpPool {
   }
 
   async #run(agent: string, prompt: string, cwd: string, timeoutMs: number, options: PoolRequestOptions = {}) {
+    throwIfAborted(options.signal);
     if (this.runner) {
       const lease = await this.#acquireConnectionLease(agent, this.#providerKeyForRequest(agent, options), options);
       try {
-        return await this.runner({ agent, prompt, cwd, timeoutMs });
+        throwIfAborted(options.signal);
+        return await raceWithAbort(
+          this.runner({ agent, prompt, cwd, timeoutMs, signal: options.signal }),
+          options.signal,
+        );
       } finally {
         await this.#releaseConnectionLease(lease);
       }
@@ -2076,6 +3971,7 @@ export class AcpPool {
       jobId: options.jobId || null,
       phase: options.phase || null,
       role: options.role || null,
+      ...(options.env?.CPB_PROVIDER_PREFLIGHT_NONCE ? { correlationNonce: options.env.CPB_PROVIDER_PREFLIGHT_NONCE } : {}),
       ...event,
     })}\n`, "utf8");
   }
@@ -2104,28 +4000,51 @@ export class AcpPool {
     const phase = String(options.phase || "");
     const role = String(options.role || "");
     const planning = phase === "plan";
+    const writableVerificationReplay = (
+      phase === "verify" || phase === "adversarial_verify"
+    ) && (
+      env.CPB_VERIFIER_REPLAY_WORKSPACE_WRITE === "1"
+      || env.CPB_CODEX_VERIFIER_WORKSPACE_WRITE === "1"
+    );
+    const validationPhase = (phase === "verify" || phase === "review")
+      && !writableVerificationReplay;
+    const strictReadOnlyPhase = Boolean(phase)
+      && !planning
+      && phase !== "execute"
+      && phase !== "remediate"
+      && !validationPhase
+      && !writableVerificationReplay;
+    const readOnlyPhase = strictReadOnlyPhase || validationPhase || writableVerificationReplay;
+    const providerLivePreflight = Boolean(options.env?.CPB_PROVIDER_PREFLIGHT_NONCE);
     const runtimeGuards = resolveAcpRuntimeGuards(env);
-    const planningJsonSchema = planning ? claudePlanningJsonSchemaForRole(role) : null;
-    // Claude-compatible providers count hidden thinking and the structured
-    // answer against the same output ceiling. Reserve 8k tokens for the JSON
-    // result so a valid plan is not truncated after consuming its thinking
-    // budget. The compatible endpoint used here advertises a 32k maximum.
-    const defaultPlanningThinkingTokens = role.startsWith("critic_") ? 24_000 : 12_000;
-    const defaultPlanningOutputTokens = Math.min(32_000, defaultPlanningThinkingTokens + 8_000);
-    if (planning) {
-      if (!env.MAX_THINKING_TOKENS) env.MAX_THINKING_TOKENS = String(defaultPlanningThinkingTokens);
-      if (!env.CLAUDE_CODE_MAX_OUTPUT_TOKENS) {
-        env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(defaultPlanningOutputTokens);
-      }
+    const planningJsonSchema = planning && !providerLivePreflight
+      ? claudePlanningJsonSchemaForRole(role)
+      : null;
+    // CPB must not cap normal planning output. Explicit CPB_CLAUDE_PLAN_MAX_*
+    // values remain available for deliberately bounded probes and tests.
+    const configuredPlanningThinkingTokens = positiveIntOption(env.CPB_CLAUDE_PLAN_MAX_THINKING_TOKENS, 0);
+    const configuredPlanningOutputTokens = positiveIntOption(env.CPB_CLAUDE_PLAN_MAX_TEXT_CHARS, 0);
+    if (planning && configuredPlanningThinkingTokens > 0 && !env.MAX_THINKING_TOKENS) {
+      env.MAX_THINKING_TOKENS = String(configuredPlanningThinkingTokens);
+    }
+    if (planning && configuredPlanningOutputTokens > 0 && !env.CLAUDE_CODE_MAX_OUTPUT_TOKENS) {
+      env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(configuredPlanningOutputTokens);
     }
     const pathGuardScript = path.resolve(__dirname, "../../../scripts/claude-path-guard.js");
-    const pathGuardWriteRoots = String(env.CPB_ACP_WRITE_ALLOW || "")
+    const configuredPathGuardWriteRoots = String(env.CPB_ACP_WRITE_ALLOW || "")
       .split(",")
       .map((entry) => entry.trim())
       .filter((entry) => entry && entry !== "__cpb_no_worktree_writes__")
       .map((entry) => entry.includes("*") ? entry.slice(0, entry.indexOf("*")) : entry)
       .map((entry) => entry.replace(/[\\/]+$/, ""))
       .filter(Boolean);
+    const strictPhaseOutputRoot = strictReadOnlyPhase && homeDataRoot
+      ? path.join(homeDataRoot, "phase-io", phase)
+      : null;
+    let pathGuardWriteRoots = configuredPathGuardWriteRoots;
+    if (strictReadOnlyPhase) {
+      pathGuardWriteRoots = strictPhaseOutputRoot ? [strictPhaseOutputRoot] : [];
+    }
     const filesystemBoundary = parseAgentFilesystemBoundary(env.CPB_AGENT_FS_BOUNDARY_JSON);
     const linkedGitMetadataReadRoots = filesystemBoundary
       ? await resolveLinkedGitMetadataReadRoots(executionCwd)
@@ -2140,6 +4059,7 @@ export class AcpPool {
         ].filter(Boolean))
       : null;
     const planningRepositoryDiscovery = planning
+      && !providerLivePreflight
       && Boolean(boundarySettings)
       && (planningJsonSchema === null || /^planner_[ab](?:_|$)/.test(role));
     const planningMaxTurns = planning
@@ -2195,10 +4115,131 @@ export class AcpPool {
         allowUnsandboxedCommands: false,
       },
     });
+    const nativeVerificationReplaySettings = JSON.stringify({
+      permissions: {
+        allow: ["Read", "Glob", "Grep", ...(sandboxedBashEnabled ? ["Bash"] : [])],
+        deny: [
+          ...(!sandboxedBashEnabled ? ["Bash"] : []),
+          "Edit", "Write", "MultiEdit", "WebFetch", "WebSearch", "NotebookEdit",
+          ...(boundarySettings?.permissionDeny || []),
+        ],
+      },
+      hooks: {
+        PreToolUse: [{
+          matcher: "Read|Bash",
+          hooks: [{
+            type: "command",
+            command: pathGuardCommand,
+            timeout: 5,
+          }],
+        }],
+      },
+      sandbox: boundarySettings ? {
+        enabled: true,
+        failIfUnavailable: true,
+        autoAllowBashIfSandboxed: true,
+        allowUnsandboxedCommands: false,
+        excludedCommands: [],
+        filesystem: {
+          // Canonical tests may write build products in this disposable replay.
+          // Direct mutation tools stay denied and candidate drift is checked
+          // after the verifier returns.
+          allowWrite: [
+            executionCwd,
+            String(env.HOME || ""),
+            String(env.TMPDIR || env.TMP || env.TEMP || ""),
+            ...pathGuardWriteRoots,
+          ].filter(Boolean),
+          denyRead: boundarySettings.denyRead,
+          allowRead: boundarySettings.allowRead,
+        },
+        network: { allowedDomains: [] },
+      } : {
+        enabled: false,
+        allowUnsandboxedCommands: false,
+      },
+    });
+    const validationWriteEnabled = phase === "verify" && Boolean(boundarySettings);
+    const nativeValidationSettings = JSON.stringify({
+      permissions: {
+        allow: [
+          "Read", "Glob", "Grep",
+          ...(validationWriteEnabled ? ["Write"] : []),
+          ...(sandboxedBashEnabled ? ["Bash"] : []),
+        ],
+        deny: [
+          ...(!sandboxedBashEnabled ? ["Bash"] : []),
+          "Edit", "MultiEdit",
+          ...(!validationWriteEnabled ? ["Write"] : []),
+          "WebFetch", "WebSearch", "NotebookEdit",
+          ...(boundarySettings?.permissionDeny || []),
+        ],
+      },
+      hooks: {
+        PreToolUse: [{
+          matcher: "Read|Write|Bash",
+          hooks: [{
+            type: "command",
+            command: pathGuardCommand,
+            timeout: 5,
+          }],
+        }],
+      },
+      sandbox: boundarySettings ? {
+        enabled: true,
+        failIfUnavailable: true,
+        autoAllowBashIfSandboxed: true,
+        allowUnsandboxedCommands: false,
+        excludedCommands: [],
+        filesystem: {
+          // Validation may write its phase-owned verdict and isolated temp
+          // files, but it cannot write the candidate checkout.
+          allowWrite: [
+            String(env.HOME || ""),
+            String(env.TMPDIR || env.TMP || env.TEMP || ""),
+            ...pathGuardWriteRoots,
+          ].filter(Boolean),
+          denyRead: boundarySettings.denyRead,
+          allowRead: boundarySettings.allowRead,
+        },
+        network: { allowedDomains: [] },
+      } : {
+        enabled: false,
+        allowUnsandboxedCommands: false,
+      },
+    });
+    const nativeReadOnlySettings = JSON.stringify({
+      permissions: {
+        allow: ["Read", "Glob", "Grep"],
+        deny: ["Bash", "Edit", "Write", "MultiEdit", "WebFetch", "WebSearch", "NotebookEdit"],
+      },
+      sandbox: boundarySettings ? {
+        enabled: true,
+        failIfUnavailable: true,
+        autoAllowBashIfSandboxed: false,
+        allowUnsandboxedCommands: false,
+        excludedCommands: [],
+        filesystem: {
+          // Read-only phases may persist their structured phase artifact, but
+          // provider tools cannot write into the candidate worktree.
+          allowWrite: [
+            String(env.HOME || ""),
+            String(env.TMPDIR || env.TMP || env.TEMP || ""),
+            ...pathGuardWriteRoots,
+          ].filter(Boolean),
+          denyRead: boundarySettings.denyRead,
+          allowRead: boundarySettings.allowRead,
+        },
+        network: { allowedDomains: [] },
+      } : {
+        enabled: false,
+        allowUnsandboxedCommands: false,
+      },
+    });
     const nativePlanningSettings = JSON.stringify({
       permissions: {
         allow: ["Read", "Glob", "Grep"],
-        deny: ["Bash", "Edit", "Write", "WebFetch", "WebSearch", "NotebookEdit"],
+        deny: ["Bash", "Edit", "Write", "MultiEdit", "WebFetch", "WebSearch", "NotebookEdit"],
       },
       sandbox: boundarySettings ? {
         enabled: true,
@@ -2222,6 +4263,94 @@ export class AcpPool {
         allowUnsandboxedCommands: false,
       },
     });
+    const nativeLivePreflightSettings = JSON.stringify({
+      permissions: {
+        allow: [],
+        deny: ["Read", "Edit", "Write", "MultiEdit", "Glob", "Grep", "Bash", "WebFetch", "WebSearch", "NotebookEdit"],
+      },
+      sandbox: {
+        enabled: false,
+        allowUnsandboxedCommands: false,
+      },
+    });
+    const defaultExecutionTools = [
+      "Read", "Edit", "Write", "Glob", "Grep",
+      ...(sandboxedBashEnabled ? ["Bash"] : []),
+    ].join(",");
+    const verificationReplayTools = [
+      "Read", "Glob", "Grep",
+      ...(sandboxedBashEnabled ? ["Bash"] : []),
+    ].join(",");
+    const validationTools = [
+      "Read",
+      ...(validationWriteEnabled ? ["Write"] : []),
+      "Glob",
+      "Grep",
+      ...(sandboxedBashEnabled ? ["Bash"] : []),
+    ].join(",");
+    let runtimeSettings: string | null = null;
+    let runtimeTools: string | null = null;
+    if (providerLivePreflight) {
+      runtimeSettings = nativeLivePreflightSettings;
+      runtimeTools = "";
+    } else if (!planning) {
+      if (strictReadOnlyPhase) {
+        runtimeSettings = nativeReadOnlySettings;
+        runtimeTools = "Read,Glob,Grep";
+      } else if (writableVerificationReplay) {
+        runtimeSettings = nativeVerificationReplaySettings;
+        runtimeTools = verificationReplayTools;
+      } else if (validationPhase) {
+        runtimeSettings = nativeValidationSettings;
+        runtimeTools = validationTools;
+      } else {
+        runtimeSettings = nativeExecutionSettings;
+        runtimeTools = defaultExecutionTools;
+      }
+    }
+    const runtimeCliArgs = [];
+    if (runtimeSettings !== null && runtimeTools !== null) {
+      runtimeCliArgs.push(
+        "--settings", runtimeSettings,
+        "--setting-sources", "user",
+        "--strict-mcp-config", "--mcp-config", "{\"mcpServers\":{}}",
+        "--disable-slash-commands",
+        "--tools", runtimeTools,
+      );
+    }
+    let planningContractTools = ["StructuredOutput"];
+    if (providerLivePreflight) {
+      planningContractTools = [];
+    } else if (planningRepositoryDiscovery) {
+      planningContractTools = ["Read", "Glob", "Grep", "StructuredOutput"];
+    }
+    const livePreflightPolicy = providerLivePreflight ? {
+      terminalPolicy: "deny",
+      permissionRequests: "reject",
+      webToolsDisabled: true,
+      tools: [],
+      mcpServers: [],
+      slashCommandsDisabled: true,
+      settings: {
+        permissions: {
+          allow: [],
+          deny: ["Bash", "Edit", "Glob", "Grep", "MultiEdit", "NotebookEdit", "Read", "WebFetch", "WebSearch", "Write"],
+        },
+        strictMcpConfig: true,
+      },
+    } : null;
+    let outerSandboxMode = "claude-native-permissions";
+    if (planningRepositoryDiscovery) {
+      outerSandboxMode = "claude-native-readonly-plan";
+    } else if (planning) {
+      outerSandboxMode = "zero-repository-tool-plan";
+    } else if (strictReadOnlyPhase) {
+      outerSandboxMode = "claude-native-readonly";
+    } else if (writableVerificationReplay) {
+      outerSandboxMode = "claude-native-verification-replay";
+    } else if (validationPhase) {
+      outerSandboxMode = "claude-native-validation";
+    }
     const args = [
       "-p",
       ...(planning ? ["--bare"] : []),
@@ -2233,13 +4362,7 @@ export class AcpPool {
       "--no-session-persistence",
       // Keep the user's provider configuration, but ignore repository-local
       // settings so an untrusted task cannot widen the explicit deny rules.
-      ...(!planning ? [
-        "--settings", nativeExecutionSettings,
-        "--setting-sources", "user",
-        "--strict-mcp-config", "--mcp-config", "{\"mcpServers\":{}}",
-        "--disable-slash-commands",
-        "--tools", sandboxedBashEnabled ? "Read,Edit,Write,Glob,Grep,Bash" : "Read,Edit,Write,Glob,Grep",
-      ] : []),
+      ...runtimeCliArgs,
       ...(planningRepositoryDiscovery ? [
         "--settings", nativePlanningSettings,
         "--setting-sources", "user",
@@ -2247,7 +4370,7 @@ export class AcpPool {
         "--disable-slash-commands",
         "--tools", "Read,Glob,Grep",
       ] : planning ? ["--tools", ""] : []),
-      ...(planning ? ["--max-turns", String(planningMaxTurns)] : []),
+      ...(planning && planningMaxTurns > 0 ? ["--max-turns", String(planningMaxTurns)] : []),
       // Claude-compatible planning providers do not all honor prose-only
       // instructions to return one bounded JSON object. Native structured
       // output keeps the transport contract machine-enforced while the
@@ -2282,15 +4405,12 @@ export class AcpPool {
         structuredOutput: Boolean(planningJsonSchema),
         repositoryDiscovery: planningRepositoryDiscovery,
         maxTurns: planningMaxTurns,
-        tools: planningRepositoryDiscovery ? ["Read", "Glob", "Grep", "StructuredOutput"] : ["StructuredOutput"],
+        tools: planningContractTools,
       } : null,
+      livePreflightPolicy,
       executionPolicy: {
-        outerSandboxMode: planningRepositoryDiscovery
-          ? "claude-native-readonly-plan"
-          : planning
-            ? "zero-repository-tool-plan"
-            : "claude-native-permissions",
-        readOnly: planning,
+        outerSandboxMode,
+        readOnly: planning || readOnlyPhase,
         sourceBoundary: filesystemBoundary ? {
           schemaVersion: filesystemBoundary.schemaVersion,
           dependencyReadRootCount: filesystemBoundary.dependencyReadRoots.length,
@@ -2306,15 +4426,17 @@ export class AcpPool {
       // No await is allowed between this gate and the synchronous Promise
       // executor adding the child to oneShotChildren. That makes stop() either
       // win before spawn or observe and terminate the spawned child.
+      throwIfAborted(options.signal);
       if (this.stopped) throw new Error("ACP pool stopped");
       return await new Promise<string>((resolve, reject) => {
         const child = spawn(launch.command, launch.args, {
           cwd: executionCwd,
-          env,
+          env: childEnvWithoutControlPlaneAuditPath(env),
           detached: process.platform !== "win32",
           stdio: ["pipe", "pipe", "pipe"],
         }) as SpawnedChild;
         this.oneShotChildren.add(child);
+        captureSpawnedChildIdentity(child);
         let stdout = "";
         let stdoutLineBuffer = "";
         let stderr = "";
@@ -2335,13 +4457,14 @@ export class AcpPool {
         let executeNoEditSatisfied = false;
         let executeNoEditIdleTimer: NodeJS.Timeout | null = null;
         let auditUpdateEvents = 0;
-        const configuredTextBudget = Number(env.CPB_CLAUDE_PLAN_MAX_TEXT_CHARS || 32_000);
-        const configuredThinkingBudget = Number(env.CPB_CLAUDE_PLAN_MAX_THINKING_TOKENS || defaultPlanningThinkingTokens);
+        let abortCleanup: (() => void) | null = null;
+        const configuredTextBudget = Number(env.CPB_CLAUDE_PLAN_MAX_TEXT_CHARS || 0);
+        const configuredThinkingBudget = Number(env.CPB_CLAUDE_PLAN_MAX_THINKING_TOKENS || 0);
         const maxGeneratedTextChars = planning
-          ? Math.max(1_000, Number.isFinite(configuredTextBudget) ? configuredTextBudget : 32_000)
+          ? Math.max(0, Number.isFinite(configuredTextBudget) ? configuredTextBudget : 0)
           : 0;
         const maxGeneratedThinkingTokens = planning
-          ? Math.max(1_000, Number.isFinite(configuredThinkingBudget) ? configuredThinkingBudget : defaultPlanningThinkingTokens)
+          ? Math.max(0, Number.isFinite(configuredThinkingBudget) ? configuredThinkingBudget : 0)
           : 0;
         const configuredInternalRetries = Number(env.CPB_CLAUDE_MAX_INTERNAL_API_RETRIES || 3);
         const maxInternalApiRetries = Math.max(1, Number.isFinite(configuredInternalRetries) ? configuredInternalRetries : 3);
@@ -2354,9 +4477,11 @@ export class AcpPool {
             if (settled) return;
             settled = true;
             if (executeNoEditIdleTimer) clearTimeout(executeNoEditIdleTimer);
-            terminateChild(child).finally(() => reject(new Error(
-              `${agent} CLI stream idle timed out after ${idleTimeoutMs}ms without output`,
-            )));
+            rejectAfterCleanup(
+              reject,
+              new Error(`${agent} CLI stream idle timed out after ${idleTimeoutMs}ms without output`),
+              [terminateChild(child)],
+            );
           }, idleTimeoutMs);
           idleTimer.unref();
         };
@@ -2366,7 +4491,11 @@ export class AcpPool {
             settled = true;
             if (idleTimer) clearTimeout(idleTimer);
             if (executeNoEditIdleTimer) clearTimeout(executeNoEditIdleTimer);
-            terminateChild(child).finally(() => reject(new Error(`${agent} timed out after ${timeoutMs}ms`)));
+            rejectAfterCleanup(
+              reject,
+              new Error(`${agent} timed out after ${timeoutMs}ms`),
+              [terminateChild(child)],
+            );
           }, timeoutMs)
           : null;
         if (timer) timer.unref();
@@ -2374,16 +4503,14 @@ export class AcpPool {
           if (timer) clearTimeout(timer);
           if (idleTimer) clearTimeout(idleTimer);
           if (executeNoEditIdleTimer) clearTimeout(executeNoEditIdleTimer);
+          abortCleanup?.();
+          abortCleanup = null;
           idleTimer = null;
           executeNoEditIdleTimer = null;
         };
         const rejectAfterFailureCleanup = (error: Error, audit: Promise<unknown>) => {
           clearExecutionTimers();
-          Promise.all([
-            audit.catch(() => null),
-            streamWriteChain.catch(() => null),
-            terminateChild(child).catch(() => null),
-          ]).then(() => reject(error), () => reject(error));
+          rejectAfterCleanup(reject, error, [audit, streamWriteChain, terminateChild(child)]);
         };
         const failOutputBudget = () => {
           if (settled) return;
@@ -2550,7 +4677,7 @@ export class AcpPool {
               }));
               rejectAfterFailureCleanup(new Error(reason), audit);
             } else {
-              void terminateChild(child).finally(() => reject(new Error(reason)));
+              rejectAfterCleanup(reject, new Error(reason), [terminateChild(child)]);
             }
             return;
           }
@@ -2687,6 +4814,16 @@ export class AcpPool {
             // Stream diagnostics are allowed; only structured result lines end the turn.
           }
         };
+        abortCleanup = addAbortHandler(options.signal, () => {
+          if (settled) return;
+          settled = true;
+          clearExecutionTimers();
+          rejectAfterCleanup(
+            reject,
+            abortErrorForSignal(options.signal),
+            [streamWriteChain, auditWriteChain, terminateChild(child)],
+          );
+        });
         resetIdleTimer();
         child.stdout.on("data", (chunk) => {
           const text = String(chunk);
@@ -2720,7 +4857,7 @@ export class AcpPool {
           if (settled) return;
           settled = true;
           clearExecutionTimers();
-          void terminateChild(child).finally(() => reject(error));
+          rejectAfterCleanup(reject, error, [terminateChild(child)]);
         });
         child.on("close", (code, signal) => {
           this.oneShotChildren.delete(child);
@@ -2763,6 +4900,7 @@ export class AcpPool {
       await mkdir(path.join(env.CPB_PROJECT_RUNTIME_ROOT, "acp-audit"), { recursive: true });
     }
     try {
+      throwIfAborted(options.signal);
       return await new Promise<string>((resolve, reject) => {
         const launch = customClient
           ? buildAgentSandboxLaunch(command, args, { env, cwd: this.cpbRoot })
@@ -2774,9 +4912,16 @@ export class AcpPool {
           stdio: ["pipe", "pipe", "pipe"],
         }) as SpawnedChild;
         this.oneShotChildren.add(child);
+        captureSpawnedChildIdentity(child);
         let stdout = "";
         let stderr = "";
         let settled = false;
+        let abortCleanup: (() => void) | null = null;
+        const cleanup = () => {
+          if (timer) clearTimeout(timer);
+          abortCleanup?.();
+          abortCleanup = null;
+        };
         child.once("close", () => {
           this.oneShotChildren.delete(child);
         });
@@ -2784,12 +4929,21 @@ export class AcpPool {
           ? setTimeout(() => {
             if (settled) return;
             settled = true;
-            terminateChild(child).finally(() => {
-              reject(new Error(`${agent} timed out after ${timeoutMs}ms`));
-            });
+            cleanup();
+            rejectAfterCleanup(
+              reject,
+              new Error(`${agent} timed out after ${timeoutMs}ms`),
+              [terminateChild(child)],
+            );
           }, timeoutMs + ONE_SHOT_CLOSE_GRACE_MS)
           : null;
         if (timer) timer.unref();
+        abortCleanup = addAbortHandler(options.signal, () => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          rejectAfterCleanup(reject, abortErrorForSignal(options.signal), [terminateChild(child)]);
+        });
         child.stdout.on("data", (chunk) => { stdout += chunk; });
         child.stderr.on("data", (chunk) => {
           stderr += chunk;
@@ -2798,13 +4952,13 @@ export class AcpPool {
         child.on("error", (error) => {
           if (settled) return;
           settled = true;
-          if (timer) clearTimeout(timer);
-          reject(error);
+          cleanup();
+          rejectAfterCleanup(reject, error, [terminateChild(child)]);
         });
         child.on("close", (code, signal) => {
           if (settled) return;
           settled = true;
-          if (timer) clearTimeout(timer);
+          cleanup();
           if (code === 0) resolve(stdout.trim());
           else reject(new AcpExecutionError(
             `${agent} exited ${code} signal=${signal || "none"}: ${stderr.slice(-1000)}`,
@@ -2829,26 +4983,44 @@ export class AcpPool {
   }
 
   #runPersistent(agent: string, prompt: string, cwd: string, timeoutMs: number, options: PoolRequestOptions = {}) {
+    throwIfAborted(options.signal);
     const key = this.#persistentClientKey(agent, { ...options, cwd });
     const prior = this.persistentChains.get(key) || Promise.resolve();
     const providerKey = this.#providerKeyForRequest(agent, options);
-    const waitTimeout = numericOption(this.env.CPB_ACP_POOL_WAIT_TIMEOUT_MS, DEFAULT_POOL_WAIT_TIMEOUT_MS);
+    const waitTimeout = this.#poolWaitTimeoutMs(options.waitTimeoutMs);
     const warnInterval = POOL_WAIT_WARN_INTERVAL_MS;
 
     // Wrap prior promise with timeout + warn so a stuck predecessor doesn't block forever
     const timedPrior = new Promise<void>((resolve, reject) => {
       let elapsed = 0;
+      let settled = false;
       const warnTimer = setInterval(() => {
         elapsed += warnInterval;
         if (waitTimeout > 0 && elapsed >= waitTimeout) {
+          settled = true;
           clearInterval(warnTimer);
+          cleanup();
           reject(new PoolExhaustedError(agent, providerKey, elapsed, `persistent chain wait timeout: ${agent}/${providerKey} waited ${Math.round(elapsed / 1000)}s for prior call to complete`));
         } else {
           const ts = new Date().toISOString();
           process.stderr.write(`${ts} [warn] [acp-pool] persistent chain wait: ${agent} waiting ${Math.round(elapsed / 1000)}s for prior call to complete\n`);
         }
       }, warnInterval);
-      prior.then(() => { clearInterval(warnTimer); resolve(); }, () => { clearInterval(warnTimer); resolve(); });
+      warnTimer.unref();
+      const cleanup = addAbortHandler(options.signal, () => {
+        if (settled) return;
+        settled = true;
+        clearInterval(warnTimer);
+        reject(abortErrorForSignal(options.signal));
+      });
+      const finishPrior = () => {
+        if (settled) return;
+        settled = true;
+        clearInterval(warnTimer);
+        cleanup();
+        resolve();
+      };
+      prior.then(finishPrior, finishPrior);
     });
 
     const run = timedPrior
@@ -2858,9 +5030,15 @@ export class AcpPool {
   }
 
   async #runPersistentNow(key: string, agent: string, prompt: string, cwd: string, timeoutMs: number, options: PoolRequestOptions = {}) {
+    throwIfAborted(options.signal);
     const persistent = await this.#getPersistentClient(key, agent, cwd, options);
+    if (options.signal?.aborted) {
+      await this.#closePersistentClient(key);
+      throw abortErrorForSignal(options.signal);
+    }
     persistent.projectId = stringValue(options.projectId);
     persistent.jobId = stringValue(options.jobId);
+    persistent.dataRoot = this.#requestDataRoot(options, persistent);
     persistent.lastCwd = cwd;
     const client = persistent.client;
     const executionEnv = this.#executionEnv(agent, options);
@@ -2874,16 +5052,28 @@ export class AcpPool {
     let stdout = "";
     let stderr = "";
     let timer: NodeJS.Timeout | undefined;
+    let abortCleanup: (() => void) | undefined;
+    let requestedTeardown: Promise<void> | null = null;
+    const beginTeardown = () => {
+      requestedTeardown ||= this.#closePersistentClient(key);
+      return requestedTeardown;
+    };
 
     const timeout = timeoutMs > 0
       ? new Promise<never>((_, reject) => {
           timer = setTimeout(() => {
-            void this.#closePersistentClient(key);
+            beginTeardown();
             reject(new Error(`${agent} timed out after ${timeoutMs}ms`));
           }, timeoutMs);
           timer.unref();
         })
       : new Promise<never>(() => {}); // never resolves — no timeout
+    const abort = new Promise<never>((_, reject) => {
+      abortCleanup = addAbortHandler(options.signal, () => {
+        beginTeardown();
+        reject(abortErrorForSignal(options.signal));
+      });
+    });
 
     client.outputSink = (chunk: string | Buffer) => { stdout += chunk?.toString ? chunk.toString() : String(chunk); };
     client.errorSink = (chunk: string | Buffer) => {
@@ -2892,7 +5082,10 @@ export class AcpPool {
     };
 
     try {
-      const sessionId = await Promise.race([client.promptOnce(prompt, cwd), timeout]);
+      const sessionId = await Promise.race([client.promptOnce(prompt, cwd), timeout, abort]);
+      if (options.signal?.aborted) {
+        throw abortErrorForSignal(options.signal);
+      }
       persistent.requestCount += 1;
       persistent.lastUsedAt = Date.now();
       // Capture sessionId for cached lifecycle
@@ -2902,19 +5095,25 @@ export class AcpPool {
       }
       return stdout.trim();
     } catch (error) {
-      await this.#closePersistentClient(key);
-      if (stderr && !String(error.message || "").includes(stderr.slice(-120))) {
-        throw new Error(`${error.message}: ${stderr.slice(-1000)}`);
+      let primary = asExecutionError(error);
+      if (!isAbortError(primary) && stderr && !String(primary.message || "").includes(stderr.slice(-120))) {
+        primary = new Error(`${primary.message}: ${stderr.slice(-1000)}`, { cause: primary });
       }
-      throw error;
+      const cleanupResults = await Promise.allSettled([requestedTeardown || beginTeardown()]);
+      const cleanupErrors = cleanupResults
+        .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+        .map((result) => asExecutionError(result.reason));
+      throw primaryWithCleanupErrors(primary, cleanupErrors);
     } finally {
       if (timer) clearTimeout(timer);
+      abortCleanup?.();
       client.outputSink = previousOutputSink;
       client.errorSink = previousErrorSink;
     }
   }
 
   async #getPersistentClient(key: string, agent: string, cwd: string, options: PoolRequestOptions = {}) {
+    throwIfAborted(options.signal);
     const existing = this.persistentClients.get(key);
     if (existing && existing.client.isUsable()) return existing;
     if (existing) await this.#closePersistentClient(key);
@@ -2924,8 +5123,10 @@ export class AcpPool {
     const reg = await getRegistry();
     const desc = reg?.getDescriptor(agent);
     const conversationKey = this.#conversationKey(options);
+    const dataRoot = this.#requestDataRoot(options);
     if (desc?.lifecycle === "cached") {
       const cached = await loadSessionId(this.cpbRoot, agent, {
+        dataRoot,
         ...(conversationKey ? { conversationKey } : {}),
       }).catch(() => null);
       if (cached?.sessionId) resumeSessionId = cached.sessionId;
@@ -2933,6 +5134,10 @@ export class AcpPool {
 
     const providerKey = this.#providerKeyForRequest(agent, options);
     const lease = await this.#acquireConnectionLease(agent, providerKey, options);
+    if (options.signal?.aborted) {
+      await this.#releaseConnectionLease(lease);
+      throw abortErrorForSignal(options.signal);
+    }
     const launchScopedMcp = this.#usesLaunchScopedMcp(agent, { ...options, cwd });
     const executionEnv = this.#executionEnv(agent, options);
     const client = new AcpClient({
@@ -2954,6 +5159,7 @@ export class AcpPool {
       agent,
       projectId: stringValue(options.projectId),
       jobId: stringValue(options.jobId),
+      dataRoot,
       conversationKey,
       sessionKey: this.#sessionKey(agent, { ...options, cwd }),
       providerKey,
@@ -2968,13 +5174,33 @@ export class AcpPool {
     this.#noteSpawn(agent);
 
     try {
-      await client.start();
+      throwIfAborted(options.signal);
+      let startAbortCleanup: (() => void) | undefined;
+      const startAbort = new Promise<never>((_, reject) => {
+        startAbortCleanup = addAbortHandler(options.signal, () => {
+          reject(abortErrorForSignal(options.signal));
+        });
+      });
+      try {
+        await Promise.race([client.start(), startAbort]);
+      } finally {
+        startAbortCleanup?.();
+      }
+      if (options.signal?.aborted) {
+        throw abortErrorForSignal(options.signal);
+      }
       return meta;
     } catch (error) {
-      this.persistentClients.delete(key);
-      await client.close().catch(() => null);
-      await this.#releaseConnectionLease(lease);
-      throw error;
+      const closeResults = await Promise.allSettled([client.close()]);
+      const leaseResults = closeResults[0].status === "fulfilled"
+        ? await Promise.allSettled([this.#releaseConnectionLease(lease)])
+        : [];
+      if (leaseResults[0]?.status === "fulfilled") meta.connectionLease = null;
+      const cleanupErrors = [...closeResults, ...leaseResults]
+        .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+        .map((result) => asExecutionError(result.reason));
+      if (cleanupErrors.length === 0) this.persistentClients.delete(key);
+      throw primaryWithCleanupErrors(error, cleanupErrors);
     }
   }
 
@@ -3006,25 +5232,39 @@ export class AcpPool {
       k === keyOrAgent || k.startsWith(`${keyOrAgent}::`)
     );
 
+    const cleanupErrors: unknown[] = [];
     for (const key of matchingKeys) {
       const persistent = this.persistentClients.get(key);
       if (!persistent) continue;
       const agent = persistent.agent;
       // Save sessionId for cached lifecycle before closing
       const session = this.sessions.get(persistent.sessionKey);
-      if (session?.sessionId) {
+      const saveSession = session?.sessionId ? (async () => {
         const reg = await getRegistry();
         const desc = reg?.getDescriptor(agent);
         if (desc?.lifecycle === "cached") {
           await saveSessionId(this.cpbRoot, agent, session.sessionId, {
+            dataRoot: this.#requestDataRoot({}, persistent),
             ...(persistent.conversationKey ? { conversationKey: persistent.conversationKey } : {}),
-          }).catch(() => null);
+          });
         }
+      })() : Promise.resolve();
+      const closeResults = await Promise.allSettled([
+        saveSession,
+        persistent.client.close(),
+      ]);
+      const leaseResults = closeResults[1].status === "fulfilled"
+        ? await Promise.allSettled([this.#releaseConnectionLease(persistent.connectionLease)])
+        : [];
+      if (leaseResults[0]?.status === "fulfilled") persistent.connectionLease = null;
+      if (closeResults[1].status === "fulfilled" && leaseResults[0]?.status === "fulfilled") {
+        this.persistentClients.delete(key);
       }
-      this.persistentClients.delete(key);
-      await persistent.client.close().catch(() => null);
-      await this.#releaseConnectionLease(persistent.connectionLease);
+      cleanupErrors.push(...[...closeResults, ...leaseResults]
+        .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+        .map((result) => result.reason));
     }
+    throwCollectedCleanupErrors("ACP persistent client cleanup failed", cleanupErrors);
   }
 }
 
@@ -3062,7 +5302,10 @@ function managedView(pool: AcpPool) {
 }
 
 function resolvePoolRoots(hubRoot: string | undefined, cpbRoot: string | undefined, env: Record<string, string | undefined> = process.env) {
-  const resolvedCpbRoot = path.resolve(cpbRoot || env.CPB_ROOT || path.join(__dirname, ".."));
+  const resolvedCpbRoot = resolveAgentHomeRuntimeRoot(
+    cpbRoot || env.CPB_ROOT || path.join(__dirname, ".."),
+    "CPB_ROOT",
+  );
   const resolvedHubRoot = path.resolve(hubRoot || resolveHubRootFromEnv(resolvedCpbRoot, env));
   return {
     cpbRoot: resolvedCpbRoot,

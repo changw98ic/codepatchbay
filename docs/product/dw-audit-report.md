@@ -13,9 +13,9 @@ The stabilized contract now separates these states:
 | Runtime health gate | Implemented, runtime currently blocked | `./cpb dw-status` reports explicit blockers instead of claiming readiness |
 | Workflow single source | Ready | Server adapter delegates to `core/workflow/definition.ts`; `tests/workflow-definition-contract.test.ts` covers built-ins and registered DAGs |
 | DAG metadata | Ready | `workflow_dag_materialized` emits nodes, edges, and readiness metadata |
-| DAG node-first sequential execution | Ready | `runJob` iterates DAG ready nodes sequentially; same-phase dependency-order regression passes |
+| DAG node-first sequential execution | Ready as fallback | Unsafe/custom/side-effecting/mutating/verify/plan nodes remain exclusive |
 | DAG resume | Ready | `deriveDagResumeState()` preserves concrete node ids and falls back to phase ids only for legacy jobs |
-| DAG parallel execution | Not ready by design | `dag_parallel_execution_ready: false`; current executor runs one ready node at a time |
+| DAG bounded safe parallel execution | Ready for read-only review nodes | `dagParallelExecutionReady: true`; overlap, exclusive unsafe nodes, conflict-key serialization, cancellation propagation, provider capacity, and durable-order behavior are covered by DAG/runJob regressions |
 | Attention projection | Ready | Inbox and Hub delegate to `buildAttentionProjection()` |
 | Dashboard attention consumption | Ready | Dashboard fetches canonical attention rows and preserves API order |
 | TypeScript migration | Ready with typing caveat | Source-wide scan excluding dependencies, generated output, runtime homes, and vendored browser bundles has no remaining `.js`/`.mjs`/`.cjs`; compiled `dist/` is the runnable package path |
@@ -40,11 +40,28 @@ These are operational state problems, not missing implementation for the stabili
 - DAG node events are materialized into `workflowDag`, `nodeStates`, `completedNodes`, and `dagResume`.
 - Same-phase DAG nodes use node ids as the authoritative resume identity.
 - `dw-status` now prints `dag_metadata_ready`, `dag_node_first_sequential_ready`, `dag_resume_ready`, and `dag_parallel_execution_ready`.
+- DAG execution now supports bounded parallel waves for canonical read-only
+  `review` nodes. Unsafe/custom/side-effecting/mutating/verify/plan nodes stay
+  exclusive, conflict keys serialize a stable ready-prefix, and durable effects
+  commit in stable topological DAG order.
 
 ## Known Design Boundaries
 
 - Phase-level events still repeat for same-phase DAG nodes. For DAG ordering and resume decisions, consumers must use `dag_node_*` events and `dagResume`, not phase names alone.
-- Parallel DAG scheduling remains a future milestone. `maxConcurrentNodes` is preserved as metadata, but the current executor intentionally runs sequentially.
+- Parallel DAG scheduling is intentionally narrow. `maxConcurrentNodes` is an
+  upper bound, not a safety grant. Only canonical read-only `review` nodes can
+  overlap; all other nodes remain exclusive until their state and side effects
+  are proven isolated.
+- Cancellation and terminal failure propagate to active or downstream DAG nodes
+  as `dag_node_cancelled`. Cancelled parallel results must not enter durable
+  completion state or artifact-index evidence.
+- A terminal failure, thrown node error, or external abort seals the parallel
+  wave immediately; job failure/cancellation cannot be held open by a
+  non-cooperative sibling. Review artifacts cross a two-phase commit boundary,
+  so failed, cancelled, or late sibling results leave no durable or orphan file.
+- Provider capacity is jointly enforced by DAG ready-node selection and ACP
+  pool/provider leases; status surfaces must report the effective provider
+  limit instead of assuming every provider uses the default limit.
 - Runtime health checks are read-only; recovery or reconcile operations must be explicit.
 - First-observed jobs-index divergence is a warning. It escalates only with prior divergence history or failed reconcile evidence.
 

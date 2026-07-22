@@ -1,18 +1,52 @@
 #!/usr/bin/env node
-import { createHash } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { appendFile, cp, mkdir, open, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import type { Dirent, Stats } from "node:fs";
+import {
+  appendFile,
+  cp,
+  link,
+  lstat,
+  mkdir,
+  mkdtemp,
+  open,
+  readFile,
+  readdir,
+  realpath,
+  rename,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { connect as connectTcp, createServer } from "node:net";
 import { homedir, hostname } from "node:os";
 import path from "node:path";
 
 import { registerProject } from "../server/services/hub/hub-registry.js";
 import {
+  captureProcessIdentity,
+  captureSpawnProcessIdentity,
+  isProcessIdentityAlive,
+  killTree,
+  runCommandTree,
+  sameProcessIdentity,
+  type ProcessIdentity,
+  type ProcessTreeSystem,
+} from "../core/runtime/process-tree.js";
+import {
   validateCandidateReplayBundle,
   type CandidateReplayBundle,
 } from "../core/engine/candidate-replay.js";
+import {
+  readBoundedRegularFileNoFollow,
+  type BoundedRegularFileReadHooks,
+} from "../core/runtime/durable-directory-lock.js";
 import { envForAgent } from "../server/services/acp/acp-pool.js";
-import { isDelegateAlive } from "../server/services/quota-delegate-client.js";
+import {
+  isDelegateAlive,
+  waitForDelegateIncarnation,
+  type QuotaDelegateLockReceipt,
+} from "../server/services/quota-delegate-client.js";
 import { createAgentHome, isolatedAgentToolPath } from "../core/agents/isolation.js";
 import { writeJsonAtomic } from "../shared/fs-utils.js";
 import { AssignmentStore } from "../shared/orchestrator/assignment-store.js";
@@ -271,6 +305,9 @@ type Options = {
   score: boolean;
   keepFailed: boolean;
   lanes: Lane[];
+  signal?: AbortSignal;
+  harnessFinalArtifactForTest?: (targetPath: string) => void | Promise<void>;
+  removeAttemptRootForTest?: (attemptRoot: string) => void | Promise<void>;
 };
 
 type CommandResult = {
@@ -279,26 +316,891 @@ type CommandResult = {
   stdout: string;
   stderr: string;
   timedOut: boolean;
+  aborted: boolean;
   error: string | null;
 };
+
+type CommandLogs = {
+  stdoutPath: string;
+  stderrPath: string;
+  activityPath: string;
+  beforeCommitForTest?: () => void | Promise<void>;
+  afterTargetCommitForTest?: (targetPath: string, index: number) => void | Promise<void>;
+};
+
+type FileIdentity = {
+  dev: number;
+  ino: number;
+  birthtimeMs: number;
+  size: number;
+  mtimeMs: number;
+  ctimeMs: number;
+};
+
+type HarnessArtifactOwner = {
+  format: "cpb-harness-artifact-owner/v1";
+  ownerToken: string;
+  directory: string;
+  pid: number;
+  host: string;
+  acquiredAt: string;
+  processIdentity: ProcessIdentity | null;
+};
+
+type HarnessArtifactLease = {
+  owner: HarnessArtifactOwner;
+  lockPath: string;
+  assertOwned: () => Promise<void>;
+  release: () => Promise<void>;
+};
+
+type ClaudeBoundaryPreflightOwner = {
+  format: "cpb-claude-boundary-owner/v1";
+  ownerToken: string;
+  preflightRoot: string;
+  host: string;
+  pid: number;
+  startedAt: string;
+  processIdentity: ProcessIdentity;
+};
+
+type ClaudeBoundaryDirectoryGeneration = {
+  dev: number;
+  ino: number;
+  size: number;
+  mtimeMs: number;
+  ctimeMs: number;
+  birthtimeMs: number;
+};
+
+export type ClaudeBoundaryRecoveryTestHooks = {
+  ownerRead?: BoundedRegularFileReadHooks;
+  beforeQuarantineRename?: (context: {
+    preflightRoot: string;
+    quarantineRoot: string;
+    ownerToken: string;
+  }) => void | Promise<void>;
+  afterQuarantineRename?: (context: {
+    preflightRoot: string;
+    quarantineRoot: string;
+    ownerToken: string;
+  }) => void | Promise<void>;
+};
+
+type HarnessArtifactLockFsPhase =
+  | "acquire-mkdir"
+  | "acquire-owner"
+  | "acquire-owner-temp"
+  | "quarantine-rename"
+  | "quarantine-remove-rename"
+  | "restore-reserve"
+  | "restore-entry-source"
+  | "restore-entry-target"
+  | "restore-remove"
+  | "remove"
+  | "failed-acquire-rename"
+  | "failed-acquire-remove"
+  | "artifact-scratch-create"
+  | "artifact-stage-create"
+  | "artifact-backup-source"
+  | "artifact-backup-target"
+  | "artifact-publish-target"
+  | "artifact-publish-stage-remove"
+  | "artifact-rollback-quarantine-source"
+  | "artifact-rollback-quarantine-target"
+  | "artifact-rollback-restore-target"
+  | "artifact-rollback-backup-remove"
+  | "artifact-rollback-quarantine-remove"
+  | "artifact-rollback-stage-remove"
+  | "artifact-remove-quarantine"
+  | "artifact-cleanup-backup-remove"
+  | "artifact-cleanup-scratch-remove";
+
+type HarnessArtifactMutationPhase =
+  | "backup-move"
+  | "publish-link"
+  | "publish-stage-remove"
+  | "rollback-quarantine"
+  | "rollback-restore-link"
+  | "rollback-backup-remove"
+  | "rollback-quarantine-remove"
+  | "cleanup-backup-remove";
+
+export type HarnessArtifactLockTestHooks = {
+  ownerRead?: BoundedRegularFileReadHooks;
+  afterAcquireDirectoryCreated?: (context: {
+    lockPath: string;
+    ownerToken: string;
+  }) => void | Promise<void>;
+  afterQuarantineRename?: (context: {
+    lockPath: string;
+    quarantinePath: string;
+    expectedToken: string | null;
+    disposition: "released" | "stale";
+  }) => void | Promise<void>;
+  beforeQuarantineRemove?: (context: {
+    lockPath: string;
+    quarantinePath: string;
+    expectedToken: string | null;
+    disposition: "released" | "stale";
+  }) => void | Promise<void>;
+  syncDirectory?: (
+    directory: string,
+    phase: HarnessArtifactLockFsPhase,
+  ) => void | Promise<void>;
+  afterArtifactMutation?: (context: {
+    phase: HarnessArtifactMutationPhase;
+    targetPath: string;
+    stagePath: string;
+    backupPath: string;
+    quarantinePath: string;
+  }) => void | Promise<void>;
+  beforeArtifactRemove?: (context: {
+    phase: HarnessArtifactMutationPhase | null;
+    artifactPath: string;
+    targetPath: string;
+  }) => void | Promise<void>;
+};
+
+const harnessArtifactLockTestHookContext = new AsyncLocalStorage<HarnessArtifactLockTestHooks>();
+
+export function withHarnessArtifactLockTestHooks<T>(
+  hooks: HarnessArtifactLockTestHooks,
+  action: () => T,
+): T {
+  return harnessArtifactLockTestHookContext.run(hooks, action);
+}
+
+const HARNESS_ARTIFACT_INCOMPLETE_LOCK_TTL_MS = 30_000;
+const HARNESS_ARTIFACT_OWNER_MAX_BYTES = 64 * 1024;
 
 function now() {
   return new Date().toISOString();
 }
 
+function quotaDelegateCloseTimeoutMs() {
+  const parsed = Number.parseInt(process.env.CPB_QUOTA_DELEGATE_CLOSE_TIMEOUT_MS || "5000", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 5_000;
+}
+
+function quotaDelegateTeardownTimeoutMs() {
+  const parsed = Number.parseInt(process.env.CPB_QUOTA_DELEGATE_TEARDOWN_TIMEOUT_MS || "15000", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 15_000;
+}
+
+type QuotaDelegateProcessTeardown = (
+  pid: number,
+  options: {
+    signal: AbortSignal;
+    deadlineAt: number;
+    expectedRootIdentity: ProcessIdentity;
+  },
+) => void | Promise<void>;
+
+function fileIdentity(details: Stats): FileIdentity {
+  return {
+    dev: details.dev,
+    ino: details.ino,
+    birthtimeMs: details.birthtimeMs,
+    size: details.size,
+    mtimeMs: details.mtimeMs,
+    ctimeMs: details.ctimeMs,
+  };
+}
+
+function sameFileIdentity(left: FileIdentity, right: FileIdentity) {
+  return left.dev === right.dev
+    && left.ino === right.ino
+    && left.birthtimeMs === right.birthtimeMs
+    && left.size === right.size
+    && left.mtimeMs === right.mtimeMs
+    && left.ctimeMs === right.ctimeMs;
+}
+
+function sameFileInode(left: FileIdentity, right: FileIdentity) {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function sameFileGeneration(left: FileIdentity, right: FileIdentity) {
+  return sameFileInode(left, right) && left.birthtimeMs === right.birthtimeMs;
+}
+
+function sameFileDataStamp(left: FileIdentity, right: FileIdentity) {
+  return sameFileInode(left, right)
+    && left.size === right.size
+    && left.mtimeMs === right.mtimeMs;
+}
+
+function errnoCode(error: unknown) {
+  return error && typeof error === "object" && "code" in error
+    ? String((error as NodeJS.ErrnoException).code || "")
+    : "";
+}
+
+function pidIsAlive(pid: number, kill = process.kill) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  try {
+    kill(pid, 0);
+    return true;
+  } catch (error) {
+    const code = errnoCode(error);
+    if (code === "ESRCH") return false;
+    if (code === "EPERM") return true;
+    throw error;
+  }
+}
+
+function processIdentityIsAlive(
+  identity: ProcessIdentity,
+  probe: (expected: ProcessIdentity) => boolean = isProcessIdentityAlive,
+) {
+  try {
+    return probe(identity);
+  } catch (error) {
+    if (errnoCode(error) === "EPERM" || errnoCode(error) === "PROCESS_IDENTITY_UNAVAILABLE") return true;
+    throw error;
+  }
+}
+
+function harnessArtifactLockTimeoutMs() {
+  const parsed = Number.parseInt(process.env.CPB_HARNESS_ARTIFACT_LOCK_TIMEOUT_MS || "30000", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 30_000;
+}
+
+function parseProcessIdentity(value: unknown): ProcessIdentity | null {
+  if (!isRecord(value)) return null;
+  const pid = Number(value.pid);
+  const birthId = typeof value.birthId === "string" ? value.birthId : "";
+  const incarnation = typeof value.incarnation === "string" ? value.incarnation : "";
+  const capturedAt = typeof value.capturedAt === "string" ? value.capturedAt : "";
+  const birthIdPrecision = value.birthIdPrecision;
+  if (!Number.isInteger(pid) || pid <= 0 || !birthId || !incarnation || !capturedAt) return null;
+  if (incarnation !== `${pid}:${birthId}`) return null;
+  if (birthIdPrecision !== "exact") return null;
+  const capturedAtMs = Date.parse(capturedAt);
+  if (!Number.isFinite(capturedAtMs) || new Date(capturedAtMs).toISOString() !== capturedAt) return null;
+  const identity: ProcessIdentity = { pid, birthId, incarnation, capturedAt, birthIdPrecision };
+  if (value.processGroupId !== undefined) {
+    if (!Number.isInteger(value.processGroupId) || Number(value.processGroupId) <= 0) return null;
+    identity.processGroupId = Number(value.processGroupId);
+  }
+  return identity;
+}
+
+async function readHarnessArtifactOwner(lockPath: string): Promise<HarnessArtifactOwner | null> {
+  const ownerPath = path.join(lockPath, "owner.json");
+  try {
+    const hooks = harnessArtifactLockTestHookContext.getStore() || {};
+    const raw = await readBoundedRegularFileNoFollow(ownerPath, {
+      maxBytes: HARNESS_ARTIFACT_OWNER_MAX_BYTES,
+      hooks: hooks.ownerRead,
+    });
+    const parsed = JSON.parse(raw);
+    if (!isRecord(parsed)) {
+      throw new Error("harness artifact owner metadata must be an object");
+    }
+    const parsedPid = Number(parsed.pid);
+    const parsedIdentity = parseProcessIdentity(parsed.processIdentity);
+    const processIdentity = parsedIdentity?.pid === parsedPid ? parsedIdentity : null;
+    const acquiredAtMs = typeof parsed.acquiredAt === "string" ? Date.parse(parsed.acquiredAt) : Number.NaN;
+    if (
+      parsed.format !== "cpb-harness-artifact-owner/v1"
+      || typeof parsed.ownerToken !== "string"
+      || !parsed.ownerToken
+      || parsed.directory !== path.dirname(lockPath)
+      || !Number.isInteger(parsed.pid)
+      || typeof parsed.host !== "string"
+      || !parsed.host
+      || typeof parsed.acquiredAt !== "string"
+      || !Number.isFinite(acquiredAtMs)
+      || new Date(acquiredAtMs).toISOString() !== parsed.acquiredAt
+    ) {
+      throw new Error("harness artifact owner metadata is malformed");
+    }
+    return {
+      format: "cpb-harness-artifact-owner/v1",
+      ownerToken: parsed.ownerToken,
+      directory: parsed.directory,
+      pid: parsedPid,
+      host: parsed.host,
+      acquiredAt: parsed.acquiredAt,
+      processIdentity,
+    };
+  } catch (error) {
+    if (errnoCode(error) === "ENOENT") return null;
+    throw Object.assign(
+      new Error(`harness artifact owner metadata is unsafe: ${ownerPath}`, { cause: error }),
+      { code: "HARNESS_ARTIFACT_OWNER_UNSAFE", ownerPath },
+    );
+  }
+}
+
+export function harnessArtifactOwnerAlive(
+  owner: HarnessArtifactOwner,
+  {
+    identityAlive = isProcessIdentityAlive,
+    kill = process.kill,
+  }: {
+    identityAlive?: (expected: ProcessIdentity) => boolean;
+    kill?: typeof process.kill;
+  } = {},
+) {
+  if (owner.host !== hostname()) return true;
+  if (owner.processIdentity) return processIdentityIsAlive(owner.processIdentity, identityAlive);
+  // An owner without a parseable exact incarnation cannot be proved stale.
+  // Keep the lock non-reclaimable until the acquisition deadline instead of
+  // re-owning a potentially reused PID through a coarse kill(0) probe.
+  void kill;
+  return true;
+}
+
+async function harnessArtifactLockDirectoryIdentity(lockPath: string) {
+  const details = await lstat(lockPath);
+  if (!details.isDirectory() || details.isSymbolicLink()) {
+    throw new Error(`harness artifact lock is not a real directory: ${lockPath}`);
+  }
+  return fileIdentity(details);
+}
+
+async function preserveQuarantinedLock(
+  quarantinePath: string,
+  lockPath: string,
+  cause: unknown,
+): Promise<never> {
+  let successorPreserved = false;
+  try {
+    await lstat(lockPath);
+    successorPreserved = true;
+  } catch (error) {
+    if (errnoCode(error) !== "ENOENT") {
+      throw harnessArtifactLockAggregate(
+        cause,
+        [error],
+        `harness artifact lock quarantine could not be inspected: ${lockPath}`,
+        {
+          committed: true,
+          residualPath: quarantinePath,
+          canonicalPath: lockPath,
+          recoveryPaths: [quarantinePath, lockPath],
+        },
+      );
+    }
+  }
+  throw harnessArtifactLockAggregate(
+    cause,
+    [],
+    successorPreserved
+      ? `harness artifact lock quarantine preserved without overwriting its successor; owner remains at ${quarantinePath}`
+      : `harness artifact lock quarantine preserved for manual recovery: ${quarantinePath}`,
+    {
+      code: "HARNESS_ARTIFACT_LOCK_QUARANTINE_PRESERVED",
+      committed: true,
+      successorPreserved,
+      residualPath: quarantinePath,
+      canonicalPath: lockPath,
+      recoveryPaths: [quarantinePath, ...(successorPreserved ? [lockPath] : [])],
+    },
+  );
+}
+
+async function quarantineHarnessArtifactLock(
+  lockPath: string,
+  expectedToken: string | null,
+  disposition: "released" | "stale",
+) {
+  const hooks = harnessArtifactLockTestHookContext.getStore() || {};
+  const quarantinePath = `${lockPath}.${disposition}-${expectedToken || "incomplete"}-${randomUUID()}`;
+  let originalIdentity: FileIdentity;
+  try {
+    originalIdentity = await harnessArtifactLockDirectoryIdentity(lockPath);
+  } catch (error) {
+    if (errnoCode(error) === "ENOENT") return false;
+    throw error;
+  }
+  try {
+    await rename(lockPath, quarantinePath);
+  } catch (error) {
+    if (errnoCode(error) === "ENOENT") return false;
+    throw error;
+  }
+  let quarantinedIdentity: FileIdentity;
+  try {
+    quarantinedIdentity = await harnessArtifactLockDirectoryIdentity(quarantinePath);
+    if (
+      !sameFileGeneration(quarantinedIdentity, originalIdentity)
+      || !sameFileDataStamp(quarantinedIdentity, originalIdentity)
+    ) {
+      throw new Error(`harness artifact lock generation changed while entering quarantine: ${lockPath}`);
+    }
+  } catch (error) {
+    await preserveQuarantinedLock(quarantinePath, lockPath, error);
+  }
+  try {
+    await syncHarnessArtifactLockDirectory(path.dirname(lockPath), "quarantine-rename", hooks);
+  } catch (error) {
+    throw harnessArtifactLockCommittedAmbiguity(
+      "harness artifact lock entered quarantine but parent durability is ambiguous",
+      "HARNESS_ARTIFACT_LOCK_QUARANTINE_COMMITTED_DURABILITY_AMBIGUOUS",
+      quarantinePath,
+      error,
+    );
+  }
+
+  const assertQuarantineGeneration = async () => {
+    const observed = await harnessArtifactLockDirectoryIdentity(quarantinePath);
+    if (!sameFileIdentity(observed, quarantinedIdentity)) {
+      throw new Error(`harness artifact lock quarantine generation changed while ${disposition}: ${quarantinePath}`);
+    }
+  };
+  try {
+    await hooks.afterQuarantineRename?.({ lockPath, quarantinePath, expectedToken, disposition });
+    await assertQuarantineGeneration();
+  } catch (error) {
+    await preserveQuarantinedLock(quarantinePath, lockPath, error);
+  }
+  let movedOwner: HarnessArtifactOwner | null = null;
+  try {
+    movedOwner = await readHarnessArtifactOwner(quarantinePath);
+    await assertQuarantineGeneration();
+  } catch (error) {
+    await preserveQuarantinedLock(quarantinePath, lockPath, error);
+  }
+  const ownsMovedLock = expectedToken ? movedOwner?.ownerToken === expectedToken : movedOwner === null;
+  if (!ownsMovedLock) {
+    await preserveQuarantinedLock(
+      quarantinePath,
+      lockPath,
+      new Error(`harness artifact lock owner changed while ${disposition}`),
+    );
+  }
+
+  try {
+    await hooks.beforeQuarantineRemove?.({ lockPath, quarantinePath, expectedToken, disposition });
+    await assertQuarantineGeneration();
+    const confirmedOwner = await readHarnessArtifactOwner(quarantinePath);
+    const stillOwned = expectedToken ? confirmedOwner?.ownerToken === expectedToken : confirmedOwner === null;
+    if (!stillOwned) throw new Error(`harness artifact lock owner changed before ${disposition} removal`);
+    await assertQuarantineGeneration();
+  } catch (error) {
+    await preserveQuarantinedLock(quarantinePath, lockPath, error);
+  }
+
+  // The owned generation has already left the canonical lock name. Retain it
+  // as recovery evidence instead of issuing a final path-based recursive
+  // delete: no Node filesystem primitive can stop a concurrent rename from
+  // replacing that path between the last identity check and rm(2).
+  try {
+    await syncHarnessArtifactLockDirectory(path.dirname(lockPath), "remove", hooks);
+  } catch (error) {
+    throw harnessArtifactLockCommittedAmbiguity(
+      "harness artifact lock release quarantine was retained but parent durability is ambiguous",
+      "HARNESS_ARTIFACT_LOCK_REMOVE_COMMITTED_DURABILITY_AMBIGUOUS",
+      quarantinePath,
+      error,
+    );
+  }
+  return true;
+}
+
+async function syncHarnessArtifactLockDirectory(
+  directory: string,
+  phase: HarnessArtifactLockFsPhase,
+  hooks: HarnessArtifactLockTestHooks,
+) {
+  if (hooks.syncDirectory) {
+    await hooks.syncDirectory(directory, phase);
+    return;
+  }
+  let handle: Awaited<ReturnType<typeof open>> | null = null;
+  let primaryError: unknown = null;
+  try {
+    handle = await open(directory, "r");
+    await handle.sync();
+  } catch (error) {
+    primaryError = error;
+  }
+  let closeError: unknown = null;
+  if (handle) {
+    try {
+      await handle.close();
+    } catch (error) {
+      closeError = error;
+    }
+  }
+  if (primaryError && closeError) {
+    throw new AggregateError(
+      [primaryError, closeError],
+      `harness artifact lock directory fsync and close failed: ${directory}`,
+      { cause: primaryError },
+    );
+  }
+  if (primaryError) throw primaryError;
+  if (closeError) throw closeError;
+}
+
+function harnessArtifactLockCommittedAmbiguity(
+  message: string,
+  code: string,
+  committedPath: string,
+  cause: unknown,
+) {
+  return Object.assign(new Error(message, { cause }), {
+    code,
+    committed: true,
+    committedPath,
+    recoveryPaths: [committedPath],
+  });
+}
+
+function nestedErrorMetadata(error: unknown) {
+  const recoveryPaths = new Set<string>();
+  const visited = new Set<unknown>();
+  let committed = false;
+  const visit = (candidate: unknown) => {
+    if (!candidate || typeof candidate !== "object" || visited.has(candidate)) return;
+    visited.add(candidate);
+    const record = candidate as {
+      committed?: boolean;
+      committedPath?: unknown;
+      residualPath?: unknown;
+      recoveryPaths?: unknown;
+      cause?: unknown;
+      errors?: unknown[];
+    };
+    if (record.committed === true) committed = true;
+    for (const pathValue of [record.committedPath, record.residualPath]) {
+      if (typeof pathValue === "string") recoveryPaths.add(pathValue);
+    }
+    if (Array.isArray(record.recoveryPaths)) {
+      for (const pathValue of record.recoveryPaths) {
+        if (typeof pathValue === "string") recoveryPaths.add(pathValue);
+      }
+    }
+    visit(record.cause);
+    for (const nested of record.errors || []) visit(nested);
+  };
+  visit(error);
+  return { committed, recoveryPaths: [...recoveryPaths] };
+}
+
+function harnessArtifactLockAggregate(
+  primary: unknown,
+  errors: unknown[],
+  message: string,
+  extra: Record<string, unknown> = {},
+) {
+  const nestedMetadata = [primary, ...errors].map(nestedErrorMetadata);
+  const explicitRecoveryPaths = Array.isArray(extra.recoveryPaths)
+    ? extra.recoveryPaths.filter((entry): entry is string => typeof entry === "string")
+    : [];
+  const recoveryPaths = [...new Set([
+    ...explicitRecoveryPaths,
+    ...nestedMetadata.flatMap((metadata) => metadata.recoveryPaths),
+  ])];
+  const aggregate = Object.assign(
+    new AggregateError([primary, ...errors], message, { cause: primary }),
+    {
+      primaryError: primary,
+      ...(nestedMetadata.some((metadata) => metadata.committed) ? { committed: true } : {}),
+      ...extra,
+      recoveryPaths,
+    },
+  );
+  return aggregate;
+}
+
+async function recoverStaleHarnessArtifactLock(lockPath: string) {
+  let details: Stats;
+  try {
+    details = await lstat(lockPath);
+  } catch (error) {
+    if (errnoCode(error) === "ENOENT") return true;
+    throw error;
+  }
+  if (!details.isDirectory() || details.isSymbolicLink()) {
+    throw new Error(`harness artifact lock is not a real directory: ${lockPath}`);
+  }
+  const observedGeneration = fileIdentity(details);
+  let owner: HarnessArtifactOwner | null;
+  try {
+    owner = await readHarnessArtifactOwner(lockPath);
+  } catch (error) {
+    let currentDetails: Stats;
+    try {
+      currentDetails = await lstat(lockPath);
+    } catch (inspectionError) {
+      if (errnoCode(inspectionError) === "ENOENT") return true;
+      throw new AggregateError([error, inspectionError], `harness artifact lock recovery inspection failed: ${lockPath}`, {
+        cause: error,
+      });
+    }
+    if (
+      currentDetails.isDirectory()
+      && !currentDetails.isSymbolicLink()
+      && !sameFileGeneration(fileIdentity(currentDetails), observedGeneration)
+    ) {
+      return true;
+    }
+    throw error;
+  }
+  try {
+    const currentDetails = await lstat(lockPath);
+    if (
+      !currentDetails.isDirectory()
+      || currentDetails.isSymbolicLink()
+      || !sameFileIdentity(fileIdentity(currentDetails), observedGeneration)
+    ) {
+      return true;
+    }
+  } catch (error) {
+    if (errnoCode(error) === "ENOENT") return true;
+    throw error;
+  }
+  if (owner && harnessArtifactOwnerAlive(owner)) return false;
+  if (!owner && Date.now() - details.mtimeMs < HARNESS_ARTIFACT_INCOMPLETE_LOCK_TTL_MS) return false;
+  return quarantineHarnessArtifactLock(lockPath, owner?.ownerToken || null, "stale");
+}
+
+async function waitForHarnessArtifactLock(signal: AbortSignal | undefined, delayMs: number) {
+  throwIfAborted(signal);
+  await new Promise<void>((resolve, reject) => {
+    let timer: NodeJS.Timeout | null = null;
+    let settled = false;
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      callback();
+    };
+    const onAbort = () => finish(() => {
+      const reason = signal?.reason;
+      reject(reason instanceof Error ? reason : new Error(typeof reason === "string" ? reason : "operation aborted"));
+    });
+    timer = setTimeout(() => finish(resolve), delayMs);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) onAbort();
+  });
+}
+
+async function acquireHarnessArtifactLease(
+  directory: string,
+  signal: AbortSignal | undefined,
+): Promise<HarnessArtifactLease> {
+  const lockHooks = harnessArtifactLockTestHookContext.getStore() || {};
+  await mkdir(directory, { recursive: true });
+  const lockPath = path.join(directory, ".cpb-harness-artifacts.lock");
+  const processIdentity = parseProcessIdentity(captureProcessIdentity(process.pid, { strict: true }));
+  if (!processIdentity) {
+    throw Object.assign(new Error("harness artifact owner process identity unavailable"), {
+      code: "PROCESS_IDENTITY_UNAVAILABLE",
+    });
+  }
+  const owner: HarnessArtifactOwner = {
+    format: "cpb-harness-artifact-owner/v1",
+    ownerToken: randomUUID(),
+    directory,
+    pid: process.pid,
+    host: hostname(),
+    acquiredAt: new Date().toISOString(),
+    processIdentity,
+  };
+  const deadlineAt = Date.now() + harnessArtifactLockTimeoutMs();
+  while (Date.now() < deadlineAt) {
+    throwIfAborted(signal);
+    let created = false;
+    let createdIdentity: FileIdentity | null = null;
+    try {
+      await mkdir(lockPath, { mode: 0o700 });
+      created = true;
+      createdIdentity = await harnessArtifactLockDirectoryIdentity(lockPath);
+      await lockHooks.afterAcquireDirectoryCreated?.({ lockPath, ownerToken: owner.ownerToken });
+      try {
+        await syncHarnessArtifactLockDirectory(path.dirname(lockPath), "acquire-mkdir", lockHooks);
+      } catch (error) {
+        throw harnessArtifactLockCommittedAmbiguity(
+          "harness artifact lock directory was created but parent durability is ambiguous",
+          "HARNESS_ARTIFACT_LOCK_ACQUIRE_COMMITTED_DURABILITY_AMBIGUOUS",
+          lockPath,
+          error,
+        );
+      }
+      const ownerPath = path.join(lockPath, "owner.json");
+      const ownerTempPath = path.join(lockPath, `.owner-${owner.ownerToken}.tmp`);
+      const ownerHandle = await open(ownerTempPath, "wx", 0o600);
+      try {
+        await ownerHandle.writeFile(`${JSON.stringify(owner, null, 2)}\n`, "utf8");
+        await ownerHandle.sync();
+      } finally {
+        await ownerHandle.close();
+      }
+      try {
+        await syncHarnessArtifactLockDirectory(lockPath, "acquire-owner-temp", lockHooks);
+        await link(ownerTempPath, ownerPath);
+        await syncHarnessArtifactLockDirectory(lockPath, "acquire-owner", lockHooks);
+      } catch (error) {
+        throw harnessArtifactLockCommittedAmbiguity(
+          "harness artifact lock owner was persisted but lock-directory durability is ambiguous",
+          "HARNESS_ARTIFACT_LOCK_OWNER_COMMITTED_DURABILITY_AMBIGUOUS",
+          ownerPath,
+          error,
+        );
+      }
+      const assertOwned = async () => {
+        const [currentIdentity, currentOwner] = await Promise.all([
+          harnessArtifactLockDirectoryIdentity(lockPath),
+          readHarnessArtifactOwner(lockPath),
+        ]);
+        if (
+          !createdIdentity
+          || !sameFileGeneration(currentIdentity, createdIdentity)
+          || currentOwner?.ownerToken !== owner.ownerToken
+        ) {
+          throw Object.assign(
+            new Error(`harness artifact lock ownership fence was lost: ${lockPath}`),
+            {
+              code: "HARNESS_ARTIFACT_LOCK_FENCE_LOST",
+              successorPreserved: true,
+              recoveryPaths: [lockPath],
+            },
+          );
+        }
+      };
+      await assertOwned();
+      return {
+        owner,
+        lockPath,
+        assertOwned,
+        release: async () => {
+          const released = await quarantineHarnessArtifactLock(lockPath, owner.ownerToken, "released");
+          if (!released) throw new Error(`harness artifact lock disappeared before release: ${lockPath}`);
+        },
+      };
+    } catch (error) {
+      if ((error as { committed?: boolean }).committed === true) throw error;
+      if (created) {
+        const failedPath = `${lockPath}.failed-${owner.ownerToken}-${randomUUID()}`;
+        try {
+          const currentIdentity = await harnessArtifactLockDirectoryIdentity(lockPath);
+          if (!createdIdentity || !sameFileGeneration(currentIdentity, createdIdentity)) {
+            throw Object.assign(
+              new Error(`harness artifact lock successor replaced a failed acquisition: ${lockPath}`),
+              { code: "HARNESS_ARTIFACT_LOCK_SUCCESSOR_PRESERVED", successorPreserved: true },
+            );
+          }
+          await rename(lockPath, failedPath);
+          const failedIdentity = await harnessArtifactLockDirectoryIdentity(failedPath);
+          if (!sameFileGeneration(failedIdentity, createdIdentity)) {
+            throw Object.assign(
+              new Error(`harness artifact lock successor was captured after failed acquisition: ${failedPath}`),
+              {
+                code: "HARNESS_ARTIFACT_LOCK_SUCCESSOR_PRESERVED",
+                committed: true,
+                successorPreserved: true,
+                recoveryPaths: [lockPath, failedPath],
+              },
+            );
+          }
+          await syncHarnessArtifactLockDirectory(path.dirname(lockPath), "failed-acquire-rename", lockHooks);
+          try {
+            await syncHarnessArtifactLockDirectory(path.dirname(lockPath), "failed-acquire-remove", lockHooks);
+          } catch (syncError) {
+            throw harnessArtifactLockCommittedAmbiguity(
+              "failed harness artifact lock was retained but parent durability is ambiguous",
+              "HARNESS_ARTIFACT_LOCK_REMOVE_COMMITTED_DURABILITY_AMBIGUOUS",
+              failedPath,
+              syncError,
+            );
+          }
+        } catch (cleanupError) {
+          throw new AggregateError(
+            [error, cleanupError],
+            `harness artifact lock acquisition failed; recovery may remain at ${failedPath}`,
+          );
+        }
+      }
+      if (errnoCode(error) !== "EEXIST") throw error;
+      if (await recoverStaleHarnessArtifactLock(lockPath)) continue;
+      await waitForHarnessArtifactLock(signal, Math.min(25, Math.max(1, deadlineAt - Date.now())));
+    }
+  }
+  throw Object.assign(
+    new Error(`timed out waiting for harness artifact lock: ${lockPath}`),
+    { code: "HARNESS_ARTIFACT_LOCK_TIMEOUT" },
+  );
+}
+
 const sourceCacheTails = new Map<string, Promise<void>>();
 
-async function withSourceCacheLock<T>(cachePath: string, operation: () => Promise<T>) {
+export function sourceCacheLockDirectory(cachePath: string) {
+  const canonicalCachePath = path.resolve(cachePath);
+  const cacheKey = path.basename(canonicalCachePath).replace(/[^a-zA-Z0-9._-]+/g, "_") || "cache";
+  const identity = sha256(canonicalCachePath).slice(0, 24);
+  return path.join(path.dirname(canonicalCachePath), ".cpb-source-cache-locks", `${cacheKey}-${identity}`);
+}
+
+function errorRecoveryPaths(error: unknown) {
+  return error
+    && typeof error === "object"
+    && Array.isArray((error as { recoveryPaths?: unknown }).recoveryPaths)
+    ? (error as { recoveryPaths: unknown[] }).recoveryPaths.map(String)
+    : [];
+}
+
+export async function withSourceCacheLock<T>(
+  cachePath: string,
+  operation: () => Promise<T>,
+  signal?: AbortSignal,
+) {
   const previous = sourceCacheTails.get(cachePath) || Promise.resolve();
-  let release = () => {};
-  const hold = new Promise<void>((resolve) => { release = resolve; });
+  let releaseTail = () => {};
+  const hold = new Promise<void>((resolve) => { releaseTail = resolve; });
   const tail = previous.catch(() => undefined).then(() => hold);
   sourceCacheTails.set(cachePath, tail);
   await previous.catch(() => undefined);
+  let lease: HarnessArtifactLease | null = null;
+  let result: T | undefined;
+  const failures: unknown[] = [];
   try {
-    return await operation();
+    throwIfAborted(signal);
+    try {
+      lease = await acquireHarnessArtifactLease(sourceCacheLockDirectory(cachePath), signal);
+      await lease.assertOwned();
+      result = await operation();
+    } catch (error) {
+      failures.push(error);
+    }
+    if (lease) {
+      let fenceOwned = true;
+      try {
+        await lease.assertOwned();
+      } catch (fenceError) {
+        fenceOwned = false;
+        failures.push(fenceError);
+      }
+      if (fenceOwned) {
+        try {
+          await lease.release();
+        } catch (releaseError) {
+          failures.push(releaseError);
+        }
+      }
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) {
+      throw Object.assign(
+        new AggregateError(failures, `source cache operation, ownership fence, or lock release failed: ${cachePath}`, {
+          cause: failures[0],
+        }),
+        {
+          code: "SWEBENCH_SOURCE_CACHE_LOCK_FAILURE",
+          recoveryPaths: [...new Set(failures.flatMap(errorRecoveryPaths))],
+        },
+      );
+    }
+    return result as T;
   } finally {
-    release();
+    releaseTail();
     if (sourceCacheTails.get(cachePath) === tail) sourceCacheTails.delete(cachePath);
   }
 }
@@ -936,24 +1838,55 @@ export async function compactLaneEphemeralArtifacts(laneRoot: string, runRoot: s
     path.join(laneRoot, "hub", "worktrees"),
   ]);
   const projectsRoot = path.join(laneRoot, "hub", "projects");
-  for (const entry of await readdir(projectsRoot, { withFileTypes: true }).catch(() => [])) {
+  let projectEntries: Dirent[] = [];
+  try {
+    projectEntries = await readdir(projectsRoot, { withFileTypes: true });
+  } catch (error) {
+    if (errnoCode(error) !== "ENOENT") throw error;
+  }
+  for (const entry of projectEntries) {
     if (entry.isDirectory()) targets.add(path.join(projectsRoot, entry.name, "agent-homes"));
   }
 
   const removed: string[] = [];
-  for (const target of [...targets].sort()) {
-    if (!(await exists(target))) continue;
-    if (!isPathInside(laneRoot, target) || target === laneRoot) {
-      throw new Error(`refusing to compact an unsafe lane artifact path: ${target}`);
+  const retainedQuarantines: SweBenchPathQuarantineProof[] = [];
+  try {
+    for (const target of [...targets].sort()) {
+      if (!isPathInside(laneRoot, target) || target === laneRoot) {
+        throw new Error(`refusing to compact an unsafe lane artifact path: ${target}`);
+      }
+      const proof = await quarantineSweBenchRunPath(target, laneRoot);
+      if (!proof) continue;
+      retainedQuarantines.push(proof);
+      removed.push(runRelativePath(runRoot, target));
     }
-    await rm(target, { recursive: true, force: true });
-    removed.push(runRelativePath(runRoot, target));
+  } catch (error) {
+    const existingRecoveryPaths = error
+      && typeof error === "object"
+      && Array.isArray((error as { recoveryPaths?: unknown }).recoveryPaths)
+      ? (error as { recoveryPaths: unknown[] }).recoveryPaths.map(String)
+      : [];
+    const recoveryPaths = [...new Set([
+      ...existingRecoveryPaths,
+      ...retainedQuarantines.flatMap(sweBenchQuarantineRecoveryPaths),
+    ])];
+    const failure = error instanceof Error ? error : new Error(String(error));
+    throw Object.assign(failure, {
+      recoveryPaths,
+      completedQuarantines: retainedQuarantines,
+      partiallyCommitted: retainedQuarantines.length > 0,
+    });
   }
   const record = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     compactedAt: now(),
     laneRoot: runRelativePath(runRoot, laneRoot),
     removed,
+    retainedQuarantines: retainedQuarantines.map((proof) => ({
+      targetPath: runRelativePath(runRoot, proof.targetPath),
+      quarantineContainer: runRelativePath(runRoot, proof.quarantineContainer),
+      quarantinePath: runRelativePath(runRoot, proof.quarantinePath),
+    })),
     preserved: [
       runRelativePath(runRoot, path.join(laneRoot, "candidate.patch")),
       runRelativePath(runRoot, path.join(laneRoot, "stdout.log")),
@@ -1159,29 +2092,23 @@ export async function prepareLaneForSolverInvocation(
   return null;
 }
 
-function pidIsAlive(pid: number) {
-  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
-  }
-}
-
 export async function reconcileInterruptedSolverInvocations(
   runRoot: string,
   options: {
     currentPid?: number;
     currentHost?: string;
     isPidAlive?: (pid: number) => boolean;
+    isIdentityAlive?: (identity: ProcessIdentity) => boolean;
   } = {},
 ) {
   const invocationRoot = path.join(runRoot, "solver-invocations");
   const entries = await readdir(invocationRoot, { withFileTypes: true }).catch(() => []);
   const currentPid = options.currentPid ?? process.pid;
   const currentHost = options.currentHost ?? hostname();
-  const isAlive = options.isPidAlive || pidIsAlive;
+  const isIdentityAlive = options.isIdentityAlive || isProcessIdentityAlive;
+  // Kept as an input seam for compatibility. A persisted bare PID can refer
+  // to a newer process and therefore is never sufficient recovery evidence.
+  void options.isPidAlive;
   const recovered: string[] = [];
 
   for (const entry of entries) {
@@ -1191,7 +2118,21 @@ export async function reconcileInterruptedSolverInvocations(
     if (!invocation || invocation.status !== "running") continue;
     const ownerPid = Number(invocation.pid);
     const ownerHost = text(invocation.host) || currentHost;
-    if (ownerHost !== currentHost || (ownerPid !== currentPid && isAlive(ownerPid))) {
+    const parsedOwnerIdentity = parseProcessIdentity(invocation.processIdentity);
+    const ownerIdentity = parsedOwnerIdentity?.pid === ownerPid ? parsedOwnerIdentity : null;
+    if (ownerHost !== currentHost) {
+      throw new Error(`solver invocation already active: ${text(invocation.invocationId) || entry.name} (${ownerHost}:${ownerPid})`);
+    }
+    if (!ownerIdentity) {
+      throw Object.assign(
+        new Error(
+          `solver invocation already active: ${text(invocation.invocationId) || entry.name} `
+          + `(${ownerHost}:${ownerPid}); exact owner identity is unavailable`,
+        ),
+        { code: "SOLVER_INVOCATION_OWNER_IDENTITY_UNSAFE" },
+      );
+    }
+    if (processIdentityIsAlive(ownerIdentity, isIdentityAlive)) {
       throw new Error(`solver invocation already active: ${text(invocation.invocationId) || entry.name} (${ownerHost}:${ownerPid})`);
     }
     await writeJsonAtomic(invocationPath, {
@@ -1252,6 +2193,1222 @@ async function exists(target: string) {
   }
 }
 
+async function throwWithCleanup(original: unknown, cleanup: () => Promise<unknown>): Promise<never> {
+  let cleanupDisposition: unknown;
+  try {
+    cleanupDisposition = await cleanup();
+  } catch (cleanupError) {
+    throw new AggregateError([original, cleanupError], "cleanup failed after primary error");
+  }
+  if (
+    cleanupDisposition
+    && typeof cleanupDisposition === "object"
+    && typeof (cleanupDisposition as { quarantinePath?: unknown }).quarantinePath === "string"
+  ) {
+    throw attachSweBenchRecoveryEvidence(
+      original,
+      cleanupDisposition as SweBenchPathQuarantineProof,
+      "cleanup completed by retaining a recovery quarantine",
+    );
+  }
+  throw original;
+}
+
+export type SweBenchPathQuarantineHooks = {
+  afterOwnershipValidated?: (context: {
+    targetPath: string;
+    boundaryPath: string;
+    quarantineContainer: string;
+  }) => void | Promise<void>;
+};
+
+export type SweBenchPathQuarantineProof = {
+  targetPath: string;
+  boundaryPath: string;
+  quarantineContainer: string;
+  quarantinePath: string;
+  originalIdentity: FileIdentity;
+  canonicalPathRemoved: true;
+  quarantinePreserved: true;
+};
+
+function sweBenchQuarantineRecoveryPaths(proof: SweBenchPathQuarantineProof | null | undefined) {
+  return proof ? [proof.targetPath, proof.quarantineContainer, proof.quarantinePath] : [];
+}
+
+function attachSweBenchRecoveryEvidence(
+  original: unknown,
+  proof: SweBenchPathQuarantineProof,
+  message: string,
+) {
+  const existingRecoveryPaths = original
+    && typeof original === "object"
+    && Array.isArray((original as { recoveryPaths?: unknown }).recoveryPaths)
+    ? (original as { recoveryPaths: unknown[] }).recoveryPaths.map(String)
+    : [];
+  const details = {
+    cleanupDisposition: proof,
+    recoveryPaths: [...new Set([...existingRecoveryPaths, ...sweBenchQuarantineRecoveryPaths(proof)])],
+  };
+  const failure = original instanceof Error ? original : new Error(String(original));
+  try {
+    return Object.assign(failure, details);
+  } catch {
+    return Object.assign(new Error(message, { cause: original }), details);
+  }
+}
+
+async function throwAfterQuarantiningSweBenchGeneration(
+  original: unknown,
+  targetPath: string,
+  boundaryPath: string,
+  expectedIdentity: FileIdentity,
+  priorProofs: SweBenchPathQuarantineProof[] = [],
+): Promise<never> {
+  let failure: unknown = original;
+  try {
+    const proof = await quarantineSweBenchRunPath(targetPath, boundaryPath, { expectedIdentity });
+    if (!proof) throw new Error(`failed run generation disappeared before quarantine: ${targetPath}`);
+    failure = attachSweBenchRecoveryEvidence(
+      failure,
+      proof,
+      "primary operation failed; active run generation was retained for recovery",
+    );
+  } catch (cleanupError) {
+    failure = new AggregateError(
+      [original, cleanupError],
+      `primary operation and run-generation quarantine failed: ${targetPath}`,
+      { cause: original },
+    );
+  }
+  for (const proof of priorProofs) {
+    failure = attachSweBenchRecoveryEvidence(
+      failure,
+      proof,
+      "primary operation failed after predecessor quarantine",
+    );
+  }
+  throw failure;
+}
+
+async function syncDirectoryStrict(directory: string) {
+  const handle = await open(directory, "r");
+  let syncError: unknown = null;
+  try {
+    await handle.sync();
+  } catch (error) {
+    syncError = error;
+  }
+  try {
+    await handle.close();
+  } catch (closeError) {
+    if (syncError) {
+      throw new AggregateError([syncError, closeError], `directory sync and close failed: ${directory}`);
+    }
+    throw closeError;
+  }
+  if (syncError) throw syncError;
+}
+
+async function lstatIdentityOrNull(targetPath: string) {
+  try {
+    return fileIdentity(await lstat(targetPath));
+  } catch (error) {
+    if (errnoCode(error) === "ENOENT") return null;
+    throw error;
+  }
+}
+
+/**
+ * Removes a run-owned generation from its canonical name without ever deleting
+ * it by path. The retained quarantine is deliberate recovery evidence: a later
+ * trusted janitor can reclaim it from the captured identity, while this live
+ * workflow cannot erase a successor inserted after its final ownership check.
+ */
+export async function quarantineSweBenchRunPath(
+  targetPath: string,
+  boundaryPath: string,
+  {
+    expectedIdentity,
+    hooks = {},
+  }: {
+    expectedIdentity?: FileIdentity | null;
+    hooks?: SweBenchPathQuarantineHooks;
+  } = {},
+): Promise<SweBenchPathQuarantineProof | null> {
+  const canonicalTarget = path.resolve(targetPath);
+  const canonicalBoundary = path.resolve(boundaryPath);
+  if (canonicalTarget === canonicalBoundary || !isPathInside(canonicalBoundary, canonicalTarget)) {
+    throw new Error(`refusing to quarantine path outside its run boundary: ${canonicalTarget}`);
+  }
+  const observedIdentity = await lstatIdentityOrNull(canonicalTarget);
+  if (expectedIdentity && (!observedIdentity || !sameFileGeneration(observedIdentity, expectedIdentity))) {
+    throw Object.assign(
+      new Error(`refusing to quarantine a changed run-path generation: ${canonicalTarget}`),
+      { code: "SWEBENCH_RUN_PATH_SUCCESSOR_PRESERVED", successorPreserved: true },
+    );
+  }
+  const realBoundary = await realpath(canonicalBoundary);
+  let existingParent = path.dirname(canonicalTarget);
+  let realParent = "";
+  while (!realParent) {
+    try {
+      realParent = await realpath(existingParent);
+    } catch (error) {
+      if (errnoCode(error) !== "ENOENT" || existingParent === canonicalBoundary) throw error;
+      const nextParent = path.dirname(existingParent);
+      if (nextParent === existingParent || !isPathInside(canonicalBoundary, nextParent)) throw error;
+      existingParent = nextParent;
+    }
+  }
+  if (!isPathInside(realBoundary, realParent)) {
+    throw new Error(`refusing to quarantine path through a parent outside its run boundary: ${canonicalTarget}`);
+  }
+  if (!observedIdentity) return null;
+
+  const quarantineContainer = `${canonicalTarget}.quarantine-${Date.now()}-${randomUUID()}`;
+  await mkdir(quarantineContainer, { mode: 0o700 });
+  const containerIdentity = await lstatIdentityOrNull(quarantineContainer);
+  if (!containerIdentity) throw new Error(`run-path quarantine container disappeared: ${quarantineContainer}`);
+  const quarantinePath = path.join(quarantineContainer, `.cpb-retained-generation-${randomUUID()}`);
+  try {
+    await hooks.afterOwnershipValidated?.({
+      targetPath: canonicalTarget,
+      boundaryPath: canonicalBoundary,
+      quarantineContainer,
+    });
+    const [confirmedIdentity, confirmedContainerIdentity, destinationIdentity] = await Promise.all([
+      lstatIdentityOrNull(canonicalTarget),
+      lstatIdentityOrNull(quarantineContainer),
+      lstatIdentityOrNull(quarantinePath),
+    ]);
+    if (!confirmedIdentity || !sameFileGeneration(confirmedIdentity, observedIdentity)) {
+      throw Object.assign(
+        new Error(`refusing to quarantine a successor run-path generation: ${canonicalTarget}`),
+        { code: "SWEBENCH_RUN_PATH_SUCCESSOR_PRESERVED", successorPreserved: true },
+      );
+    }
+    if (!confirmedContainerIdentity || !sameFileGeneration(confirmedContainerIdentity, containerIdentity)) {
+      throw new Error(`run-path quarantine container generation changed: ${quarantineContainer}`);
+    }
+    if (destinationIdentity) {
+      throw new Error(`run-path quarantine destination is occupied: ${quarantinePath}`);
+    }
+
+    await rename(canonicalTarget, quarantinePath);
+    const quarantinedIdentity = await lstatIdentityOrNull(quarantinePath);
+    if (!quarantinedIdentity || !sameFileGeneration(quarantinedIdentity, observedIdentity)) {
+      throw Object.assign(
+        new Error(`run-path successor was captured during quarantine: ${quarantinePath}`),
+        {
+          code: "SWEBENCH_RUN_PATH_SUCCESSOR_PRESERVED",
+          committed: true,
+          successorPreserved: true,
+          recoveryPaths: [canonicalTarget, quarantineContainer, quarantinePath],
+        },
+      );
+    }
+    try {
+      await syncDirectoryStrict(quarantineContainer);
+      await syncDirectoryStrict(path.dirname(canonicalTarget));
+    } catch (error) {
+      throw Object.assign(
+        new Error(`run-path quarantine committed but directory durability is ambiguous: ${canonicalTarget}`, {
+          cause: error,
+        }),
+        {
+          code: "SWEBENCH_RUN_PATH_QUARANTINE_DURABILITY_AMBIGUOUS",
+          committed: true,
+          recoveryPaths: [canonicalTarget, quarantineContainer, quarantinePath],
+        },
+      );
+    }
+    return {
+      targetPath: canonicalTarget,
+      boundaryPath: canonicalBoundary,
+      quarantineContainer,
+      quarantinePath,
+      originalIdentity: observedIdentity,
+      canonicalPathRemoved: true,
+      quarantinePreserved: true,
+    };
+  } catch (error) {
+    if ((error as { recoveryPaths?: unknown }).recoveryPaths) throw error;
+    throw Object.assign(
+      error instanceof Error ? error : new Error(String(error)),
+      { recoveryPaths: [canonicalTarget, quarantineContainer, quarantinePath] },
+    );
+  }
+}
+
+type SweBenchTemporaryWorkspace = {
+  rootPath: string;
+  cleanup: () => Promise<SweBenchPathQuarantineProof>;
+};
+
+async function createAdjacentSweBenchTemporaryWorkspace(
+  directory: string,
+  prefix: string,
+): Promise<SweBenchTemporaryWorkspace> {
+  if (!prefix.startsWith("cpb-") || !prefix.endsWith("-") || path.basename(prefix) !== prefix) {
+    throw new Error("adjacent temporary workspace prefix must be a cpb-* basename ending in '-'");
+  }
+  const canonicalDirectory = await realpath(directory);
+  let rootPath = "";
+  try {
+    // This transaction moves backups with rename(2) and publishes stages with
+    // link(2), so its temporary root must be on the artifact directory's
+    // filesystem. The shared system-temp helper cannot guarantee that
+    // same-device invariant; this adjacent wrapper provides the same
+    // identity-bound, successor-preserving cleanup protocol locally.
+    // `canonicalDirectory` is already resolved, so retain mkdtemp's returned
+    // child path immediately. A second realpath here would create an
+    // untracked committed directory if that lookup failed, and could follow a
+    // hostile replacement before we capture the directory generation.
+    rootPath = await mkdtemp(path.join(canonicalDirectory, prefix));
+    const identity = await lstatIdentityOrNull(rootPath);
+    if (!identity) throw new Error(`adjacent temporary workspace disappeared after creation: ${rootPath}`);
+    let cleanupPromise: Promise<SweBenchPathQuarantineProof> | null = null;
+    return {
+      rootPath,
+      cleanup() {
+        if (!cleanupPromise) {
+          cleanupPromise = quarantineSweBenchRunPath(rootPath, canonicalDirectory, {
+            expectedIdentity: identity,
+          }).then((proof) => {
+            if (!proof) throw new Error(`adjacent temporary workspace disappeared before cleanup: ${rootPath}`);
+            return proof;
+          });
+        }
+        return cleanupPromise;
+      },
+    };
+  } catch (error) {
+    throw Object.assign(
+      error instanceof Error ? error : new Error(String(error)),
+      { creationCommitted: Boolean(rootPath), recoveryPaths: rootPath ? [rootPath] : [] },
+    );
+  }
+}
+
+type HarnessArtifactTransactionEntry = {
+  targetPath: string;
+  stagePath: string;
+  backupPath: string;
+  quarantinePath: string;
+  content: string;
+  stagedIdentity: FileIdentity | null;
+  publishedIdentity: FileIdentity | null;
+  backupIdentity: FileIdentity | null;
+  quarantineIdentity: FileIdentity | null;
+  hadPrevious: boolean;
+  stagePresent: boolean;
+  backupMoved: boolean;
+  published: boolean;
+  quarantineMoved: boolean;
+  residualPaths: string[];
+};
+
+type HarnessArtifactDirectorySync = {
+  directory: string;
+  phase: HarnessArtifactLockFsPhase;
+};
+
+function harnessArtifactRecoveryPaths(
+  scratchRoot: string,
+  entries: HarnessArtifactTransactionEntry[],
+  extraPaths: string[] = [],
+) {
+  const paths = new Set<string>([scratchRoot, ...extraPaths]);
+  for (const entry of entries) {
+    paths.add(entry.targetPath);
+    if (entry.stagePresent) paths.add(entry.stagePath);
+    if (entry.backupMoved) paths.add(entry.backupPath);
+    if (entry.quarantineMoved) paths.add(entry.quarantinePath);
+    for (const residualPath of entry.residualPaths) paths.add(residualPath);
+  }
+  return [...paths];
+}
+
+function resolvedHarnessArtifactRecoveryPaths(
+  scratchRoot: string,
+  entries: HarnessArtifactTransactionEntry[],
+  disposition: SweBenchPathQuarantineProof | null,
+) {
+  if (!disposition) return harnessArtifactRecoveryPaths(scratchRoot, entries);
+  const relocated = harnessArtifactRecoveryPaths(scratchRoot, entries).map((candidate) => {
+    if (candidate === scratchRoot) return disposition.quarantinePath;
+    if (!isPathInside(scratchRoot, candidate)) return candidate;
+    return path.join(disposition.quarantinePath, path.relative(scratchRoot, candidate));
+  });
+  return [...new Set([
+    ...relocated,
+    disposition.quarantineContainer,
+    disposition.quarantinePath,
+  ])];
+}
+
+function harnessArtifactCommittedAmbiguity(
+  message: string,
+  code: string,
+  cause: unknown,
+  scratchRoot: string,
+  entries: HarnessArtifactTransactionEntry[],
+  extraPaths: string[] = [],
+) {
+  return Object.assign(new Error(message, { cause }), {
+    code,
+    committed: true,
+    recoveryRoot: scratchRoot,
+    recoveryPaths: harnessArtifactRecoveryPaths(scratchRoot, entries, extraPaths),
+  });
+}
+
+async function regularHarnessArtifactIdentity(
+  targetPath: string,
+  { allowMissing = false }: { allowMissing?: boolean } = {},
+) {
+  let details: Stats;
+  try {
+    details = await lstat(targetPath);
+  } catch (error) {
+    if (allowMissing && errnoCode(error) === "ENOENT") return null;
+    throw error;
+  }
+  if (!details.isFile() || details.isSymbolicLink()) {
+    throw Object.assign(new Error(`harness artifact path is not a regular file: ${targetPath}`), {
+      code: "HARNESS_ARTIFACT_PATH_UNSAFE",
+      artifactPath: targetPath,
+    });
+  }
+  return fileIdentity(details);
+}
+
+async function finishHarnessArtifactMutation(input: {
+  entry?: HarnessArtifactTransactionEntry;
+  entries: HarnessArtifactTransactionEntry[];
+  scratchRoot: string;
+  hookPhase?: HarnessArtifactMutationPhase;
+  syncs: HarnessArtifactDirectorySync[];
+  ambiguityCode: string;
+  ambiguityMessage: string;
+  extraRecoveryPaths?: string[];
+  validate?: () => void | Promise<void>;
+}) {
+  const hooks = harnessArtifactLockTestHookContext.getStore() || {};
+  let mutationError: unknown = null;
+  if (input.hookPhase && input.entry) {
+    try {
+      await hooks.afterArtifactMutation?.({
+        phase: input.hookPhase,
+        targetPath: input.entry.targetPath,
+        stagePath: input.entry.stagePath,
+        backupPath: input.entry.backupPath,
+        quarantinePath: input.entry.quarantinePath,
+      });
+    } catch (error) {
+      mutationError = error;
+    }
+  }
+  if (!mutationError && input.validate) {
+    try {
+      await input.validate();
+    } catch (error) {
+      mutationError = error;
+    }
+  }
+
+  const syncResults = await Promise.allSettled(input.syncs.map(({ directory, phase }) => (
+    syncHarnessArtifactLockDirectory(directory, phase, hooks)
+  )));
+  const syncErrors = syncResults.flatMap((result) => (
+    result.status === "rejected" ? [result.reason] : []
+  ));
+  if (syncErrors.length > 0) {
+    const causes = mutationError ? [mutationError, ...syncErrors] : syncErrors;
+    const cause = causes.length === 1
+      ? causes[0]
+      : new AggregateError(causes, `${input.ambiguityMessage}: multiple post-mutation failures`);
+    throw harnessArtifactCommittedAmbiguity(
+      input.ambiguityMessage,
+      input.ambiguityCode,
+      cause,
+      input.scratchRoot,
+      input.entries,
+      input.extraRecoveryPaths,
+    );
+  }
+  if (mutationError) throw mutationError;
+}
+
+async function restoreHarnessArtifactNoClobber(input: {
+  entry: HarnessArtifactTransactionEntry;
+  entries: HarnessArtifactTransactionEntry[];
+  scratchRoot: string;
+  sourcePath: string;
+  expectedIdentity: FileIdentity;
+  hookPhase: "rollback-restore-link";
+}) {
+  const before = await regularHarnessArtifactIdentity(input.sourcePath);
+  if (!before || !sameFileIdentity(before, input.expectedIdentity)) {
+    throw new Error(`refusing to restore harness artifact because recovery ownership changed: ${input.sourcePath}`);
+  }
+  try {
+    await link(input.sourcePath, input.entry.targetPath);
+  } catch (error) {
+    if (["EEXIST", "ENOTEMPTY", "EISDIR"].includes(errnoCode(error))) {
+      throw Object.assign(
+        new Error(`refusing to overwrite harness artifact successor: ${input.entry.targetPath}`, { cause: error }),
+        {
+          code: "HARNESS_ARTIFACT_SUCCESSOR_PRESERVED",
+          successorPreserved: true,
+          recoveryPaths: harnessArtifactRecoveryPaths(
+            input.scratchRoot,
+            input.entries,
+            [input.sourcePath, input.entry.targetPath],
+          ),
+        },
+      );
+    }
+    throw error;
+  }
+  let installedIdentity: FileIdentity | null = null;
+  let installationError: unknown = null;
+  try {
+    const [sourceIdentity, targetIdentity] = await Promise.all([
+      regularHarnessArtifactIdentity(input.sourcePath),
+      regularHarnessArtifactIdentity(input.entry.targetPath),
+    ]);
+    if (
+      !sourceIdentity
+      || !targetIdentity
+      || !sameFileIdentity(sourceIdentity, targetIdentity)
+      || !sameFileGeneration(sourceIdentity, input.expectedIdentity)
+      || !sameFileDataStamp(sourceIdentity, input.expectedIdentity)
+    ) {
+      throw new Error(`harness artifact restore identity changed: ${input.entry.targetPath}`);
+    }
+    installedIdentity = sourceIdentity;
+  } catch (error) {
+    installationError = error;
+  }
+  await finishHarnessArtifactMutation({
+    entry: input.entry,
+    entries: input.entries,
+    scratchRoot: input.scratchRoot,
+    hookPhase: input.hookPhase,
+    syncs: [{ directory: path.dirname(input.entry.targetPath), phase: "artifact-rollback-restore-target" }],
+    ambiguityCode: "HARNESS_ARTIFACT_RESTORE_COMMITTED_DURABILITY_AMBIGUOUS",
+    ambiguityMessage: `harness artifact restore installed ${input.entry.targetPath} but directory durability is ambiguous`,
+    extraRecoveryPaths: [input.sourcePath, input.entry.targetPath],
+    validate: async () => {
+      if (installationError) throw installationError;
+      const [sourceIdentity, targetIdentity] = await Promise.all([
+        regularHarnessArtifactIdentity(input.sourcePath),
+        regularHarnessArtifactIdentity(input.entry.targetPath),
+      ]);
+      if (
+        !installedIdentity
+        || !sourceIdentity
+        || !targetIdentity
+        || !sameFileIdentity(sourceIdentity, targetIdentity)
+        || !sameFileIdentity(sourceIdentity, installedIdentity)
+      ) {
+        throw new Error(`harness artifact restore identity changed: ${input.entry.targetPath}`);
+      }
+    },
+  });
+}
+
+async function removeOwnedHarnessArtifact(input: {
+  entry: HarnessArtifactTransactionEntry;
+  entries: HarnessArtifactTransactionEntry[];
+  scratchRoot: string;
+  artifactPath: string;
+  expectedIdentity: FileIdentity;
+  hookPhase?: HarnessArtifactMutationPhase;
+  syncPhase: HarnessArtifactLockFsPhase;
+  markRemoved: () => void;
+}) {
+  const hooks = harnessArtifactLockTestHookContext.getStore() || {};
+  const observed = await regularHarnessArtifactIdentity(input.artifactPath);
+  if (!observed || !sameFileIdentity(observed, input.expectedIdentity)) {
+    throw new Error(`refusing to remove harness recovery artifact because ownership changed: ${input.artifactPath}`);
+  }
+  await hooks.beforeArtifactRemove?.({
+    phase: input.hookPhase || null,
+    artifactPath: input.artifactPath,
+    targetPath: input.entry.targetPath,
+  });
+  const confirmed = await regularHarnessArtifactIdentity(input.artifactPath);
+  if (!confirmed || !sameFileIdentity(confirmed, observed)) {
+    throw Object.assign(
+      new Error(`refusing to remove harness artifact successor: ${input.artifactPath}`),
+      {
+        code: "HARNESS_ARTIFACT_SUCCESSOR_PRESERVED",
+        successorPreserved: true,
+        recoveryPaths: harnessArtifactRecoveryPaths(
+          input.scratchRoot,
+          input.entries,
+          [input.artifactPath, input.entry.targetPath],
+        ),
+      },
+    );
+  }
+
+  const removalPath = `${input.artifactPath}.remove-${randomUUID()}`;
+  await rename(input.artifactPath, removalPath);
+  input.markRemoved();
+  input.entry.residualPaths.push(removalPath);
+  let removalIdentity: FileIdentity | null = null;
+  let quarantineError: unknown = null;
+  try {
+    removalIdentity = await regularHarnessArtifactIdentity(removalPath);
+    if (
+      !removalIdentity
+      || !sameFileGeneration(removalIdentity, confirmed)
+      || !sameFileDataStamp(removalIdentity, confirmed)
+    ) {
+      throw Object.assign(
+        new Error(`harness artifact successor captured during removal: ${removalPath}`),
+        { code: "HARNESS_ARTIFACT_SUCCESSOR_PRESERVED", successorPreserved: true },
+      );
+    }
+  } catch (error) {
+    quarantineError = error;
+  }
+  await finishHarnessArtifactMutation({
+    entry: input.entry,
+    entries: input.entries,
+    scratchRoot: input.scratchRoot,
+    syncs: [{ directory: path.dirname(input.artifactPath), phase: "artifact-remove-quarantine" }],
+    ambiguityCode: "HARNESS_ARTIFACT_REMOVE_COMMITTED_DURABILITY_AMBIGUOUS",
+    ambiguityMessage: `harness recovery artifact entered removal quarantine but directory durability is ambiguous: ${removalPath}`,
+    extraRecoveryPaths: [input.artifactPath, removalPath, input.entry.targetPath],
+    validate: async () => {
+      if (quarantineError) throw quarantineError;
+      const current = await regularHarnessArtifactIdentity(removalPath);
+      if (!current || !removalIdentity || !sameFileIdentity(current, removalIdentity)) {
+        throw new Error(`harness artifact removal quarantine identity changed: ${removalPath}`);
+      }
+    },
+  });
+
+  const retainedIdentity = await regularHarnessArtifactIdentity(removalPath);
+  if (!retainedIdentity || !removalIdentity || !sameFileIdentity(retainedIdentity, removalIdentity)) {
+    throw new Error(`refusing to release changed harness removal quarantine: ${removalPath}`);
+  }
+  // Keep the identity-bound removal generation inside the transaction
+  // workspace. The workspace lifecycle will atomically quarantine the whole
+  // scratch root, avoiding a final unlink-by-path successor race.
+  await finishHarnessArtifactMutation({
+    entry: input.entry,
+    entries: input.entries,
+    scratchRoot: input.scratchRoot,
+    hookPhase: input.hookPhase,
+    syncs: [{ directory: path.dirname(input.artifactPath), phase: input.syncPhase }],
+    ambiguityCode: "HARNESS_ARTIFACT_REMOVE_COMMITTED_DURABILITY_AMBIGUOUS",
+    ambiguityMessage: `harness recovery artifact retention completed but directory durability is ambiguous: ${removalPath}`,
+    extraRecoveryPaths: [input.artifactPath, removalPath, input.entry.targetPath],
+  });
+}
+
+async function commitHarnessArtifacts(
+  artifacts: Array<{ path: string; content: string }>,
+  signal: AbortSignal | undefined,
+  hooks: {
+    beforePublish?: () => void | Promise<void>;
+    afterArtifact?: (targetPath: string, index: number) => void | Promise<void>;
+  } = {},
+) {
+  if (artifacts.length === 0) return;
+  const artifactDirs = new Set(artifacts.map((artifact) => path.dirname(path.resolve(artifact.path))));
+  if (artifactDirs.size !== 1) {
+    throw new Error("harness artifact transaction requires all artifacts to share one directory");
+  }
+  const directory = [...artifactDirs][0];
+  const lease = await acquireHarnessArtifactLease(directory, signal);
+  let scratchRoot: string | null = null;
+  let scratchWorkspace: SweBenchTemporaryWorkspace | null = null;
+  let scratchDisposition: SweBenchPathQuarantineProof | null = null;
+  let staged: HarnessArtifactTransactionEntry[] = [];
+  let transactionError: unknown = null;
+  let artifactsCommitted = false;
+  try {
+    scratchWorkspace = await createAdjacentSweBenchTemporaryWorkspace(
+      directory,
+      `cpb-harness-artifacts-${lease.owner.ownerToken}-`,
+    );
+    scratchRoot = scratchWorkspace.rootPath;
+    await finishHarnessArtifactMutation({
+      entries: staged,
+      scratchRoot,
+      syncs: [{ directory, phase: "artifact-scratch-create" }],
+      ambiguityCode: "HARNESS_ARTIFACT_SCRATCH_COMMITTED_DURABILITY_AMBIGUOUS",
+      ambiguityMessage: `harness artifact scratch directory was created but parent durability is ambiguous: ${scratchRoot}`,
+    });
+    staged = artifacts.map((artifact, index) => ({
+      content: artifact.content,
+      targetPath: path.resolve(artifact.path),
+      stagePath: path.join(scratchRoot as string, `stage-${index}.json`),
+      backupPath: path.join(scratchRoot as string, `backup-${index}.json`),
+      quarantinePath: path.join(scratchRoot as string, `rollback-${index}.json`),
+      stagedIdentity: null as FileIdentity | null,
+      publishedIdentity: null as FileIdentity | null,
+      backupIdentity: null as FileIdentity | null,
+      quarantineIdentity: null as FileIdentity | null,
+      hadPrevious: false,
+      stagePresent: false,
+      backupMoved: false,
+      published: false,
+      quarantineMoved: false,
+      residualPaths: [],
+    }));
+
+    for (const artifact of staged) {
+      const handle = await open(artifact.stagePath, "wx", 0o600);
+      artifact.stagePresent = true;
+      try {
+        await handle.writeFile(artifact.content, "utf8");
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      artifact.stagedIdentity = await regularHarnessArtifactIdentity(artifact.stagePath);
+      await finishHarnessArtifactMutation({
+        entry: artifact,
+        entries: staged,
+        scratchRoot,
+        syncs: [{ directory: scratchRoot, phase: "artifact-stage-create" }],
+        ambiguityCode: "HARNESS_ARTIFACT_STAGE_COMMITTED_DURABILITY_AMBIGUOUS",
+        ambiguityMessage: `harness artifact stage was created but directory durability is ambiguous: ${artifact.stagePath}`,
+        extraRecoveryPaths: [artifact.stagePath],
+      });
+      throwIfAborted(signal);
+    }
+    await hooks.beforePublish?.();
+    throwIfAborted(signal);
+    for (const [artifactIndex, artifact] of staged.entries()) {
+      throwIfAborted(signal);
+      const previousIdentity = await regularHarnessArtifactIdentity(artifact.targetPath, { allowMissing: true });
+      artifact.hadPrevious = previousIdentity !== null;
+      if (previousIdentity) {
+        await rename(artifact.targetPath, artifact.backupPath);
+        artifact.backupMoved = true;
+        let backupAfterRename: FileIdentity | null = null;
+        let backupInspectionError: unknown = null;
+        try {
+          backupAfterRename = await regularHarnessArtifactIdentity(artifact.backupPath);
+          if (
+            !backupAfterRename
+            || !sameFileGeneration(backupAfterRename, previousIdentity)
+            || !sameFileDataStamp(backupAfterRename, previousIdentity)
+          ) {
+            throw new Error(`harness artifact changed while moving to backup: ${artifact.targetPath}`);
+          }
+          artifact.backupIdentity = backupAfterRename;
+        } catch (error) {
+          backupInspectionError = error;
+        }
+        await finishHarnessArtifactMutation({
+          entry: artifact,
+          entries: staged,
+          scratchRoot,
+          hookPhase: "backup-move",
+          syncs: [
+            { directory: path.dirname(artifact.targetPath), phase: "artifact-backup-source" },
+            { directory: scratchRoot, phase: "artifact-backup-target" },
+          ],
+          ambiguityCode: "HARNESS_ARTIFACT_BACKUP_COMMITTED_DURABILITY_AMBIGUOUS",
+          ambiguityMessage: `harness artifact backup move completed but directory durability is ambiguous: ${artifact.targetPath}`,
+          extraRecoveryPaths: [artifact.backupPath, artifact.targetPath],
+          validate: async () => {
+            if (backupInspectionError) throw backupInspectionError;
+            const backupIdentity = await regularHarnessArtifactIdentity(artifact.backupPath);
+            if (
+              !backupAfterRename
+              || !backupIdentity
+              || !sameFileIdentity(backupIdentity, backupAfterRename)
+            ) {
+              throw new Error(`harness artifact changed while moving to backup: ${artifact.targetPath}`);
+            }
+          },
+        });
+      }
+
+      try {
+        await link(artifact.stagePath, artifact.targetPath);
+      } catch (error) {
+        if (["EEXIST", "ENOTEMPTY", "EISDIR"].includes(errnoCode(error))) {
+          throw new Error(`refusing to overwrite harness artifact successor during publish: ${artifact.targetPath}`, {
+            cause: error,
+          });
+        }
+        throw error;
+      }
+      artifact.published = true;
+      const [stageAfterLink, targetAfterLink] = await Promise.all([
+        regularHarnessArtifactIdentity(artifact.stagePath),
+        regularHarnessArtifactIdentity(artifact.targetPath),
+      ]);
+      if (
+        !stageAfterLink
+        || !targetAfterLink
+        || !artifact.stagedIdentity
+        || !sameFileIdentity(stageAfterLink, targetAfterLink)
+        || !sameFileGeneration(stageAfterLink, artifact.stagedIdentity)
+        || !sameFileDataStamp(stageAfterLink, artifact.stagedIdentity)
+      ) {
+        throw new Error(`harness artifact identity changed during no-clobber publish: ${artifact.targetPath}`);
+      }
+      artifact.stagedIdentity = stageAfterLink;
+      artifact.publishedIdentity = targetAfterLink;
+      await finishHarnessArtifactMutation({
+        entry: artifact,
+        entries: staged,
+        scratchRoot,
+        hookPhase: "publish-link",
+        syncs: [{ directory: path.dirname(artifact.targetPath), phase: "artifact-publish-target" }],
+        ambiguityCode: "HARNESS_ARTIFACT_PUBLISH_COMMITTED_DURABILITY_AMBIGUOUS",
+        ambiguityMessage: `harness artifact publish completed but directory durability is ambiguous: ${artifact.targetPath}`,
+        extraRecoveryPaths: [artifact.stagePath, artifact.targetPath],
+        validate: async () => {
+          const [stageIdentity, targetIdentity] = await Promise.all([
+            regularHarnessArtifactIdentity(artifact.stagePath),
+            regularHarnessArtifactIdentity(artifact.targetPath),
+          ]);
+          if (
+            !stageIdentity
+            || !targetIdentity
+            || !sameFileIdentity(stageIdentity, targetIdentity)
+            || !artifact.publishedIdentity
+            || !sameFileIdentity(targetIdentity, artifact.publishedIdentity)
+          ) {
+            throw new Error(`harness artifact changed before publish durability: ${artifact.targetPath}`);
+          }
+        },
+      });
+
+      if (!artifact.stagedIdentity) throw new Error(`missing staged harness artifact identity: ${artifact.stagePath}`);
+      await removeOwnedHarnessArtifact({
+        entry: artifact,
+        entries: staged,
+        scratchRoot,
+        artifactPath: artifact.stagePath,
+        expectedIdentity: artifact.stagedIdentity,
+        hookPhase: "publish-stage-remove",
+        syncPhase: "artifact-publish-stage-remove",
+        markRemoved: () => { artifact.stagePresent = false; },
+      });
+      const publishedAfterStageRemoval = await regularHarnessArtifactIdentity(artifact.targetPath);
+      if (
+        !publishedAfterStageRemoval
+        || !artifact.publishedIdentity
+        || !sameFileGeneration(publishedAfterStageRemoval, artifact.publishedIdentity)
+        || !sameFileDataStamp(publishedAfterStageRemoval, artifact.publishedIdentity)
+      ) {
+        throw new Error(`published harness artifact changed after stage removal: ${artifact.targetPath}`);
+      }
+      artifact.publishedIdentity = publishedAfterStageRemoval;
+      await hooks.afterArtifact?.(artifact.targetPath, artifactIndex);
+      throwIfAborted(signal);
+    }
+    artifactsCommitted = true;
+
+    const cleanupErrors: unknown[] = [];
+    for (const artifact of staged) {
+      if (!artifact.backupMoved) continue;
+      try {
+        if (!artifact.backupIdentity) {
+          throw new Error(`missing harness artifact backup identity: ${artifact.backupPath}`);
+        }
+        await removeOwnedHarnessArtifact({
+          entry: artifact,
+          entries: staged,
+          scratchRoot,
+          artifactPath: artifact.backupPath,
+          expectedIdentity: artifact.backupIdentity,
+          hookPhase: "cleanup-backup-remove",
+          syncPhase: "artifact-cleanup-backup-remove",
+          markRemoved: () => { artifact.backupMoved = false; },
+        });
+      } catch (error) {
+        if ((error as { committed?: boolean }).committed === true) throw error;
+        cleanupErrors.push(error);
+      }
+    }
+    if (cleanupErrors.length === 0) {
+      try {
+        if (!scratchWorkspace) throw new Error("harness artifact scratch workspace is unavailable");
+        scratchDisposition = await scratchWorkspace.cleanup();
+      } catch (error) {
+        if ((error as { committed?: boolean }).committed === true) throw error;
+        cleanupErrors.push(error);
+      }
+    }
+    if (cleanupErrors.length > 0) {
+      throw Object.assign(
+        new AggregateError(cleanupErrors, `harness artifacts committed but cleanup failed; recovery remains at ${scratchRoot}`),
+        {
+          committed: true,
+          recoveryRoot: scratchRoot,
+          recoveryPaths: harnessArtifactRecoveryPaths(scratchRoot, staged),
+        },
+      );
+    }
+  } catch (error) {
+    transactionError = error;
+    try {
+      if ((error as { committed?: boolean }).committed === true || !scratchRoot) {
+        transactionError = error;
+      } else {
+        const rollbackErrors: unknown[] = [];
+
+        const restoreRecoverySource = async (
+          artifact: HarnessArtifactTransactionEntry,
+          sourcePath: string,
+          expectedIdentity: FileIdentity,
+        ) => {
+          await restoreHarnessArtifactNoClobber({
+            entry: artifact,
+            entries: staged,
+            scratchRoot,
+            sourcePath,
+            expectedIdentity,
+            hookPhase: "rollback-restore-link",
+          });
+        };
+
+        const removeBackup = async (artifact: HarnessArtifactTransactionEntry) => {
+          if (!artifact.backupIdentity) throw new Error(`missing harness artifact backup identity: ${artifact.backupPath}`);
+          const currentBackupIdentity = await regularHarnessArtifactIdentity(artifact.backupPath);
+          if (
+            !currentBackupIdentity
+            || !sameFileGeneration(currentBackupIdentity, artifact.backupIdentity)
+            || !sameFileDataStamp(currentBackupIdentity, artifact.backupIdentity)
+          ) {
+            throw new Error(`harness artifact backup identity changed during restore: ${artifact.backupPath}`);
+          }
+          artifact.backupIdentity = currentBackupIdentity;
+          await removeOwnedHarnessArtifact({
+            entry: artifact,
+            entries: staged,
+            scratchRoot,
+            artifactPath: artifact.backupPath,
+            expectedIdentity: currentBackupIdentity,
+            hookPhase: "rollback-backup-remove",
+            syncPhase: "artifact-rollback-backup-remove",
+            markRemoved: () => { artifact.backupMoved = false; },
+          });
+        };
+
+        const restoreBackupIfUnoccupied = async (artifact: HarnessArtifactTransactionEntry) => {
+          if (!artifact.backupIdentity) {
+            throw new Error(`missing harness artifact backup identity: ${artifact.backupPath}`);
+          }
+          await restoreRecoverySource(artifact, artifact.backupPath, artifact.backupIdentity);
+          await removeBackup(artifact);
+        };
+
+        const restoreQuarantinedCurrent = async (artifact: HarnessArtifactTransactionEntry, cause: unknown) => {
+          try {
+            const quarantineIdentity = await regularHarnessArtifactIdentity(artifact.quarantinePath);
+            if (!quarantineIdentity) throw new Error(`missing quarantined harness artifact: ${artifact.quarantinePath}`);
+            artifact.quarantineIdentity = quarantineIdentity;
+            await restoreRecoverySource(artifact, artifact.quarantinePath, quarantineIdentity);
+            const currentQuarantineIdentity = await regularHarnessArtifactIdentity(artifact.quarantinePath);
+            if (
+              !currentQuarantineIdentity
+              || !sameFileGeneration(currentQuarantineIdentity, quarantineIdentity)
+              || !sameFileDataStamp(currentQuarantineIdentity, quarantineIdentity)
+            ) {
+              throw new Error(`quarantined harness artifact identity changed during restore: ${artifact.quarantinePath}`);
+            }
+            artifact.quarantineIdentity = currentQuarantineIdentity;
+            await removeOwnedHarnessArtifact({
+              entry: artifact,
+              entries: staged,
+              scratchRoot,
+              artifactPath: artifact.quarantinePath,
+              expectedIdentity: currentQuarantineIdentity,
+              hookPhase: "rollback-quarantine-remove",
+              syncPhase: "artifact-rollback-quarantine-remove",
+              markRemoved: () => { artifact.quarantineMoved = false; },
+            });
+          } catch (restoreError) {
+            if ((restoreError as { committed?: boolean }).committed === true) throw restoreError;
+            rollbackErrors.push(new AggregateError(
+              [cause, restoreError],
+              `could not restore quarantined artifact without overwriting a successor; recovery remains at ${artifact.quarantinePath}`,
+            ));
+          }
+        };
+
+        for (const artifact of [...staged].reverse()) {
+          if (artifact.published) {
+            if (artifact.hadPrevious) {
+              try {
+                const backupIdentity = await regularHarnessArtifactIdentity(artifact.backupPath);
+                if (
+                  !backupIdentity
+                  || !artifact.backupIdentity
+                  || !sameFileIdentity(backupIdentity, artifact.backupIdentity)
+                ) {
+                  throw new Error(`harness artifact backup ownership changed: ${artifact.backupPath}`);
+                }
+              } catch (backupError) {
+                rollbackErrors.push(new AggregateError(
+                  [backupError],
+                  `refusing to remove current harness artifact without its owned backup: ${artifact.targetPath}`,
+                ));
+                continue;
+              }
+            }
+
+            let currentIdentity: FileIdentity | null = null;
+            try {
+              currentIdentity = await regularHarnessArtifactIdentity(artifact.targetPath, { allowMissing: true });
+            } catch (inspectionError) {
+              rollbackErrors.push(inspectionError);
+              continue;
+            }
+            if (!currentIdentity) {
+              artifact.published = false;
+              if (artifact.hadPrevious && artifact.backupMoved) {
+                try {
+                  await restoreBackupIfUnoccupied(artifact);
+                } catch (restoreError) {
+                  if ((restoreError as { committed?: boolean }).committed === true) throw restoreError;
+                  rollbackErrors.push(restoreError);
+                }
+              }
+              rollbackErrors.push(new Error(`published harness artifact disappeared before rollback: ${artifact.targetPath}`));
+              continue;
+            }
+            if (!artifact.publishedIdentity || !sameFileIdentity(currentIdentity, artifact.publishedIdentity)) {
+              rollbackErrors.push(new Error(
+                `refusing to roll back ${artifact.targetPath}: successor artifact replaced committed file`,
+              ));
+              continue;
+            }
+
+            try {
+              await rename(artifact.targetPath, artifact.quarantinePath);
+              artifact.quarantineMoved = true;
+              artifact.published = false;
+              let quarantineAfterRename: FileIdentity | null = null;
+              let quarantineInspectionError: unknown = null;
+              try {
+                quarantineAfterRename = await regularHarnessArtifactIdentity(artifact.quarantinePath);
+                if (
+                  !quarantineAfterRename
+                  || !sameFileGeneration(quarantineAfterRename, currentIdentity)
+                  || !sameFileDataStamp(quarantineAfterRename, currentIdentity)
+                  || !artifact.publishedIdentity
+                  || !sameFileGeneration(quarantineAfterRename, artifact.publishedIdentity)
+                  || !sameFileDataStamp(quarantineAfterRename, artifact.publishedIdentity)
+                ) {
+                  throw new Error(`harness artifact changed while entering rollback quarantine: ${artifact.targetPath}`);
+                }
+                artifact.quarantineIdentity = quarantineAfterRename;
+              } catch (error) {
+                quarantineInspectionError = error;
+              }
+              await finishHarnessArtifactMutation({
+                entry: artifact,
+                entries: staged,
+                scratchRoot,
+                hookPhase: "rollback-quarantine",
+                syncs: [
+                  { directory: path.dirname(artifact.targetPath), phase: "artifact-rollback-quarantine-source" },
+                  { directory: scratchRoot, phase: "artifact-rollback-quarantine-target" },
+                ],
+                ambiguityCode: "HARNESS_ARTIFACT_ROLLBACK_COMMITTED_DURABILITY_AMBIGUOUS",
+                ambiguityMessage: `harness artifact rollback quarantine completed but directory durability is ambiguous: ${artifact.targetPath}`,
+                extraRecoveryPaths: [artifact.targetPath, artifact.quarantinePath],
+                validate: async () => {
+                  if (quarantineInspectionError) throw quarantineInspectionError;
+                  const quarantineIdentity = await regularHarnessArtifactIdentity(artifact.quarantinePath);
+                  if (
+                    !quarantineAfterRename
+                    || !quarantineIdentity
+                    || !sameFileIdentity(quarantineIdentity, quarantineAfterRename)
+                  ) {
+                    throw new Error(`harness artifact changed while entering rollback quarantine: ${artifact.targetPath}`);
+                  }
+                },
+              });
+            } catch (quarantineError) {
+              if ((quarantineError as { committed?: boolean }).committed === true) throw quarantineError;
+              rollbackErrors.push(quarantineError);
+              if (artifact.quarantineMoved) await restoreQuarantinedCurrent(artifact, quarantineError);
+              continue;
+            }
+
+            if (artifact.hadPrevious) {
+              try {
+                await restoreBackupIfUnoccupied(artifact);
+              } catch (restoreError) {
+                if ((restoreError as { committed?: boolean }).committed === true) throw restoreError;
+                rollbackErrors.push(restoreError);
+                continue;
+              }
+            }
+            if (!artifact.quarantineIdentity) {
+              rollbackErrors.push(new Error(`missing harness artifact quarantine identity: ${artifact.quarantinePath}`));
+              continue;
+            }
+            try {
+              await removeOwnedHarnessArtifact({
+                entry: artifact,
+                entries: staged,
+                scratchRoot,
+                artifactPath: artifact.quarantinePath,
+                expectedIdentity: artifact.quarantineIdentity,
+                hookPhase: "rollback-quarantine-remove",
+                syncPhase: "artifact-rollback-quarantine-remove",
+                markRemoved: () => { artifact.quarantineMoved = false; },
+              });
+            } catch (cleanupError) {
+              if ((cleanupError as { committed?: boolean }).committed === true) throw cleanupError;
+              rollbackErrors.push(cleanupError);
+            }
+            continue;
+          }
+
+          if (artifact.backupMoved) {
+            let targetIdentity: FileIdentity | null = null;
+            try {
+              targetIdentity = await regularHarnessArtifactIdentity(artifact.targetPath, { allowMissing: true });
+            } catch (inspectionError) {
+              rollbackErrors.push(inspectionError);
+              continue;
+            }
+            if (targetIdentity) {
+              rollbackErrors.push(new Error(
+                `refusing to overwrite current harness artifact while restoring backup: ${artifact.targetPath}`,
+              ));
+              continue;
+            }
+            try {
+              await restoreBackupIfUnoccupied(artifact);
+            } catch (restoreError) {
+              if ((restoreError as { committed?: boolean }).committed === true) throw restoreError;
+              rollbackErrors.push(restoreError);
+            }
+          }
+        }
+
+        for (const artifact of staged) {
+          if (!artifact.stagePresent) continue;
+          try {
+            if (!artifact.stagedIdentity) throw new Error(`missing staged harness artifact identity: ${artifact.stagePath}`);
+            await removeOwnedHarnessArtifact({
+              entry: artifact,
+              entries: staged,
+              scratchRoot,
+              artifactPath: artifact.stagePath,
+              expectedIdentity: artifact.stagedIdentity,
+              syncPhase: "artifact-rollback-stage-remove",
+              markRemoved: () => { artifact.stagePresent = false; },
+            });
+          } catch (cleanupError) {
+            if ((cleanupError as { committed?: boolean }).committed === true) throw cleanupError;
+            rollbackErrors.push(cleanupError);
+          }
+        }
+
+        if (rollbackErrors.length === 0) {
+          try {
+            if (!scratchWorkspace) throw new Error("harness artifact scratch workspace is unavailable");
+            scratchDisposition = await scratchWorkspace.cleanup();
+          } catch (cleanupError) {
+            if ((cleanupError as { committed?: boolean }).committed === true) throw cleanupError;
+            if (errnoCode(cleanupError) !== "ENOENT") rollbackErrors.push(cleanupError);
+          }
+        }
+        transactionError = rollbackErrors.length > 0
+          ? Object.assign(
+            new AggregateError([error, ...rollbackErrors], "harness artifact transaction rollback failed", { cause: error }),
+            {
+              primaryError: error,
+              recoveryRoot: scratchRoot,
+              recoveryPaths: harnessArtifactRecoveryPaths(scratchRoot, staged),
+            },
+          )
+          : error;
+      }
+    } catch (rollbackFailure) {
+      if ((rollbackFailure as { committed?: boolean }).committed === true) {
+        transactionError = Object.assign(
+          rollbackFailure instanceof Error ? rollbackFailure : new Error(String(rollbackFailure)),
+          { primaryError: error },
+        );
+      } else {
+        transactionError = Object.assign(
+          new AggregateError([error, rollbackFailure], "harness artifact rollback handling failed", { cause: error }),
+          {
+            committed: artifactsCommitted,
+            recoveryRoot: scratchRoot || undefined,
+            recoveryPaths: scratchRoot ? harnessArtifactRecoveryPaths(scratchRoot, staged) : [],
+          },
+        );
+      }
+    }
+  }
+
+  try {
+    await lease.release();
+  } catch (releaseError) {
+    const scratchRecoveryPaths = scratchRoot
+      ? resolvedHarnessArtifactRecoveryPaths(scratchRoot, staged, scratchDisposition)
+      : [];
+    const releaseRecoveryPaths = releaseError
+      && typeof releaseError === "object"
+      && Array.isArray((releaseError as { recoveryPaths?: unknown }).recoveryPaths)
+      ? (releaseError as { recoveryPaths: unknown[] }).recoveryPaths.map(String)
+      : [];
+    const recoveryPaths = [...new Set([...scratchRecoveryPaths, ...releaseRecoveryPaths])];
+    transactionError = transactionError
+      ? Object.assign(
+        new AggregateError([transactionError, releaseError], "harness artifact transaction and lock release failed"),
+        {
+          committed: artifactsCommitted || (transactionError as { committed?: boolean }).committed === true,
+          recoveryRoot: scratchDisposition?.quarantinePath || scratchRoot || undefined,
+          recoveryPaths,
+        },
+      )
+      : Object.assign(
+        releaseError instanceof Error ? releaseError : new Error(String(releaseError)),
+        {
+          committed: artifactsCommitted,
+          recoveryRoot: scratchDisposition?.quarantinePath || scratchRoot || undefined,
+          recoveryPaths,
+        },
+      );
+  }
+  if (transactionError) throw transactionError;
+}
+
+export async function commitHarnessJsonArtifacts(
+  artifacts: Array<{ path: string; value: unknown }>,
+  signal: AbortSignal | undefined,
+  afterArtifactForTest?: (targetPath: string) => void | Promise<void>,
+) {
+  return commitHarnessArtifacts(
+    artifacts.map((artifact) => ({
+      path: artifact.path,
+      content: `${JSON.stringify(artifact.value, null, 2)}\n`,
+    })),
+    signal,
+    {
+      afterArtifact: afterArtifactForTest
+        ? (targetPath) => afterArtifactForTest(targetPath)
+        : undefined,
+    },
+  );
+}
+
 export async function assertRunNotInvalidated(runRoot: string) {
   const invalidationPath = path.join(runRoot, "INVALIDATED.json");
   if (!(await exists(invalidationPath))) return;
@@ -1262,43 +3419,235 @@ export async function assertRunNotInvalidated(runRoot: string) {
   throw new Error(`run is permanently invalidated (${reason}); create a new run-id instead of resuming or scoring it`);
 }
 
-async function startQuotaDelegate(hubRoot: string, laneRoot: string, frozenDistRoot: string) {
+export async function startQuotaDelegate(
+  hubRoot: string,
+  laneRoot: string,
+  frozenDistRoot: string,
+  signal?: AbortSignal,
+  teardownProcessTree?: QuotaDelegateProcessTeardown,
+) {
+  throwIfAborted(signal);
   const logPath = path.join(laneRoot, "quota-delegate.log");
+  const ownerToken = randomUUID();
   const child = spawn(process.execPath, [
     path.join(frozenDistRoot, "server", "services", "quota-delegate.js"),
     "--hub-root", hubRoot,
+    "--owner-token", ownerToken,
   ], {
     cwd: frozenDistRoot,
-    env: { ...process.env, CPB_HUB_ROOT: hubRoot },
+    env: { ...process.env, CPB_HUB_ROOT: hubRoot, CPB_DELEGATE_OWNER_TOKEN: ownerToken },
     stdio: ["ignore", "pipe", "pipe"],
+    detached: process.platform !== "win32",
+  });
+  let childClosed = false;
+  let childSpawnError: unknown = null;
+  let childIdentity: ProcessIdentity | null = null;
+  const spawned = new Promise<void>((resolve, reject) => {
+    child.once("spawn", () => {
+      try {
+        if (!child.pid) throw new Error("quota delegate spawned without a pid");
+        childIdentity = parseProcessIdentity(captureSpawnProcessIdentity(child));
+        if (!childIdentity) throw new Error("quota delegate process identity was unavailable at spawn");
+        resolve();
+      } catch (error) {
+        reject(error);
+      }
+    });
+    child.once("error", (error) => reject(error));
+  });
+  child.once("close", () => {
+    childClosed = true;
+  });
+  child.once("error", (error) => {
+    childSpawnError = error;
   });
   let logChain = Promise.resolve();
+  const logErrors: unknown[] = [];
   const record = (chunk: Buffer | string) => {
-    logChain = logChain.then(() => appendFile(logPath, String(chunk), "utf8"));
+    logChain = logChain
+      .then(() => appendFile(logPath, String(chunk), "utf8"))
+      .catch((error) => {
+        logErrors.push(error);
+      });
   };
   child.stdout.on("data", record);
   child.stderr.on("data", record);
+  child.stdout.on("error", (error) => { logErrors.push(error); });
+  child.stderr.on("error", (error) => { logErrors.push(error); });
+  let stopPromise: Promise<void> | null = null;
+  const stop = async () => {
+    if (stopPromise) return stopPromise;
+    stopPromise = (async () => {
+      const errors: unknown[] = [];
+      await spawned.catch(() => undefined);
+      const expectedRootIdentity = childIdentity;
+      if (child.pid && expectedRootIdentity && !childClosed && child.exitCode === null && child.signalCode === null) {
+        const cleanup: QuotaDelegateProcessTeardown = teardownProcessTree || ((pid, options) => killTree(
+          pid,
+          10_000,
+          { requireDescendantScan: true, expectedRootIdentity: options.expectedRootIdentity },
+        ));
+        const teardownTimeoutMs = quotaDelegateTeardownTimeoutMs();
+        const deadlineAt = Date.now() + teardownTimeoutMs;
+        const controller = new AbortController();
+        const deadlineError = Object.assign(
+          new Error(`quota delegate teardown timed out after ${teardownTimeoutMs}ms`),
+          { name: "AbortError", code: "ABORT_ERR" },
+        );
+        const deadlineTimer = setTimeout(() => controller.abort(deadlineError), teardownTimeoutMs);
+        let teardownError: unknown = null;
+        try {
+          await cleanup(child.pid, { signal: controller.signal, deadlineAt, expectedRootIdentity });
+          if (controller.signal.aborted) teardownError = controller.signal.reason;
+        } catch (error) {
+          teardownError = error;
+        } finally {
+          clearTimeout(deadlineTimer);
+        }
+        if (teardownError) errors.push(teardownError);
+
+        let stillAlive = true;
+        try {
+          stillAlive = isProcessIdentityAlive(expectedRootIdentity);
+        } catch (error) {
+          errors.push(error);
+        }
+        if (stillAlive && teardownProcessTree) {
+          try {
+            await killTree(child.pid, 10_000, {
+              requireDescendantScan: true,
+              expectedRootIdentity,
+            });
+          } catch (error) {
+            errors.push(error);
+          }
+        }
+        try {
+          if (isProcessIdentityAlive(expectedRootIdentity)) {
+            errors.push(new Error("quota delegate process is still running after cleanup"));
+          }
+        } catch (error) {
+          errors.push(error);
+        }
+      } else if (child.pid && !childClosed && !expectedRootIdentity) {
+        errors.push(Object.assign(
+          new Error("quota delegate process identity was not captured; refusing teardown by bare pid"),
+          { code: "PROCESS_IDENTITY_UNAVAILABLE" },
+        ));
+      }
+      if (!childClosed) {
+        const closeTimeoutMs = quotaDelegateCloseTimeoutMs();
+        try {
+          await new Promise<void>((resolve, reject) => {
+            let settled = false;
+            const finish = (callback: () => void) => {
+              if (settled) return;
+              settled = true;
+              clearTimeout(closeTimer);
+              child.removeListener("close", onClose);
+              callback();
+            };
+            const onClose = () => finish(resolve);
+            const closeTimer = setTimeout(
+              () => finish(() => reject(new Error(`quota delegate did not exit within ${closeTimeoutMs}ms`))),
+              closeTimeoutMs,
+            );
+            child.once("close", onClose);
+            if (childClosed) onClose();
+          });
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+      if (!childClosed) {
+        let alive = true;
+        try {
+          alive = expectedRootIdentity ? isProcessIdentityAlive(expectedRootIdentity) : true;
+        } catch (error) {
+          errors.push(error);
+        }
+        if (alive) errors.push(new Error("quota delegate process is still running after cleanup"));
+        else errors.push(new Error("quota delegate process exited but the child close event was not observed"));
+      }
+      try {
+        await logChain;
+      } catch (error) {
+        errors.push(error);
+      }
+      errors.push(...logErrors);
+      child.stdout.removeAllListeners("data");
+      child.stderr.removeAllListeners("data");
+      child.stdout.removeAllListeners("error");
+      child.stderr.removeAllListeners("error");
+      if (errors.length > 0) throw new AggregateError(errors, "quota delegate cleanup failed");
+    })();
+    return stopPromise;
+  };
   const deadline = Date.now() + 10_000;
-  while (!(await isDelegateAlive(hubRoot))) {
-    if (child.exitCode !== null) {
-      await logChain.catch(() => null);
-      throw new Error(`quota delegate exited during startup with code ${child.exitCode}`);
+  const onAbort = () => {
+    // Trigger teardown immediately; the same memoized stopPromise is awaited
+    // below during startup failure or by cpbHighAssurance's finally block, where
+    // cleanup errors are aggregated with the primary failure.
+    void stop().catch(() => undefined);
+  };
+  signal?.addEventListener("abort", onAbort, { once: true });
+  try {
+    try {
+      await spawned;
+    } catch (error) {
+      childSpawnError = error;
     }
-    if (Date.now() >= deadline) {
-      child.kill("SIGTERM");
-      await logChain.catch(() => null);
-      throw new Error("quota delegate did not become ready within 10000ms");
+    if (childSpawnError) {
+      const spawnError = childSpawnError instanceof Error ? childSpawnError : new Error(String(childSpawnError));
+      throw new Error(`quota delegate failed to start: ${spawnError.message}`, { cause: spawnError });
     }
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    const startupIdentity = childIdentity as ProcessIdentity | null;
+    if (!child.pid || !startupIdentity) {
+      throw Object.assign(new Error("quota delegate process identity was unavailable at startup"), {
+        code: "PROCESS_IDENTITY_UNAVAILABLE",
+      });
+    }
+    const expectedReceipt: QuotaDelegateLockReceipt = {
+      pid: child.pid,
+      hubRoot,
+      startedAt: new Date().toISOString(),
+      ownerToken,
+      generation: randomUUID(),
+      processIdentity: startupIdentity,
+      incarnation: startupIdentity.incarnation,
+    };
+    let ready = false;
+    while (!ready) {
+      throwIfAborted(signal);
+      if (childSpawnError) {
+        const spawnError = childSpawnError instanceof Error ? childSpawnError : new Error(String(childSpawnError));
+        throw new Error(`quota delegate failed to start: ${spawnError.message}`, { cause: spawnError });
+      }
+      if (childClosed || child.exitCode !== null || child.signalCode !== null) {
+        throw new Error(
+          `quota delegate exited during startup with code ${child.exitCode} signal ${child.signalCode || "none"}`,
+        );
+      }
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) throw new Error("quota delegate did not become ready within 10000ms");
+      ready = Boolean(await waitForDelegateIncarnation(
+        hubRoot,
+        expectedReceipt,
+        Math.min(100, remainingMs),
+      ));
+    }
+  } catch (error) {
+    try {
+      await stop();
+    } catch (cleanupError) {
+      throw new AggregateError([error, cleanupError], "quota delegate startup cleanup failed");
+    }
+    throw error;
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
   }
   return async () => {
-    if (child.exitCode === null) child.kill("SIGTERM");
-    await Promise.race([
-      new Promise((resolve) => child.once("close", resolve)),
-      new Promise((resolve) => setTimeout(resolve, 5_000)),
-    ]);
-    if (child.exitCode === null) child.kill("SIGKILL");
-    await logChain.catch(() => null);
+    await stop();
   };
 }
 
@@ -1426,7 +3775,7 @@ async function findContainingDatasetCache(cachePath: string, offset: number, cou
   return null;
 }
 
-async function fetchRowsFromPythonCache(offset: number, count: number): Promise<DatasetRow[]> {
+async function fetchRowsFromPythonCache(offset: number, count: number, signal?: AbortSignal): Promise<DatasetRow[]> {
   const script = [
     "import json, sys",
     "from datasets import load_dataset",
@@ -1452,6 +3801,7 @@ async function fetchRowsFromPythonCache(offset: number, count: number): Promise<
       cwd: REPO_ROOT,
       env: { ...process.env, HF_DATASETS_OFFLINE: "1" },
       timeoutMs: 120_000,
+      signal,
     });
     if (result.code === 0) break;
     failures.push(`${command}: ${result.error || result.stderr || result.stdout || `exit ${result.code}`}`);
@@ -1469,7 +3819,7 @@ async function fetchRowsFromPythonCache(offset: number, count: number): Promise<
   });
 }
 
-async function fetchRows(offset: number, count: number, cachePath: string) {
+async function fetchRows(offset: number, count: number, cachePath: string, signal?: AbortSignal) {
   if (await exists(cachePath)) {
     const cached = validateDatasetCacheEnvelope(await readJson<unknown>(cachePath), { offset, count });
     if (cached.ok === false) throw new Error(`dataset cache is invalid: ${cached.reason}`);
@@ -1500,7 +3850,7 @@ async function fetchRows(offset: number, count: number, cachePath: string) {
     if (attempt < 5) {
       const delayMs = Math.min(8_000, 1_000 * (2 ** (attempt - 1)));
       console.warn(`dataset fetch attempt ${attempt}/5 failed; retrying after ${delayMs}ms`);
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      await abortableDelay(delayMs, signal);
     }
   }
   let source: DatasetCacheEnvelope["source"] = "hf_rows_api";
@@ -1517,7 +3867,7 @@ async function fetchRows(offset: number, count: number, cachePath: string) {
   } else {
     source = "python_datasets_offline";
     try {
-      normalizedRows = await fetchRowsFromPythonCache(offset, count);
+      normalizedRows = await fetchRowsFromPythonCache(offset, count, signal);
       console.warn("dataset rows API remained unavailable; using the verified local datasets cache");
     } catch (fallbackError) {
       const primary = lastError instanceof Error ? lastError.message : "dataset request failed after 5 attempts";
@@ -1553,7 +3903,7 @@ async function freezeManifests(options: Options) {
     "_dataset-cache",
     `swe-bench-verified-${SPLIT}-${options.offset}-${options.count}.json`,
   );
-  const fetched = await fetchRows(options.offset, options.count, datasetCachePath);
+  const fetched = await fetchRows(options.offset, options.count, datasetCachePath, options.signal);
   const manifests = buildFrozenManifests(fetched.rows, options.runId);
   await mkdir(path.dirname(solverPath), { recursive: true });
   await mkdir(path.dirname(evaluatorPath), { recursive: true });
@@ -1574,7 +3924,61 @@ async function freezeManifests(options: Options) {
   return { ...manifests, solverPath, evaluatorPath };
 }
 
-async function runCommand({
+function abortReason(signal: AbortSignal | undefined) {
+  const reason = signal?.reason;
+  if (reason instanceof Error && reason.message) return reason.message;
+  if (typeof reason === "string" && reason) return reason;
+  return "aborted";
+}
+
+function abortError(signal: AbortSignal | undefined): Error {
+  const reason = signal?.reason;
+  if (reason instanceof Error) return reason;
+  const error = new Error(abortReason(signal)) as Error & { code?: string };
+  error.name = "AbortError";
+  error.code = "ABORT_ERR";
+  return error;
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw abortError(signal);
+}
+
+async function abortableDelay(ms: number, signal?: AbortSignal) {
+  if (ms <= 0) return;
+  throwIfAborted(signal);
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => signal?.removeEventListener("abort", onAbort);
+    const timer = setTimeout(() => {
+      settled = true;
+      cleanup();
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      cleanup();
+      reject(new Error(abortReason(signal)));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+async function initializeCommandLogs(logs: CommandLogs, signal?: AbortSignal) {
+  const targets = [logs.stdoutPath, logs.stderrPath, logs.activityPath];
+  await commitHarnessArtifacts(
+    targets.map((target) => ({ path: target, content: "" })),
+    signal,
+    {
+      beforePublish: logs.beforeCommitForTest,
+      afterArtifact: logs.afterTargetCommitForTest,
+    },
+  );
+}
+
+export async function runCommand({
   command,
   args,
   cwd,
@@ -1582,6 +3986,8 @@ async function runCommand({
   timeoutMs,
   stdin = null,
   logs = null,
+  signal,
+  processTreeSystemForTest,
 }: {
   command: string;
   args: string[];
@@ -1589,57 +3995,222 @@ async function runCommand({
   env?: NodeJS.ProcessEnv;
   timeoutMs: number;
   stdin?: string | null;
-  logs?: { stdoutPath: string; stderrPath: string; activityPath: string } | null;
+  logs?: CommandLogs | null;
+  signal?: AbortSignal;
+  processTreeSystemForTest?: ProcessTreeSystem;
 }): Promise<CommandResult> {
-  if (logs) {
-    await mkdir(path.dirname(logs.stdoutPath), { recursive: true });
-    await Promise.all([
-      writeFile(logs.stdoutPath, "", "utf8"),
-      writeFile(logs.stderrPath, "", "utf8"),
-      writeFile(logs.activityPath, "", "utf8"),
-    ]);
+  if (signal?.aborted) {
+    return { code: null, signal: null, stdout: "", stderr: "", timedOut: false, aborted: true, error: abortReason(signal) };
   }
-  return await new Promise((resolve) => {
-    const child = spawn(command, args, { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
-    let timedOut = false;
-    let logWrites = Promise.resolve();
-    const recordChunk = (stream: "stdout" | "stderr", chunk: Buffer) => {
-      const value = chunk.toString();
-      const combined = (stream === "stdout" ? stdout : stderr) + value;
-      if (stream === "stdout") stdout = combined.slice(-2_000_000);
-      else stderr = combined.slice(-2_000_000);
-      if (!logs) return;
-      const outputPath = stream === "stdout" ? logs.stdoutPath : logs.stderrPath;
-      const activity = `${JSON.stringify({ ts: now(), stream, bytes: chunk.length })}\n`;
-      logWrites = logWrites
-        .then(() => Promise.all([appendFile(outputPath, chunk), appendFile(logs.activityPath, activity, "utf8")]))
-        .then(() => undefined);
-    };
-    child.stdout.on("data", (chunk: Buffer) => recordChunk("stdout", chunk));
-    child.stderr.on("data", (chunk: Buffer) => recordChunk("stderr", chunk));
-    child.stdin.end(stdin || undefined);
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill("SIGTERM");
-      setTimeout(() => child.exitCode === null && child.kill("SIGKILL"), 10_000).unref();
-    }, timeoutMs);
-    child.on("error", (error) => {
-      clearTimeout(timer);
-      resolve({ code: null, signal: null, stdout, stderr, timedOut, error: error.message });
-    });
-    child.on("close", (code, signal) => {
-      clearTimeout(timer);
-      void logWrites.finally(() => {
-        resolve({ code, signal, stdout, stderr, timedOut, error: timedOut ? `timed out after ${timeoutMs}ms` : null });
-      });
-    });
+  if (logs) {
+    try {
+      await initializeCommandLogs(logs, signal);
+    } catch (error) {
+      if (signal?.aborted && !(error instanceof AggregateError)) {
+        return { code: null, signal: null, stdout: "", stderr: "", timedOut: false, aborted: true, error: abortReason(signal) };
+      }
+      throw error;
+    }
+  }
+  throwIfAborted(signal);
+  let logWrites = Promise.resolve();
+  let logError: Error | null = null;
+  const recordChunk = (stream: "stdout" | "stderr", value: string) => {
+    if (!logs) return;
+    const outputPath = stream === "stdout" ? logs.stdoutPath : logs.stderrPath;
+    const bytes = Buffer.byteLength(value);
+    const activity = `${JSON.stringify({ ts: now(), stream, bytes })}\n`;
+    logWrites = logWrites
+      .then(() => Promise.all([appendFile(outputPath, value, "utf8"), appendFile(logs.activityPath, activity, "utf8")]))
+      .then(() => undefined);
+  };
+  const result = await runCommandTree(command, args, {
+    cwd,
+    env,
+    input: stdin || "",
+    timeoutMs,
+    signal,
+    onStdout: (value) => recordChunk("stdout", value),
+    onStderr: (value) => recordChunk("stderr", value),
+    ...(processTreeSystemForTest ? { system: processTreeSystemForTest } : {}),
+  });
+  try {
+    await logWrites;
+  } catch (error) {
+    logError = error instanceof Error ? error : new Error(String(error));
+  }
+
+  const primaryError = result.aborted
+    ? Object.assign(new Error(abortReason(signal)), { name: "AbortError", code: "ABORT_ERR" })
+    : result.timedOut
+      ? Object.assign(new Error(`timed out after ${timeoutMs}ms`), { code: "COMMAND_TIMEOUT" })
+      : null;
+  const cleanupErrors = [
+    ...(!result.cleanupVerified && result.error ? [result.error] : []),
+    ...(logError ? [logError] : []),
+  ];
+  if (primaryError && cleanupErrors.length > 0) {
+    throw Object.assign(
+      new AggregateError([primaryError, ...cleanupErrors], `${primaryError.message}; command cleanup failed`, {
+        cause: primaryError,
+      }),
+      { code: "COMMAND_CLEANUP_UNVERIFIED", cleanupVerified: false },
+    );
+  }
+  return {
+    code: result.aborted || result.timedOut || result.error ? null : result.exitCode,
+    signal: result.signal,
+    stdout: result.stdout.slice(-2_000_000),
+    stderr: result.stderr.slice(-2_000_000),
+    timedOut: result.timedOut,
+    aborted: result.aborted,
+    error: logError?.message
+      || primaryError?.message
+      || result.error?.message
+      || null,
+  };
+}
+
+export function buildSweBenchGitEnvironment(input: NodeJS.ProcessEnv = process.env) {
+  const env: NodeJS.ProcessEnv = {};
+  for (const key of [
+    "PATH",
+    "HOME",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "SYSTEMROOT",
+    "COMSPEC",
+    "PATHEXT",
+    "HOMEDRIVE",
+    "HOMEPATH",
+  ]) {
+    if (input[key] !== undefined) env[key] = input[key];
+  }
+  const nullDevice = process.platform === "win32" ? "NUL" : "/dev/null";
+  env.GIT_CONFIG_NOSYSTEM = "1";
+  env.GIT_CONFIG_SYSTEM = nullDevice;
+  env.GIT_CONFIG_GLOBAL = nullDevice;
+  env.GIT_ATTR_NOSYSTEM = "1";
+  env.GIT_ALLOW_PROTOCOL = "https:file";
+  env.GIT_PROTOCOL_FROM_USER = "0";
+  env.GIT_PAGER = "cat";
+  env.GIT_TERMINAL_PROMPT = "0";
+  const overrides: Array<[string, string]> = [
+    ["core.hooksPath", nullDevice],
+    ["core.fsmonitor", "false"],
+    ["core.attributesFile", nullDevice],
+    ["credential.helper", ""],
+    ["credential.interactive", "false"],
+    ["protocol.ext.allow", "never"],
+    ["protocol.git.allow", "never"],
+    ["protocol.ssh.allow", "never"],
+    ["protocol.file.allow", "always"],
+    ["protocol.https.allow", "always"],
+  ];
+  env.GIT_CONFIG_COUNT = String(overrides.length);
+  for (const [index, [key, value]] of overrides.entries()) {
+    env[`GIT_CONFIG_KEY_${index}`] = key;
+    env[`GIT_CONFIG_VALUE_${index}`] = value;
+  }
+  return env;
+}
+
+async function runRequiredGit(
+  args: string[],
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  timeoutMs = 600_000,
+  signal?: AbortSignal,
+) {
+  const result = await runCommand({ command: "git", args, cwd, env, timeoutMs, signal });
+  if (result.code !== 0) throw new Error(`git ${args.join(" ")} failed: ${result.stderr || result.stdout || result.error}`);
+  return result;
+}
+
+function untrustedSourceCacheConfig(message: string, cachePath: string, cause?: unknown) {
+  return Object.assign(new Error(message, cause === undefined ? undefined : { cause }), {
+    code: "SWEBENCH_SOURCE_CACHE_UNTRUSTED",
+    cachePath,
+    recoveryPaths: [cachePath],
   });
 }
 
-async function runRequired(command: string, args: string[], cwd: string, timeoutMs = 600_000) {
-  const result = await runCommand({ command, args, cwd, timeoutMs });
+async function assertSweBenchSourceCacheConfigTrusted(
+  cachePath: string,
+  expectedOrigin: string,
+  gitEnv: NodeJS.ProcessEnv,
+  signal?: AbortSignal,
+) {
+  try {
+    await readBoundedRegularFileNoFollow(path.join(cachePath, "config"), { maxBytes: 1024 * 1024 });
+  } catch (error) {
+    if (["BOUNDED_FILE_UNSAFE", "BOUNDED_FILE_TOO_LARGE"].includes(errnoCode(error))) {
+      throw untrustedSourceCacheConfig(`source cache config is unsafe: ${cachePath}`, cachePath, error);
+    }
+    throw error;
+  }
+  const config = await runCommand({
+    command: "git",
+    args: ["config", "--local", "--no-includes", "--null", "--list"],
+    cwd: cachePath,
+    env: gitEnv,
+    timeoutMs: 30_000,
+    signal,
+  });
+  throwIfAborted(signal);
+  if (config.code !== 0) {
+    const diagnostics = config.stderr || config.stdout || config.error || `exit ${config.code}`;
+    throw untrustedSourceCacheConfig(
+      `source cache config could not be verified: ${cachePath}: ${diagnostics}`,
+      cachePath,
+    );
+  }
+  const records = config.stdout.split("\0");
+  if (records.at(-1) === "") records.pop();
+  const values = new Map<string, string[]>();
+  for (const record of records) {
+    const separator = record.indexOf("\n");
+    if (separator <= 0) {
+      throw untrustedSourceCacheConfig(`source cache config output is malformed: ${cachePath}`, cachePath);
+    }
+    const key = record.slice(0, separator).trim().toLowerCase();
+    const value = record.slice(separator + 1);
+    values.set(key, [...(values.get(key) || []), value]);
+  }
+  const allowedKeys = new Set([
+    "core.repositoryformatversion",
+    "core.filemode",
+    "core.bare",
+    "core.logallrefupdates",
+    "core.ignorecase",
+    "core.precomposeunicode",
+    "remote.origin.url",
+    "remote.origin.fetch",
+  ]);
+  const untrustedKeys = [...values.keys()].filter((key) => !allowedKeys.has(key));
+  const onlyValue = (key: string, expected: string) => {
+    const found = values.get(key) || [];
+    return found.length === 1 && found[0] === expected;
+  };
+  if (
+    untrustedKeys.length > 0
+    || !onlyValue("core.repositoryformatversion", "0")
+    || !onlyValue("core.bare", "true")
+    || !onlyValue("remote.origin.url", expectedOrigin)
+  ) {
+    throw untrustedSourceCacheConfig(
+      `source cache identity, origin, or config keys are untrusted: ${cachePath}`,
+      cachePath,
+    );
+  }
+}
+
+async function runRequired(command: string, args: string[], cwd: string, timeoutMs = 600_000, signal?: AbortSignal) {
+  const result = await runCommand({ command, args, cwd, timeoutMs, signal });
   if (result.code !== 0) throw new Error(`${command} ${args.join(" ")} failed: ${result.stderr || result.stdout}`);
   return result;
 }
@@ -2064,42 +4635,461 @@ export function claudeRuntimeBoundaryRetryReason(
   return null;
 }
 
+const CLAUDE_BOUNDARY_OWNER_MAX_BYTES = 64 * 1024;
+const CLAUDE_BOUNDARY_RESULT_MAX_BYTES = 2 * 1024 * 1024;
+const CLAUDE_BOUNDARY_HISTORY_DIRECTORY = /^attempt-(\d+)(?:-[0-9a-f-]+)?$/;
+const CLAUDE_BOUNDARY_OWNER_TOKEN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function claudeBoundaryError(
+  message: string,
+  code: string,
+  details: Record<string, unknown> = {},
+  cause?: unknown,
+) {
+  return Object.assign(
+    new Error(message, cause === undefined ? undefined : { cause }),
+    { code, ...details },
+  );
+}
+
+function claudeBoundaryDirectoryGeneration(details: Stats): ClaudeBoundaryDirectoryGeneration {
+  return {
+    dev: details.dev,
+    ino: details.ino,
+    size: details.size,
+    mtimeMs: details.mtimeMs,
+    ctimeMs: details.ctimeMs,
+    birthtimeMs: details.birthtimeMs,
+  };
+}
+
+function sameClaudeBoundaryGeneration(
+  left: ClaudeBoundaryDirectoryGeneration,
+  right: ClaudeBoundaryDirectoryGeneration,
+) {
+  return left.dev === right.dev
+    && left.ino === right.ino
+    && left.size === right.size
+    && left.mtimeMs === right.mtimeMs
+    && left.ctimeMs === right.ctimeMs
+    && left.birthtimeMs === right.birthtimeMs;
+}
+
+function sameClaudeBoundaryObjectAcrossRename(
+  left: ClaudeBoundaryDirectoryGeneration,
+  right: ClaudeBoundaryDirectoryGeneration,
+) {
+  // A rename can legitimately advance ctime, so compare every other stable
+  // generation field across the namespace move, then pin the post-rename full
+  // generation for all subsequent checks.
+  return left.dev === right.dev
+    && left.ino === right.ino
+    && left.size === right.size
+    && left.mtimeMs === right.mtimeMs
+    && left.birthtimeMs === right.birthtimeMs;
+}
+
+async function inspectClaudeBoundaryDirectory(directory: string) {
+  const details = await lstat(directory);
+  if (!details.isDirectory() || details.isSymbolicLink()) {
+    throw claudeBoundaryError(
+      `Claude runtime boundary recovery requires a regular directory: ${directory}`,
+      "CLAUDE_BOUNDARY_RECOVERY_UNSAFE",
+      { recoveryPaths: [directory] },
+    );
+  }
+  return claudeBoundaryDirectoryGeneration(details);
+}
+
+async function claudeBoundaryResultExists(preflightRoot: string) {
+  const resultPath = path.join(preflightRoot, "result.json");
+  try {
+    const details = await lstat(resultPath);
+    if (!details.isFile() || details.isSymbolicLink()) {
+      throw claudeBoundaryError(
+        `Claude runtime boundary result is unsafe: ${resultPath}`,
+        "CLAUDE_BOUNDARY_RESULT_UNSAFE",
+        { resultPath },
+      );
+    }
+    return true;
+  } catch (error) {
+    if (errnoCode(error) === "ENOENT") return false;
+    throw error;
+  }
+}
+
+async function readClaudeBoundaryJsonRecord(filePath: string, maxBytes: number, code: string) {
+  try {
+    const raw = await readBoundedRegularFileNoFollow(filePath, { maxBytes });
+    const parsed = JSON.parse(raw);
+    if (!isRecord(parsed)) throw new Error("JSON root must be an object");
+    return parsed;
+  } catch (error) {
+    throw claudeBoundaryError(
+      `Claude runtime boundary metadata is unsafe: ${filePath}`,
+      code,
+      { filePath, readErrorCode: errnoCode(error) || "INVALID_JSON" },
+      error,
+    );
+  }
+}
+
+async function readExistingClaudeBoundaryResult(preflightRoot: string) {
+  let generationBeforeRead: ClaudeBoundaryDirectoryGeneration;
+  try {
+    generationBeforeRead = await inspectClaudeBoundaryDirectory(preflightRoot);
+  } catch (error) {
+    if (errnoCode(error) === "ENOENT") return null;
+    throw error;
+  }
+  if (!(await claudeBoundaryResultExists(preflightRoot))) return null;
+  const recordPath = path.join(preflightRoot, "result.json");
+  const existing = await readClaudeBoundaryJsonRecord(
+    recordPath,
+    CLAUDE_BOUNDARY_RESULT_MAX_BYTES,
+    "CLAUDE_BOUNDARY_RESULT_UNSAFE",
+  );
+  const generationAfterRead = await inspectClaudeBoundaryDirectory(preflightRoot);
+  if (!sameClaudeBoundaryGeneration(generationBeforeRead, generationAfterRead)) {
+    throw claudeBoundaryError(
+      `Claude runtime boundary result namespace changed while reading: ${recordPath}`,
+      "CLAUDE_BOUNDARY_RESULT_UNSAFE",
+      { resultPath: recordPath, recoveryPaths: [preflightRoot] },
+    );
+  }
+  return existing;
+}
+
+async function syncClaudeBoundaryDirectory(directory: string) {
+  const handle = await open(directory, "r");
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+async function publishClaudeBoundaryJsonExclusive(
+  directory: string,
+  targetName: string,
+  sourceName: string,
+  value: unknown,
+  options: {
+    label: string;
+    conflictCode: string;
+    committedCode: string;
+    recoveryPaths: string[];
+  },
+) {
+  const targetPath = path.join(directory, targetName);
+  const sourcePath = path.join(directory, sourceName);
+  let targetLinked = false;
+  try {
+    const handle = await open(sourcePath, "wx", 0o600);
+    try {
+      await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`, "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await link(sourcePath, targetPath);
+    targetLinked = true;
+    await syncClaudeBoundaryDirectory(directory);
+    // Keep the tokenized source hardlink as recovery evidence. A later
+    // path-based unlink would reopen a successor-deletion race.
+  } catch (error) {
+    throw claudeBoundaryError(
+      targetLinked
+        ? `Claude runtime boundary ${options.label} was published but directory durability is ambiguous: ${targetPath}`
+        : `Claude runtime boundary ${options.label} could not be published exclusively: ${targetPath}`,
+      targetLinked ? options.committedCode : options.conflictCode,
+      {
+        committed: targetLinked,
+        targetPath,
+        residualPath: directory,
+        recoveryPaths: [...new Set([...options.recoveryPaths, targetPath, sourcePath])],
+      },
+      error,
+    );
+  }
+}
+
+async function publishClaudeBoundaryOwnerExclusive(
+  preflightRoot: string,
+  owner: ClaudeBoundaryPreflightOwner,
+) {
+  await publishClaudeBoundaryJsonExclusive(
+    preflightRoot,
+    "owner.json",
+    `.owner-${owner.ownerToken}.proof`,
+    owner,
+    {
+      label: "owner",
+      conflictCode: "CLAUDE_BOUNDARY_OWNER_CONFLICT",
+      committedCode: "CLAUDE_BOUNDARY_OWNER_DURABILITY_AMBIGUOUS",
+      recoveryPaths: [preflightRoot],
+    },
+  );
+}
+
+async function readClaudeBoundaryOwner(
+  ownerRoot: string,
+  expectedPreflightRoot: string,
+  hooks?: BoundedRegularFileReadHooks,
+): Promise<ClaudeBoundaryPreflightOwner | null> {
+  const ownerPath = path.join(ownerRoot, "owner.json");
+  try {
+    const raw = await readBoundedRegularFileNoFollow(ownerPath, {
+      maxBytes: CLAUDE_BOUNDARY_OWNER_MAX_BYTES,
+      hooks,
+    });
+    const parsed = JSON.parse(raw);
+    if (!isRecord(parsed)) throw new Error("owner metadata root must be an object");
+    const identityRecord = isRecord(parsed.processIdentity) ? parsed.processIdentity : null;
+    const processIdentity = identityRecord && typeof identityRecord.pid === "number"
+      ? parseProcessIdentity(identityRecord)
+      : null;
+    const startedAtMs = typeof parsed.startedAt === "string" ? Date.parse(parsed.startedAt) : Number.NaN;
+    if (
+      parsed.format !== "cpb-claude-boundary-owner/v1"
+      || typeof parsed.ownerToken !== "string"
+      || !CLAUDE_BOUNDARY_OWNER_TOKEN.test(parsed.ownerToken)
+      || parsed.preflightRoot !== path.resolve(expectedPreflightRoot)
+      || typeof parsed.host !== "string"
+      || parsed.host.length === 0
+      || typeof parsed.pid !== "number"
+      || !Number.isSafeInteger(parsed.pid)
+      || parsed.pid <= 0
+      || !processIdentity
+      || processIdentity.pid !== parsed.pid
+      || typeof parsed.startedAt !== "string"
+      || !Number.isFinite(startedAtMs)
+      || new Date(startedAtMs).toISOString() !== parsed.startedAt
+    ) {
+      throw new Error("owner metadata is malformed or not bound to this preflight root");
+    }
+    return {
+      format: "cpb-claude-boundary-owner/v1",
+      ownerToken: parsed.ownerToken,
+      preflightRoot: parsed.preflightRoot,
+      host: parsed.host,
+      pid: parsed.pid,
+      startedAt: parsed.startedAt,
+      processIdentity,
+    };
+  } catch (error) {
+    if (errnoCode(error) === "ENOENT") return null;
+    throw claudeBoundaryError(
+      `Claude runtime boundary owner metadata is unsafe: ${ownerPath}`,
+      "CLAUDE_BOUNDARY_OWNER_UNSAFE",
+      { ownerPath, readErrorCode: errnoCode(error) || "INVALID_OWNER" },
+      error,
+    );
+  }
+}
+
+function sameClaudeBoundaryOwner(
+  left: ClaudeBoundaryPreflightOwner,
+  right: ClaudeBoundaryPreflightOwner,
+) {
+  return left.format === right.format
+    && left.ownerToken === right.ownerToken
+    && left.preflightRoot === right.preflightRoot
+    && left.host === right.host
+    && left.pid === right.pid
+    && left.startedAt === right.startedAt
+    && sameProcessIdentity(left.processIdentity, right.processIdentity);
+}
+
+function nextClaudeBoundaryHistoryAttempt(entries: string[]) {
+  return entries.reduce((highest, entry) => {
+    const match = CLAUDE_BOUNDARY_HISTORY_DIRECTORY.exec(entry);
+    if (!match) return highest;
+    const attempt = Number.parseInt(match[1], 10);
+    return Number.isSafeInteger(attempt) ? Math.max(highest, attempt) : highest;
+  }, 0) + 1;
+}
+
+function claudeBoundaryRecoveryChanged(
+  message: string,
+  residualPath: string,
+  recoveryPaths: string[],
+  cause?: unknown,
+) {
+  return claudeBoundaryError(
+    message,
+    "CLAUDE_BOUNDARY_RECOVERY_CHANGED",
+    { residualPath, recoveryPaths: [...new Set(recoveryPaths)] },
+    cause,
+  );
+}
+
 export async function recoverInterruptedClaudeBoundaryPreflight(
   runRoot: string,
   options: {
     currentPid?: number;
     currentHost?: string;
-    isPidAlive?: (pid: number) => boolean;
+    identityAlive?: (identity: ProcessIdentity) => boolean;
+    hooks?: ClaudeBoundaryRecoveryTestHooks;
   } = {},
 ) {
-  const preflightRoot = path.join(runRoot, "preflight", "claude-runtime-boundary");
-  if (!(await exists(preflightRoot)) || await exists(path.join(preflightRoot, "result.json"))) return null;
-  const owner = await readJson<LooseRecord>(path.join(preflightRoot, "owner.json")).catch(() => null);
+  const absoluteRunRoot = path.resolve(runRoot);
+  const preflightRoot = path.join(absoluteRunRoot, "preflight", "claude-runtime-boundary");
+  let originalGeneration: ClaudeBoundaryDirectoryGeneration;
+  try {
+    originalGeneration = await inspectClaudeBoundaryDirectory(preflightRoot);
+  } catch (error) {
+    if (errnoCode(error) === "ENOENT") return null;
+    throw error;
+  }
+  if (await claudeBoundaryResultExists(preflightRoot)) return null;
+  const owner = await readClaudeBoundaryOwner(preflightRoot, preflightRoot, options.hooks?.ownerRead);
+  if (!owner) {
+    throw claudeBoundaryError(
+      `Claude runtime boundary owner metadata is missing: ${path.join(preflightRoot, "owner.json")}`,
+      "CLAUDE_BOUNDARY_OWNER_UNSAFE",
+      { ownerPath: path.join(preflightRoot, "owner.json"), recoveryPaths: [preflightRoot] },
+    );
+  }
+  const generationAfterOwnerRead = await inspectClaudeBoundaryDirectory(preflightRoot);
+  if (!sameClaudeBoundaryGeneration(originalGeneration, generationAfterOwnerRead)) {
+    throw claudeBoundaryRecoveryChanged(
+      `Claude runtime boundary preflight changed while reading its owner: ${preflightRoot}`,
+      preflightRoot,
+      [preflightRoot],
+    );
+  }
   const currentPid = options.currentPid ?? process.pid;
   const currentHost = options.currentHost ?? hostname();
-  const isAlive = options.isPidAlive || pidIsAlive;
-  const ownerPid = Number(owner?.pid);
-  const ownerHost = text(owner?.host) || currentHost;
-  if (owner && (ownerHost !== currentHost || (ownerPid !== currentPid && isAlive(ownerPid)))) {
-    throw new Error(`Claude runtime boundary preflight already active (${ownerHost}:${ownerPid})`);
+  const identityAlive = options.identityAlive || isProcessIdentityAlive;
+  if (owner.host !== currentHost || processIdentityIsAlive(owner.processIdentity, identityAlive)) {
+    throw new Error(`Claude runtime boundary preflight already active (${owner.host}:${owner.pid})`);
   }
 
-  const historyRoot = path.join(runRoot, "preflight", "claude-runtime-boundary-history");
+  const historyRoot = path.join(absoluteRunRoot, "preflight", "claude-runtime-boundary-history");
   await mkdir(historyRoot, { recursive: true });
-  const historyAttempt = nextSolverAttemptNumber(await readdir(historyRoot));
-  const archiveRoot = path.join(historyRoot, `attempt-${String(historyAttempt).padStart(3, "0")}`);
-  await rename(preflightRoot, archiveRoot);
+  const historyAttempt = nextClaudeBoundaryHistoryAttempt(await readdir(historyRoot));
+  const recoveryToken = randomUUID();
+  const quarantineRoot = path.join(
+    historyRoot,
+    `attempt-${String(historyAttempt).padStart(3, "0")}-${recoveryToken}`,
+  );
+  await options.hooks?.beforeQuarantineRename?.({
+    preflightRoot,
+    quarantineRoot,
+    ownerToken: owner.ownerToken,
+  });
+  const generationBeforeRename = await inspectClaudeBoundaryDirectory(preflightRoot);
+  if (!sameClaudeBoundaryGeneration(originalGeneration, generationBeforeRename)) {
+    throw claudeBoundaryRecoveryChanged(
+      `Claude runtime boundary preflight generation changed before quarantine: ${preflightRoot}`,
+      preflightRoot,
+      [preflightRoot],
+    );
+  }
+  const ownerBeforeRename = await readClaudeBoundaryOwner(preflightRoot, preflightRoot, options.hooks?.ownerRead);
+  const generationAfterOwnerRecheck = await inspectClaudeBoundaryDirectory(preflightRoot);
+  if (
+    !ownerBeforeRename
+    || !sameClaudeBoundaryOwner(owner, ownerBeforeRename)
+    || !sameClaudeBoundaryGeneration(originalGeneration, generationAfterOwnerRecheck)
+  ) {
+    throw claudeBoundaryRecoveryChanged(
+      `Claude runtime boundary preflight ownership changed before quarantine: ${preflightRoot}`,
+      preflightRoot,
+      [preflightRoot],
+    );
+  }
+
+  await rename(preflightRoot, quarantineRoot);
+  let quarantinedGeneration: ClaudeBoundaryDirectoryGeneration;
+  try {
+    quarantinedGeneration = await inspectClaudeBoundaryDirectory(quarantineRoot);
+    if (!sameClaudeBoundaryObjectAcrossRename(originalGeneration, quarantinedGeneration)) {
+      throw claudeBoundaryRecoveryChanged(
+        `Claude runtime boundary preflight generation changed while entering quarantine: ${quarantineRoot}`,
+        quarantineRoot,
+        [quarantineRoot, preflightRoot],
+      );
+    }
+    try {
+      await syncClaudeBoundaryDirectory(path.dirname(preflightRoot));
+      await syncClaudeBoundaryDirectory(path.dirname(quarantineRoot));
+    } catch (error) {
+      throw claudeBoundaryError(
+        `Claude runtime boundary quarantine is preserved but its namespace durability is ambiguous: ${quarantineRoot}`,
+        "CLAUDE_BOUNDARY_RECOVERY_PRESERVED",
+        { committed: true, residualPath: quarantineRoot, recoveryPaths: [quarantineRoot, preflightRoot] },
+        error,
+      );
+    }
+    await options.hooks?.afterQuarantineRename?.({
+      preflightRoot,
+      quarantineRoot,
+      ownerToken: owner.ownerToken,
+    });
+    const generationAfterQuarantineHook = await inspectClaudeBoundaryDirectory(quarantineRoot);
+    if (!sameClaudeBoundaryGeneration(quarantinedGeneration, generationAfterQuarantineHook)) {
+      throw claudeBoundaryRecoveryChanged(
+        `Claude runtime boundary quarantine generation changed: ${quarantineRoot}`,
+        quarantineRoot,
+        [quarantineRoot, preflightRoot],
+      );
+    }
+    const quarantinedOwner = await readClaudeBoundaryOwner(
+      quarantineRoot,
+      preflightRoot,
+      options.hooks?.ownerRead,
+    );
+    const generationAfterQuarantinedOwnerRead = await inspectClaudeBoundaryDirectory(quarantineRoot);
+    if (
+      !quarantinedOwner
+      || !sameClaudeBoundaryOwner(owner, quarantinedOwner)
+      || !sameClaudeBoundaryGeneration(quarantinedGeneration, generationAfterQuarantinedOwnerRead)
+    ) {
+      throw claudeBoundaryRecoveryChanged(
+        `Claude runtime boundary quarantine ownership changed: ${quarantineRoot}`,
+        quarantineRoot,
+        [quarantineRoot, preflightRoot],
+      );
+    }
+  } catch (error) {
+    if ([
+      "CLAUDE_BOUNDARY_RECOVERY_CHANGED",
+      "CLAUDE_BOUNDARY_RECOVERY_PRESERVED",
+    ].includes(String((error as { code?: string })?.code || ""))) throw error;
+    throw claudeBoundaryRecoveryChanged(
+      `Claude runtime boundary recovery was preserved after quarantine: ${quarantineRoot}`,
+      quarantineRoot,
+      [quarantineRoot, preflightRoot],
+      error,
+    );
+  }
+
   const record = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     historyAttempt,
+    recoveryToken,
     decision: "resume_interrupted_preflight",
     archivedAt: now(),
-    originalRoot: runRelativePath(runRoot, preflightRoot),
-    archiveRoot: runRelativePath(runRoot, archiveRoot),
+    originalRoot: runRelativePath(absoluteRunRoot, preflightRoot),
+    archiveRoot: runRelativePath(absoluteRunRoot, quarantineRoot),
     owner,
     recoveredBy: { host: currentHost, pid: currentPid },
   };
-  await writeJsonAtomic(path.join(archiveRoot, "recovery-record.json"), record);
+  await publishClaudeBoundaryJsonExclusive(
+    quarantineRoot,
+    "recovery-record.json",
+    `.recovery-${recoveryToken}.proof`,
+    record,
+    {
+      label: "recovery record",
+      conflictCode: "CLAUDE_BOUNDARY_RECOVERY_PRESERVED",
+      committedCode: "CLAUDE_BOUNDARY_RECOVERY_PRESERVED",
+      recoveryPaths: [quarantineRoot, preflightRoot],
+    },
+  );
   return record;
 }
 
@@ -2167,6 +5157,7 @@ export async function verifyCodexFilesystemBoundary(
   sourcePath: string,
   boundary: AgentFilesystemBoundary,
   laneRoot: string,
+  signal?: AbortSignal,
 ) {
   const insideCandidates = [
     ...boundary.projectPackageNames.map((name) => path.join(sourcePath, name, "__init__.py")),
@@ -2206,6 +5197,7 @@ export async function verifyCodexFilesystemBoundary(
       ],
       cwd: sourcePath,
       timeoutMs: 30_000,
+      signal,
     });
   } finally {
     await new Promise<void>((resolve) => loopback.server.close(() => resolve()));
@@ -2234,6 +5226,7 @@ export async function verifyCodexFilesystemBoundary(
       cwd: sourcePath,
       timeoutMs: 30_000,
       stdin: "#include <Python.h>\nint main(void) { return 0; }\n",
+      signal,
     });
     const check = {
       includeRoot,
@@ -2268,10 +5261,10 @@ export async function verifyCodexFilesystemBoundary(
 }
 
 export async function verifyClaudeRuntimeBoundary(options: Options, frozenDistRoot = DIST_ROOT) {
-  const preflightRoot = path.join(options.runRoot, "preflight", "claude-runtime-boundary");
+  const preflightRoot = path.resolve(options.runRoot, "preflight", "claude-runtime-boundary");
   const recordPath = path.join(preflightRoot, "result.json");
-  if (await exists(recordPath)) {
-    const existing = await readJson<LooseRecord>(recordPath);
+  const existing = await readExistingClaudeBoundaryResult(preflightRoot);
+  if (existing) {
     if (existing.ok === true && existing.expectedModel === effectiveProviderModel(options.glmModel)) return existing;
     throw new Error(`Claude runtime boundary preflight already failed and its evidence is preserved: ${text(existing.violations) || recordPath}`);
   }
@@ -2281,16 +5274,50 @@ export async function verifyClaudeRuntimeBoundary(options: Options, frozenDistRo
   const insidePath = path.join(sourcePath, "inside.txt");
   const deniedPath = path.join(deniedRoot, "future-copy.txt");
   const probeScriptPath = path.join(sourcePath, "boundary-probe.cjs");
+  const ownerIdentity = captureProcessIdentity(process.pid, { strict: true });
+  if (!ownerIdentity) {
+    throw Object.assign(new Error("Claude runtime boundary owner process identity unavailable"), {
+      code: "PROCESS_IDENTITY_UNAVAILABLE",
+    });
+  }
+  await mkdir(path.dirname(preflightRoot), { recursive: true });
+  try {
+    await mkdir(preflightRoot, { mode: 0o700 });
+  } catch (error) {
+    if (errnoCode(error) === "EEXIST") {
+      throw claudeBoundaryError(
+        `Claude runtime boundary preflight namespace was claimed concurrently: ${preflightRoot}`,
+        "CLAUDE_BOUNDARY_OWNER_CONFLICT",
+        { residualPath: preflightRoot, recoveryPaths: [preflightRoot] },
+        error,
+      );
+    }
+    throw error;
+  }
+  try {
+    await syncClaudeBoundaryDirectory(path.dirname(preflightRoot));
+  } catch (error) {
+    throw claudeBoundaryError(
+      `Claude runtime boundary preflight namespace was created but parent durability is ambiguous: ${preflightRoot}`,
+      "CLAUDE_BOUNDARY_OWNER_DURABILITY_AMBIGUOUS",
+      { committed: true, residualPath: preflightRoot, recoveryPaths: [preflightRoot] },
+      error,
+    );
+  }
+  const owner: ClaudeBoundaryPreflightOwner = {
+    format: "cpb-claude-boundary-owner/v1",
+    ownerToken: randomUUID(),
+    preflightRoot,
+    host: hostname(),
+    pid: process.pid,
+    startedAt: now(),
+    processIdentity: ownerIdentity,
+  };
+  await publishClaudeBoundaryOwnerExclusive(preflightRoot, owner);
   await Promise.all([
     mkdir(sourcePath, { recursive: true }),
     mkdir(deniedRoot, { recursive: true }),
   ]);
-  await writeJsonAtomic(path.join(preflightRoot, "owner.json"), {
-    schemaVersion: 1,
-    host: hostname(),
-    pid: process.pid,
-    startedAt: now(),
-  });
   await Promise.all([
     writeFile(insidePath, "current source\n", "utf8"),
     writeFile(deniedPath, "later implementation\n", "utf8"),
@@ -2362,6 +5389,7 @@ export async function verifyClaudeRuntimeBoundary(options: Options, frozenDistRo
         cwd: sourcePath,
         env,
         timeoutMs: 120_000,
+        signal: options.signal,
         logs: {
           stdoutPath: path.join(attemptRoot, "stdout.log"),
           stderrPath: path.join(attemptRoot, "stderr.log"),
@@ -2400,6 +5428,7 @@ export async function verifyClaudeRuntimeBoundary(options: Options, frozenDistRo
         exitCode: commandResult.code,
         signal: commandResult.signal,
         timedOut: commandResult.timedOut,
+        aborted: commandResult.aborted,
         error: commandResult.error,
         stderr: commandResult.stderr.slice(-2_000),
         completedAt: now(),
@@ -2423,7 +5452,7 @@ export async function verifyClaudeRuntimeBoundary(options: Options, frozenDistRo
         break;
       }
       if (!retryScheduled) break;
-      if (retryBackoffMs > 0) await new Promise((resolve) => setTimeout(resolve, retryBackoffMs));
+      await abortableDelay(retryBackoffMs, options.signal);
     }
   } finally {
     await new Promise<void>((resolve) => loopback.server.close(() => resolve()));
@@ -2445,6 +5474,7 @@ export async function verifyClaudeRuntimeBoundary(options: Options, frozenDistRo
     violations: finalViolations,
     exitCode: finalCommandResult?.code ?? null,
     signal: finalCommandResult?.signal ?? null,
+    aborted: finalCommandResult?.aborted === true,
     stderr: finalCommandResult?.stderr.slice(-2_000) || "",
     verifiedAt: now(),
     recoveredPreflight,
@@ -2454,7 +5484,13 @@ export async function verifyClaudeRuntimeBoundary(options: Options, frozenDistRo
   return record;
 }
 
-async function fetchSourceCommit(cachePath: string, task: SolverTask, laneRoot: string) {
+async function fetchSourceCommit(
+  cachePath: string,
+  task: SolverTask,
+  laneRoot: string,
+  gitEnv: NodeJS.ProcessEnv,
+  signal?: AbortSignal,
+) {
   const attempts: LooseRecord[] = [];
   for (let attempt = 1; attempt <= 5; attempt += 1) {
     const startedAt = now();
@@ -2462,7 +5498,9 @@ async function fetchSourceCommit(cachePath: string, task: SolverTask, laneRoot: 
       command: "git",
       args: ["fetch", "--no-tags", "--depth=1", "origin", task.baseCommit],
       cwd: cachePath,
+      env: gitEnv,
       timeoutMs: 600_000,
+      signal,
     });
     const diagnostics = `${result.stderr}\n${result.stdout}`.trim();
     attempts.push({
@@ -2472,6 +5510,7 @@ async function fetchSourceCommit(cachePath: string, task: SolverTask, laneRoot: 
       code: result.code,
       signal: result.signal,
       timedOut: result.timedOut,
+      aborted: result.aborted,
       error: result.error,
       diagnostics: diagnostics.slice(-4_000),
     });
@@ -2482,51 +5521,119 @@ async function fetchSourceCommit(cachePath: string, task: SolverTask, laneRoot: 
     }
     const delayMs = Math.min(8_000, 1_000 * (2 ** (attempt - 1)));
     console.warn(`  source fetch attempt ${attempt}/5 failed; retrying after ${delayMs}ms`);
-    await new Promise((resolve) => setTimeout(resolve, delayMs));
+    await abortableDelay(delayMs, signal);
   }
   return attempts;
 }
 
-async function prepareSource(task: SolverTask, laneRoot: string, runRoot: string) {
+export async function prepareSource(task: SolverTask, laneRoot: string, runRoot: string, signal?: AbortSignal) {
   const sourcePath = path.join(laneRoot, "source");
   const cacheKey = task.repository.replace(/[^a-zA-Z0-9._-]+/g, "__");
   const cachePath = path.join(runRoot, "source-cache", `${cacheKey}.git`);
+  const gitEnv = buildSweBenchGitEnvironment();
+  const expectedOrigin = `https://github.com/${task.repository}.git`;
   await mkdir(path.dirname(cachePath), { recursive: true });
   const cache = await withSourceCacheLock(cachePath, async () => {
-    if (!(await exists(path.join(cachePath, "HEAD")))) {
-      await rm(cachePath, { recursive: true, force: true });
-      await mkdir(cachePath, { recursive: true });
-      await runRequired("git", ["init", "--bare"], cachePath);
-      await runRequired("git", ["remote", "add", "origin", `https://github.com/${task.repository}.git`], cachePath);
+    let predecessor: SweBenchPathQuarantineProof | null = null;
+    let initializedIdentity: FileIdentity | null = null;
+    let cacheReady = false;
+    try {
+      const cacheDetails = await lstat(cachePath);
+      if (cacheDetails.isDirectory() && !cacheDetails.isSymbolicLink()) {
+        const headDetails = await lstat(path.join(cachePath, "HEAD"));
+        cacheReady = headDetails.isFile() && !headDetails.isSymbolicLink();
+      }
+    } catch (error) {
+      if (!["ENOENT", "ENOTDIR"].includes(errnoCode(error))) throw error;
     }
-    const cached = await runCommand({
-      command: "git",
-      args: ["cat-file", "-e", `${task.baseCommit}^{commit}`],
-      cwd: cachePath,
-      timeoutMs: 30_000,
+    if (cacheReady) {
+      try {
+        await assertSweBenchSourceCacheConfigTrusted(cachePath, expectedOrigin, gitEnv, signal);
+      } catch (error) {
+        if (errnoCode(error) !== "SWEBENCH_SOURCE_CACHE_UNTRUSTED") throw error;
+        cacheReady = false;
+      }
+    }
+    if (!cacheReady) {
+      predecessor = await quarantineSweBenchRunPath(cachePath, runRoot);
+      await mkdir(cachePath, { mode: 0o700 });
+      initializedIdentity = await lstatIdentityOrNull(cachePath);
+      if (!initializedIdentity) throw new Error(`source cache disappeared after creation: ${cachePath}`);
+    }
+    try {
+      if (initializedIdentity) {
+        await runRequiredGit(["init", "--bare"], cachePath, gitEnv, 600_000, signal);
+        await runRequiredGit(["remote", "add", "origin", expectedOrigin], cachePath, gitEnv, 600_000, signal);
+      }
+      await runRequiredGit(["remote", "set-url", "origin", expectedOrigin], cachePath, gitEnv, 30_000, signal);
+      const cached = await runCommand({
+        command: "git",
+        args: ["cat-file", "-e", `${task.baseCommit}^{commit}`],
+        cwd: cachePath,
+        env: gitEnv,
+        timeoutMs: 30_000,
+        signal,
+      });
+      const fetchAttempts = cached.code === 0 ? [] : await fetchSourceCommit(cachePath, task, laneRoot, gitEnv, signal);
+      const verified = await runRequiredGit(["cat-file", "-e", `${task.baseCommit}^{commit}`], cachePath, gitEnv, 30_000, signal);
+      return {
+        cacheHit: cached.code === 0,
+        fetchAttempts,
+        commitVerified: verified.code === 0,
+        predecessor,
+      };
+    } catch (error) {
+      if (initializedIdentity) {
+        await throwAfterQuarantiningSweBenchGeneration(
+          error,
+          cachePath,
+          runRoot,
+          initializedIdentity,
+          predecessor ? [predecessor] : [],
+        );
+      }
+      if (predecessor) {
+        throw attachSweBenchRecoveryEvidence(
+          error,
+          predecessor,
+          "source cache preparation failed after predecessor quarantine",
+        );
+      }
+      throw error;
+    }
+  }, signal);
+  const sourcePredecessor = await quarantineSweBenchRunPath(sourcePath, laneRoot);
+  await mkdir(sourcePath, { mode: 0o700 });
+  const sourceIdentity = await lstatIdentityOrNull(sourcePath);
+  if (!sourceIdentity) throw new Error(`source workspace disappeared after creation: ${sourcePath}`);
+  try {
+    await runRequiredGit(["init"], sourcePath, gitEnv, 600_000, signal);
+    await runRequiredGit(["remote", "add", "origin", cachePath], sourcePath, gitEnv, 600_000, signal);
+    await runRequiredGit(["fetch", "--depth=1", "origin", task.baseCommit], sourcePath, gitEnv, 600_000, signal);
+    await runRequiredGit(["checkout", "--detach", "FETCH_HEAD"], sourcePath, gitEnv, 600_000, signal);
+    const head = (await runRequiredGit(["rev-parse", "HEAD"], sourcePath, gitEnv, 30_000, signal)).stdout.trim();
+    if (head !== task.baseCommit) throw new Error(`source identity mismatch: expected ${task.baseCommit}, got ${head}`);
+    await writeJsonAtomic(path.join(laneRoot, "source-prepare.json"), {
+      repository: task.repository,
+      baseCommit: task.baseCommit,
+      sourcePath,
+      cachePath,
+      cacheHit: cache.cacheHit,
+      cachePredecessor: cache.predecessor,
+      sourcePredecessor,
+      fetchAttempts: cache.fetchAttempts,
+      commitVerified: cache.commitVerified,
+      preparedAt: now(),
     });
-    const fetchAttempts = cached.code === 0 ? [] : await fetchSourceCommit(cachePath, task, laneRoot);
-    const verified = await runRequired("git", ["cat-file", "-e", `${task.baseCommit}^{commit}`], cachePath, 30_000);
-    return { cacheHit: cached.code === 0, fetchAttempts, commitVerified: verified.code === 0 };
-  });
-  await rm(sourcePath, { recursive: true, force: true });
-  await mkdir(sourcePath, { recursive: true });
-  await runRequired("git", ["init"], sourcePath);
-  await runRequired("git", ["remote", "add", "origin", cachePath], sourcePath);
-  await runRequired("git", ["fetch", "--depth=1", "origin", task.baseCommit], sourcePath);
-  await runRequired("git", ["checkout", "--detach", "FETCH_HEAD"], sourcePath);
-  const head = (await runRequired("git", ["rev-parse", "HEAD"], sourcePath, 30_000)).stdout.trim();
-  if (head !== task.baseCommit) throw new Error(`source identity mismatch: expected ${task.baseCommit}, got ${head}`);
-  await writeJsonAtomic(path.join(laneRoot, "source-prepare.json"), {
-    repository: task.repository,
-    baseCommit: task.baseCommit,
-    sourcePath,
-    cachePath,
-    cacheHit: cache.cacheHit,
-    fetchAttempts: cache.fetchAttempts,
-    commitVerified: cache.commitVerified,
-    preparedAt: now(),
-  });
+  } catch (error) {
+    await throwAfterQuarantiningSweBenchGeneration(
+      error,
+      sourcePath,
+      laneRoot,
+      sourceIdentity,
+      sourcePredecessor ? [sourcePredecessor] : [],
+    );
+  }
   return sourcePath;
 }
 
@@ -2557,13 +5664,13 @@ export function promptLeakageViolations(prompt: string, instanceId: string) {
   return violations;
 }
 
-async function capturePatch(sourcePath: string, baseCommit: string, patchPath: string) {
+async function capturePatch(sourcePath: string, baseCommit: string, patchPath: string, signal?: AbortSignal) {
   // Agent/runtime state is not part of a software candidate. Explicit-path
   // `git clean` removes only untracked entries; tracked project config at the
   // same paths is preserved.
-  await runRequired("git", ["clean", "-fd", "--", ".omc", ".claude", ".codex", ".cpb", ".codegraph", "cpb-task"], sourcePath, 120_000).catch(() => null);
-  await runRequired("git", ["add", "-N", "--", "."], sourcePath, 120_000).catch(() => null);
-  const diff = await runRequired("git", ["diff", "--binary", baseCommit, "--", "."], sourcePath, 120_000);
+  await runRequired("git", ["clean", "-fd", "--", ".omc", ".claude", ".codex", ".cpb", ".codegraph", "cpb-task"], sourcePath, 120_000, signal).catch(() => null);
+  await runRequired("git", ["add", "-N", "--", "."], sourcePath, 120_000, signal).catch(() => null);
+  const diff = await runRequired("git", ["diff", "--binary", baseCommit, "--", "."], sourcePath, 120_000, signal);
   await mkdir(path.dirname(patchPath), { recursive: true });
   await writeFile(patchPath, diff.stdout, "utf8");
   return { patch: diff.stdout, sha256: sha256(diff.stdout), bytes: Buffer.byteLength(diff.stdout) };
@@ -2607,12 +5714,14 @@ async function nativeCodex(
     env: { ...process.env, ...isolatedEnv },
     timeoutMs: options.timeoutMs,
     stdin: prompt,
+    signal: options.signal,
     logs: {
       stdoutPath: path.join(laneRoot, "stdout.log"),
       stderrPath: path.join(laneRoot, "stderr.log"),
       activityPath: path.join(laneRoot, "activity.jsonl"),
     },
   });
+  throwIfAborted(options.signal);
   return {
     command,
     prompt,
@@ -2671,12 +5780,14 @@ async function nativeClaudeGlm(
     cwd: sourcePath,
     env,
     timeoutMs: options.timeoutMs,
+    signal: options.signal,
     logs: {
       stdoutPath,
       stderrPath,
       activityPath: path.join(laneRoot, "activity.jsonl"),
     },
   });
+  throwIfAborted(options.signal);
   const attestation = observedModelAttestation(await readFile(stdoutPath, "utf8").catch(() => ""));
   const expectedModel = effectiveProviderModel(options.glmModel);
   const modelContractViolation = observedModelContractViolation(attestation, expectedModel);
@@ -2867,12 +5978,21 @@ async function cpbHighAssurance(
   options: Options,
   boundary: AgentFilesystemBoundary,
 ) {
+  throwIfAborted(options.signal);
   const codegraph = await initializeCodeGraph(sourcePath);
+  throwIfAborted(options.signal);
   const assignment = await writeNeutralAssignment({ runRoot, laneRoot, task, sourcePath });
+  throwIfAborted(options.signal);
   const frozenDistRoot = path.join(runRoot, "runtime-dist");
-  const stopQuotaDelegate = await startQuotaDelegate(assignment.hubRoot, laneRoot, frozenDistRoot);
+  const hubRoot = assignment.hubRoot;
+  const stopQuotaDelegate = await startQuotaDelegate(hubRoot, laneRoot, frozenDistRoot, options.signal);
   let worker;
+  let primaryError: unknown = null;
   try {
+    throwIfAborted(options.signal);
+    if (!(await isDelegateAlive(hubRoot))) {
+      throw new Error("quota delegate did not remain alive after startup");
+    }
     worker = await runManagedWorker({
       workerId: assignment.workerId,
       hubRoot: assignment.hubRoot,
@@ -2881,6 +6001,7 @@ async function cpbHighAssurance(
       phaseAgents: assignment.agents,
       timeoutMs: options.timeoutMs,
       distRoot: frozenDistRoot,
+      signal: options.signal,
       extraEnv: {
         CPB_CODEGRAPH_INDEX_ONLY_OK: "1",
         CPB_ASSURANCE_MODE: "high",
@@ -2898,8 +6019,17 @@ async function cpbHighAssurance(
         ]),
       },
     });
+    throwIfAborted(options.signal);
+  } catch (error) {
+    primaryError = error;
+    throw error;
   } finally {
-    await stopQuotaDelegate();
+    try {
+      await stopQuotaDelegate();
+    } catch (cleanupError) {
+      if (primaryError) throw new AggregateError([primaryError, cleanupError], "cpb high assurance cleanup failed");
+      throw cleanupError;
+    }
   }
   const resultPath = path.join(assignment.attemptDir, "result.json");
   const result: LooseRecord = await readJson<LooseRecord>(resultPath).catch((): LooseRecord => ({}));
@@ -2981,6 +6111,7 @@ async function cpbHighAssurance(
       stdout: worker.stdout,
       stderr: worker.stderr,
       timedOut: worker.timedOut === true,
+      aborted: false,
       error: worker.errorMessage || (completionViolations.length > 0 ? `CPB completion invariant failed: ${completionViolations.join(", ")}` : null),
     },
     prompt: promptCorpus,
@@ -3026,14 +6157,16 @@ async function cpbHighAssurance(
 }
 
 async function runLane(task: SolverTask, evaluator: EvaluatorTask, lane: Lane, options: Options): Promise<LaneResult> {
+  throwIfAborted(options.signal);
   const laneRoot = path.join(options.runRoot, "lanes", lane, task.opaqueId);
   const resultPath = path.join(laneRoot, "result.json");
   await mkdir(laneRoot, { recursive: true });
   const startedAt = now();
   let sourcePath = path.join(laneRoot, "source");
   try {
-    sourcePath = await prepareSource(task, laneRoot, options.runRoot);
+    sourcePath = await prepareSource(task, laneRoot, options.runRoot, options.signal);
   } catch (error) {
+    throwIfAborted(options.signal);
     const message = `source preparation failed: ${error instanceof Error ? error.message : String(error)}`;
     const patchPath = path.join(laneRoot, "candidate.patch");
     const stdoutPath = path.join(laneRoot, "stdout.log");
@@ -3078,20 +6211,22 @@ async function runLane(task: SolverTask, evaluator: EvaluatorTask, lane: Lane, o
   let sourceBoundaryPreflight: LooseRecord | null = null;
   let execution;
   try {
+    throwIfAborted(options.signal);
     sourceBoundary = await buildAgentFilesystemBoundary(task.repository, sourcePath, options.runRoot);
     await writeJsonAtomic(path.join(laneRoot, "source-boundary.json"), sourceBoundary);
-    sourceBoundaryPreflight = await verifyCodexFilesystemBoundary(sourcePath, sourceBoundary, laneRoot);
+    sourceBoundaryPreflight = await verifyCodexFilesystemBoundary(sourcePath, sourceBoundary, laneRoot, options.signal);
     execution = lane === "native_codex"
       ? await nativeCodex(task, sourcePath, laneRoot, options, sourceBoundary)
       : lane === "native_claude_glm"
         ? await nativeClaudeGlm(task, sourcePath, laneRoot, options, sourceBoundary)
         : await cpbHighAssurance(task, sourcePath, laneRoot, options.runRoot, options, sourceBoundary);
   } catch (error) {
+    throwIfAborted(options.signal);
     const sourceBoundaryViolation = sourceBoundary === null || sourceBoundaryPreflight?.ok !== true
       ? `source_boundary_unavailable:${error instanceof Error ? error.message : String(error)}`
       : null;
     execution = {
-      command: { code: null, signal: null, stdout: "", stderr: "", timedOut: false, error: error instanceof Error ? error.message : String(error) },
+      command: { code: null, signal: null, stdout: "", stderr: "", timedOut: false, aborted: options.signal?.aborted === true, error: error instanceof Error ? error.message : String(error) },
       prompt: lane === "cpb_high_assurance" ? "" : ordinaryTaskPrompt(task.task),
       metadata: { sourceBoundaryViolation },
       candidatePath: sourcePath,
@@ -3125,25 +6260,28 @@ async function runLane(task: SolverTask, evaluator: EvaluatorTask, lane: Lane, o
             bytes: Buffer.byteLength(frozenCandidatePatch, "utf8"),
           };
         })()
-      : await capturePatch(candidatePath, task.baseCommit, patchPath).catch(async (error) => {
+      : await capturePatch(candidatePath, task.baseCommit, patchPath, options.signal).catch(async (error) => {
+          throwIfAborted(options.signal);
           await writeFile(patchPath, "", "utf8");
           return { patch: "", sha256: sha256(""), bytes: 0, error: error instanceof Error ? error.message : String(error) };
         });
   const promptLeakage = promptLeakageViolations(execution.prompt, evaluator.instanceId);
   const commandOk = execution.command.code === 0 && !execution.command.timedOut && !execution.command.error;
-  const patchError = "error" in patch ? patch.error || "candidate patch capture failed" : null;
-  const executionMetadata = isRecord(execution.metadata) ? execution.metadata : {};
-  const modelContractViolation = typeof executionMetadata.modelContractViolation === "string"
-    && executionMetadata.modelContractViolation
-    ? executionMetadata.modelContractViolation
+  const patchError: string | null = "error" in patch && typeof patch.error === "string"
+    ? patch.error || "candidate patch capture failed"
     : null;
-  const agentContractViolation = typeof executionMetadata.agentContractViolation === "string"
-    && executionMetadata.agentContractViolation
-    ? executionMetadata.agentContractViolation
+  const executionMetadata: LooseRecord = isRecord(execution.metadata) ? execution.metadata : {};
+  const rawModelContractViolation = executionMetadata.modelContractViolation;
+  const modelContractViolation = typeof rawModelContractViolation === "string" && rawModelContractViolation
+    ? rawModelContractViolation
     : null;
-  const sourceBoundaryViolation = typeof executionMetadata.sourceBoundaryViolation === "string"
-    && executionMetadata.sourceBoundaryViolation
-    ? executionMetadata.sourceBoundaryViolation
+  const rawAgentContractViolation = executionMetadata.agentContractViolation;
+  const agentContractViolation = typeof rawAgentContractViolation === "string" && rawAgentContractViolation
+    ? rawAgentContractViolation
+    : null;
+  const rawSourceBoundaryViolation = executionMetadata.sourceBoundaryViolation;
+  const sourceBoundaryViolation = typeof rawSourceBoundaryViolation === "string" && rawSourceBoundaryViolation
+    ? rawSourceBoundaryViolation
     : null;
   const result: LaneResult = {
     lane,
@@ -3174,7 +6312,14 @@ async function runLane(task: SolverTask, evaluator: EvaluatorTask, lane: Lane, o
 }
 
 async function executeAll(solverTasks: SolverTask[], evaluatorTasks: EvaluatorTask[], options: Options) {
+  throwIfAborted(options.signal);
   const recoveredInvocations = await reconcileInterruptedSolverInvocations(options.runRoot);
+  const invocationProcessIdentity = captureProcessIdentity(process.pid, { strict: true });
+  if (!invocationProcessIdentity) {
+    throw Object.assign(new Error("solver invocation process identity unavailable"), {
+      code: "PROCESS_IDENTITY_UNAVAILABLE",
+    });
+  }
   const invocationStartedAt = now();
   const invocationId = `solver-${invocationStartedAt.replace(/[^0-9]/g, "")}-${process.pid}`;
   const invocationPath = path.join(options.runRoot, "solver-invocations", `${invocationId}.json`);
@@ -3184,6 +6329,8 @@ async function executeAll(solverTasks: SolverTask[], evaluatorTasks: EvaluatorTa
     runId: options.runId,
     host: hostname(),
     pid: process.pid,
+    processIdentity: invocationProcessIdentity,
+    incarnation: invocationProcessIdentity.incarnation,
     startedAt: invocationStartedAt,
     status: "running",
     solverAttempts: options.solverAttempts,
@@ -3216,13 +6363,15 @@ async function executeAll(solverTasks: SolverTask[], evaluatorTasks: EvaluatorTa
       taskCount: solverTasks.length,
       laneConcurrency: options.solverLaneConcurrency,
       run: async (lane, index) => {
-      const task = solverTasks[index];
-      const evaluator = evaluatorTasks.find((entry) => entry.opaqueId === task.opaqueId);
-      if (!evaluator) throw new Error(`evaluator mapping missing for ${task.opaqueId}`);
-      console.log(`[${lane} ${index + 1}/${solverTasks.length}] ${task.opaqueId}`);
-      const existing = await prepareLaneForSolverInvocation(lane, task.opaqueId, options, invocationId);
-      let result = existing || await runLane(task, evaluator, lane, options);
-      for (let attempt = 1; attempt < options.solverAttempts; attempt += 1) {
+        throwIfAborted(options.signal);
+        const task = solverTasks[index];
+        const evaluator = evaluatorTasks.find((entry) => entry.opaqueId === task.opaqueId);
+        if (!evaluator) throw new Error(`evaluator mapping missing for ${task.opaqueId}`);
+        console.log(`[${lane} ${index + 1}/${solverTasks.length}] ${task.opaqueId}`);
+        const existing = await prepareLaneForSolverInvocation(lane, task.opaqueId, options, invocationId);
+        let result = existing || await runLane(task, evaluator, lane, options);
+        for (let attempt = 1; attempt < options.solverAttempts; attempt += 1) {
+        throwIfAborted(options.signal);
         const diagnostics = [
           await readFile(result.stdoutPath, "utf8").catch(() => ""),
           await readFile(result.stderrPath, "utf8").catch(() => ""),
@@ -3235,9 +6384,10 @@ async function executeAll(solverTasks: SolverTask[], evaluatorTasks: EvaluatorTa
         );
         const archive = await archiveLaneAttempt(result, attempt, options, invocationId, backoffMs);
         console.log(`  ${lane}/${task.opaqueId} transient failure archived as attempt-${String(archive.historyAttempt).padStart(3, "0")}; retry ${attempt + 1}/${options.solverAttempts} after ${backoffMs}ms`);
-        if (backoffMs > 0) await new Promise((resolve) => setTimeout(resolve, backoffMs));
+        await abortableDelay(backoffMs, options.signal);
         result = await runLane(task, evaluator, lane, options);
       }
+      throwIfAborted(options.signal);
       const finalDiagnostics = [
         await readFile(result.stdoutPath, "utf8").catch(() => ""),
         await readFile(result.stderrPath, "utf8").catch(() => ""),
@@ -3497,7 +6647,8 @@ export async function recoverHarnessInstanceReports({
   }
 }
 
-async function runHarness(lane: Lane, predictionsPath: string, evaluatorTasks: EvaluatorTask[], options: Options) {
+export async function runHarness(lane: Lane, predictionsPath: string, evaluatorTasks: EvaluatorTask[], options: Options) {
+  throwIfAborted(options.signal);
   const harnessRoot = path.join(options.runRoot, "harness", lane);
   await mkdir(harnessRoot, { recursive: true });
   const runId = `${options.runId}-${lane}`.replace(/[^a-zA-Z0-9_.-]/g, "-");
@@ -3560,7 +6711,8 @@ async function runHarness(lane: Lane, predictionsPath: string, evaluatorTasks: E
     attemptHistory.push(...(Array.isArray(existing.attempts) ? existing.attempts.map(recordValue) : []));
   }
 
-  const attemptEntries = await readdir(attemptsRoot, { withFileTypes: true }).catch(() => []);
+  await mkdir(attemptsRoot, { recursive: true });
+  const attemptEntries = await readdir(attemptsRoot, { withFileTypes: true });
   const discoveredAttemptNumbers = attemptEntries
     .filter((entry) => entry.isDirectory())
     .map((entry) => Number.parseInt(entry.name.match(/^attempt-(\d+)$/)?.[1] || "", 10))
@@ -3598,6 +6750,7 @@ async function runHarness(lane: Lane, predictionsPath: string, evaluatorTasks: E
       args: ["-c", "import swebench"],
       cwd: harnessRoot,
       timeoutMs: 30_000,
+      signal: options.signal,
     });
     if (probe.code === 0) {
       harnessPython = candidate;
@@ -3617,94 +6770,124 @@ async function runHarness(lane: Lane, predictionsPath: string, evaluatorTasks: E
 
   for (let attempt = nextHarnessAttemptNumber(attemptHistory, discoveredAttemptNumbers); pendingIds.length > 0 && attempt <= options.harnessAttempts; attempt += 1) {
     const attemptRoot = path.join(harnessRoot, "attempts", `attempt-${String(attempt).padStart(3, "0")}`);
-    await mkdir(attemptRoot, { recursive: true });
-    const attemptRunId = `${runId}-attempt-${String(attempt).padStart(3, "0")}`;
-    const attemptPredictions = pendingIds.map((instanceId) => {
-      const prediction = predictionById.get(instanceId);
-      if (!prediction) throw new Error(`frozen prediction missing for ${lane}/${instanceId}`);
-      return prediction;
-    });
-    const attemptPredictionsPath = path.join(attemptRoot, "predictions.jsonl");
-    const attemptPredictionsText = attemptPredictions.map((entry) => JSON.stringify(entry)).join("\n") + "\n";
-    await writeFile(attemptPredictionsPath, attemptPredictionsText, "utf8");
-    const args = [
-      "-m", "swebench.harness.run_evaluation",
-      "--dataset_name", DATASET,
-      "--split", SPLIT,
-      "--predictions_path", attemptPredictionsPath,
-      "--max_workers", String(Math.min(options.maxHarnessWorkers, pendingIds.length)),
-      "--timeout", String(options.harnessTimeoutSeconds),
-      "--cache_level", "env",
-      "--clean", "False",
-      "--run_id", attemptRunId,
-      "--report_dir", path.join(attemptRoot, "reports"),
-      "--instance_ids", ...pendingIds,
-    ];
-    console.log(`  official harness ${lane} attempt ${attempt}/${options.harnessAttempts}: ${pendingIds.length} instance(s)`);
-    const command = await runCommand({
-      command: harnessPython,
-      args,
-      cwd: attemptRoot,
-      env: buildHarnessEnvironment(),
-      timeoutMs: Math.max(options.timeoutMs, options.harnessTimeoutSeconds * 1000 * Math.ceil(pendingIds.length / options.maxHarnessWorkers) + 600_000),
-    });
-    await writeFile(path.join(attemptRoot, "command.full.txt"), [harnessPython, ...args].map(shellQuote).join(" ") + "\n", "utf8");
-    await writeJsonAtomic(path.join(attemptRoot, "command.json"), {
-      command: harnessPython,
-      args,
-      cwd: attemptRoot,
-      frozenPredictionsPath: predictionsPath,
-      frozenPredictionsSha256: predictionsSha256,
-      attemptPredictionsPath,
-      attemptPredictionsSha256: sha256(attemptPredictionsText),
-      requestedIds: pendingIds,
-    });
-    await writeFile(path.join(attemptRoot, "stdout.log"), command.stdout, "utf8");
-    await writeFile(path.join(attemptRoot, "stderr.log"), command.stderr, "utf8");
-    await writeJsonAtomic(path.join(attemptRoot, "result.json"), { lane, runId: attemptRunId, command, completedAt: now() });
+    let attemptCommitted = false;
+    let attemptRootIdentity: FileIdentity | null = null;
+    try {
+      throwIfAborted(options.signal);
+      await mkdir(attemptRoot, { mode: 0o700 });
+      attemptRootIdentity = await lstatIdentityOrNull(attemptRoot);
+      if (!attemptRootIdentity) throw new Error(`official harness attempt root disappeared after creation: ${attemptRoot}`);
+      throwIfAborted(options.signal);
+      const attemptRunId = `${runId}-attempt-${String(attempt).padStart(3, "0")}`;
+      const attemptPredictions = pendingIds.map((instanceId) => {
+        const prediction = predictionById.get(instanceId);
+        if (!prediction) throw new Error(`frozen prediction missing for ${lane}/${instanceId}`);
+        return prediction;
+      });
+      const attemptPredictionsPath = path.join(attemptRoot, "predictions.jsonl");
+      const attemptPredictionsText = attemptPredictions.map((entry) => JSON.stringify(entry)).join("\n") + "\n";
+      throwIfAborted(options.signal);
+      await writeFile(attemptPredictionsPath, attemptPredictionsText, "utf8");
+      throwIfAborted(options.signal);
+      const args = [
+        "-m", "swebench.harness.run_evaluation",
+        "--dataset_name", DATASET,
+        "--split", SPLIT,
+        "--predictions_path", attemptPredictionsPath,
+        "--max_workers", String(Math.min(options.maxHarnessWorkers, pendingIds.length)),
+        "--timeout", String(options.harnessTimeoutSeconds),
+        "--cache_level", "env",
+        "--clean", "False",
+        "--run_id", attemptRunId,
+        "--report_dir", path.join(attemptRoot, "reports"),
+        "--instance_ids", ...pendingIds,
+      ];
+      console.log(`  official harness ${lane} attempt ${attempt}/${options.harnessAttempts}: ${pendingIds.length} instance(s)`);
+      const command = await runCommand({
+        command: harnessPython,
+        args,
+        cwd: attemptRoot,
+        env: buildHarnessEnvironment(),
+        timeoutMs: Math.max(options.timeoutMs, options.harnessTimeoutSeconds * 1000 * Math.ceil(pendingIds.length / options.maxHarnessWorkers) + 600_000),
+        signal: options.signal,
+      });
+      throwIfAborted(options.signal);
+      await writeFile(path.join(attemptRoot, "command.full.txt"), [harnessPython, ...args].map(shellQuote).join(" ") + "\n", "utf8");
+      throwIfAborted(options.signal);
+      await writeJsonAtomic(path.join(attemptRoot, "command.json"), {
+        command: harnessPython,
+        args,
+        cwd: attemptRoot,
+        frozenPredictionsPath: predictionsPath,
+        frozenPredictionsSha256: predictionsSha256,
+        attemptPredictionsPath,
+        attemptPredictionsSha256: sha256(attemptPredictionsText),
+        requestedIds: pendingIds,
+      });
+      throwIfAborted(options.signal);
+      await writeFile(path.join(attemptRoot, "stdout.log"), command.stdout, "utf8");
+      throwIfAborted(options.signal);
+      await writeFile(path.join(attemptRoot, "stderr.log"), command.stderr, "utf8");
+      throwIfAborted(options.signal);
+      await writeJsonAtomic(path.join(attemptRoot, "result.json"), { lane, runId: attemptRunId, command, completedAt: now() });
+      throwIfAborted(options.signal);
 
-    const aggregatePath = path.join(attemptRoot, `${lane}.${attemptRunId}.json`);
-    const aggregate: LooseRecord = await readJson<LooseRecord>(aggregatePath).catch(() => ({}));
-    const reports: Record<string, unknown> = {};
-    const reportPaths: Record<string, string> = {};
-    for (const instanceId of pendingIds) {
-      const reportPath = path.join(attemptRoot, "logs", "run_evaluation", attemptRunId, lane, instanceId, "report.json");
-      reportPaths[instanceId] = reportPath;
-      reports[instanceId] = await readJson<LooseRecord>(reportPath).catch(() => null);
-      const parsed = parseHarnessInstanceReport(reports[instanceId], instanceId);
-      if (parsed.ok) {
-        instanceResults.set(instanceId, {
-          ...parsed.result,
-          reportPath,
-          attempt,
+      const aggregatePath = path.join(attemptRoot, `${lane}.${attemptRunId}.json`);
+      throwIfAborted(options.signal);
+      const aggregate: LooseRecord = await readJson<LooseRecord>(aggregatePath).catch(() => ({}));
+      const reports: Record<string, unknown> = {};
+      const reportPaths: Record<string, string> = {};
+      for (const instanceId of pendingIds) {
+        throwIfAborted(options.signal);
+        const reportPath = path.join(attemptRoot, "logs", "run_evaluation", attemptRunId, lane, instanceId, "report.json");
+        reportPaths[instanceId] = reportPath;
+        reports[instanceId] = await readJson<LooseRecord>(reportPath).catch(() => null);
+        const parsed = parseHarnessInstanceReport(reports[instanceId], instanceId);
+        if (parsed.ok) {
+          instanceResults.set(instanceId, {
+            ...parsed.result,
+            reportPath,
+            attempt,
+          });
+        }
+      }
+      for (const instanceId of Array.isArray(aggregate.empty_patch_ids) ? aggregate.empty_patch_ids.map(String) : []) {
+        if (expectedIdSet.has(instanceId)) emptyPatchIds.add(instanceId);
+      }
+      const retryIds = selectHarnessRetryIds({ requestedIds: pendingIds, aggregate, reports });
+      const attemptSummary = {
+        attempt,
+        runId: attemptRunId,
+        requestedIds: [...pendingIds],
+        completedIds: pendingIds.filter((instanceId) => instanceResults.has(instanceId)),
+        resolvedIds: pendingIds.filter((instanceId) => instanceResults.get(instanceId)?.resolved === true),
+        unresolvedIds: pendingIds.filter((instanceId) => instanceResults.get(instanceId)?.resolved === false),
+        emptyPatchIds: pendingIds.filter((instanceId) => emptyPatchIds.has(instanceId)),
+        retryIds,
+        commandCode: command.code,
+        timedOut: command.timedOut,
+        aggregatePath: await exists(aggregatePath) ? aggregatePath : null,
+        reportPaths,
+      };
+      throwIfAborted(options.signal);
+      attemptHistory.push(attemptSummary);
+      await writeJsonAtomic(path.join(attemptRoot, "attempt-summary.json"), attemptSummary);
+      throwIfAborted(options.signal);
+      attemptCommitted = true;
+      pendingIds = expectedIds.filter((instanceId) => !instanceResults.has(instanceId) && !emptyPatchIds.has(instanceId));
+      if (pendingIds.length > 0 && attempt < options.harnessAttempts) {
+        const backoffMs = options.harnessRetryBackoffMs * attempt;
+        console.log(`  official harness infrastructure retry ${attempt + 1}/${options.harnessAttempts} after ${backoffMs}ms: ${pendingIds.join(", ")}`);
+        await abortableDelay(backoffMs, options.signal);
+      }
+    } catch (error) {
+      if (options.signal?.aborted && !attemptCommitted) {
+        await throwWithCleanup(error, async () => {
+          if (options.removeAttemptRootForTest) await options.removeAttemptRootForTest(attemptRoot);
+          else return quarantineSweBenchRunPath(attemptRoot, harnessRoot, { expectedIdentity: attemptRootIdentity });
         });
       }
-    }
-    for (const instanceId of Array.isArray(aggregate.empty_patch_ids) ? aggregate.empty_patch_ids.map(String) : []) {
-      if (expectedIdSet.has(instanceId)) emptyPatchIds.add(instanceId);
-    }
-    const retryIds = selectHarnessRetryIds({ requestedIds: pendingIds, aggregate, reports });
-    const attemptSummary = {
-      attempt,
-      runId: attemptRunId,
-      requestedIds: [...pendingIds],
-      completedIds: pendingIds.filter((instanceId) => instanceResults.has(instanceId)),
-      resolvedIds: pendingIds.filter((instanceId) => instanceResults.get(instanceId)?.resolved === true),
-      unresolvedIds: pendingIds.filter((instanceId) => instanceResults.get(instanceId)?.resolved === false),
-      emptyPatchIds: pendingIds.filter((instanceId) => emptyPatchIds.has(instanceId)),
-      retryIds,
-      commandCode: command.code,
-      timedOut: command.timedOut,
-      aggregatePath: await exists(aggregatePath) ? aggregatePath : null,
-      reportPaths,
-    };
-    attemptHistory.push(attemptSummary);
-    await writeJsonAtomic(path.join(attemptRoot, "attempt-summary.json"), attemptSummary);
-    pendingIds = expectedIds.filter((instanceId) => !instanceResults.has(instanceId) && !emptyPatchIds.has(instanceId));
-    if (pendingIds.length > 0 && attempt < options.harnessAttempts) {
-      const backoffMs = options.harnessRetryBackoffMs * attempt;
-      console.log(`  official harness infrastructure retry ${attempt + 1}/${options.harnessAttempts} after ${backoffMs}ms: ${pendingIds.join(", ")}`);
-      if (backoffMs > 0) await new Promise((resolve) => setTimeout(resolve, backoffMs));
+      throw error;
     }
   }
 
@@ -3732,8 +6915,6 @@ async function runHarness(lane: Lane, predictionsPath: string, evaluatorTasks: E
     merged_from_attempts: attemptHistory.map((attempt) => recordValue(attempt).runId).filter(Boolean),
   };
   const aggregatePath = path.join(harnessRoot, "official-merged-report.json");
-  await writeJsonAtomic(aggregatePath, officialReport);
-  await writeJsonAtomic(path.join(harnessRoot, "official-report.json"), officialReport);
   const testMetrics = summarizeHarnessTestMetrics(finalInstanceResults);
   const summary = {
     lane,
@@ -3761,16 +6942,49 @@ async function runHarness(lane: Lane, predictionsPath: string, evaluatorTasks: E
       && Math.max(0, ...attemptHistory.map((entry) => Number(recordValue(entry).attempt) || 0)) >= options.harnessAttempts,
     aggregatePath,
   };
-  await writeJsonAtomic(summaryPath, summary);
+  throwIfAborted(options.signal);
+  await commitHarnessJsonArtifacts([
+    { path: aggregatePath, value: officialReport },
+    { path: path.join(harnessRoot, "official-report.json"), value: officialReport },
+    { path: summaryPath, value: summary },
+  ], options.signal, options.harnessFinalArtifactForTest);
   return summary;
 }
 
-async function main() {
+type CliSignalTarget = {
+  once(event: "SIGINT" | "SIGTERM", listener: () => void): unknown;
+  off(event: "SIGINT" | "SIGTERM", listener: () => void): unknown;
+};
+
+export function installCliSignalHandlers(controller = new AbortController(), target: CliSignalTarget = process) {
+  let exitCode: number | null = null;
+  const handleSignal = (signal: NodeJS.Signals) => {
+    exitCode = signal === "SIGINT" ? 130 : 143;
+    controller.abort(`aborted by ${signal}`);
+  };
+  const handleSigint = () => handleSignal("SIGINT");
+  const handleSigterm = () => handleSignal("SIGTERM");
+  target.once("SIGINT", handleSigint);
+  target.once("SIGTERM", handleSigterm);
+  return {
+    signal: controller.signal,
+    get exitCode() {
+      return exitCode;
+    },
+    cleanup() {
+      target.off("SIGINT", handleSigint);
+      target.off("SIGTERM", handleSigterm);
+    },
+  };
+}
+
+export async function main(signal?: AbortSignal) {
   if (process.argv.includes("--help") || process.argv.includes("-h")) {
     process.stdout.write(USAGE);
     return;
   }
-  const options = parseOptions(process.argv);
+  const options = { ...parseOptions(process.argv), signal };
+  throwIfAborted(options.signal);
   await mkdir(options.runRoot, { recursive: true });
   await assertRunNotInvalidated(options.runRoot);
   const executionContract = await freezeExecutionContract(options);
@@ -3779,7 +6993,7 @@ async function main() {
   const sourceFiles = (await runRequired("git", [
     "ls-files", "--cached", "--others", "--exclude-standard", "--",
     "core", "server", "runtime", "shared", "scripts", "cli", "package.json", "tsconfig.node.json",
-  ], REPO_ROOT, 120_000)).stdout.split(/\r?\n/).filter(Boolean).sort();
+  ], REPO_ROOT, 120_000, options.signal)).stdout.split(/\r?\n/).filter(Boolean).sort();
   const sourceTreeHash = createHash("sha256");
   for (const file of sourceFiles) {
     sourceTreeHash.update(file).update("\0");
@@ -3788,8 +7002,8 @@ async function main() {
   const currentSourceSnapshot = {
     generatedAt: now(),
     repoRoot: REPO_ROOT,
-    head: (await runRequired("git", ["rev-parse", "HEAD"], REPO_ROOT, 30_000)).stdout.trim(),
-    diffSha256: sha256((await runRequired("git", ["diff", "--binary", "HEAD"], REPO_ROOT, 120_000)).stdout),
+    head: (await runRequired("git", ["rev-parse", "HEAD"], REPO_ROOT, 30_000, options.signal)).stdout.trim(),
+    diffSha256: sha256((await runRequired("git", ["diff", "--binary", "HEAD"], REPO_ROOT, 120_000, options.signal)).stdout),
     sourceTreeSha256: sourceTreeHash.digest("hex"),
     sourceFileCount: sourceFiles.length,
     frozenDistRoot,
@@ -3813,8 +7027,10 @@ async function main() {
     if (options.lanes.some((lane) => lane === "native_claude_glm" || lane === "cpb_high_assurance")) {
       await verifyClaudeRuntimeBoundary(options, frozenDistRoot);
     }
+    throwIfAborted(options.signal);
     await executeAll(solverTasks, evaluatorTasks, options);
   }
+  throwIfAborted(options.signal);
   if (options.execute && options.lanes.length < LANES.length) {
     console.log(`Selected lane execution complete (${options.lanes.join(",")}): ${options.runRoot}`);
     return;
@@ -3863,8 +7079,11 @@ async function main() {
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  main().catch((error) => {
+  const cliAbort = installCliSignalHandlers();
+  main(cliAbort.signal).catch((error) => {
     console.error(error instanceof Error ? error.stack || error.message : String(error));
-    process.exitCode = 1;
+    process.exitCode = cliAbort.exitCode || 1;
+  }).finally(() => {
+    cliAbort.cleanup();
   });
 }

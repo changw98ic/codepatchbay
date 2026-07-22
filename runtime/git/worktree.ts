@@ -1,8 +1,18 @@
 #!/usr/bin/env node
 import { spawn, type SpawnOptions } from "node:child_process";
-import { lstat, mkdir, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { lstat, mkdir, readFile, realpath, stat, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { LooseRecord } from "../../core/contracts/types.js";
+import {
+  WORKTREE_OWNERSHIP_VERSION,
+  parseWorktreeOwnership,
+  sameWorktreeDirectoryIdentity,
+  type PreparedWorktreeOwnership,
+  type ReadyWorktreeOwnership,
+  type WorktreeDirectoryIdentity,
+  type WorktreeOwnership,
+} from "../../core/contracts/worktree-ownership.js";
 
 const REQUIRED_IGNORES = [
   ".env",
@@ -64,6 +74,11 @@ type CreateWorktreeOptions = WorktreeRuntimeOptions & {
   jobId?: string;
   slug?: string;
   worktreesRoot?: string;
+};
+
+type SourceBase = {
+  baseBranch: string;
+  baseCommit: string;
 };
 
 function usage() {
@@ -391,8 +406,14 @@ async function ensureIsolatedCodegraph(worktreePath: string, { initCodegraph = i
   try {
     const existing = await lstat(worktreeCodegraph);
     if (existing.isSymbolicLink() || !existing.isDirectory()) {
-      await rm(worktreeCodegraph, { force: true });
-      resetCodegraph = true;
+      throw Object.assign(
+        new Error(`refusing to replace unowned worktree CodeGraph path: ${worktreeCodegraph}`),
+        {
+          code: "WORKTREE_CODEGRAPH_PATH_UNOWNED",
+          committed: false,
+          recoveryPaths: { canonical: worktreeCodegraph },
+        },
+      );
     }
   } catch (err: unknown) {
     if (!err || (err as NodeJS.ErrnoException).code !== "ENOENT") {
@@ -422,17 +443,39 @@ async function ensureSharedNodeModules(project: string, worktreePath: string) {
   try {
     const existing = await lstat(worktreeNodeModules);
     if (!existing.isSymbolicLink()) {
-      return false;
+      throw Object.assign(
+        new Error(`refusing unowned worktree node_modules path: ${worktreeNodeModules}`),
+        {
+          code: "WORKTREE_NODE_MODULES_PATH_UNOWNED",
+          committed: false,
+          recoveryPaths: { canonical: worktreeNodeModules },
+        },
+      );
     }
     try {
       const existingTarget = await realpath(worktreeNodeModules);
       if (existingTarget === sourceTarget) {
         return false;
       }
-      return false;
+      throw Object.assign(
+        new Error(`refusing to replace unowned node_modules link: ${worktreeNodeModules}`),
+        {
+          code: "WORKTREE_NODE_MODULES_LINK_UNOWNED",
+          committed: false,
+          recoveryPaths: { canonical: worktreeNodeModules, target: existingTarget },
+        },
+      );
     } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException)?.code === "WORKTREE_NODE_MODULES_LINK_UNOWNED") throw err;
       if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") throw err;
-      await rm(worktreeNodeModules, { force: true });
+      throw Object.assign(
+        new Error(`refusing to replace unowned dangling node_modules link: ${worktreeNodeModules}`),
+        {
+          code: "WORKTREE_NODE_MODULES_LINK_UNOWNED",
+          committed: false,
+          recoveryPaths: { canonical: worktreeNodeModules },
+        },
+      );
     }
   } catch (err: unknown) {
     if (!err || (err as NodeJS.ErrnoException).code !== "ENOENT") {
@@ -479,6 +522,111 @@ async function existingWorktreePath(project: string, branch: string) {
   return null;
 }
 
+function worktreeBaseBindingKey(branch: string) {
+  return `branch.${branch}.cpbBaseBinding`;
+}
+
+function parseWorktreeBaseBinding(raw: string, branch: string): WorktreeOwnership {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new Error(`managed branch has invalid base binding metadata: ${branch}`, { cause: error });
+  }
+  try {
+    return parseWorktreeOwnership(parsed, { allowPrepared: true });
+  } catch (error) {
+    throw new Error(`managed branch has invalid base binding metadata: ${branch}`, { cause: error });
+  }
+}
+
+async function readWorktreeBaseBinding(project: string, branch: string) {
+  const result = await git(project, ["config", "--local", "--get", worktreeBaseBindingKey(branch)]);
+  if (result.code === 1 && !result.stdout.trim() && !result.stderr.trim()) return null;
+  if (result.code !== 0) {
+    throw new Error(`git config base binding read failed: ${result.stderr || result.stdout}`);
+  }
+  return parseWorktreeBaseBinding(result.stdout.trim(), branch);
+}
+
+async function captureSourceBase(project: string): Promise<SourceBase> {
+  const branchResult = await git(project, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
+  if (branchResult.code !== 0 || !branchResult.stdout.trim()) {
+    throw new Error("source checkout must have a symbolic base branch before creating a managed worktree");
+  }
+  const baseBranch = branchResult.stdout.trim();
+  await mustGit(project, ["check-ref-format", "--branch", baseBranch]);
+  const commitResult = await mustGit(project, ["rev-parse", "--verify", "HEAD"]);
+  const baseCommit = commitResult.stdout.trim();
+  if (!/^[0-9a-f]{40,64}$/.test(baseCommit)) {
+    throw new Error("source checkout returned an invalid base commit");
+  }
+  return { baseBranch, baseCommit };
+}
+
+function sameWorktreeBase(left: SourceBase, right: SourceBase) {
+  return left.baseBranch === right.baseBranch
+    && left.baseCommit === right.baseCommit;
+}
+
+function sameWorktreeOwnership(left: WorktreeOwnership, right: WorktreeOwnership) {
+  if (
+    left.version !== right.version
+    || left.state !== right.state
+    || left.ownerToken !== right.ownerToken
+    || left.baseBranch !== right.baseBranch
+    || left.baseCommit !== right.baseCommit
+  ) return false;
+  if (left.state === "prepared" || right.state === "prepared") return left.state === right.state;
+  return sameWorktreeDirectoryIdentity(left.directory, right.directory);
+}
+
+async function persistWorktreeBaseBinding(project: string, branch: string, binding: WorktreeOwnership) {
+  await mustGit(project, [
+    "config",
+    "--local",
+    "--replace-all",
+    worktreeBaseBindingKey(branch),
+    JSON.stringify(binding),
+  ]);
+  const durable = await readWorktreeBaseBinding(project, branch);
+  if (!durable || !sameWorktreeOwnership(durable, binding)) {
+    throw new Error(`managed branch base binding was not persisted exactly: ${branch}`);
+  }
+}
+
+async function captureWorktreeDirectoryIdentity(worktreePath: string): Promise<WorktreeDirectoryIdentity> {
+  const info = await lstat(worktreePath, { bigint: true });
+  if (!info.isDirectory() || info.isSymbolicLink()) {
+    throw new Error(`managed worktree is not a real directory: ${worktreePath}`);
+  }
+  return {
+    dev: String(info.dev),
+    ino: String(info.ino),
+    birthtimeNs: String(info.birthtimeNs),
+    mode: String(info.mode),
+    uid: String(info.uid),
+    gid: String(info.gid),
+  };
+}
+
+async function assertOwnedWorktreeDirectory(worktreePath: string, ownership: ReadyWorktreeOwnership) {
+  const current = await captureWorktreeDirectoryIdentity(worktreePath);
+  if (!sameWorktreeDirectoryIdentity(current, ownership.directory)) {
+    throw new Error(`managed worktree directory no longer matches its durable ownership binding: ${worktreePath}`);
+  }
+}
+
+function worktreeContext(branch: string, worktreePath: string, ownership: ReadyWorktreeOwnership) {
+  return {
+    branch,
+    path: worktreePath,
+    baseBranch: ownership.baseBranch,
+    baseCommit: ownership.baseCommit,
+    ownership,
+  };
+}
+
 export async function createWorktree({ project, jobId, slug, worktreesRoot, initCodegraph, codegraphEnabled }: CreateWorktreeOptions = {}) {
   if (!project) throw new Error("missing --project");
   if (!worktreesRoot) throw new Error("missing --worktrees-root");
@@ -487,35 +635,78 @@ export async function createWorktree({ project, jobId, slug, worktreesRoot, init
 
   await bootstrap(project);
 
+  const source = path.resolve(project);
+  const currentBase = await captureSourceBase(source);
+
   const branch = `cpb/${jobId}-${slug}`;
   const root = path.resolve(worktreesRoot);
   const worktreePath = path.resolve(root, `${jobId}-${slug}`);
   ensureInside(root, worktreePath);
   await mkdir(root, { recursive: true });
 
-  await mustGit(path.resolve(project), ["check-ref-format", "--branch", branch]);
-  const existingPath = await existingWorktreePath(path.resolve(project), branch);
+  await mustGit(source, ["check-ref-format", "--branch", branch]);
+  const existingPath = await existingWorktreePath(source, branch);
   if (existingPath !== null) {
     if ((await pathExists(worktreePath)) && (await samePath(existingPath, worktreePath))) {
+      const binding = await readWorktreeBaseBinding(source, branch);
+      if (!binding) {
+        throw new Error(`managed branch is missing durable base binding metadata: ${branch}`);
+      }
+      if (binding.state !== "ready") {
+        throw new Error(`managed branch ownership binding is not ready: ${branch}`);
+      }
+      if (!sameWorktreeBase(binding, currentBase)) {
+        throw new Error(`source checkout no longer matches the managed branch base binding: ${branch}`);
+      }
+      await assertOwnedWorktreeDirectory(worktreePath, binding);
       await prepareWorktreeRuntime(project, worktreePath, { initCodegraph, codegraphEnabled });
-      return { branch, path: worktreePath };
+      await assertOwnedWorktreeDirectory(worktreePath, binding);
+      return worktreeContext(branch, worktreePath, binding);
     }
     throw new Error(`branch already has a different worktree: ${branch}`);
   }
 
-  // If branch exists but worktree was removed (stale branch), clean it up first
-  const branchCheck = await git(path.resolve(project), ["rev-parse", "--verify", `refs/heads/${branch}`]);
+  // A branch without its exact registered worktree is recovery state. Never
+  // delete it implicitly: target-scoped ownership cannot be reconstructed from
+  // the ref alone.
+  const branchCheck = await git(source, ["rev-parse", "--verify", `refs/heads/${branch}`]);
   if (branchCheck.code === 0) {
-    await mustGit(path.resolve(project), ["branch", "-D", branch]);
+    throw new Error(`managed branch exists without the exact registered worktree; preserving recovery state: ${branch}`);
+  }
+  if (branchCheck.code !== 1 && branchCheck.code !== 128) {
+    throw new Error(`managed branch existence check failed: ${branchCheck.stderr || branchCheck.stdout}`);
   }
 
-  await mustGit(path.resolve(project), ["worktree", "add", "-b", branch, worktreePath, "HEAD"]);
+  const existingBinding = await readWorktreeBaseBinding(source, branch);
+  if (existingBinding && !sameWorktreeBase(existingBinding, currentBase)) {
+    throw new Error(`source checkout no longer matches preserved base binding metadata: ${branch}`);
+  }
+  if (existingBinding?.state === "ready") {
+    throw new Error(`ready managed worktree ownership exists without its branch; preserving recovery state: ${branch}`);
+  }
+  const prepared: PreparedWorktreeOwnership = existingBinding || {
+    version: WORKTREE_OWNERSHIP_VERSION,
+    state: "prepared",
+    ownerToken: randomUUID(),
+    baseBranch: currentBase.baseBranch,
+    baseCommit: currentBase.baseCommit,
+  };
+  if (!existingBinding) await persistWorktreeBaseBinding(source, branch, prepared);
+
+  await mustGit(source, ["worktree", "add", "-b", branch, worktreePath, prepared.baseCommit]);
+  const binding: ReadyWorktreeOwnership = {
+    ...prepared,
+    state: "ready",
+    directory: await captureWorktreeDirectoryIdentity(worktreePath),
+  };
+  await persistWorktreeBaseBinding(source, branch, binding);
   await prepareWorktreeRuntime(project, worktreePath, {
     initCodegraph,
     codegraphEnabled,
   });
+  await assertOwnedWorktreeDirectory(worktreePath, binding);
 
-  return { branch, path: worktreePath };
+  return worktreeContext(branch, worktreePath, binding);
 }
 
 async function main() {

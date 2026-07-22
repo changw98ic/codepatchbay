@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmod, mkdtemp, mkdir, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -12,6 +12,7 @@ import {
   captureCandidateArtifact,
   verifyCandidateArtifactIdentity,
 } from "../core/engine/candidate-artifact.js";
+import { temporaryWorkspaceErrorDetails } from "../core/runtime/temporary-workspace.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -31,6 +32,39 @@ async function makeRepository() {
   await git(cwd, ["add", "-A"]);
   await git(cwd, ["commit", "-q", "-m", "base"]);
   return cwd;
+}
+
+async function makeJobGitEnv() {
+  const root = await mkdtemp(path.join(tmpdir(), "cpb-candidate-git-env-"));
+  const bin = path.join(root, "bin");
+  const log = path.join(root, "git.log");
+  const gitPath = path.join(bin, "git");
+  await mkdir(bin, { recursive: true });
+  await writeFile(gitPath, `#!/bin/sh
+if [ "\${CPB_AMBIENT_GIT_POISON+x}" = "x" ]; then
+  echo "ambient git poison leaked" >&2
+  exit 86
+fi
+if [ "$CPB_CANDIDATE_GIT_ENV" != "job" ]; then
+  echo "missing job git env" >&2
+  exit 87
+fi
+echo "$@" >> "$CPB_GIT_WRAPPER_LOG"
+exec /usr/bin/git "$@"
+`, "utf8");
+  await chmod(gitPath, 0o755);
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    PATH: `${bin}:/usr/bin:/bin`,
+    CPB_CANDIDATE_GIT_ENV: "job",
+    CPB_GIT_WRAPPER_LOG: log,
+  };
+  delete env.CPB_AMBIENT_GIT_POISON;
+  return {
+    root,
+    log,
+    env,
+  };
 }
 
 test("candidate artifact identity is stable and covers tracked plus untracked content", async () => {
@@ -138,6 +172,84 @@ test("identity verification produces an auditable record and assertion failure",
       },
     );
   } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("candidate artifact git commands use the explicit job env", { concurrency: false }, async () => {
+  const cwd = await makeRepository();
+  const gitEnv = await makeJobGitEnv();
+  const previousPoison = process.env.CPB_AMBIENT_GIT_POISON;
+  try {
+    await writeFile(path.join(cwd, "src", "value.txt"), "job env candidate\n", "utf8");
+    process.env.CPB_AMBIENT_GIT_POISON = "ambient-only";
+
+    const candidate = await captureCandidateArtifact({ cwd, env: gitEnv.env });
+
+    assert.match(candidate.identityHash, /^sha256:[0-9a-f]{64}$/);
+    const log = await readFile(gitEnv.log, "utf8");
+    assert.match(log, /rev-parse --show-toplevel/);
+    assert.match(log, /write-tree/);
+  } finally {
+    if (previousPoison === undefined) {
+      delete process.env.CPB_AMBIENT_GIT_POISON;
+    } else {
+      process.env.CPB_AMBIENT_GIT_POISON = previousPoison;
+    }
+    await rm(cwd, { recursive: true, force: true });
+    await rm(gitEnv.root, { recursive: true, force: true });
+  }
+});
+
+test("candidate tree hashing preserves a temporary-index successor created by a clean filter", async () => {
+  const cwd = await makeRepository();
+  const filterPath = path.join(cwd, "replace-index-root.sh");
+  const movedLog = path.join(cwd, "moved-index-root.txt");
+  let movedRoot = "";
+  try {
+    await writeFile(filterPath, `#!/bin/sh
+root=$(dirname "$GIT_INDEX_FILE")
+case $(basename "$root") in
+  cpb-candidate-index-*)
+    moved="$root.owned"
+    mv "$root" "$moved"
+    mkdir "$root"
+    printf 'successor\\n' > "$root/successor.txt"
+    printf '%s\\n' "$moved" > "$CPB_FILTER_MOVED_LOG"
+    ;;
+esac
+cat
+`, "utf8");
+    await chmod(filterPath, 0o755);
+    await writeFile(path.join(cwd, ".gitattributes"), "src/value.txt filter=cpb-root-replace\n", "utf8");
+    await git(cwd, ["config", "filter.cpb-root-replace.clean", filterPath]);
+    await git(cwd, ["config", "filter.cpb-root-replace.smudge", "cat"]);
+    await writeFile(path.join(cwd, "src", "value.txt"), "hostile filter candidate\n", "utf8");
+
+    let failure: unknown;
+    try {
+      await captureCandidateArtifact({
+        cwd,
+        env: { ...process.env, CPB_FILTER_MOVED_LOG: movedLog },
+      });
+      assert.fail("candidate capture must reject replaced temporary-index ownership");
+    } catch (error) {
+      failure = error;
+    }
+
+    movedRoot = (await readFile(movedLog, "utf8")).trim();
+    const details = temporaryWorkspaceErrorDetails(failure);
+    assert.equal(details?.code, "TEMPORARY_WORKSPACE_OWNERSHIP_CONFLICT");
+    assert.equal(details?.committed, false);
+    assert.equal(details?.disposition, "retained");
+    assert.equal(details?.successorPreserved, true);
+    assert.equal(await readFile(path.join(details?.recoveryPaths.canonicalRoot || "", "successor.txt"), "utf8"), "successor\n");
+    assert.ok(movedRoot.endsWith(".owned"));
+  } finally {
+    if (movedRoot) {
+      await rm(movedRoot, { recursive: true, force: true });
+      await rm(movedRoot.slice(0, -".owned".length), { recursive: true, force: true });
+    }
     await rm(cwd, { recursive: true, force: true });
   }
 });

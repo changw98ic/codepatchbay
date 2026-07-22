@@ -69,6 +69,7 @@ export async function emitPhaseStartEvents({
       phase,
       agent: agentName,
       role,
+      attemptId,
     });
   } else {
     await appendEvent(cpbRoot, project, jobId, {
@@ -76,6 +77,7 @@ export async function emitPhaseStartEvents({
       jobId,
       project,
       phase,
+      attemptId,
       agent: agentName,
       ts: now(),
     });

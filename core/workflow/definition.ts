@@ -15,6 +15,11 @@ type WorkflowNode = LooseRecord & {
   squad?: string | LooseRecord;
   _squad?: string | LooseRecord;
   dependsOn?: string[];
+  custom?: boolean;
+  sideEffecting?: boolean;
+  parallelSafe?: boolean;
+  conflictKey?: string;
+  conflictKeys?: string[];
 };
 type WorkflowDefinition = LooseRecord & {
   name: string;

@@ -34,7 +34,7 @@ export function buildAgentMetadata({
   return hasAny ? result : undefined;
 }
 
-function parseCommonFlags(args: string[]) {
+export function parseCommonFlags(args: string[]) {
   let workflow = "standard";
   let planMode = "auto";
   let triageMode = null;
@@ -47,6 +47,7 @@ function parseCommonFlags(args: string[]) {
   let executeAgent = "";
   let verifyAgent = "";
   let reviewAgent = "";
+  let project = "";
   let planVariant = "";
   let executeVariant = "";
   let verifyVariant = "";
@@ -72,6 +73,8 @@ function parseCommonFlags(args: string[]) {
       agent = args[++i];
     } else if (arg === "--model" && args[i + 1]) {
       model = args[++i];
+    } else if (arg === "--project" && args[i + 1]) {
+      project = args[++i];
     } else if (arg === "--plan-agent" && args[i + 1]) {
       planAgent = args[++i];
     } else if (arg === "--execute-agent" && args[i + 1]) {
@@ -113,6 +116,7 @@ function parseCommonFlags(args: string[]) {
     executeAgent,
     verifyAgent,
     reviewAgent,
+    project,
     planVariant,
     executeVariant,
     verifyVariant,
@@ -126,7 +130,7 @@ function parseCommonFlags(args: string[]) {
 /**
  * Pipeline / Run command — unified entry point.
  *
- * cpb pipeline <project> "<task>" [retries]  [--flags...]
+ * cpb pipeline <project> "<task>" [--flags...]
  * cpb run "<task>" [--project <id>] [--flags...]
  *
  * Both resolve to the same enqueue call. "run" mode auto-detects project
@@ -153,10 +157,14 @@ Options:
   --triage <mode>      auto|rules|acp|none
   --retries <n>        Max pipeline retries (default: 3)
   --agent <name>       Agent for all phases
+  --plan-agent <name>  Agent for the planning phase
+  --execute-agent <name> Agent for the execution phase
+  --verify-agent <name> Agent for the verification phase
+  --review-agent <name> Agent for the review phase
   --model <profile>    Model profile
   --help               Show this help`);
     } else {
-      console.log(`Usage: cpb pipeline [--interactive] <project> "<task>" [retries] [flags]
+      console.log(`Usage: cpb pipeline [--interactive] <project> "<task>" [flags]
 
 Full plan -> execute -> verify pipeline.
 
@@ -165,6 +173,11 @@ Options:
   --workflow <n>       Workflow name (default: standard)
   --triage <mode>      auto|rules|acp|none
   --agent <name>       Agent for all phases
+  --plan-agent <name>  Agent for the planning phase
+  --execute-agent <name> Agent for the execution phase
+  --verify-agent <name> Agent for the verification phase
+  --review-agent <name> Agent for the review phase
+  --retries <n>        Max pipeline retries (default: 3)
   --model <profile>    Model profile
   --issue-number <num> Link to GitHub issue
   --issue-url <url>    Link to GitHub issue URL
@@ -185,10 +198,7 @@ Options:
       console.error("Usage: cpb run \"<task>\" [--project <id>]");
       return 1;
     }
-    project = parsed.positional.find((_, i) => args.indexOf("--project") >= 0 && args[args.indexOf("--project") + 1]) || "";
-    // Extract --project value
-    const projectFlagIdx = args.indexOf("--project");
-    project = projectFlagIdx >= 0 && args[projectFlagIdx + 1] ? args[projectFlagIdx + 1] : "";
+    project = parsed.project;
 
     if (!project) {
       // Auto-detect project from cwd
@@ -222,7 +232,7 @@ Options:
     project = parsed.positional[0];
     task = parsed.positional.slice(1).join(" ").trim();
     if (!project || !task) {
-      console.error("Usage: cpb pipeline <project> \"<task>\" [retries]");
+      console.error("Usage: cpb pipeline <project> \"<task>\" [--retries <n>]");
       return 1;
     }
   }

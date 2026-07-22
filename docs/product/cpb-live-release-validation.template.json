@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "__ISO_TIMESTAMP_FROM_LIVE_REHEARSAL__",
+  "providerConnectivity": {
+    "evidenceBundleRef": "docs/product/evidence/live-release/provider-connectivity.placeholder.json",
+    "sha256": "__LOWERCASE_SHA256_OF_PROVIDER_BUNDLE__"
+  },
+  "draftPrRehearsal": {
+    "evidenceBundleRef": "docs/product/evidence/live-release/draft-pr-rehearsal.placeholder.json",
+    "sha256": "__LOWERCASE_SHA256_OF_DRAFT_REHEARSAL_BUNDLE__"
+  },
+  "productEvidence": {
+    "evidenceBundleRef": "docs/product/cpb-flagship-product-validation.json",
+    "sha256": "__LOWERCASE_SHA256_OF_PRODUCT_EVIDENCE_FILE__"
+  },
+  "_templateNotice": "This template is intentionally invalid evidence. Replace every placeholder with current live rehearsal output and exact SHA-256 digests before running npm run verify:live-release-evidence."
+}

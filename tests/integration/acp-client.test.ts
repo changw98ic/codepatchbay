@@ -13,6 +13,7 @@ const fakeHandoffAgent = path.join(root, "tests", "fixtures", "fake-acp-agent-ha
 const fakeBadHandoffAgent = path.join(root, "tests", "fixtures", "fake-acp-agent-bad-handoff.js");
 const fakeTerminalAgent = path.join(root, "tests", "fixtures", "fake-acp-agent-terminal.js");
 const fakePermissionTerminalAgent = path.join(root, "tests", "fixtures", "fake-acp-agent-permission-terminal.js");
+const fakeEnvCaptureAgent = path.join(root, "tests", "fixtures", "fake-acp-agent-env-capture.js");
 
 async function runClient({ env, prompt, cwd }) {
   const cleanEnv = { ...process.env, ...env };
@@ -83,6 +84,33 @@ async function runClient({ env, prompt, cwd }) {
   const output = await readFile(outputFile, "utf8");
   assert.match(output, /Written through ACP fs\/write_text_file/);
   assert.match(stdout, /done/);
+}
+
+{
+  const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-client-audit-env-"));
+  const captureFile = path.join(tempDir, "child-env.json");
+  const auditFile = path.join(tempDir, "control-plane-audit.jsonl");
+
+  const { exitCode, stderr } = await runClient({
+    cwd: tempDir,
+    env: {
+      CPB_ACP_CODEX_COMMAND: process.execPath,
+      CPB_ACP_CODEX_ARGS: fakeEnvCaptureAgent,
+      CPB_ACP_CONTROL_PLANE: "1",
+      CPB_ACP_AUDIT_FILE: auditFile,
+      CPB_PROJECT_RUNTIME_ROOT: path.join(tempDir, "runtime"),
+      CPB_ACP_PROJECT: "control-plane-project",
+      CPB_ACP_JOB_ID: "control-plane-job",
+    },
+    prompt: "Capture provider child env.\n",
+  });
+
+  assert.equal(exitCode, 0, stderr);
+  const captured = JSON.parse(await readFile(captureFile, "utf8"));
+  assert.equal(captured.auditFileExposed, false);
+  assert.equal(captured.auditDerivationExposed, false);
+  const audit = await readFile(auditFile, "utf8");
+  assert.match(audit, /"event":"agent_launch"/);
 }
 
 {

@@ -1,7 +1,9 @@
 import type { LooseRecord } from "../../shared/types.js";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { execFile as execFileCb } from "node:child_process";
+import { constants, fstatSync, lstatSync, renameSync, type BigIntStats } from "node:fs";
 import path from "node:path";
-import { mkdir, readFile, rm } from "node:fs/promises";
+import { mkdir, open, readFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import { phasePassed, phaseFailed } from "../contracts/phase-result.js";
 import { FailureKind, failure } from "../contracts/failure.js";
@@ -16,9 +18,303 @@ import { buildPhaseAcpEnv } from "./phase-env.js";
 import { captureCandidateArtifact } from "../engine/candidate-artifact.js";
 import { createCandidateReplayBundle } from "../engine/candidate-replay.js";
 import { resolveHighAssurancePolicy } from "../policy/high-assurance.js";
+import { createTemporaryWorkspace } from "../runtime/temporary-workspace.js";
+import { fsyncDirectory } from "../../shared/hub-maintenance.js";
 
 const execFile = promisify(execFileCb);
 const PROMPT_PLAN_CHARS = 12_000;
+
+export type ExecuteCleanupTestHooks = {
+  beforeQuarantineRename?: (context: {
+    sourcePath: string;
+    quarantinePath: string;
+    relativePath: string;
+  }) => void | Promise<void>;
+};
+
+const executeCleanupTestHookStorage = new AsyncLocalStorage<ExecuteCleanupTestHooks>();
+
+export function withExecuteCleanupTestHooksForTests<T>(
+  hooks: ExecuteCleanupTestHooks,
+  operation: () => T,
+): T {
+  const inherited = executeCleanupTestHookStorage.getStore();
+  return executeCleanupTestHookStorage.run(inherited ? { ...inherited, ...hooks } : hooks, operation);
+}
+
+function executeCleanupTestHooks() {
+  return executeCleanupTestHookStorage.getStore() || {};
+}
+
+function executeGitInspectionEnv(): NodeJS.ProcessEnv {
+  const allowed = [
+    "PATH",
+    "HOME",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+    "LANG",
+    "LC_ALL",
+    "SHELL",
+    "SYSTEMROOT",
+    "WINDIR",
+    "COMSPEC",
+    "PATHEXT",
+  ];
+  const env: NodeJS.ProcessEnv = {};
+  for (const key of allowed) {
+    if (typeof process.env[key] === "string") env[key] = process.env[key];
+  }
+  env.GIT_CONFIG_NOSYSTEM = "1";
+  env.GIT_CONFIG_GLOBAL = process.platform === "win32" ? "NUL" : "/dev/null";
+  env.GIT_OPTIONAL_LOCKS = "0";
+  return env;
+}
+
+type ExecuteCleanupGeneration = {
+  dev: bigint;
+  ino: bigint;
+  mode: bigint;
+  uid: bigint;
+  gid: bigint;
+  size: bigint;
+  mtimeNs: bigint;
+  ctimeNs: bigint;
+  birthtimeNs: bigint;
+};
+
+function executeCleanupGeneration(info: BigIntStats): ExecuteCleanupGeneration {
+  return {
+    dev: info.dev,
+    ino: info.ino,
+    mode: info.mode,
+    uid: info.uid,
+    gid: info.gid,
+    size: info.size,
+    mtimeNs: info.mtimeNs,
+    ctimeNs: info.ctimeNs,
+    birthtimeNs: info.birthtimeNs,
+  };
+}
+
+function sameExecuteCleanupGeneration(left: ExecuteCleanupGeneration, right: BigIntStats) {
+  return left.dev === right.dev
+    && left.ino === right.ino
+    && left.mode === right.mode
+    && left.uid === right.uid
+    && left.gid === right.gid
+    && left.size === right.size
+    && left.mtimeNs === right.mtimeNs
+    && left.ctimeNs === right.ctimeNs
+    && left.birthtimeNs === right.birthtimeNs;
+}
+
+function sameExecuteCleanupGenerationAcrossRename(left: ExecuteCleanupGeneration, right: BigIntStats) {
+  return left.dev === right.dev
+    && left.ino === right.ino
+    && left.mode === right.mode
+    && left.uid === right.uid
+    && left.gid === right.gid
+    && left.size === right.size
+    && left.mtimeNs === right.mtimeNs
+    && left.birthtimeNs === right.birthtimeNs;
+}
+
+function executeCleanupSourcePath(cwd: string, relativePath: string) {
+  if (!relativePath || relativePath.includes("\0") || path.posix.isAbsolute(relativePath)) {
+    throw Object.assign(new Error(`unsafe untracked cleanup path: ${relativePath}`), {
+      code: "EXECUTE_UNTRACKED_PATH_UNSAFE",
+      committed: false,
+    });
+  }
+  const parts = relativePath.split("/");
+  if (parts.some((part) => !part || part === "." || part === "..")) {
+    throw Object.assign(new Error(`unsafe untracked cleanup path: ${relativePath}`), {
+      code: "EXECUTE_UNTRACKED_PATH_UNSAFE",
+      committed: false,
+    });
+  }
+  const root = path.resolve(cwd);
+  const sourcePath = path.resolve(root, ...parts);
+  const relative = path.relative(root, sourcePath);
+  if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw Object.assign(new Error(`untracked cleanup path escapes the candidate root: ${relativePath}`), {
+      code: "EXECUTE_UNTRACKED_PATH_UNSAFE",
+      committed: false,
+    });
+  }
+  return sourcePath;
+}
+
+async function quarantineOwnedUntrackedFiles({
+  cwd,
+  files,
+  signal,
+}: {
+  cwd: string;
+  files: string[];
+  signal?: AbortSignal;
+}) {
+  const workspace = await createTemporaryWorkspace({ prefix: "cpb-execute-residue-" });
+  const entries: Array<{ file: string; quarantineName: string }> = [];
+  let primaryError: unknown = null;
+
+  try {
+    if (typeof constants.O_NOFOLLOW !== "number" || constants.O_NOFOLLOW === 0) {
+      throw Object.assign(new Error("O_NOFOLLOW is unavailable for untracked cleanup"), {
+        code: "EXECUTE_UNTRACKED_CLEANUP_UNSAFE",
+        committed: false,
+      });
+    }
+    for (const [index, file] of files.entries()) {
+      throwIfPhaseAborted(signal);
+      const sourcePath = executeCleanupSourcePath(cwd, file);
+      const quarantineName = `${String(index).padStart(6, "0")}.residue`;
+      const quarantinePath = path.join(workspace.rootPath, quarantineName);
+      let authority: Awaited<ReturnType<typeof open>> | null = null;
+      let operationError: unknown = null;
+      try {
+        authority = await open(sourcePath, constants.O_RDONLY | constants.O_NOFOLLOW);
+        const descriptor = await authority.stat({ bigint: true });
+        if (!descriptor.isFile()) {
+          throw Object.assign(new Error(`untracked cleanup requires an owned regular file: ${file}`), {
+            code: "EXECUTE_UNTRACKED_CLEANUP_UNSAFE",
+            committed: false,
+            recoveryPaths: { canonical: sourcePath },
+          });
+        }
+        const expected = executeCleanupGeneration(descriptor);
+        await executeCleanupTestHooks().beforeQuarantineRename?.({
+          sourcePath,
+          quarantinePath,
+          relativePath: file,
+        });
+
+        const pinned = fstatSync(authority.fd, { bigint: true });
+        const current = lstatSync(sourcePath, { bigint: true });
+        if (
+          !pinned.isFile()
+          || !current.isFile()
+          || current.isSymbolicLink()
+          || !sameExecuteCleanupGeneration(expected, pinned)
+          || !sameExecuteCleanupGeneration(expected, current)
+        ) {
+          throw Object.assign(new Error(`untracked cleanup ownership changed before isolation: ${file}`), {
+            code: "EXECUTE_UNTRACKED_CLEANUP_RACE",
+            committed: false,
+            successorPreserved: true,
+            recoveryPaths: { canonical: sourcePath },
+          });
+        }
+        try {
+          lstatSync(quarantinePath);
+          throw Object.assign(new Error(`untracked cleanup quarantine already exists: ${quarantinePath}`), {
+            code: "EXECUTE_UNTRACKED_QUARANTINE_CONFLICT",
+            committed: false,
+          });
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
+        }
+
+        renameSync(sourcePath, quarantinePath);
+        const movedDescriptor = fstatSync(authority.fd, { bigint: true });
+        const movedPath = lstatSync(quarantinePath, { bigint: true });
+        if (
+          !movedDescriptor.isFile()
+          || !movedPath.isFile()
+          || movedPath.isSymbolicLink()
+          || !sameExecuteCleanupGenerationAcrossRename(expected, movedDescriptor)
+          || !sameExecuteCleanupGenerationAcrossRename(expected, movedPath)
+        ) {
+          throw Object.assign(new Error(`untracked cleanup generation changed during isolation: ${file}`), {
+            code: "EXECUTE_UNTRACKED_CLEANUP_RACE",
+            committed: true,
+            quarantinePreserved: true,
+            recoveryPaths: { canonical: sourcePath, quarantine: quarantinePath },
+          });
+        }
+        try {
+          lstatSync(sourcePath);
+          throw Object.assign(new Error(`untracked cleanup source remained reachable: ${file}`), {
+            code: "EXECUTE_UNTRACKED_CLEANUP_RACE",
+            committed: true,
+            quarantinePreserved: true,
+            recoveryPaths: { canonical: sourcePath, quarantine: quarantinePath },
+          });
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
+        }
+        await fsyncDirectory(path.dirname(sourcePath));
+        await fsyncDirectory(workspace.rootPath);
+        entries.push({ file, quarantineName });
+      } catch (error) {
+        operationError = error;
+      }
+
+      let closeError: unknown = null;
+      if (authority) {
+        try {
+          await authority.close();
+        } catch (error) {
+          closeError = error;
+        }
+      }
+      if (operationError) {
+        if (!closeError) throw operationError;
+        throw Object.assign(new AggregateError(
+          [operationError, closeError],
+          `untracked cleanup operation and authority close failed: ${file}`,
+          { cause: operationError },
+        ), {
+          code: String((operationError as NodeJS.ErrnoException | undefined)?.code || "EXECUTE_UNTRACKED_CLEANUP_FAILED"),
+          primaryError: operationError,
+          closeError,
+        });
+      }
+      if (closeError) throw closeError;
+    }
+  } catch (error) {
+    primaryError = error;
+  }
+
+  let cleanupDisposition: unknown = null;
+  let cleanupError: unknown = null;
+  try {
+    cleanupDisposition = await workspace.cleanup();
+  } catch (error) {
+    cleanupError = error;
+  }
+  if (primaryError) {
+    const primaryRecord = primaryError && typeof primaryError === "object"
+      ? primaryError as Record<string, unknown>
+      : {};
+    const dispositionRecord = cleanupDisposition && typeof cleanupDisposition === "object"
+      ? cleanupDisposition as Record<string, unknown>
+      : {};
+    const metadata = {
+      code: String(primaryRecord.code || "EXECUTE_UNTRACKED_CLEANUP_FAILED"),
+      committed: primaryRecord.committed ?? entries.length > 0,
+      successorPreserved: primaryRecord.successorPreserved ?? false,
+      quarantinePreserved: dispositionRecord.quarantinePreserved ?? entries.length > 0,
+      recoveryPaths: primaryRecord.recoveryPaths || dispositionRecord.recoveryPaths || null,
+      primaryError,
+      cleanupDisposition,
+      cleanupError,
+    };
+    if (!cleanupError) {
+      throw Object.assign(new Error("untracked cleanup failed; owned residue disposition was preserved", {
+        cause: primaryError,
+      }), metadata);
+    }
+    throw Object.assign(new AggregateError(
+      [primaryError, cleanupError],
+      "untracked cleanup and temporary workspace disposition both failed",
+      { cause: primaryError },
+    ), metadata);
+  }
+  if (cleanupError) throw cleanupError;
+  return { entries, cleanupDisposition };
+}
 
 const JSON_INSTRUCTION = `
 
@@ -121,6 +417,18 @@ async function readExecutorJsonOutputFile(filePath: string) {
 
 function recordValue(value: unknown): LooseRecord {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as LooseRecord : {};
+}
+
+function phaseAbortError(signal?: AbortSignal) {
+  const reason = signal?.reason;
+  if (reason instanceof Error && reason.name === "AbortError") return reason;
+  const err = new Error("execute phase aborted");
+  err.name = "AbortError";
+  return err;
+}
+
+function throwIfPhaseAborted(signal?: AbortSignal) {
+  if (signal?.aborted) throw phaseAbortError(signal);
 }
 
 function stringValue(value: unknown, fallback = ""): string {
@@ -347,19 +655,23 @@ function mergeChecklistScopeMappings({
 }
 
 export async function runExecute(ctx: LooseRecord) {
+  throwIfPhaseAborted(ctx.signal as AbortSignal | undefined);
   const { project, cpbRoot, pool, sourcePath, jobId } = ctx;
   const { dataRoot } = ctx;
   const role = stringValue(ctx.role, "executor");
   const planArtifact = getRequiredArtifact(recordArray(ctx.previousResults), "plan");
   const cwd = sourcePath || cpbRoot;
   const retry = recordValue(recordValue(ctx.sourceContext).retry);
+  const assurancePolicy = resolveHighAssurancePolicy(ctx);
+  const hasFrozenChecklistScope = acceptanceChecklistItems(ctx).length > 0;
 
   // Capture the immutable candidate base before the agent run. Final changed
   // files are derived from HEAD after execution so untracked directories are
   // expanded to concrete files and pre-existing candidate changes cannot hide.
+  const gitInspectionEnv = executeGitInspectionEnv();
   let candidateBaseSha = "";
   try {
-    const { stdout: baseSha } = await execFile("git", ["rev-parse", "HEAD"], { cwd });
+    const { stdout: baseSha } = await execFile("git", ["rev-parse", "HEAD"], { cwd, env: gitInspectionEnv });
     candidateBaseSha = baseSha.trim();
   } catch { /* not a git repo — skip */ }
 
@@ -368,6 +680,7 @@ export async function runExecute(ctx: LooseRecord) {
   const executorOutputFilePath = outputTransport === "file"
     ? executorJsonOutputFilePath({ cpbRoot, dataRoot, project, jobId, retry })
     : null;
+  throwIfPhaseAborted(ctx.signal as AbortSignal | undefined);
   if (executorOutputFilePath) await mkdir(path.dirname(executorOutputFilePath), { recursive: true });
   const phaseEnv = { ...buildPhaseAcpEnv(ctx, "execute") };
   phaseEnv.CPB_ACP_WRITE_ALLOW = executorWriteAllowPaths({
@@ -378,6 +691,7 @@ export async function runExecute(ctx: LooseRecord) {
   const prompt = await buildExecutePrompt(ctx, planArtifact, { agent: resolvedAgent.agent })
     + (executorOutputFilePath ? executorJsonOutputFileInstruction(executorOutputFilePath) : "")
     + (executorOutputFilePath ? JSON_INSTRUCTION : CHAT_JSON_INSTRUCTION);
+  throwIfPhaseAborted(ctx.signal as AbortSignal | undefined);
   const promptArtifact = await writePromptArtifact(cpbRoot, {
     project,
     jobId,
@@ -386,7 +700,30 @@ export async function runExecute(ctx: LooseRecord) {
     agent: resolvedAgent.agent,
     prompt,
     dataRoot,
+    signal: ctx.signal as AbortSignal | undefined,
   });
+
+  let preExecutionUntrackedFiles: Set<string> | null = null;
+  if (assurancePolicy.enabled && hasFrozenChecklistScope && candidateBaseSha) {
+    try {
+      const baseline = await computeChangedFileState(cwd, gitInspectionEnv);
+      preExecutionUntrackedFiles = new Set(normalizeRepoRelativePaths(baseline.untrackedFiles));
+    } catch (error) {
+      return phaseFailed({
+        phase: "execute",
+        failure: failure({
+          kind: FailureKind.ARTIFACT_INVALID,
+          phase: "execute",
+          reason: `failed to establish the pre-execution untracked-file ownership baseline: ${error instanceof Error ? error.message : String(error)}`,
+          retryable: true,
+          cause: {
+            code: String((error as NodeJS.ErrnoException | undefined)?.code || "EXECUTE_UNTRACKED_BASELINE_FAILED"),
+          },
+        }),
+        diagnostics: withPromptArtifactDiagnostics({}, promptArtifact),
+      });
+    }
+  }
 
   const agentResult: LooseRecord = await runAgent({
     phase: "execute",
@@ -404,8 +741,10 @@ export async function runExecute(ctx: LooseRecord) {
     onProgress: ctx.onProgress,
     attemptId: ctx.attemptId,
     conversationKey: ctx.conversationKey,
+    signal: ctx.signal as AbortSignal | undefined,
   });
 
+  throwIfPhaseAborted(ctx.signal as AbortSignal | undefined);
   if (!agentResult.ok) {
     const failureKind = typeof agentResult.kind === "string" ? agentResult.kind : FailureKind.UNKNOWN;
     return phaseFailed({
@@ -423,6 +762,7 @@ export async function runExecute(ctx: LooseRecord) {
     });
   }
 
+  throwIfPhaseAborted(ctx.signal as AbortSignal | undefined);
   const executorFileOutput = executorOutputFilePath
     ? await readExecutorJsonOutputFile(executorOutputFilePath)
     : null;
@@ -438,6 +778,7 @@ export async function runExecute(ctx: LooseRecord) {
     },
   };
 
+  throwIfPhaseAborted(ctx.signal as AbortSignal | undefined);
   const parsed = recordValue(parseExecutorJson(stringValue(executorOutput)));
   if (!parsed.ok) {
     return phaseFailed({
@@ -458,7 +799,33 @@ export async function runExecute(ctx: LooseRecord) {
     });
   }
 
-  let changedFileState = await computeChangedFileState(cwd);
+  throwIfPhaseAborted(ctx.signal as AbortSignal | undefined);
+  let changedFileState;
+  if (!candidateBaseSha) {
+    // Preserve the long-standing non-Git execution contract. Without a frozen
+    // Git base there is no deletion authority, so the phase reports no file
+    // cleanup candidates and never mutates an observed pathname.
+    changedFileState = { changedFiles: [], trackedFiles: [], untrackedFiles: [] };
+  } else {
+    try {
+      changedFileState = await computeChangedFileState(cwd, gitInspectionEnv);
+    } catch (error) {
+      return phaseFailed({
+        phase: "execute",
+        failure: failure({
+          kind: FailureKind.ARTIFACT_INVALID,
+          phase: "execute",
+          reason: `failed to inspect the candidate tree before freezing it: ${error instanceof Error ? error.message : String(error)}`,
+          retryable: true,
+          cause: {
+            code: String((error as NodeJS.ErrnoException | undefined)?.code || "EXECUTE_CHANGED_FILE_INSPECTION_FAILED"),
+          },
+        }),
+        diagnostics: withPromptArtifactDiagnostics(executorOutputDiagnostics, promptArtifact),
+      });
+    }
+  }
+  throwIfPhaseAborted(ctx.signal as AbortSignal | undefined);
   let normalizedChangedFiles = normalizeRepoRelativePaths(changedFileState.changedFiles);
   const checklistMapping = recordArray(parsed.checklistMapping);
   let { mappings, mappedFiles, rejectedExecutorMappings } = mergeChecklistScopeMappings({
@@ -469,16 +836,76 @@ export async function runExecute(ctx: LooseRecord) {
   const initialUnmappedChangedFiles = normalizedChangedFiles.filter(
     (file: string) => !mappedFiles.includes(file),
   );
-  const assurancePolicy = resolveHighAssurancePolicy(ctx);
-  const hasFrozenChecklistScope = acceptanceChecklistItems(ctx).length > 0;
   const discardedUntrackedFiles = assurancePolicy.enabled && hasFrozenChecklistScope
     ? changedFileState.untrackedFiles.filter((file) => initialUnmappedChangedFiles.includes(file))
     : [];
-  for (const file of discardedUntrackedFiles) {
-    await rm(path.join(cwd, ...file.split("/")), { recursive: true, force: true });
+  const unownedUntrackedFiles = discardedUntrackedFiles.filter(
+    (file) => preExecutionUntrackedFiles === null || preExecutionUntrackedFiles.has(file),
+  );
+  if (unownedUntrackedFiles.length > 0) {
+    return phaseFailed({
+      phase: "execute",
+      failure: failure({
+        kind: FailureKind.ARTIFACT_INVALID,
+        phase: "execute",
+        reason: `refusing to delete untracked paths without exact current-execution ownership: ${unownedUntrackedFiles.join(", ")}`,
+        retryable: false,
+        cause: {
+          code: "EXECUTE_UNTRACKED_OWNERSHIP_UNAVAILABLE",
+          preservedPaths: unownedUntrackedFiles,
+        },
+      }),
+      diagnostics: withPromptArtifactDiagnostics(executorOutputDiagnostics, promptArtifact),
+    });
   }
+  let discardedUntrackedDisposition: unknown = null;
   if (discardedUntrackedFiles.length > 0) {
-    changedFileState = await computeChangedFileState(cwd);
+    try {
+      discardedUntrackedDisposition = await quarantineOwnedUntrackedFiles({
+        cwd,
+        files: discardedUntrackedFiles,
+        signal: ctx.signal as AbortSignal | undefined,
+      });
+    } catch (error) {
+      const errorRecord = error && typeof error === "object" ? error as Record<string, unknown> : {};
+      return phaseFailed({
+        phase: "execute",
+        failure: failure({
+          kind: FailureKind.ARTIFACT_INVALID,
+          phase: "execute",
+          reason: `failed to isolate current-execution untracked residue: ${error instanceof Error ? error.message : String(error)}`,
+          retryable: false,
+          cause: {
+            code: String(errorRecord.code || "EXECUTE_UNTRACKED_CLEANUP_FAILED"),
+            committed: errorRecord.committed ?? false,
+            recoveryPaths: errorRecord.recoveryPaths || null,
+            cleanupDisposition: errorRecord.cleanupDisposition || null,
+            cleanupError: errorRecord.cleanupError || null,
+          },
+        }),
+        diagnostics: withPromptArtifactDiagnostics(executorOutputDiagnostics, promptArtifact),
+      });
+    }
+    throwIfPhaseAborted(ctx.signal as AbortSignal | undefined);
+    try {
+      changedFileState = await computeChangedFileState(cwd, gitInspectionEnv);
+    } catch (error) {
+      return phaseFailed({
+        phase: "execute",
+        failure: failure({
+          kind: FailureKind.ARTIFACT_INVALID,
+          phase: "execute",
+          reason: `untracked residue was isolated but candidate reinspection failed: ${error instanceof Error ? error.message : String(error)}`,
+          retryable: false,
+          cause: {
+            code: String((error as NodeJS.ErrnoException | undefined)?.code || "EXECUTE_CHANGED_FILE_REINSPECTION_FAILED"),
+            discardedUntrackedDisposition,
+          },
+        }),
+        diagnostics: withPromptArtifactDiagnostics(executorOutputDiagnostics, promptArtifact),
+      });
+    }
+    throwIfPhaseAborted(ctx.signal as AbortSignal | undefined);
     normalizedChangedFiles = normalizeRepoRelativePaths(changedFileState.changedFiles);
     ({ mappings, mappedFiles, rejectedExecutorMappings } = mergeChecklistScopeMappings({
       ctx,
@@ -501,8 +928,11 @@ export async function runExecute(ctx: LooseRecord) {
       (file: string) => !mappedFiles.includes(file),
     ),
     discardedUntrackedFiles,
+    discardedUntrackedDisposition,
   };
+  throwIfPhaseAborted(ctx.signal as AbortSignal | undefined);
   const executionMapArtifact = await writeArtifact(cpbRoot, {
+    signal: ctx.signal as AbortSignal | undefined,
     project,
     jobId,
     kind: "execution-map",
@@ -528,7 +958,9 @@ export async function runExecute(ctx: LooseRecord) {
     });
   }
 
+  throwIfPhaseAborted(ctx.signal as AbortSignal | undefined);
   const artifact = await writeArtifact(cpbRoot, {
+    signal: ctx.signal as AbortSignal | undefined,
     project,
     jobId,
     kind: "deliverable",
@@ -543,8 +975,11 @@ export async function runExecute(ctx: LooseRecord) {
   let candidateReplayBundleRecord = null;
   if (candidateBaseSha) {
     try {
-      candidateArtifact = await captureCandidateArtifact({ cwd, base: candidateBaseSha });
+      throwIfPhaseAborted(ctx.signal as AbortSignal | undefined);
+      candidateArtifact = await captureCandidateArtifact({ cwd, base: candidateBaseSha, env: gitInspectionEnv });
+      throwIfPhaseAborted(ctx.signal as AbortSignal | undefined);
       candidateArtifactRecord = await writeArtifact(cpbRoot, {
+        signal: ctx.signal as AbortSignal | undefined,
         project,
         jobId,
         kind: "candidate-artifact",
@@ -560,8 +995,11 @@ export async function runExecute(ctx: LooseRecord) {
           attemptId: ctx.attemptId || null,
         },
       });
-      candidateReplayBundle = await createCandidateReplayBundle({ cwd, candidate: candidateArtifact });
+      throwIfPhaseAborted(ctx.signal as AbortSignal | undefined);
+      candidateReplayBundle = await createCandidateReplayBundle({ cwd, candidate: candidateArtifact, env: gitInspectionEnv });
+      throwIfPhaseAborted(ctx.signal as AbortSignal | undefined);
       candidateReplayBundleRecord = await writeArtifact(cpbRoot, {
+        signal: ctx.signal as AbortSignal | undefined,
         project,
         jobId,
         kind: "candidate-replay-bundle",
@@ -579,6 +1017,7 @@ export async function runExecute(ctx: LooseRecord) {
         },
       });
     } catch (err) {
+      if ((err as Error | undefined)?.name === "AbortError") throw err;
       return phaseFailed({
         phase: "execute",
         failure: failure({
@@ -610,22 +1049,18 @@ function nulSeparatedPaths(value: string) {
   return value.split("\0").filter(Boolean);
 }
 
-async function computeChangedFileState(cwd: string) {
-  try {
-    const [{ stdout: tracked }, { stdout: untracked }] = await Promise.all([
-      execFile("git", ["diff", "HEAD", "--name-only", "-z", "--"], { cwd }),
-      execFile("git", ["ls-files", "--others", "--exclude-standard", "-z"], { cwd }),
-    ]);
-    const trackedFiles = nulSeparatedPaths(tracked).sort();
-    const untrackedFiles = nulSeparatedPaths(untracked).sort();
-    return {
-      changedFiles: [...new Set([...trackedFiles, ...untrackedFiles])].sort(),
-      trackedFiles,
-      untrackedFiles,
-    };
-  } catch {
-    return { changedFiles: [], trackedFiles: [], untrackedFiles: [] };
-  }
+async function computeChangedFileState(cwd: string, env: NodeJS.ProcessEnv = process.env) {
+  const [{ stdout: tracked }, { stdout: untracked }] = await Promise.all([
+    execFile("git", ["diff", "HEAD", "--name-only", "-z", "--"], { cwd, env }),
+    execFile("git", ["ls-files", "--others", "--exclude-standard", "-z"], { cwd, env }),
+  ]);
+  const trackedFiles = nulSeparatedPaths(tracked).sort();
+  const untrackedFiles = nulSeparatedPaths(untracked).sort();
+  return {
+    changedFiles: [...new Set([...trackedFiles, ...untrackedFiles])].sort(),
+    trackedFiles,
+    untrackedFiles,
+  };
 }
 
 function getRequiredArtifact(previousResults: LooseRecord[], kind: string) {

@@ -9,7 +9,7 @@ import type { LooseRecord } from "../shared/types.js";
 import {
   buildServices as buildServerServices,
   runJobWithServices as runJobWithServerServices,
-} from "../server/services/setup.js";
+} from "../server/services/engine-runner.js";
 
 export function buildServices(cpbRoot: string, opts: LooseRecord = {}) {
   return buildServerServices(cpbRoot, opts);

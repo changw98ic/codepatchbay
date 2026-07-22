@@ -17,11 +17,20 @@
 //   6. Process growth bound: pool tracks active requests, no leak after release
 
 import { spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
+import type { ChildProcess } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { recordValue, type LooseRecord } from "../shared/types.js";
+import {
+  captureProcessIdentity,
+  killTree,
+  type ProcessIdentity,
+  type ProcessTreeSystem,
+} from "../core/runtime/process-tree.js";
+import {
+  createTemporaryWorkspace,
+  type TemporaryWorkspace,
+} from "../core/runtime/temporary-workspace.js";
 
 import { AcpPool } from "../server/services/acp/acp-pool.js";
 import { enqueue, loadQueue, queueStatus, updateEntry } from "../server/services/hub/hub-queue.js";
@@ -36,6 +45,124 @@ function stringValue(value: unknown, fallback = ""): string {
 
 function numberValue(value: unknown, fallback = 0): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+type TeardownOptions = {
+  identity?: ProcessIdentity | null;
+  graceMs?: number;
+  closeTimeoutMs?: number;
+  processTreeSystem?: ProcessTreeSystem;
+};
+
+function processIdentityError(message: string, code = "PROCESS_IDENTITY_UNAVAILABLE") {
+  return Object.assign(new Error(message), { code });
+}
+
+function isExactProcessIdentity(identity: ProcessIdentity | null | undefined): identity is ProcessIdentity {
+  const capturedAt = identity?.capturedAt || "";
+  const capturedAtMs = Date.parse(capturedAt);
+  return Boolean(
+    identity
+      && identity.birthIdPrecision === "exact"
+      && Number.isSafeInteger(identity.pid)
+      && identity.pid > 0
+      && typeof identity.birthId === "string"
+      && identity.birthId.length > 0
+      && identity.incarnation === `${identity.pid}:${identity.birthId}`
+      && Number.isFinite(capturedAtMs)
+      && new Date(capturedAtMs).toISOString() === capturedAt
+      && (identity.processGroupId === undefined
+        || (Number.isSafeInteger(identity.processGroupId) && identity.processGroupId > 0)),
+  );
+}
+
+export function captureScriptChildIdentity(
+  child: Pick<ChildProcess, "pid">,
+  system?: ProcessTreeSystem,
+): ProcessIdentity | null {
+  if (!child.pid) return null;
+  try {
+    return captureProcessIdentity(child.pid, { strict: true, system });
+  } catch {
+    return null;
+  }
+}
+
+function closeChildStreams(child: ChildProcess) {
+  child.stdin?.destroy();
+  child.stdout?.destroy();
+  child.stderr?.destroy();
+}
+
+function describeError(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function appendCleanupFailure(primary: Error, cleanupFailure: unknown) {
+  return new AggregateError(
+    [primary, cleanupFailure],
+    `${primary.message}; cleanup failed: ${describeError(cleanupFailure)}`,
+  );
+}
+
+function observeClose(child: ChildProcess, allowAlreadyExited = true) {
+  return new Promise<void>((resolve) => {
+    if (allowAlreadyExited && (child.exitCode !== null || child.signalCode !== null)) {
+      resolve();
+      return;
+    }
+    child.once("close", () => resolve());
+  });
+}
+
+async function waitForObservedClose(observed: Promise<void>, timeoutMs = 10_000) {
+  let timer: NodeJS.Timeout | null = null;
+  try {
+    await Promise.race([
+      observed,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("process did not close within timeout")), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+export async function teardownScriptChildProcess(child: ChildProcess, options: TeardownOptions = {}) {
+  const running = Boolean(child.pid && child.exitCode === null && child.signalCode === null);
+  const closeObserved = observeClose(child, !running);
+  let teardownError: unknown = null;
+  if (running && child.pid) {
+    if (!isExactProcessIdentity(options.identity)) {
+      teardownError = processIdentityError("script child exact spawn identity unavailable; refusing to signal by bare pid");
+      closeChildStreams(child);
+    } else {
+      try {
+        await killTree(child.pid, options.graceMs ?? 2_000, {
+          requireDescendantScan: true,
+          expectedRootIdentity: options.identity,
+          system: options.processTreeSystem,
+          forceVerifyMs: options.closeTimeoutMs ?? 10_000,
+        });
+      } catch (error) {
+        teardownError = error;
+      }
+    }
+  }
+  let closeError: unknown = null;
+  try {
+    await waitForObservedClose(closeObserved, options.closeTimeoutMs ?? 10_000);
+  } catch (error) {
+    closeError = error;
+  }
+  if (teardownError && closeError) {
+    throw new AggregateError([teardownError, closeError], "script child teardown and close wait both failed", {
+      cause: teardownError,
+    });
+  }
+  if (teardownError) throw teardownError;
+  if (closeError) throw closeError;
 }
 
 type CliOptions = {
@@ -69,8 +196,8 @@ export function parseArgs(argv: string[]): CliOptions {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-export function makeTempHub() {
-  return mkdtemp(path.join(os.tmpdir(), "cpb-val-"));
+export function makeTempHub(): Promise<TemporaryWorkspace> {
+  return createTemporaryWorkspace({ prefix: "cpb-val-" });
 }
 
 async function withQuotaDelegate(hubRoot: string, fn: () => Promise<unknown>) {
@@ -79,38 +206,55 @@ async function withQuotaDelegate(hubRoot: string, fn: () => Promise<unknown>) {
     env: { ...process.env, CPB_DELEGATE_POLL_MS: "10" },
     stdio: ["ignore", "pipe", "pipe"],
   });
+  const identity = captureScriptChildIdentity(child);
 
   let stdout = "";
   let stderr = "";
   await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      callback();
+    };
     const timer = setTimeout(() => {
-      reject(new Error(`quota delegate did not start\nstdout:\n${stdout}\nstderr:\n${stderr}`));
+      if (settled) return;
+      settled = true;
+      const primary = new Error(`quota delegate did not start\nstdout:\n${stdout}\nstderr:\n${stderr}`);
+      teardownScriptChildProcess(child, { identity })
+        .then(() => reject(primary), (cleanupFailure) => reject(appendCleanupFailure(primary, cleanupFailure)));
     }, 3_000);
     child.stdout.on("data", (chunk) => {
       stdout += chunk.toString();
       if (stdout.includes("quota-delegate: started")) {
-        clearTimeout(timer);
-        resolve();
+        finish(resolve);
       }
     });
     child.stderr.on("data", (chunk) => {
       stderr += chunk.toString();
     });
     child.once("error", (error) => {
-      clearTimeout(timer);
-      reject(error);
+      finish(() => reject(error));
     });
     child.once("exit", (code) => {
-      clearTimeout(timer);
-      reject(new Error(`quota delegate exited before start: ${code}\nstdout:\n${stdout}\nstderr:\n${stderr}`));
+      finish(() => reject(new Error(`quota delegate exited before start: ${code}\nstdout:\n${stdout}\nstderr:\n${stderr}`)));
     });
   });
 
+  let primaryFailure: unknown;
   try {
     return await fn();
+  } catch (error) {
+    primaryFailure = error;
+    throw error;
   } finally {
-    if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
-    await new Promise((resolve) => child.once("close", resolve));
+    try {
+      await teardownScriptChildProcess(child, { identity });
+    } catch (cleanupFailure) {
+      if (primaryFailure instanceof Error) throw appendCleanupFailure(primaryFailure, cleanupFailure);
+      throw cleanupFailure;
+    }
   }
 }
 
@@ -343,20 +487,49 @@ export const ALL_CHECKS = [
   { name: "process-growth-bound", fn: checkProcessGrowthBound },
 ];
 
-export async function runChecks(hubRootFactory: string | (() => Promise<string>), opts: LooseRecord = {}) {
+type HubRootFactory = string | (() => Promise<string | TemporaryWorkspace>);
+type ReadinessCheck = {
+  name: string;
+  fn: (hubRoot: string) => Promise<unknown>;
+};
+
+function isTemporaryWorkspace(value: string | TemporaryWorkspace): value is TemporaryWorkspace {
+  return typeof value !== "string";
+}
+
+export async function runIsolatedCheck(
+  check: ReadinessCheck,
+  isolatedResource: string | TemporaryWorkspace,
+): Promise<LooseRecord> {
+  const isolatedHub = isTemporaryWorkspace(isolatedResource)
+    ? isolatedResource.rootPath
+    : isolatedResource;
+  let result: LooseRecord;
+  try {
+    result = { name: check.name, ...recordValue(await check.fn(isolatedHub)) };
+  } catch (err: unknown) {
+    result = { name: check.name, pass: false, detail: `UNEXPECTED: ${recordValue(err).message || err}` };
+  }
+  if (isTemporaryWorkspace(isolatedResource)) {
+    try {
+      await isolatedResource.cleanup();
+    } catch (cleanupError) {
+      result = {
+        ...result,
+        pass: false,
+        detail: `${String(result.detail || "check completed")}; isolated Hub cleanup failed: ${describeError(cleanupError)}`,
+        cleanupError,
+      };
+    }
+  }
+  return result;
+}
+
+export async function runChecks(hubRootFactory: HubRootFactory, opts: LooseRecord = {}) {
   const results = [];
   for (const check of ALL_CHECKS) {
-    const isolatedHub = typeof hubRootFactory === "function" ? await hubRootFactory() : hubRootFactory;
-    try {
-      const result = await check.fn(isolatedHub);
-      results.push({ name: check.name, ...recordValue(result) });
-    } catch (err: unknown) {
-      results.push({ name: check.name, pass: false, detail: `UNEXPECTED: ${recordValue(err).message || err}` });
-    } finally {
-      if (typeof hubRootFactory === "function") {
-        try { await rm(isolatedHub, { recursive: true, force: true }); } catch { /* best effort */ }
-      }
-    }
+    const isolatedResource = typeof hubRootFactory === "function" ? await hubRootFactory() : hubRootFactory;
+    results.push(await runIsolatedCheck(check, isolatedResource));
   }
   return results;
 }

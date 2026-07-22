@@ -73,6 +73,7 @@ type FinalizePhaseResultInput = {
   now: () => string;
   legacyAgentForPhase: (phase: string) => string;
   phaseRoutingDecision?: LooseRecord | null;
+  readArtifactFile?: (path: string, encoding: BufferEncoding) => Promise<string>;
 };
 
 /**
@@ -92,7 +93,7 @@ export async function finalizePhaseResult(input: FinalizePhaseResultInput): Prom
     phaseResults, state, phaseAgents, result: inResult,
     agent, providerServices, hubRoot, pool, job, phaseSourceContext,
     handoffState, providerAttempts, appendEvent, onProgress, completePhase,
-    now, legacyAgentForPhase, phaseRoutingDecision = null,
+    now, legacyAgentForPhase, phaseRoutingDecision = null, readArtifactFile,
   } = input;
 
   let result: PhaseResult = inResult;
@@ -119,6 +120,7 @@ export async function finalizePhaseResult(input: FinalizePhaseResultInput): Prom
 
   result = await evaluatePoisonedSessionGate({
     cpbRoot, project, jobId, phase, nodeId, attemptId, result, appendEvent,
+    ...(readArtifactFile ? { readFile: readArtifactFile } : {}),
     now,
   });
   phaseResults[phaseResultIndex] = result;

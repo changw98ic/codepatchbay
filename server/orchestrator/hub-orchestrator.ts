@@ -8,16 +8,50 @@ import { Reconciler } from "./reconciler.js";
 import { FailureRouter } from "./failure-router.js";
 import { AcpSupervisor } from "./acp-supervisor.js";
 import { createLogger } from "../../shared/logger.js";
-import { resolveExecutorRoot } from "../services/setup.js";
+import { resolveExecutorRoot } from "../services/executor-root.js";
 import { resolveHubConcurrencyLimits } from "../services/infra.js";
 import { getProject } from "../services/hub/hub-registry.js";
 import { assertHubWritable, recoverStaleHubMaintenance } from "../../shared/hub-maintenance.js";
 import os from "node:os";
+import {
+  isProcessIdentityAlive,
+  sameProcessIdentity,
+  type ProcessIdentity,
+} from "../../core/runtime/process-tree.js";
 
 const TICK_MS = 2_000;
 
 function textOrNull(value: unknown): string | null {
   return value === undefined || value === null ? null : String(value);
+}
+
+function processIdentityValue(value: unknown): ProcessIdentity | null {
+  const record = recordValue(value);
+  const pid = Number(record.pid);
+  const birthId = typeof record.birthId === "string" ? record.birthId : "";
+  const incarnation = typeof record.incarnation === "string" ? record.incarnation : "";
+  const capturedAt = typeof record.capturedAt === "string" ? record.capturedAt : "";
+  const processGroupId = Number(record.processGroupId);
+  if (
+    !Number.isSafeInteger(pid)
+    || pid <= 0
+    || !birthId
+    || incarnation !== `${pid}:${birthId}`
+    || !capturedAt
+    || !Number.isFinite(Date.parse(capturedAt))
+    || new Date(Date.parse(capturedAt)).toISOString() !== capturedAt
+    || record.birthIdPrecision !== "exact"
+    || (record.processGroupId !== undefined
+      && (!Number.isSafeInteger(processGroupId) || processGroupId <= 0))
+  ) return null;
+  return {
+    pid,
+    birthId,
+    incarnation,
+    capturedAt,
+    birthIdPrecision: "exact",
+    ...(record.processGroupId === undefined ? {} : { processGroupId }),
+  };
 }
 const JANITOR_MS = 30_000;
 const BACKOFF_BASE_MS = 1_000;
@@ -153,6 +187,7 @@ export class HubOrchestrator {
       leaderLock: this.leaderLock,
       failureRouter,
       hubRoot,
+      cpbRoot,
     });
     this.failureRouter = failureRouter;
 
@@ -189,6 +224,16 @@ export class HubOrchestrator {
       await this.reconciler.recoverRuntime();
       await this.reconcileQueueVsAssignments();
 
+      // Leadership acquisition only proves the lease. Publish readiness after
+      // every fallible store/supervisor/reconciliation step has completed so
+      // the parent hub never reports a partially initialized orchestrator as
+      // healthy.
+      if (!await this.leaderLock.markReady()) {
+        throw Object.assign(new Error("orchestrator lost leadership before readiness publication"), {
+          code: "HUB_ORCHESTRATOR_READINESS_LOST",
+        });
+      }
+
       // Start main tick loop (NOT unref'd — this keeps the process alive)
       this._scheduleTick();
       // Janitor can be unref'd — tick loop is the keepalive
@@ -219,12 +264,7 @@ export class HubOrchestrator {
 
   async _startSupervisor() {
     if (!this.acpSupervisor || typeof this.acpSupervisor.start !== "function") return null;
-    try {
-      return await this.acpSupervisor.start();
-    } catch (err) {
-      this.log.warn(`resident supervisor start failed: ${err.message}`);
-      return null;
-    }
+    return await this.acpSupervisor.start();
   }
 
   _scheduleTick() {
@@ -488,6 +528,10 @@ export class HubOrchestrator {
     this.log.error(`tick error: ${err instanceof Error ? err.message : String(err)}`);
   }
 
+  _isProcessIdentityAlive(identity: ProcessIdentity) {
+    return isProcessIdentityAlive(identity);
+  }
+
   async reconcileQueueVsAssignments() {
     const { listQueue, updateEntry } = await import("../services/hub/hub-queue.js");
     const entries = await listQueue(this.hubRoot, { status: "in_progress" });
@@ -518,22 +562,63 @@ export class HubOrchestrator {
       if (assignment.workerId) {
         const worker = await this.workerStore.getWorker(assignment.workerId);
         if (worker && worker.pid && (worker.host === "local" || worker.host === os.hostname())) {
-          try { process.kill(worker.pid, 0); } catch {
-            eLog.warn(`startup: ${entry.id} worker ${assignment.workerId} PID ${worker.pid} is dead, writing synthetic failure`);
-            const attemptNum = typeof assignment.activeAttempt === "number" ? assignment.activeAttempt : Number(assignment.activeAttempt || 1);
-            await this.assignmentStore.writeSyntheticFailure(assignment.assignmentId, attemptNum, {
-              assignmentId: assignment.assignmentId,
-              attempt: attemptNum,
-              status: "failed",
-              jobResult: { status: "failed", failure: { kind: "worker_heartbeat_lost", reason: `worker PID ${worker.pid} dead on startup` } },
-              writtenAt: new Date().toISOString(),
-            });
-            await updateEntry(this.hubRoot, entry.id, {
-              status: "failed",
-              metadata: { failureReason: "worker dead on startup", failedAt: new Date().toISOString() },
-            });
-            await this.workerStore.updateWorker(assignment.workerId, { status: "exited" });
+          const processIdentity = processIdentityValue(worker.processIdentity);
+          const incarnationToken = typeof worker.incarnationToken === "string" ? worker.incarnationToken : "";
+          if (!processIdentity || processIdentity.pid !== Number(worker.pid) || !incarnationToken) {
+            eLog.warn(
+              `startup: ${entry.id} worker ${assignment.workerId} lacks an incarnation-bound process receipt; preserving state`,
+            );
+            continue;
           }
+          if (this._isProcessIdentityAlive(processIdentity)) continue;
+
+          // Re-read after the liveness observation. A worker may restart and
+          // publish a successor between the probe and synthetic-failure write.
+          const currentWorker = await this.workerStore.getWorker(assignment.workerId);
+          if (
+            !currentWorker
+            || currentWorker.incarnationToken !== incarnationToken
+            || !sameProcessIdentity(processIdentityValue(currentWorker.processIdentity), processIdentity)
+          ) {
+            eLog.warn(`startup: ${entry.id} worker ${assignment.workerId} changed incarnation; preserving successor state`);
+            continue;
+          }
+          const currentAssignment = await this.assignmentStore.getAssignment(assignment.assignmentId);
+          if (
+            !currentAssignment
+            || currentAssignment.workerId !== assignment.workerId
+            || currentAssignment.status === "completed"
+            || currentAssignment.status === "failed"
+          ) continue;
+
+          eLog.warn(
+            `startup: ${entry.id} worker ${assignment.workerId} incarnation ${processIdentity.incarnation} is dead, writing synthetic failure`,
+          );
+          const attemptNum = typeof currentAssignment.activeAttempt === "number"
+            ? currentAssignment.activeAttempt
+            : Number(currentAssignment.activeAttempt || 1);
+          await this.assignmentStore.writeSyntheticFailure(currentAssignment.assignmentId, attemptNum, {
+            assignmentId: currentAssignment.assignmentId,
+            attempt: attemptNum,
+            status: "failed",
+            jobResult: {
+              status: "failed",
+              failure: {
+                kind: "worker_heartbeat_lost",
+                reason: `worker incarnation ${processIdentity.incarnation} dead on startup`,
+              },
+            },
+            writtenAt: new Date().toISOString(),
+          });
+          await updateEntry(this.hubRoot, entry.id, {
+            status: "failed",
+            metadata: { failureReason: "worker dead on startup", failedAt: new Date().toISOString() },
+          });
+          await this.workerStore.updateWorkerIf(
+            assignment.workerId,
+            { status: "exited" },
+            { incarnationToken },
+          );
         }
       }
     }

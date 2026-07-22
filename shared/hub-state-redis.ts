@@ -33,6 +33,56 @@ const MAX_TIMEOUT_MS = 30_000;
 const utf8 = new TextDecoder("utf-8", { fatal: true });
 const backendIdentityByHubRoot = new Map<string, string>();
 const backendConfigFileByHubRoot = new Map<string, string>();
+export type RedisRestoreCommitEvidence = {
+  registryKey: string;
+  backendIdentityFingerprint: string;
+  snapshotSha256: string;
+  operationToken: string;
+};
+
+type RedisRestoreCommitOutcome = "committed" | "unknown";
+type BoundRedisRestoreCommitEvidence = RedisRestoreCommitEvidence & {
+  outcome: RedisRestoreCommitOutcome;
+};
+
+const redisRestoreCommitEvidence = new WeakMap<object, BoundRedisRestoreCommitEvidence>();
+
+function sameRedisRestoreCommitEvidence(
+  expected: RedisRestoreCommitEvidence,
+  actual: RedisRestoreCommitEvidence,
+) {
+  return expected.registryKey === actual.registryKey
+    && expected.backendIdentityFingerprint === actual.backendIdentityFingerprint
+    && expected.snapshotSha256 === actual.snapshotSha256
+    && expected.operationToken === actual.operationToken;
+}
+
+function markRedisRestoreCommitOutcome(
+  error: unknown,
+  outcome: RedisRestoreCommitOutcome,
+  evidence: RedisRestoreCommitEvidence,
+  recovery: Record<string, unknown>,
+) {
+  const marked = error && typeof error === "object"
+    ? error
+    : new Error(String(error));
+  Object.assign(marked, {
+    commitMayHaveOccurred: true,
+    ...(outcome === "committed" ? { redisCommitted: true } : {}),
+    redisCommitRecovery: Object.freeze({ ...recovery }),
+  });
+  redisRestoreCommitEvidence.set(marked, { ...evidence, outcome });
+  return marked;
+}
+
+export function redisRestoreCommitOutcome(
+  error: unknown,
+  expected: RedisRestoreCommitEvidence,
+): RedisRestoreCommitOutcome | null {
+  if (!error || typeof error !== "object") return null;
+  const actual = redisRestoreCommitEvidence.get(error);
+  return actual && sameRedisRestoreCommitEvidence(expected, actual) ? actual.outcome : null;
+}
 
 const REDIS_MAINTENANCE_GUARD = `
 local maintenance_token = redis.call("HGET", KEYS[1], "maintenanceToken")
@@ -155,11 +205,27 @@ if revision then
 end
 local expected = tonumber(ARGV[1])
 local next_revision = tonumber(ARGV[2])
+local mutation_id = ARGV[4] or ""
 if not expected or not next_revision or next_revision ~= expected + 1 then
   return redis.error_reply("CPB_REGISTRY_INVALID")
 end
+if mutation_id ~= "" and data then
+  local current_ok, current_data = pcall(cjson.decode, data)
+  if not current_ok or type(current_data) ~= "table" then
+    return redis.error_reply("CPB_REGISTRY_INVALID")
+  end
+  if current_data["mutationId"] == mutation_id then
+    return {1, string.format("%.0f", current)}
+  end
+end
 if current ~= expected then
   return {0, string.format("%.0f", current)}
+end
+if mutation_id ~= "" then
+  local next_ok, next_data = pcall(cjson.decode, ARGV[3])
+  if not next_ok or type(next_data) ~= "table" or next_data["mutationId"] ~= mutation_id then
+    return redis.error_reply("CPB_REGISTRY_INVALID")
+  end
 end
 redis.call("HSET", KEYS[1], "revision", string.format("%.0f", next_revision), "data", ARGV[3])
 return {1, string.format("%.0f", next_revision)}
@@ -621,6 +687,7 @@ export type HubRedisStateBackend = {
     expectedRevision: number,
     nextRevision: number,
     serialized: string,
+    mutationId?: string,
   ) => Promise<{ committed: boolean; revision: number }>;
   acquireLeader: (input: RedisLeaderIdentity, ttlMs: number) => Promise<RedisLeaderAcquireResult>;
   renewLeader: (input: RedisLeaderFence, ttlMs: number) => Promise<RedisLeaderRenewResult>;
@@ -1319,14 +1386,20 @@ async function executeOnSocket(
   });
 
   const outbound = Buffer.concat(commands.map(encodeCommand));
+  let commandMayHaveBeenSent = false;
   try {
+    commandMayHaveBeenSent = true;
     if (!socket.write(outbound)) await once(socket, "drain");
+    return await response;
   } catch (error) {
     socket.destroy();
     await response.catch(() => undefined);
-    throw error;
+    const failure = error instanceof Error ? error : new Error(String(error));
+    if (commandMayHaveBeenSent && !(failure instanceof RedisReplyError)) {
+      Object.assign(failure, { redisCommandOutcome: "unknown" });
+    }
+    throw failure;
   }
-  return response;
 }
 
 async function createPoolConnection(pool: RedisConnectionPool) {
@@ -1394,7 +1467,11 @@ function releasePoolConnection(
   releasePermit();
 }
 
-async function execute(config: RedisStateConfig, command: Array<string | number>): Promise<RedisValue> {
+async function execute(
+  config: RedisStateConfig,
+  command: Array<string | number>,
+  { commitMayHaveOccurred = false }: { commitMayHaveOccurred?: boolean } = {},
+): Promise<RedisValue> {
   const pool = connectionPool(config);
   let lease: Awaited<ReturnType<typeof acquirePoolConnection>> | null = null;
   let reusable = false;
@@ -1434,7 +1511,11 @@ async function execute(config: RedisStateConfig, command: Array<string | number>
     if (error instanceof RedisReplyError && error.message.includes("CPB_AUDIT_POLICY_MISMATCH")) {
       throw codedError("HUB_ACCESS_AUDIT_POLICY_MISMATCH", "Hub access audit capacity policy differs across nodes");
     }
-    throw unavailableError();
+    const unavailable = unavailableError();
+    if (commitMayHaveOccurred && (error as { redisCommandOutcome?: unknown })?.redisCommandOutcome === "unknown") {
+      Object.assign(unavailable, { commitOutcome: "unknown" });
+    }
+    throw unavailable;
   } finally {
     if (lease) releasePoolConnection(pool, lease.connection, lease.releasePermit, reusable);
   }
@@ -1600,6 +1681,7 @@ function validateLogicalSnapshot(value: unknown, identityFingerprint: string): R
     || raw.backendIdentityFingerprint !== identityFingerprint
     || typeof raw.capturedAt !== "string"
     || !Number.isFinite(Date.parse(raw.capturedAt))
+    || new Date(Date.parse(raw.capturedAt)).toISOString() !== raw.capturedAt
     || !Array.isArray(raw.hashFields)
     || !Array.isArray(raw.jobStreams)
     || typeof raw.sha256 !== "string"
@@ -1958,6 +2040,12 @@ export async function openHubRedisStateBackend(options: {
   const restoreSnapshot = async (token: string, input: RedisLogicalSnapshot): Promise<RedisLogicalSnapshot> => {
     const checked = maintenanceInput(token);
     const snapshot = validateLogicalSnapshot(input, identityFingerprint);
+    const commitEvidence: RedisRestoreCommitEvidence = {
+      registryKey: config.registryKey,
+      backendIdentityFingerprint: identityFingerprint,
+      snapshotSha256: snapshot.sha256,
+      operationToken: checked.token,
+    };
     const maintenance = await readMaintenance();
     if (!maintenance.active || maintenance.token !== checked.token || !maintenance.operation
       || !maintenance.acquiredAt || !maintenance.expiresAt) {
@@ -2052,19 +2140,42 @@ export async function openHubRedisStateBackend(options: {
       existingStreamKeys.sort();
       const targetPairs = snapshot.jobStreams.flatMap((stream, index) => [jobStreamKey(stream.field), stageStreamKeys[index]]);
       const commitKeys = [config.registryKey, stageHashKey, ...existingStreamKeys, ...targetPairs];
-      const committed = await execute(config, [
-        "EVAL", RESTORE_COMMIT_SCRIPT, commitKeys.length, ...commitKeys,
-        checked.token, existingStreamKeys.length, snapshot.jobStreams.length,
-      ]);
+      let committed: RedisValue;
+      try {
+        committed = await execute(config, [
+          "EVAL", RESTORE_COMMIT_SCRIPT, commitKeys.length, ...commitKeys,
+          checked.token, existingStreamKeys.length, snapshot.jobStreams.length,
+        ], { commitMayHaveOccurred: true });
+      } catch (error) {
+        if ((error as { commitOutcome?: unknown })?.commitOutcome === "unknown") {
+          throw markRedisRestoreCommitOutcome(error, "unknown", commitEvidence, {
+            registryKey: config.registryKey,
+            stageRegistryKey: stageHashKey,
+            stageStreamKeys: Object.freeze([...stageStreamKeys]),
+            backendIdentityFingerprint: identityFingerprint,
+            snapshotSha256: snapshot.sha256,
+          });
+        }
+        throw error;
+      }
       if (committed !== 1) throw codedError("HUB_STATE_BACKEND_UNAVAILABLE", "Redis logical restore commit failed");
 
-      const restored = await exportSnapshot(checked.token);
-      if (JSON.stringify(restored.hashFields) !== JSON.stringify(effectiveHashFields)
-        || JSON.stringify(restored.jobStreams) !== JSON.stringify(snapshot.jobStreams)) {
-        throw codedError("HUB_STATE_RECORD_INVALID", "Redis logical restore verification failed");
+      try {
+        const restored = await exportSnapshot(checked.token);
+        if (JSON.stringify(restored.hashFields) !== JSON.stringify(effectiveHashFields)
+          || JSON.stringify(restored.jobStreams) !== JSON.stringify(snapshot.jobStreams)) {
+          throw codedError("HUB_STATE_RECORD_INVALID", "Redis logical restore verification failed");
+        }
+        return restored;
+      } catch (error) {
+        throw markRedisRestoreCommitOutcome(error, "committed", commitEvidence, {
+          registryKey: config.registryKey,
+          backendIdentityFingerprint: identityFingerprint,
+          snapshotSha256: snapshot.sha256,
+        });
       }
-      return restored;
     } catch (error) {
+      if (redisRestoreCommitOutcome(error, commitEvidence) === "unknown") throw error;
       await cleanupStage();
       throw error;
     }
@@ -2076,23 +2187,36 @@ export async function openHubRedisStateBackend(options: {
     identityFingerprint,
     topology: config.topology,
     readRegistry,
-    compareAndSwapRegistry: async (expectedRevision, nextRevision, serialized) => {
-      const reply = responseArray(await execute(config, [
-        "EVAL",
-        REGISTRY_CAS_SCRIPT,
-        1,
-        config.registryKey,
-        expectedRevision,
-        nextRevision,
-        serialized,
-      ]), "Redis registry CAS");
-      if (reply.length !== 2 || (reply[0] !== 0 && reply[0] !== 1)) {
-        throw codedError("HUB_STATE_BACKEND_UNAVAILABLE", "Redis registry CAS returned an invalid response");
+    compareAndSwapRegistry: async (expectedRevision, nextRevision, serialized, mutationId = "") => {
+      if (typeof mutationId !== "string"
+        || Buffer.byteLength(mutationId, "utf8") > 128
+        || /[\u0000-\u001f\u007f]/.test(mutationId)) {
+        throw codedError("HUB_REGISTRY_INVALID", "Redis registry mutation id is invalid");
       }
-      return {
-        committed: reply[0] === 1,
-        revision: responseRevision(reply[1], "Redis registry CAS"),
-      };
+      try {
+        const reply = responseArray(await execute(config, [
+          "EVAL",
+          REGISTRY_CAS_SCRIPT,
+          1,
+          config.registryKey,
+          expectedRevision,
+          nextRevision,
+          serialized,
+          mutationId,
+        ], { commitMayHaveOccurred: true }), "Redis registry CAS");
+        if (reply.length !== 2 || (reply[0] !== 0 && reply[0] !== 1)) {
+          throw codedError("HUB_STATE_BACKEND_UNAVAILABLE", "Redis registry CAS returned an invalid response");
+        }
+        return {
+          committed: reply[0] === 1,
+          revision: responseRevision(reply[1], "Redis registry CAS"),
+        };
+      } catch (error) {
+        if ((error as { commitOutcome?: unknown }).commitOutcome === "unknown") {
+          Object.assign(error as object, { mutationId });
+        }
+        throw error;
+      }
     },
     acquireLeader: async (identity, ttlMs) => {
       const value = leaderIdentity(identity);

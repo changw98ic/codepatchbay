@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmod, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -12,6 +12,7 @@ import {
   normalizeClaudeCliToolAuditEvents,
   resolveClaudePlanningMaxTurns,
 } from "../server/services/acp/acp-pool.js";
+import { buildPhaseAcpEnv } from "../core/phases/phase-env.js";
 import { isDelegateAlive } from "../server/services/quota-delegate-client.js";
 import { tempRoot } from "./helpers.js";
 
@@ -36,6 +37,10 @@ async function readAuditEvents(file: string) {
     .split("\n")
     .filter(Boolean)
     .map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
+function isAbortError(error: unknown) {
+  return error instanceof Error && error.name === "AbortError";
 }
 
 test("Claude API retry normalization locks the native 2.1.168 stream schema", () => {
@@ -134,12 +139,12 @@ test("Claude structured output candidates and risk-derived planning turns are de
     repositoryDiscovery: true,
     structuredOutput: true,
     toolCallBudget: 40,
-  }), 18);
+  }), 0);
   assert.equal(resolveClaudePlanningMaxTurns({
     repositoryDiscovery: true,
     structuredOutput: true,
     toolCallBudget: 60,
-  }), 24);
+  }), 0);
   assert.equal(resolveClaudePlanningMaxTurns({
     configured: "7",
     repositoryDiscovery: true,
@@ -150,7 +155,7 @@ test("Claude structured output candidates and risk-derived planning turns are de
     repositoryDiscovery: false,
     structuredOutput: true,
     toolCallBudget: 80,
-  }), 4);
+  }), 0);
 });
 
 test("Claude planning schemas follow plan-tournament roles and repair suffixes", () => {
@@ -247,8 +252,7 @@ setTimeout(() => {}, 30000);
     assert.ok(captured.args.includes("dontAsk"));
     assert.ok(captured.args.includes("stream-json"));
     assert.ok(captured.args.includes("low"));
-    assert.ok(captured.args.includes("--max-turns"));
-    assert.equal(captured.args[captured.args.indexOf("--max-turns") + 1], "8");
+    assert.ok(!captured.args.includes("--max-turns"));
     assert.ok(captured.args.includes("--json-schema"));
     const plannerSchema = JSON.parse(captured.args[captured.args.indexOf("--json-schema") + 1]);
     assert.deepEqual(plannerSchema.required, ["status", "proposal"]);
@@ -258,8 +262,8 @@ setTimeout(() => {}, 30000);
     assert.deepEqual(planningSettings.permissions.allow, ["Read", "Glob", "Grep"]);
     assert.equal(planningSettings.sandbox.enabled, true);
     assert.ok(!planningSettings.sandbox.filesystem.allowWrite.includes(root));
-    assert.equal(captured.maxThinkingTokens, "12000");
-    assert.equal(captured.maxOutputTokens, "20000");
+    assert.equal(captured.maxThinkingTokens, undefined);
+    assert.equal(captured.maxOutputTokens, undefined);
     assert.ok(!captured.args.includes("claude-agent-acp"));
     assert.equal(result.usage.totalTokens, 18);
     assert.equal(result.usage.tokenSource, "acp_audit_prompt_usage:claude_cli_result");
@@ -276,9 +280,9 @@ setTimeout(() => {}, 30000);
       dataRoot: path.join(root, "runtime"),
     });
     const criticCapture = JSON.parse(await readFile(capture, "utf8"));
-    assert.equal(criticCapture.maxThinkingTokens, "24000");
-    assert.equal(criticCapture.maxOutputTokens, "32000");
-    assert.equal(criticCapture.args[criticCapture.args.indexOf("--max-turns") + 1], "4");
+    assert.equal(criticCapture.maxThinkingTokens, undefined);
+    assert.equal(criticCapture.maxOutputTokens, undefined);
+    assert.ok(!criticCapture.args.includes("--max-turns"));
     assert.equal(criticCapture.args[criticCapture.args.indexOf("--tools") + 1], "");
     const criticSchema = JSON.parse(criticCapture.args[criticCapture.args.indexOf("--json-schema") + 1]);
     assert.deepEqual(criticSchema.required, ["status", "critique"]);
@@ -291,8 +295,8 @@ setTimeout(() => {}, 30000);
       dataRoot: path.join(root, "runtime"),
     });
     const criticRepairCapture = JSON.parse(await readFile(capture, "utf8"));
-    assert.equal(criticRepairCapture.maxThinkingTokens, "24000");
-    assert.equal(criticRepairCapture.maxOutputTokens, "32000");
+    assert.equal(criticRepairCapture.maxThinkingTokens, undefined);
+    assert.equal(criticRepairCapture.maxOutputTokens, undefined);
 
     const executeResult = await pool.execute("claude-glm", "implement this ordinary task", root, 30_000, {
       projectId: "project-1",
@@ -510,6 +514,62 @@ setTimeout(() => {}, 30000);
       /thinkingTokens=1100\/1000/,
     );
   } finally {
+    await pool.stop();
+  }
+});
+
+test("claude-glm abort terminates the active Claude CLI child and rejects AbortError", async () => {
+  const root = await tempRoot("cpb-claude-glm-abort");
+  const command = path.join(root, "fake-claude.mjs");
+  await writeFile(command, `#!/usr/bin/env node
+for await (const _chunk of process.stdin) {}
+setInterval(() => {}, 1000);
+`, "utf8");
+  await chmod(command, 0o755);
+
+  const controller = new AbortController();
+  const pool = new AcpPool({
+    cpbRoot: path.join(root, "cpb"),
+    hubRoot: path.join(root, "hub"),
+    env: {
+      ...process.env,
+      CPB_AGENT_SANDBOX: "off",
+      CPB_AGENT_ISOLATE_HOME: "0",
+      CPB_CLAUDE_CLI_COMMAND: command,
+      ...FAKE_GLM_PROVIDER_ENV,
+    },
+  });
+  let childPid: number | null = null;
+  try {
+    const execution = pool.execute("claude-glm", "return JSON", root, 30_000, {
+      projectId: "project-1",
+      jobId: "job-abort",
+      phase: "plan",
+      role: "planner_b",
+      dataRoot: path.join(root, "runtime"),
+      signal: controller.signal,
+    });
+
+    await waitFor(async () => pool.oneShotChildren.size === 1, 2_000);
+    childPid = [...pool.oneShotChildren][0].pid || null;
+    controller.abort();
+
+    await assert.rejects(execution, isAbortError);
+    await waitFor(async () => {
+      if (!childPid) return true;
+      try {
+        process.kill(childPid, 0);
+        return false;
+      } catch {
+        return true;
+      }
+    }, 2_000);
+    assert.equal(pool.oneShotChildren.size, 0);
+  } finally {
+    if (childPid) {
+      try { process.kill(-childPid, "SIGKILL"); } catch {}
+      try { process.kill(childPid, "SIGKILL"); } catch {}
+    }
     await pool.stop();
   }
 });
@@ -840,5 +900,337 @@ setInterval(() => {}, 1000);
     } finally {
       await pool.stop();
     }
+  }
+});
+
+test("claude-glm adversarial_verify terminates when phase tool-call budget is exceeded", async () => {
+  const root = await tempRoot("cpb-claude-glm-adversarial-budget");
+  const command = path.join(root, "fake-claude.mjs");
+  await writeFile(command, `#!/usr/bin/env node
+for await (const _chunk of process.stdin) {}
+const emitTool = (id) => console.log(JSON.stringify({
+  type: "assistant",
+  session_id: "session-adversarial-budget",
+  message: { content: [{ type: "tool_use", id, name: "Grep", input: { pattern: id, path: "." } }] }
+}));
+emitTool("grep-1");
+emitTool("grep-2");
+setInterval(() => {}, 1000);
+`, "utf8");
+  await chmod(command, 0o755);
+
+  const runtimeRoot = path.join(root, "runtime");
+  const jobId = "job-adversarial-budget";
+  const auditFile = path.join(runtimeRoot, "acp-audit", "project-1", `${jobId}.jsonl`);
+  const adversarialEnv = buildPhaseAcpEnv({
+    env: {
+      CPB_ACP_TOOL_CALL_BUDGET_ADVERSARIAL_VERIFY: "1",
+      CPB_ACP_TOOL_EVENT_BUDGET_ADVERSARIAL_VERIFY: "10",
+    },
+    sourceContext: {
+      riskMap: {
+        riskLevel: "medium",
+        adversarialRequired: true,
+      },
+    },
+  }, "adversarial_verify");
+  const pool = new AcpPool({
+    cpbRoot: path.join(root, "cpb"),
+    hubRoot: path.join(root, "hub"),
+    env: {
+      ...process.env,
+      CPB_AGENT_SANDBOX: "off",
+      CPB_AGENT_ISOLATE_HOME: "0",
+      CPB_CLAUDE_CLI_COMMAND: command,
+      ...FAKE_GLM_PROVIDER_ENV,
+    },
+  });
+  try {
+    await assert.rejects(
+      pool.execute("claude-glm", "attack the frozen evidence", root, 3_000, {
+        projectId: "project-1",
+        jobId,
+        phase: "adversarial_verify",
+        role: "adversarial_verifier",
+        dataRoot: runtimeRoot,
+        env: adversarialEnv,
+      }),
+      /tool_budget_exceeded/,
+    );
+    const events = await readAuditEvents(auditFile);
+    const launch = events.find((event) => event.event === "agent_launch");
+    const runtimeGuards = launch?.runtimeGuards as Record<string, unknown>;
+    assert.equal(runtimeGuards.toolCallBudget, 1);
+    assert.equal(runtimeGuards.toolEventBudget, 10);
+    const blocked = events.find((event) => event.event === "tool_budget_exceeded");
+    assert.equal(blocked?.toolCallBudget, 1);
+    assert.equal(blocked?.normalizedToolCalls, 2);
+  } finally {
+    await pool.stop();
+  }
+});
+
+test("claude-glm adversarial_verify reads the frozen phase snapshot without workspace write shortcuts", async () => {
+  const root = await tempRoot("cpb-claude-glm-adversarial-snapshot-guard");
+  const runtimeRoot = path.join(root, "runtime");
+  const snapshotPath = path.join(runtimeRoot, "phase-io", "adversarial_verify", "snapshot.json");
+  await mkdir(path.dirname(snapshotPath), { recursive: true });
+  await writeFile(snapshotPath, JSON.stringify({ snapshot: true }), "utf8");
+  const command = path.join(root, "fake-claude.mjs");
+  const capture = path.join(root, "capture.json");
+  await writeFile(command, `#!/usr/bin/env node
+import { readFileSync, writeFileSync } from "node:fs";
+for await (const _chunk of process.stdin) {}
+const args = process.argv.slice(2);
+const settings = JSON.parse(args[args.indexOf("--settings") + 1]);
+const snapshot = readFileSync(${JSON.stringify(snapshotPath)}, "utf8");
+writeFileSync(${JSON.stringify(capture)}, JSON.stringify({
+  args,
+  settings,
+  snapshot,
+  providerArgs: process.env.CPB_ACP_CLAUDE_GLM_ARGS,
+}));
+console.log(JSON.stringify({
+  type: "result",
+  subtype: "success",
+  is_error: false,
+  result: "ADVERSARIAL_SNAPSHOT_OK",
+  session_id: "session-adversarial-snapshot",
+}));
+setTimeout(() => {}, 30000);
+`, "utf8");
+  await chmod(command, 0o755);
+
+  const phaseSnapshotGlob = `${runtimeRoot}/phase-io/adversarial_verify/*`;
+  const installedProject = path.join(root, "runtime-deps", "project_pkg");
+  const adversarialEnv = buildPhaseAcpEnv({
+    env: {
+      CPB_ACP_WRITE_ALLOW: phaseSnapshotGlob,
+      CPB_ACP_CLAUDE_GLM_ARGS: JSON.stringify(["--disallowedTools", "Bash,Edit,Write,MultiEdit"]),
+      CPB_AGENT_FS_BOUNDARY_JSON: JSON.stringify({
+        schemaVersion: 1,
+        homeDenyRoot: path.dirname(root),
+        projectPackageNames: ["project_pkg"],
+        dependencyReadRoots: [path.dirname(installedProject)],
+        denyReadPaths: [installedProject],
+      }),
+    },
+    sourceContext: {
+      riskMap: {
+        riskLevel: "medium",
+        adversarialRequired: true,
+      },
+    },
+  }, "adversarial_verify");
+  const pool = new AcpPool({
+    cpbRoot: path.join(root, "cpb"),
+    hubRoot: path.join(root, "hub"),
+    env: {
+      ...process.env,
+      CPB_AGENT_SANDBOX: "off",
+      CPB_AGENT_ISOLATE_HOME: "0",
+      CPB_CLAUDE_CLI_COMMAND: command,
+      ...FAKE_GLM_PROVIDER_ENV,
+    },
+  });
+  try {
+    const result = await pool.execute("claude-glm", "read the frozen evidence snapshot", root, 3_000, {
+      projectId: "project-1",
+      jobId: "job-adversarial-snapshot",
+      phase: "adversarial_verify",
+      role: "adversarial_verifier",
+      dataRoot: runtimeRoot,
+      env: adversarialEnv,
+    });
+    assert.equal(result.output, "ADVERSARIAL_SNAPSHOT_OK");
+    const captured = JSON.parse(await readFile(capture, "utf8"));
+    assert.equal(captured.snapshot, "{\"snapshot\":true}");
+    assert.ok(captured.settings.sandbox.filesystem.allowWrite.some((entry: string) => entry.includes("phase-io/adversarial_verify")));
+    assert.ok(captured.settings.sandbox.filesystem.allowRead.some((entry: string) => entry.includes("phase-io/adversarial_verify")));
+    assert.ok(!captured.settings.permissions.allow.includes("Bash"));
+    assert.ok(!captured.settings.permissions.allow.includes("Write"));
+    assert.ok(!captured.settings.permissions.allow.includes("Edit"));
+    assert.ok(captured.settings.permissions.deny.includes("Bash"));
+    assert.ok(captured.settings.permissions.deny.includes("Write"));
+    assert.ok(captured.settings.permissions.deny.includes("Edit"));
+    assert.match(captured.providerArgs, /--disallowedTools/);
+    assert.match(captured.providerArgs, /Bash,Edit,Write,MultiEdit/);
+    assert.ok(!captured.settings.sandbox.filesystem.allowWrite.includes(root));
+  } finally {
+    await pool.stop();
+  }
+});
+
+test("claude-glm writable verifier replay allows sandboxed Bash but denies direct mutation tools", async () => {
+  const root = await tempRoot("cpb-claude-glm-verifier-replay-guard");
+  const command = path.join(root, "fake-claude.mjs");
+  const capture = path.join(root, "capture.json");
+  await writeFile(command, `#!/usr/bin/env node
+import { writeFileSync } from "node:fs";
+for await (const _chunk of process.stdin) {}
+const args = process.argv.slice(2);
+writeFileSync(${JSON.stringify(capture)}, JSON.stringify({
+  args,
+  settings: JSON.parse(args[args.indexOf("--settings") + 1]),
+}));
+console.log(JSON.stringify({
+  type: "result",
+  subtype: "success",
+  is_error: false,
+  result: "VERIFIER_REPLAY_GUARD_OK",
+  session_id: "session-verifier-replay-guard",
+}));
+setTimeout(() => {}, 30000);
+`, "utf8");
+  await chmod(command, 0o755);
+
+  const runtimeRoot = path.join(root, "runtime");
+  const phaseOutputGlob = `${runtimeRoot}/phase-io/verify/*`;
+  const replayEnv = buildPhaseAcpEnv({
+    env: {
+      CPB_ACP_WRITE_ALLOW: `${root},${phaseOutputGlob}`,
+      CPB_VERIFIER_REPLAY_WORKSPACE_WRITE: "1",
+      CPB_CODEX_VERIFIER_WORKSPACE_WRITE: "1",
+      CPB_AGENT_FS_BOUNDARY_JSON: JSON.stringify({
+        schemaVersion: 1,
+        homeDenyRoot: path.dirname(root),
+        projectPackageNames: [],
+        dependencyReadRoots: [],
+        denyReadPaths: [],
+      }),
+    },
+    sourceContext: { riskMap: { riskLevel: "medium" } },
+  }, "verify");
+  const pool = new AcpPool({
+    cpbRoot: path.join(root, "cpb"),
+    hubRoot: path.join(root, "hub"),
+    env: {
+      ...process.env,
+      CPB_AGENT_SANDBOX: "off",
+      CPB_AGENT_ISOLATE_HOME: "0",
+      CPB_CLAUDE_CLI_COMMAND: command,
+      ...FAKE_GLM_PROVIDER_ENV,
+    },
+  });
+  try {
+    const result = await pool.execute("claude-glm", "verify the disposable replay", root, 3_000, {
+      projectId: "project-1",
+      jobId: "job-verifier-replay-guard",
+      phase: "verify",
+      role: "verifier",
+      dataRoot: runtimeRoot,
+      env: replayEnv,
+    });
+    assert.equal(result.output, "VERIFIER_REPLAY_GUARD_OK");
+    const captured = JSON.parse(await readFile(capture, "utf8"));
+    const tools = captured.args[captured.args.indexOf("--tools") + 1];
+    assert.equal(tools, "Read,Glob,Grep,Bash");
+    assert.ok(captured.settings.permissions.allow.includes("Bash"));
+    assert.ok(captured.settings.permissions.deny.includes("Edit"));
+    assert.ok(captured.settings.permissions.deny.includes("Write"));
+    assert.ok(captured.settings.permissions.deny.includes("MultiEdit"));
+    assert.ok(!captured.settings.permissions.allow.includes("Edit"));
+    assert.ok(!captured.settings.permissions.allow.includes("Write"));
+    assert.ok(captured.settings.sandbox.filesystem.allowWrite.includes(root));
+    assert.ok(captured.settings.sandbox.filesystem.allowWrite.some((entry: string) => entry.includes("phase-io/verify")));
+  } finally {
+    await pool.stop();
+  }
+});
+
+test("claude-glm validation lanes preserve bounded commands and phase-only output writes", async () => {
+  const root = await tempRoot("cpb-claude-glm-validation-guard");
+  const command = path.join(root, "fake-claude.mjs");
+  const capture = path.join(root, "capture.json");
+  await writeFile(command, `#!/usr/bin/env node
+import { writeFileSync } from "node:fs";
+for await (const _chunk of process.stdin) {}
+const args = process.argv.slice(2);
+writeFileSync(${JSON.stringify(capture)}, JSON.stringify({
+  args,
+  settings: JSON.parse(args[args.indexOf("--settings") + 1]),
+}));
+console.log(JSON.stringify({
+  type: "result",
+  subtype: "success",
+  is_error: false,
+  result: "VALIDATION_GUARD_OK",
+  session_id: "session-validation-guard",
+}));
+setTimeout(() => {}, 30000);
+`, "utf8");
+  await chmod(command, 0o755);
+
+  const runtimeRoot = path.join(root, "runtime");
+  const boundary = JSON.stringify({
+    schemaVersion: 1,
+    homeDenyRoot: path.dirname(root),
+    projectPackageNames: [],
+    dependencyReadRoots: [],
+    denyReadPaths: [],
+  });
+  const pool = new AcpPool({
+    cpbRoot: path.join(root, "cpb"),
+    hubRoot: path.join(root, "hub"),
+    env: {
+      ...process.env,
+      CPB_AGENT_SANDBOX: "off",
+      CPB_AGENT_ISOLATE_HOME: "0",
+      CPB_CLAUDE_CLI_COMMAND: command,
+      ...FAKE_GLM_PROVIDER_ENV,
+    },
+  });
+  try {
+    const verifyRoot = `${runtimeRoot}/phase-io/verify/*`;
+    const verifyEnv = buildPhaseAcpEnv({
+      env: {
+        CPB_ACP_WRITE_ALLOW: verifyRoot,
+        CPB_AGENT_FS_BOUNDARY_JSON: boundary,
+      },
+      sourceContext: { riskMap: { riskLevel: "medium" } },
+    }, "verify");
+    const verifyResult = await pool.execute("claude-glm", "verify", root, 3_000, {
+      projectId: "project-1",
+      jobId: "job-validation-verify",
+      phase: "verify",
+      role: "verifier",
+      dataRoot: runtimeRoot,
+      env: verifyEnv,
+    });
+    assert.equal(verifyResult.output, "VALIDATION_GUARD_OK");
+    const verifyCapture = JSON.parse(await readFile(capture, "utf8"));
+    assert.equal(verifyCapture.args[verifyCapture.args.indexOf("--tools") + 1], "Read,Write,Glob,Grep,Bash");
+    assert.ok(verifyCapture.settings.permissions.allow.includes("Write"));
+    assert.ok(verifyCapture.settings.permissions.allow.includes("Bash"));
+    assert.ok(verifyCapture.settings.permissions.deny.includes("Edit"));
+    assert.ok(verifyCapture.settings.permissions.deny.includes("MultiEdit"));
+    assert.ok(!verifyCapture.settings.sandbox.filesystem.allowWrite.includes(root));
+    assert.ok(verifyCapture.settings.sandbox.filesystem.allowWrite.some((entry: string) => entry.includes("phase-io/verify")));
+
+    const reviewRoot = `${runtimeRoot}/phase-io/review/*`;
+    const reviewEnv = buildPhaseAcpEnv({
+      env: {
+        CPB_ACP_WRITE_ALLOW: reviewRoot,
+        CPB_AGENT_FS_BOUNDARY_JSON: boundary,
+      },
+      sourceContext: { riskMap: { riskLevel: "medium" } },
+    }, "review");
+    const reviewResult = await pool.execute("claude-glm", "review", root, 3_000, {
+      projectId: "project-1",
+      jobId: "job-validation-review",
+      phase: "review",
+      role: "reviewer",
+      dataRoot: runtimeRoot,
+      env: reviewEnv,
+    });
+    assert.equal(reviewResult.output, "VALIDATION_GUARD_OK");
+    const reviewCapture = JSON.parse(await readFile(capture, "utf8"));
+    assert.equal(reviewCapture.args[reviewCapture.args.indexOf("--tools") + 1], "Read,Glob,Grep,Bash");
+    assert.ok(reviewCapture.settings.permissions.allow.includes("Bash"));
+    assert.ok(reviewCapture.settings.permissions.deny.includes("Write"));
+    assert.ok(reviewCapture.settings.permissions.deny.includes("Edit"));
+    assert.ok(!reviewCapture.settings.sandbox.filesystem.allowWrite.includes(root));
+  } finally {
+    await pool.stop();
   }
 });

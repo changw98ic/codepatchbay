@@ -258,7 +258,7 @@ export async function startHubServer(options: HubServerOptions = {}): Promise<Ru
           },
         });
         attributeWorkerRequest();
-        response = { statusCode: 200, payload: { ok: true, result } };
+        response = { statusCode: 200, payload: { ok: true, result: result ?? null } };
       } else {
       let authenticationUnavailable: unknown = null;
       try {

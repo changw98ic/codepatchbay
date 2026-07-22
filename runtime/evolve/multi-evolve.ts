@@ -137,7 +137,13 @@ type ManagedJobResult = LooseRecord & {
 };
 
 type PoolLike = {
-  execute: (agent: string, prompt: string, cwd: string, timeoutMs: number) => Promise<{ output: string }>;
+  execute: (
+    agent: string,
+    prompt: string,
+    cwd: string,
+    timeoutMs: number,
+    options?: LooseRecord,
+  ) => Promise<{ output: string }>;
 };
 
 type ControllerOptions = LooseRecord & {
@@ -472,7 +478,18 @@ export class MultiEvolveController {
 
   async scanProject(project: RuntimeProject, { agent = "codex", timeoutMs = 300_000 }: { agent?: string; timeoutMs?: number } = {}) {
     const fixture = process.env.CPB_MULTI_EVOLVE_SCAN_FIXTURE;
-    const output = fixture || (await this.pool.execute(agent, scanPrompt(project), project.sourcePath, timeoutMs)).output;
+    const output = fixture || (await this.pool.execute(
+      agent,
+      scanPrompt(project),
+      project.sourcePath,
+      timeoutMs,
+      {
+        phase: "evolve_scan",
+        role: "scanner",
+        projectId: project.id,
+        dataRoot: project.dataRoot || project.projectRuntimeRoot || null,
+      },
+    )).output;
     const issues = parseScanResults(output);
     const result = await pushIssues(project.sourcePath, project.id, issues, evolveStateOpts(project)) as LooseRecord;
 

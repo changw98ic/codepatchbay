@@ -4,17 +4,22 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { readdir } from "node:fs/promises";
 
-const repoRoot = path.resolve(import.meta.dirname, "..");
+// The runner lives inside dist-tests/scripts (or dist/scripts for legacy
+// callers). Test modules belong to that compiled artifact, while their cwd
+// contract is the source checkout one level above it. Keeping these roots
+// separate prevents process.cwd()-based fixtures from accidentally resolving
+// to dist-tests while still executing only compiled JavaScript.
+const artifactRoot = path.resolve(import.meta.dirname, "..");
+const sourceRoot = path.resolve(artifactRoot, "..");
 
 function normalizeRequestedFile(arg: string): string {
   const resolved = path.isAbsolute(arg) ? arg : path.resolve(process.cwd(), arg);
-  let relative = path.relative(repoRoot, resolved).split(path.sep).join("/");
+  let relative = path.relative(artifactRoot, resolved).split(path.sep).join("/");
 
   if (relative.startsWith("../")) {
     const cwdRelative = path.relative(process.cwd(), resolved).split(path.sep).join("/");
-    relative = cwdRelative.startsWith("dist/")
-      ? cwdRelative.slice("dist/".length)
-      : cwdRelative;
+    const outputPrefix = ["dist-tests/", "dist/"].find((prefix) => cwdRelative.startsWith(prefix));
+    relative = outputPrefix ? cwdRelative.slice(outputPrefix.length) : cwdRelative;
   }
 
   return relative.replace(/\.ts$/, ".js");
@@ -28,7 +33,7 @@ async function collectTestFiles(dir: string): Promise<string[]> {
     if (entry.isDirectory()) {
       results.push(...await collectTestFiles(full));
     } else if (entry.name.endsWith(".test.js")) {
-      results.push(path.relative(repoRoot, full).split(path.sep).join("/"));
+      results.push(path.relative(artifactRoot, full).split(path.sep).join("/"));
     }
   }
   return results;
@@ -36,7 +41,7 @@ async function collectTestFiles(dir: string): Promise<string[]> {
 
 async function runTests(files: string[], opts: LooseRecord = {}) {
   const { concurrency = undefined, env: envOverrides = {}, label = "tests" } = opts;
-  const args = ["--test", ...files];
+  const args = ["--test", ...files.map((file) => path.resolve(artifactRoot, file))];
   if (concurrency !== undefined) {
     args.unshift(`--test-concurrency=${concurrency}`);
   }
@@ -55,7 +60,7 @@ async function runTests(files: string[], opts: LooseRecord = {}) {
   console.log(`Running ${label}: ${files.length} file(s)`);
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, args, {
-      cwd: repoRoot,
+      cwd: sourceRoot,
       stdio: "inherit",
       env,
     });
@@ -76,7 +81,7 @@ const requestedFiles = process.argv.slice(2)
 
 const allFiles = requestedFiles.length > 0
   ? requestedFiles
-  : await collectTestFiles(path.join(repoRoot, "tests"));
+  : await collectTestFiles(path.join(artifactRoot, "tests"));
 
 if (allFiles.length === 0) {
   console.error("No Node test files found");

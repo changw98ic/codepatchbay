@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { createServer, type Server, type Socket } from "node:net";
 import { chmod, link, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { openHubRedisStateBackend } from "../shared/hub-state-redis.js";
+import { openHubRedisStateBackend, redisRestoreCommitOutcome } from "../shared/hub-state-redis.js";
 import { startHubServer } from "../server/index.js";
 
 async function listen(server: Server) {
@@ -91,10 +92,156 @@ test("Redis state backend classifies a demoted primary without disclosing its re
       const value = error as NodeJS.ErrnoException;
       assert.equal(value.code, "HUB_STATE_BACKEND_NOT_PRIMARY");
       assert.equal(value.message, "Redis stable endpoint is not connected to a writable primary");
+      assert.equal((value as NodeJS.ErrnoException & { commitOutcome?: string }).commitOutcome, undefined);
       assert.doesNotMatch(value.message, /sensitive-provider-detail/);
       return true;
     },
   );
+});
+
+test("Redis registry CAS marks a lost post-send response as an unknown commit outcome", async (t) => {
+  const server = createServer((socket) => {
+    socket.once("data", () => socket.end());
+  });
+  const port = await listen(server);
+  const fixture = await configFixture(`redis://127.0.0.1:${port}/0`);
+  const mutationId = "registry-mutation-response-lost";
+  t.after(async () => {
+    await close(server);
+    await rm(fixture.root, { recursive: true, force: true });
+  });
+  const backend = await openHubRedisStateBackend({ configFile: fixture.configFile, hubRoot: fixture.hubRoot });
+  assert.ok(backend);
+  await assert.rejects(
+    backend.compareAndSwapRegistry(0, 1, JSON.stringify({
+      version: 1,
+      revision: 1,
+      projects: {},
+      projectRevisions: {},
+      mutationId,
+    }), mutationId),
+    (error: unknown) => {
+      const value = error as NodeJS.ErrnoException & { commitOutcome?: string; mutationId?: string };
+      assert.equal(value.code, "HUB_STATE_BACKEND_UNAVAILABLE");
+      assert.equal(value.commitOutcome, "unknown");
+      assert.equal(value.mutationId, mutationId);
+      return true;
+    },
+  );
+});
+
+test("Redis logical restore preserves exact recovery evidence when the commit reply is lost", async (t) => {
+  const token = "migration-restore-response-lost";
+  const operation = "Hub local-to-Redis migration";
+  const now = Date.now();
+  const bulk = (value: string) => `$${Buffer.byteLength(value, "utf8")}\r\n${value}\r\n`;
+  const array = (items: string[]) => `*${items.length}\r\n${items.join("")}`;
+  const sockets = new Set<Socket>();
+  let commandCount = 0;
+  const server = createServer((socket) => {
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
+    socket.on("data", () => {
+      commandCount += 1;
+      if (commandCount === 1) {
+        socket.write(array([
+          bulk(token),
+          bulk(operation),
+          bulk(String(now - 1_000)),
+          bulk(String(now + 60_000)),
+          bulk(String(now)),
+        ]));
+      } else if (commandCount === 2) {
+        socket.write(":1\r\n");
+      } else if (commandCount === 3) {
+        socket.write(array([
+          bulk("0"),
+          bulk(""),
+          bulk(""),
+          bulk(""),
+          bulk(""),
+          bulk(""),
+          bulk(""),
+          bulk(""),
+          bulk(""),
+          bulk(String(now)),
+          ":0\r\n",
+        ]));
+      } else if (commandCount === 4) {
+        socket.write(":1\r\n");
+      } else if (commandCount === 5) {
+        socket.write(":4\r\n");
+      } else if (commandCount === 6) {
+        socket.write(array([bulk("0"), "*0\r\n"]));
+      } else if (commandCount === 7) {
+        socket.end();
+      } else {
+        socket.write(":1\r\n");
+      }
+    });
+  });
+  const port = await listen(server);
+  const fixture = await configFixture(`redis://127.0.0.1:${port}/0`, { operationTimeoutMs: 1_000 });
+  t.after(async () => {
+    for (const socket of sockets) socket.destroy();
+    await close(server);
+    await rm(fixture.root, { recursive: true, force: true });
+  });
+  const backend = await openHubRedisStateBackend({ configFile: fixture.configFile, hubRoot: fixture.hubRoot });
+  assert.ok(backend);
+  const snapshotBody = {
+    format: "cpb-hub-redis-logical-snapshot/v1" as const,
+    backendIdentityFingerprint: backend.identityFingerprint,
+    capturedAt: new Date(now).toISOString(),
+    hashFields: [] as Array<[string, string]>,
+    jobStreams: [] as Array<{ field: string; events: string[] }>,
+  };
+  const snapshot = {
+    ...snapshotBody,
+    sha256: createHash("sha256").update(JSON.stringify(snapshotBody), "utf8").digest("hex"),
+  };
+  const expectedEvidence = {
+    registryKey: backend.registryKey,
+    backendIdentityFingerprint: backend.identityFingerprint,
+    snapshotSha256: snapshot.sha256,
+    operationToken: token,
+  };
+  let replyLossError: unknown;
+
+  await assert.rejects(
+    backend.restoreSnapshot(token, snapshot),
+    (error: unknown) => {
+      replyLossError = error;
+      const value = error as NodeJS.ErrnoException & {
+        commitOutcome?: unknown;
+        commitMayHaveOccurred?: unknown;
+        redisCommitRecovery?: Record<string, unknown>;
+      };
+      assert.equal(value.code, "HUB_STATE_BACKEND_UNAVAILABLE");
+      assert.equal(value.commitOutcome, "unknown");
+      assert.equal(value.commitMayHaveOccurred, true);
+      assert.equal(redisRestoreCommitOutcome(error, expectedEvidence), "unknown");
+      assert.equal(redisRestoreCommitOutcome(error, { ...expectedEvidence, registryKey: "cpb:{other}:registry" }), null);
+      assert.deepEqual(value.redisCommitRecovery, {
+        registryKey: backend.registryKey,
+        stageRegistryKey: value.redisCommitRecovery?.stageRegistryKey,
+        stageStreamKeys: [],
+        backendIdentityFingerprint: backend.identityFingerprint,
+        snapshotSha256: snapshot.sha256,
+      });
+      assert.match(String(value.redisCommitRecovery?.stageRegistryKey), /^cpb:\{unit\}:restore:[a-f0-9]{24}:registry$/);
+      return true;
+    },
+  );
+  assert.equal(
+    redisRestoreCommitOutcome(replyLossError, {
+      ...expectedEvidence,
+      operationToken: "migration-later-attempt",
+    }),
+    null,
+    "a reply-loss error from an earlier migration must not be trusted by a later operation",
+  );
+  assert.equal(commandCount, 7, "unknown commit outcome must not trigger destructive staging cleanup");
 });
 
 test("Redis state parser enforces a global response-node budget", async (t) => {

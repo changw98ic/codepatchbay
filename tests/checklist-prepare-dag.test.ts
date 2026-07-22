@@ -6,12 +6,13 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 import { LooseRecord, recordValue } from "../shared/types.js";
 
 import { FailureKind } from "../core/contracts/failure.js";
+import { freezeChecklistAndMaterializeDag } from "../core/engine/run-job-checklist-dag.js";
 import { runJob } from "../core/engine/run-job.js";
 import { registerDagWorkflow } from "../core/workflow/definition.js";
 import { tempRoot } from "./helpers.js";
@@ -81,6 +82,83 @@ async function makeSourceRoot() {
   );
   return sourcePath;
 }
+
+async function outputFiles(dataRoot: string) {
+  try {
+    return await readdir(path.join(dataRoot, "wiki", "outputs"));
+  } catch (error) {
+    const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
+    if (code === "ENOENT") return [];
+    throw error;
+  }
+}
+
+test("checklist DAG preparation aborts after decomposition without fail/block or durable artifacts", async () => {
+  const cpbRoot = await tempRoot("cpb-checklist-decompose-abort");
+  const sourcePath = await makeSourceRoot();
+  const dataRoot = path.join(cpbRoot, "runtime");
+  const controller = new AbortController();
+  const events: LooseRecord[] = [];
+  const failed: LooseRecord[] = [];
+  const blocked: LooseRecord[] = [];
+  const progress: LooseRecord[] = [];
+
+  await assert.rejects(
+    freezeChecklistAndMaterializeDag({
+      cpbRoot,
+      project: "flow",
+      task: "update README after decomposition abort",
+      workflow: "standard",
+      planMode: "full",
+      sourcePath,
+      sourceContext: {},
+      dataRoot,
+      timeouts: {},
+      env: {},
+      scope: null,
+      signal: controller.signal,
+      agent: null,
+      agents: { planner: "fake-primary" },
+      _attemptId: "attempt-abort",
+      appendEvent: async (_root, _project, _jobId, event) => { events.push(event); },
+      failJob: async (_root, _project, _jobId, fail) => { failed.push(fail); },
+      blockJob: async (_root, _project, _jobId, block) => { blocked.push(block); },
+      onProgress: async (event) => { progress.push(event); },
+      getPool: () => ({
+        async execute() {
+          controller.abort();
+          return {
+            output: jsonEnvelope({
+              status: "ok",
+              decomposedItems: [{
+                requirement: "README is updated after decomposition.",
+                predicateId: "decompose-abort-readme",
+                verificationMethod: "static",
+                allowedFiles: ["README.md"],
+                sourceRefs: [{ kind: "task_text", locator: "task:0" }],
+                expectedEvidence: "README.md changes",
+              }],
+            }),
+            providerKey: "fake-primary",
+            variant: null,
+          };
+        },
+      }),
+    }, {
+      jobId: "job-checklist-decompose-abort",
+      riskMap: { riskLevel: "medium" },
+      phaseSourceContext: {},
+      dynamicAgentPlan: null,
+    }),
+    { name: "AbortError" },
+  );
+
+  assert.deepEqual(failed, [], "abort after decomposition must not fail the job");
+  assert.deepEqual(blocked, [], "abort after decomposition must not block the job");
+  assert.deepEqual(events, [], "abort after decomposition must not emit checklist/DAG/plan events");
+  assert.deepEqual(progress, [], "abort after decomposition must not report materialization progress");
+  assert.deepEqual(await outputFiles(dataRoot), [], "abort after decomposition must not persist acceptance checklist artifacts");
+});
 
 test("prepare-time checklist is artifacted before workflow DAG materialization", async () => {
   const cpbRoot = await tempRoot("cpb-checklist-prepare");
@@ -310,131 +388,124 @@ test("prepare-time generated source refs fail retryably when absent from the sup
 });
 
 test("prepare-time retryable checklist decomposition failure fails instead of blocking", async () => {
-  const previousDecompose = process.env.CPB_CHECKLIST_DECOMPOSE;
-  const previousRetry = process.env.CPB_CHECKLIST_DECOMPOSE_RETRY_MAX;
-  process.env.CPB_CHECKLIST_DECOMPOSE = "1";
-  process.env.CPB_CHECKLIST_DECOMPOSE_RETRY_MAX = "0";
-  try {
-    const cpbRoot = await tempRoot("cpb-checklist-decompose-retryable");
-    const sourcePath = await makeSourceRoot();
-    const dataRoot = path.join(cpbRoot, "runtime");
-    const blocked: LooseRecord[] = [];
-    const failed: LooseRecord[] = [];
+  const cpbRoot = await tempRoot("cpb-checklist-decompose-retryable");
+  const sourcePath = await makeSourceRoot();
+  const dataRoot = path.join(cpbRoot, "runtime");
+  const blocked: LooseRecord[] = [];
+  const failed: LooseRecord[] = [];
 
-    const result = await runJob({
-      cpbRoot,
-      dataRoot,
-      project: "flow",
-      task: "update README",
-      jobId: "job-decompose-retryable-fail",
-      workflow: "standard",
-      planMode: "full",
-      sourcePath,
-      sourceContext: {},
-      agents: { planner: "fake", executor: "fake", verifier: "fake" },
-      prepareTask: async () => ({
-        riskMap: { riskLevel: "low" },
-      }),
-      createJob: async () => ({ jobId: "job-decompose-retryable-fail" }),
-      startJob: async () => ({}),
-      checkpointJob: async () => ({}),
-      completePhase: async () => ({}),
-      completeJob: async () => ({}),
-      failJob: async (_root: string, _project: string, _jobId: string, payload: LooseRecord) => { failed.push(payload); },
-      blockJob: async (_root: string, _project: string, _jobId: string, payload: LooseRecord) => { blocked.push(payload); },
-      appendEvent: async () => ({}),
-      reportProgress: async () => ({}),
-      getPool: () => ({
-        async execute() { throw new Error("fake planner exited 1: transient transport failure"); },
-        async releaseWorktree() { return true; },
-      }),
-    });
+  const result = await runJob({
+    cpbRoot,
+    dataRoot,
+    project: "flow",
+    task: "update README",
+    jobId: "job-decompose-retryable-fail",
+    workflow: "standard",
+    planMode: "full",
+    sourcePath,
+    sourceContext: {},
+    env: {
+      CPB_CHECKLIST_DECOMPOSE: "1",
+      CPB_CHECKLIST_DECOMPOSE_RETRY_MAX: "0",
+    },
+    agents: { planner: "fake", executor: "fake", verifier: "fake" },
+    prepareTask: async () => ({
+      riskMap: { riskLevel: "low" },
+    }),
+    createJob: async () => ({ jobId: "job-decompose-retryable-fail" }),
+    startJob: async () => ({}),
+    checkpointJob: async () => ({}),
+    completePhase: async () => ({}),
+    completeJob: async () => ({}),
+    failJob: async (_root: string, _project: string, _jobId: string, payload: LooseRecord) => { failed.push(payload); },
+    blockJob: async (_root: string, _project: string, _jobId: string, payload: LooseRecord) => { blocked.push(payload); },
+    appendEvent: async () => ({}),
+    reportProgress: async () => ({}),
+    getPool: () => ({
+      async execute() { throw new Error("fake planner exited 1: transient transport failure"); },
+      async releaseWorktree() { return true; },
+    }),
+  });
 
-    assert.equal(result.status, "failed");
-    assert.equal(result.failure?.kind, FailureKind.AGENT_EXIT_NONZERO);
-    assert.equal(result.failure?.retryable, true);
-    assert.equal(blocked.length, 0);
-    assert.equal(failed.length, 1);
-  } finally {
-    if (previousDecompose === undefined) delete process.env.CPB_CHECKLIST_DECOMPOSE;
-    else process.env.CPB_CHECKLIST_DECOMPOSE = previousDecompose;
-    if (previousRetry === undefined) delete process.env.CPB_CHECKLIST_DECOMPOSE_RETRY_MAX;
-    else process.env.CPB_CHECKLIST_DECOMPOSE_RETRY_MAX = previousRetry;
-  }
+  assert.equal(result.status, "failed");
+  assert.equal(result.failure?.kind, FailureKind.AGENT_EXIT_NONZERO);
+  assert.equal(result.failure?.retryable, true);
+  assert.equal(blocked.length, 0);
+  assert.equal(failed.length, 1);
 });
 
-test("prepare-time checklist decomposition receives phase timeout before DAG execution", async () => {
-  const previousDecompose = process.env.CPB_CHECKLIST_DECOMPOSE;
-  const previousRetry = process.env.CPB_CHECKLIST_DECOMPOSE_RETRY_MAX;
-  const previousPhaseTimeout = process.env.CPB_ACP_PHASE_TIMEOUT_MS;
-  process.env.CPB_CHECKLIST_DECOMPOSE = "1";
-  process.env.CPB_CHECKLIST_DECOMPOSE_RETRY_MAX = "0";
-  process.env.CPB_ACP_PHASE_TIMEOUT_MS = "12345";
-  try {
-    const cpbRoot = await tempRoot("cpb-checklist-decompose-timeout");
-    const sourcePath = await makeSourceRoot();
-    const dataRoot = path.join(cpbRoot, "runtime");
-    const plannerTimeouts: number[] = [];
-    const pool = {
-      async execute(_agent: string, _prompt: string, _cwd: string, timeoutMs: number, meta: LooseRecord) {
-        if (meta.role === "planner") {
-          plannerTimeouts.push(timeoutMs);
-          return {
-            output: jsonEnvelope({
-              status: "ok",
-              decomposedItems: [{
-                requirement: "README is updated",
-                predicateId: "readme-updated",
-                verificationMethod: "static",
-                allowedFiles: ["README.md"],
-                sourceRefs: [{ kind: "task_text", locator: "task:0" }],
-              }],
-            }),
-            providerKey: "fake",
-            variant: null,
-          };
-        }
-        if (meta.role === "executor") {
-          return { output: jsonEnvelope({ status: "ok", summary: "done", tests: [], risks: [], checklistMapping: [] }), providerKey: "fake", variant: null };
-        }
-        return { output: jsonEnvelope({ status: "ok", verdict: "pass", reason: "legacy", details: "ok", confidence: 1 }), providerKey: "fake", variant: null };
-      },
-      async releaseWorktree() { return true; },
-    };
+test("prepare-time checklist decomposition uses the job-local phase timeout before DAG execution", async () => {
+  const cpbRoot = await tempRoot("cpb-checklist-decompose-timeout");
+  const sourcePath = await makeSourceRoot();
+  const dataRoot = path.join(cpbRoot, "runtime");
+  const decompositionTimeouts: number[] = [];
+  const decompositionSignals: unknown[] = [];
+  const executionTimeouts: number[] = [];
+  const controller = new AbortController();
+  const pool = {
+    async execute(_agent: string, _prompt: string, _cwd: string, timeoutMs: number, meta: LooseRecord) {
+      if (meta.role === "checklist_decomposer") {
+        decompositionTimeouts.push(timeoutMs);
+        decompositionSignals.push(meta.signal);
+        return {
+          output: jsonEnvelope({
+            status: "ok",
+            decomposedItems: [{
+              requirement: "README is updated",
+              predicateId: "readme-updated",
+              verificationMethod: "static",
+              allowedFiles: ["README.md"],
+              sourceRefs: [{ kind: "task_text", locator: "task:0" }],
+            }],
+          }),
+          providerKey: "fake",
+          variant: null,
+        };
+      }
+      if (meta.role === "executor") {
+        executionTimeouts.push(timeoutMs);
+        return { output: jsonEnvelope({ status: "ok", summary: "done", tests: [], risks: [], checklistMapping: [] }), providerKey: "fake", variant: null };
+      }
+      return { output: jsonEnvelope({ status: "ok", verdict: "pass", reason: "legacy", details: "ok", confidence: 1 }), providerKey: "fake", variant: null };
+    },
+    async releaseWorktree() { return true; },
+  };
 
-    await runJob({
-      cpbRoot,
-      dataRoot,
-      project: "flow",
-      task: "update README",
-      jobId: "job-decompose-timeout",
-      workflow: "standard",
-      planMode: "light",
-      sourcePath,
-      sourceContext: {},
-      agents: { planner: "fake", executor: "fake", verifier: "fake" },
-      prepareTask: async () => ({ riskMap: { riskLevel: "low" } }),
-      createJob: async () => ({ jobId: "job-decompose-timeout" }),
-      startJob: async () => ({}),
-      checkpointJob: async () => ({}),
-      completePhase: async () => ({}),
-      completeJob: async () => ({}),
-      failJob: async () => ({}),
-      blockJob: async () => ({}),
-      appendEvent: async () => ({}),
-      reportProgress: async () => ({}),
-      getPool: () => pool,
-    });
+  await runJob({
+    cpbRoot,
+    dataRoot,
+    project: "flow",
+    task: "update README",
+    jobId: "job-decompose-timeout",
+    workflow: "standard",
+    planMode: "light",
+    sourcePath,
+    sourceContext: {},
+    signal: controller.signal,
+    env: {
+      CPB_CHECKLIST_DECOMPOSE: "1",
+      CPB_CHECKLIST_DECOMPOSE_RETRY_MAX: "0",
+      CPB_CHECKLIST_CODEGRAPH_FAST_PATH: "0",
+      CPB_ACP_PHASE_TIMEOUT_MS: "12345",
+    },
+    agents: { planner: "fake", executor: "fake", verifier: "fake" },
+    prepareTask: async () => ({ riskMap: { riskLevel: "low" } }),
+    createJob: async () => ({ jobId: "job-decompose-timeout" }),
+    startJob: async () => ({}),
+    checkpointJob: async () => ({}),
+    completePhase: async () => ({}),
+    completeJob: async () => ({}),
+    failJob: async () => ({}),
+    blockJob: async () => ({}),
+    appendEvent: async () => ({}),
+    reportProgress: async () => ({}),
+    getPool: () => pool,
+  });
 
-    assert.deepEqual(plannerTimeouts, [12345]);
-  } finally {
-    if (previousDecompose === undefined) delete process.env.CPB_CHECKLIST_DECOMPOSE;
-    else process.env.CPB_CHECKLIST_DECOMPOSE = previousDecompose;
-    if (previousRetry === undefined) delete process.env.CPB_CHECKLIST_DECOMPOSE_RETRY_MAX;
-    else process.env.CPB_CHECKLIST_DECOMPOSE_RETRY_MAX = previousRetry;
-    if (previousPhaseTimeout === undefined) delete process.env.CPB_ACP_PHASE_TIMEOUT_MS;
-    else process.env.CPB_ACP_PHASE_TIMEOUT_MS = previousPhaseTimeout;
-  }
+  assert.deepEqual(decompositionTimeouts, [12345]);
+  assert.deepEqual(decompositionSignals, [controller.signal]);
+  assert.ok(executionTimeouts.length > 0);
+  assert.deepEqual([...new Set(executionTimeouts)], [12345]);
 });
 
 test("prebuilt dynamic agent plan must reference frozen checklist artifact", async () => {

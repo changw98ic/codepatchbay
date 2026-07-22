@@ -1,8 +1,8 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { lstat, mkdtemp, readFile, readlink, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { lstat, readFile, readlink } from "node:fs/promises";
 import path from "node:path";
+import { createTemporaryWorkspace } from "../runtime/temporary-workspace.js";
 
 const MAX_GIT_OUTPUT_BYTES = 128 * 1024 * 1024;
 
@@ -64,6 +64,7 @@ type CaptureCandidateArtifactOptions = {
   cwd: string;
   base?: string;
   maxSnapshotAttempts?: number;
+  env?: NodeJS.ProcessEnv;
 };
 
 type RawCandidateSnapshot = {
@@ -139,18 +140,18 @@ async function gitText(cwd: string, args: string[], env: NodeJS.ProcessEnv = pro
   return (await gitBuffer(cwd, args, env)).toString("utf8").trim();
 }
 
-async function repositoryRoot(cwd: string) {
-  return path.resolve(await gitText(cwd, ["rev-parse", "--show-toplevel"]));
+async function repositoryRoot(cwd: string, env: NodeJS.ProcessEnv) {
+  return path.resolve(await gitText(cwd, ["rev-parse", "--show-toplevel"], env));
 }
 
-async function resolveCommit(cwd: string, revision: string) {
-  const sha = await gitText(cwd, ["rev-parse", "--verify", `${revision}^{commit}`]);
+async function resolveCommit(cwd: string, revision: string, env: NodeJS.ProcessEnv) {
+  const sha = await gitText(cwd, ["rev-parse", "--verify", `${revision}^{commit}`], env);
   if (!/^[0-9a-f]{40,64}$/i.test(sha)) throw new Error(`git returned an invalid commit id for ${revision}`);
   return sha.toLowerCase();
 }
 
-async function readUntrackedManifest(cwd: string) {
-  const paths = nulSeparatedPaths(await gitBuffer(cwd, ["ls-files", "--others", "--exclude-standard", "-z"]));
+async function readUntrackedManifest(cwd: string, env: NodeJS.ProcessEnv) {
+  const paths = nulSeparatedPaths(await gitBuffer(cwd, ["ls-files", "--others", "--exclude-standard", "-z"], env));
   const manifest: CandidateArtifactUntrackedEntry[] = [];
   for (const relativePath of paths) {
     const absolutePath = path.join(cwd, ...relativePath.split("/"));
@@ -181,28 +182,43 @@ async function readUntrackedManifest(cwd: string) {
   return manifest;
 }
 
-async function candidateTreeHash(cwd: string, baseSha: string) {
-  const temporaryRoot = await mkdtemp(path.join(tmpdir(), "cpb-candidate-index-"));
-  const indexPath = path.join(temporaryRoot, "index");
-  const env = { ...process.env, GIT_INDEX_FILE: indexPath };
+async function candidateTreeHash(cwd: string, baseSha: string, env: NodeJS.ProcessEnv) {
+  const workspace = await createTemporaryWorkspace({ prefix: "cpb-candidate-index-", env });
+  const indexPath = path.join(workspace.rootPath, "index");
+  const gitEnv = { ...env, GIT_INDEX_FILE: indexPath };
+  let treeHash: string | null = null;
+  let primaryError: unknown = null;
   try {
-    await gitBuffer(cwd, ["read-tree", baseSha], env);
-    await gitBuffer(cwd, ["add", "-A", "--", "."], env);
-    const treeHash = await gitText(cwd, ["write-tree"], env);
+    await gitBuffer(cwd, ["read-tree", baseSha], gitEnv);
+    await gitBuffer(cwd, ["add", "-A", "--", "."], gitEnv);
+    treeHash = await gitText(cwd, ["write-tree"], gitEnv);
     if (!/^[0-9a-f]{40,64}$/i.test(treeHash)) throw new Error("git write-tree returned an invalid tree id");
-    return treeHash.toLowerCase();
-  } finally {
-    await rm(temporaryRoot, { recursive: true, force: true });
+  } catch (error) {
+    primaryError = error;
   }
+  try {
+    await workspace.cleanup();
+  } catch (cleanupError) {
+    if (primaryError) {
+      throw new AggregateError(
+        [primaryError, cleanupError],
+        "candidate tree hashing and temporary-index cleanup failed",
+        { cause: cleanupError },
+      );
+    }
+    throw cleanupError;
+  }
+  if (primaryError) throw primaryError;
+  return (treeHash as string).toLowerCase();
 }
 
-async function captureRawSnapshot(cwd: string, baseSha: string): Promise<RawCandidateSnapshot> {
+async function captureRawSnapshot(cwd: string, baseSha: string, env: NodeJS.ProcessEnv): Promise<RawCandidateSnapshot> {
   const [headSha, trackedPatch, trackedChangedFiles, untrackedManifest, treeHash] = await Promise.all([
-    resolveCommit(cwd, "HEAD"),
-    gitBuffer(cwd, ["diff", "--binary", "--full-index", "--no-ext-diff", "--no-textconv", "--no-renames", baseSha, "--"]),
-    gitBuffer(cwd, ["diff", "--name-only", "-z", "--no-renames", baseSha, "--"]).then(nulSeparatedPaths),
-    readUntrackedManifest(cwd),
-    candidateTreeHash(cwd, baseSha),
+    resolveCommit(cwd, "HEAD", env),
+    gitBuffer(cwd, ["diff", "--binary", "--full-index", "--no-ext-diff", "--no-textconv", "--no-renames", baseSha, "--"], env),
+    gitBuffer(cwd, ["diff", "--name-only", "-z", "--no-renames", baseSha, "--"], env).then(nulSeparatedPaths),
+    readUntrackedManifest(cwd, env),
+    candidateTreeHash(cwd, baseSha, env),
   ]);
   return {
     headSha,
@@ -255,15 +271,16 @@ export async function captureCandidateArtifact({
   cwd,
   base = "HEAD",
   maxSnapshotAttempts = 3,
+  env = process.env,
 }: CaptureCandidateArtifactOptions): Promise<CandidateArtifact> {
   if (!Number.isInteger(maxSnapshotAttempts) || maxSnapshotAttempts < 1) {
     throw new Error("maxSnapshotAttempts must be a positive integer");
   }
-  const root = await repositoryRoot(cwd);
-  const baseSha = await resolveCommit(root, base);
+  const root = await repositoryRoot(cwd, env);
+  const baseSha = await resolveCommit(root, base, env);
   for (let attempt = 1; attempt <= maxSnapshotAttempts; attempt += 1) {
-    const first = await captureRawSnapshot(root, baseSha);
-    const second = await captureRawSnapshot(root, baseSha);
+    const first = await captureRawSnapshot(root, baseSha, env);
+    const second = await captureRawSnapshot(root, baseSha, env);
     if (rawSnapshotMatches(first, second)) return buildCandidateArtifact(baseSha, second);
   }
   throw new Error(`candidate worktree changed during ${maxSnapshotAttempts} identity capture attempt(s)`);

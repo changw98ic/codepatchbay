@@ -4,13 +4,21 @@
 
 **Local delivery runtime for coding agents.**
 
-Give it a task or GitHub issue. CodePatchBay uses ACP to run Codex, Claude Code, or another agent through planning, execution, evidence capture, verification, and an inspectable local delivery or draft PR.
+Give it a task or GitHub issue. CodePatchBay uses ACP or a CLI gateway to run Codex, Claude Code, OpenCode, or another supported agent through planning, execution, evidence capture, verification, and an inspectable local delivery or draft PR.
 
 ```text
 Issue / Task → CodePatchBay Runtime → Coding Agents → Evidence-backed Delivery
 ```
 
 CodePatchBay does not replace Claude Code, Codex, or other coding agents. It manages their handoffs, state, evidence, and artifacts.
+
+## Current stabilization cycle
+
+CodePatchBay is currently focused on execution-kernel and release-gate stability.
+This cycle does not add new agent types, workflow families, scheduler features,
+or provider integrations. Release criteria are recorded in
+[`docs/product/cpb-stabilization-baseline-2026-06-22.md`](docs/product/cpb-stabilization-baseline-2026-06-22.md)
+and [`docs/product/cpb-flagship-validation-gate.md`](docs/product/cpb-flagship-validation-gate.md).
 
 ## Why coding agents need a runtime
 
@@ -50,16 +58,15 @@ npm package: [`codepatchbay`](https://www.npmjs.com/package/codepatchbay)
 ```bash
 npm install -g codepatchbay
 cpb setup --recommended        # detect tools, install agents, run health checks
-cpb quickstart --demo          # local demo, no API keys needed
 cd your-project
-cpb init .                     # register project
-cpb run "fix failing tests"    # submit a task, CodePatchBay handles the rest
+cpb quickstart --demo --project-path . --project-name your-project  # initialize local demo, no API keys needed
+cpb run "fix failing tests" --project your-project                # enqueue the full workflow
 ```
 
 Try without installing:
 
 ```bash
-npx codepatchbay quickstart --demo
+npx codepatchbay quickstart --demo --project-path . --project-name cpb-demo
 ```
 
 ### Install from source
@@ -74,10 +81,10 @@ sh scripts/install.sh
 
 ```bash
 # Register your project
-cpb init .
+cpb init . myproj
 
 # Submit a task
-cpb run "add dark mode toggle to the settings page"
+cpb run "add dark mode toggle to the settings page" --project myproj
 ```
 
 CodePatchBay will:
@@ -92,13 +99,13 @@ CodePatchBay will:
 # Check progress
 cpb status myproj
 
-# Inspect deliverables and verification verdict (in the project outputs dir)
+# Inspect deliverables and verification verdict (under the registered runtime's wiki/outputs)
 cpb outputs myproj
 ```
 
 ## GitHub issue to draft PR
 
-Connect GitHub, label an issue with `cpb`, and CodePatchBay takes over:
+Configure the GitHub transport and webhook, then label an issue with `cpb` to enter the plan, execute, and verify flow. The default path first produces a draft PR dry-run preview:
 
 ```bash
 cpb github bind myproj owner/repo
@@ -106,6 +113,8 @@ cpb github connect --app-id 123 --webhook-secret-ref env:CPB_GITHUB_WEBHOOK_SECR
 cpb github doctor                # verify connectivity
 cpb hub start                    # start Hub scheduler
 ```
+
+Note: `cpb hub start` does not by itself expose a generic GitHub webhook route. An already-wired transport or external webhook entrypoint is required before issue labels can trigger the flow above.
 
 The Hub binds to loopback by default, but loopback is not an identity boundary. Startup always requires
 `CPB_HUB_BEARER_TOKEN`, `CPB_HUB_SERVICE_TOKENS_FILE`, or `CPB_HUB_OIDC_CONFIG_FILE`.
@@ -120,7 +129,9 @@ to use named service tokens stored only as SHA-256 digests and authorize them by
 `hub:health`, `hub:read`, or `hub:admin` scope plus project allowlists. The old
 `CPB_HUB_BEARER_TOKEN` remains a global `legacy-admin` compatibility credential.
 The authorization file must be a private, non-symlink file (`0600` on POSIX),
-and Hub must be restarted after rotation. See
+and Hub reloads an atomically replaced file on the next request without a
+restart. The legacy bearer environment token still requires a restart to change.
+See
 [`docs/security/cpb-hub-service-tokens.md`](docs/security/cpb-hub-service-tokens.md)
 for the schema, error contract, and rotation guidance.
 
@@ -144,6 +155,11 @@ recovers dead owners, and is revalidated before publish, while registry and
 lock metadata reads reject symlinks and enforce byte limits. This guarantee is
 for competing processes on one host, not multi-host consensus. See
 [`docs/architecture/cpb-hub-registry-consistency.md`](docs/architecture/cpb-hub-registry-consistency.md).
+
+For multi-host deployments, the project registry, queue, leases, assignments,
+and worker inbox can use the private `CPB_HUB_STATE_REDIS_CONFIG_FILE` backend.
+Remote connections require `rediss://`; the current release still reports
+`activeActiveSafe: false`, so multiple active schedulers are not supported.
 
 The Hub root contains both control-plane state and every registered project's runtime state.
 Backup and restore are offline operations. Snapshots carry a SHA-256 manifest, restore verifies
@@ -182,11 +198,11 @@ Before copying, backup and restore check free space on the destination filesyste
 count. Backup stages carry an ownership marker bound to the Hub and output path; later runs reclaim
 only stages proven to belong to that transaction and refuse to delete unmarked or mismatched directories.
 
-Label an issue `cpb` → auto plan → delegate → verify → open draft PR.
+In a configured GitHub transport, an issue label can trigger auto plan → delegate → verify → draft PR dry-run preview; live draft PR creation requires explicit opt-in.
 
 ## Supported coding agents
 
-CodePatchBay connects coding agents neutrally via the ACP protocol. Any ACP-compatible agent (Claude Code, Codex, OpenCode, or custom) can be plugged in. It decomposes the engineering workflow into 5 semantic roles, mapped by agent routing:
+CodePatchBay connects coding agents through ACP or a CLI gateway. ACP agents such as Claude Code and Codex, plus CLI agents such as OpenCode, can be connected through their respective gateways. The workflow exposes 5 semantic roles; regular agent routing covers planner, executor, verifier, and reviewer, while remediator is handled by the remediation phase:
 
 | Semantic role | Responsibility | Artifact |
 |---------------|----------------|----------|
@@ -196,14 +212,13 @@ CodePatchBay connects coding agents neutrally via the ACP protocol. Any ACP-comp
 | `reviewer` | Review deliverable | review artifact |
 | `remediator` | Remediate failures (debug/lint/tdd/test) | remediation artifact |
 
-Any agent is mapped to these roles via `core/agents/routing.ts`. You specify which agent + model handles which phase when you submit a task:
+Planner, executor, verifier, and reviewer are mapped to phases via `core/agents/routing.ts`; remediator is handled by the remediation phase. You specify which agent + model handles which phase when you submit a task:
 
 ```bash
-# Use mimo model for plan, Claude for execute and verify
+# Use per-phase agents; all phases share one model profile
 cpb run "add unit tests for auth" \
-  --plan-agent claude --plan-model mimo \
-  --execute-agent claude \
-  --verify-agent claude
+  --plan-agent claude --execute-agent claude \
+  --verify-agent claude --model mimo
 ```
 
 ## Features
@@ -226,16 +241,15 @@ cpb status <project>               # Project status
 
 # Submit tasks
 cpb run "<task>" [--project <id>]  # Submit task (full workflow)
-cpb pipeline <project> "<task>" [retries]  # Full workflow (explicit project)
+cpb pipeline <project> "<task>" [--retries <n>]  # Full workflow (explicit project)
                                   #   add --plan-agent/--execute-agent/--verify-agent
-                                  #   and --plan-model/--execute-model/--verify-model
+                                  #   and --model
 cpb review <project> [id]          # Review deliverable
-cpb retry <project> <job-id>       # Retry a failed job
+cpb retry <project> <job-id> [--agent <name>]  # Retry a failed job
 
 # Job management
 cpb jobs report [--json]           # Job run report (reconcile/cleanup/gc removed)
 cpb jobs worktrees                # List task-level git worktrees
-cpb retry <project> <job-id> [--agent <name>]
 cpb cancel <project> <jobId> [reason]
 cpb redirect <project> <jobId> "<msg>" [reason]
 
@@ -254,7 +268,7 @@ cpb hub [status|start|stop|projects|...]
 
 # Setup & diagnostics
 cpb setup [--recommended|--interactive|--json]
-cpb agents [list|detect|install|test]
+cpb agents [list|detect|install|upgrade|test]
 cpb stream [args]                  # Streaming data server
 cpb doctor [--json]
 cpb health-check                   # health check via the quickstart alias entry
@@ -267,16 +281,31 @@ cpb version
 2. **Human in the loop** — all changes require human review before merging, even after verification
 3. **Local-first** — everything runs on your machine; no hosted service required
 4. **Inspectable evidence** — each step produces local files you can inspect at any point
-5. **Composable agents** — any ACP-compatible coding agent can be plugged in
+5. **Composable agents** — supported ACP or CLI coding agents can be plugged in
 
 ## Security
 
 CodePatchBay uses each agent's native auth, never stores provider tokens, and blocks secrets in task input and artifacts. See [docs/security/](docs/security/) for the full security model covering install safety, secret redaction, webhook signature verification, worktree isolation, and draft PR policy.
 
+- **Provider authentication** — API keys and OAuth tokens stay in the agent process; CPB does not write them to disk.
+- **Webhook verification** — the current live path explicitly supports GitHub HMAC-SHA256; Slack/Discord ingress is not registered in the current Hub HTTP routes.
+- **Draft PR policy** — the flagship finalizer's live PR path creates drafts and never auto-merges; the default path produces a dry-run preview.
+- **Worktree isolation** — tasks run in separate git worktrees rather than modifying the main branch.
+
 ## Requirements
 
 - **Node.js 20+**
-- At least one coding agent (Claude Code, Codex, or other ACP-compatible agent)
+- **npm and git** (`gh` or a configured GitHub transport is also needed for GitHub integration)
+- At least one supported coding agent (Claude Code, Codex, OpenCode, or another supported agent)
+
+## Development and verification
+
+```bash
+npm ci
+npm run typecheck:node
+npm test
+npm run verify:release-gate
+```
 
 ## License
 

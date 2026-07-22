@@ -6,7 +6,14 @@ import {
   releaseManagedAcpWorktree,
   stopManagedAcpPool,
 } from "../server/services/acp/acp-pool.js";
-import { finalizeSuccessfulQueueEntry } from "../server/services/auto-finalizer.js";
+import {
+  finalizeSuccessfulQueueEntry,
+  recoverFinalizerOnly,
+} from "../server/services/auto-finalizer.js";
+import {
+  finalizerMutationFenceDigest,
+  validateFinalizerMutationReceipt,
+} from "../server/services/finalizer-contract.js";
 import { appendEvent } from "../server/services/event/event-store.js";
 import { checkPolicy } from "../server/services/evolve/evolve.js";
 import { resolveGithubTransport } from "../server/services/github/github-api.js";
@@ -21,6 +28,7 @@ import { listProjects, loadRegistry, resolveHubRoot } from "../server/services/h
 import { rebuildJobsIndex } from "../server/services/job/job-store.js";
 import { poolExhaustedJob } from "../server/services/job/job-store.js";
 import { resolveProjectDataRoot } from "../server/services/runtime.js";
+import { redactSecrets } from "../server/services/secret-policy.js";
 import {
   appendHistory,
   claimIssue,
@@ -39,6 +47,9 @@ export {
   claimIssue,
   completeIssue,
   finalizeSuccessfulQueueEntry,
+  finalizerMutationFenceDigest,
+  recoverFinalizerOnly,
+  validateFinalizerMutationReceipt,
   getManagedAcpPool,
   hubEnqueue,
   hubListQueue,
@@ -58,6 +69,7 @@ export {
   resolveGithubTransport,
   resolveHubRoot,
   resolveProjectDataRoot,
+  redactSecrets,
   stopManagedAcpPool,
   updateIssueStatus,
 };

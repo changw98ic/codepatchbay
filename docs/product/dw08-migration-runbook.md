@@ -37,19 +37,38 @@ As of 2026-06-11:
 | Workflow single source | Ready |
 | DAG metadata | Ready |
 | DAG resume | Ready |
-| DAG node-first sequential execution | Ready |
-| DAG parallel execution | Not ready; `dag_parallel_execution_ready=false` is intentional |
+| DAG node-first sequential execution | Ready as the unsafe-node fallback |
+| DAG bounded safe parallel execution | Ready for canonical read-only `review` nodes only; unsafe/custom/side-effecting/mutating/verify/plan nodes remain exclusive |
 | Attention projection | Ready |
 | Dashboard attention consumption | Ready |
 | TypeScript migration | Ready with mechanical typing caveat; source files outside dependencies, generated output, runtime homes, and vendored browser bundles have no remaining `.js`/`.mjs`/`.cjs` |
 
-Do not interpret `maxConcurrentNodes > 1` as runtime parallel execution. It is preserved as workflow metadata only until a later scheduler milestone actually starts multiple ready nodes concurrently.
+Do not interpret `maxConcurrentNodes > 1` as permission for arbitrary runtime
+parallel execution. It only sets the upper bound for the DAG scheduler. A node
+can enter a parallel wave only when it is a canonical read-only `review` node,
+is not resume-completed, is not custom or side-effecting, is not marked
+`parallelSafe: false`, and does not conflict with an earlier ready node through
+`conflictKey` / `conflictKeys`.
+
+Durable ordering is deterministic even when safe review nodes overlap:
+parallel node effects are buffered and committed in stable topological DAG
+order. Provider completion order cannot reorder `dag_node_*` events or make a
+cancelled node visible as completed. Cancellation or terminal failure cancels
+unexecuted downstream nodes with `dag_node_cancelled`. The first terminal
+failure, thrown node error, or external abort seals the wave and returns without
+waiting for a non-cooperative sibling. Review artifact files use two-phase
+commit and are discarded on failed/cancelled waves, including late sibling
+completion after the job has returned.
+
+Provider capacity remains a hard limit. The DAG scheduler bounds ready-node
+selection by workflow concurrency/provider capacity, and ACP pool leases enforce
+the effective provider connection limit during agent execution.
 
 ## Migration Steps
 
 1. Deploy the CodeGraph readiness and project capability map changes first. New project registration must fail closed when the live CodeGraph state is missing, even if an old SQLite index file exists.
 2. Verify each registered project has `project_capability_map`, `safety_boundary_map`, and `high_risk_area_map` metadata with high confidence. Do not manually mark this metadata as high confidence unless it came from the CodeGraph inventory.
-3. Deploy the workflow DAG and event projection changes. Confirm new jobs emit `workflow_dag_materialized` before node execution and emit `dag_node_started` / `dag_node_completed` for each node. Same-phase DAG nodes must be interpreted by `nodeId`, not by phase alone.
+3. Deploy the workflow DAG and event projection changes. Confirm new jobs emit `workflow_dag_materialized` before node execution and emit `dag_node_started` / `dag_node_completed` for each executed node. Same-phase DAG nodes must be interpreted by `nodeId`, not by phase alone. For wide DAGs, confirm `executionMode: "bounded_dependency_parallel"`, `dagParallelExecutionReady: true`, `dagUnsafeNodePolicy: "exclusive"`, `dagConflictPolicy: "stable_prefix_serialization"`, and `dagDurableCommitOrder: "stable_topological_node_order"`.
 4. Deploy RiskMap and dynamic verifier planning. High-risk tasks must emit `riskmap_generated` and `dynamic_agent_plan_generated`, and the queue metadata should persist the same dynamic plan used by the engine.
 5. Deploy the `adversarial_verify` phase. For high or critical RiskMap outputs, `adversarial_verify` must run after normal `verify` and must emit `adversarial_verdict`.
 6. Deploy the UI/API projection fields after the event store is writing the new state, so clients can read `riskMap`, `dynamicAgentPlan`, `adversarialVerdict`, `workflowDag`, `riskLevel`, and `adversarialRequired`.
@@ -82,6 +101,7 @@ If `adversarial_verify` fails, treat the failure as a verifier failure with a ti
 - `npm run build:tests` should pass before running compiled test files directly.
 - `node --test dist/tests/runtime-health-gate.test.js dist/tests/workflow-definition-contract.test.js dist/tests/dag-resume-contract.test.js dist/tests/attention-projection.test.js dist/tests/dw-status-readiness.test.js` should pass.
 - `node --test dist/tests/engine-prepare-task.test.js dist/tests/scheduler-dag-provider.test.js dist/tests/event-store.test.js dist/tests/job-recovery.test.js dist/tests/event-extension-gate.test.js` should pass.
+- `node dist/scripts/run-node-tests.js tests/dag-executor.test.ts tests/dag-builder.test.ts tests/engine-prepare-task.test.ts` should pass before enabling wide workflow registration; this covers bounded safe review overlap, unsafe execute exclusivity, conflict-key serialization, cancellation propagation, provider capacity, and invalid DAG rejection.
 - `cd web && npm test -- --run` should pass.
 - `./cpb dw-status` should print the DAG readiness keys and may exit non-zero only for explicit runtime health blockers.
 - `rg 'INDEX_UNAVAILABLE|WORKCPBS|recoverIndexUnavailable' core server scripts` should return no production references.

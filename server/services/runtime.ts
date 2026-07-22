@@ -67,6 +67,7 @@ export async function listRuntimeDataRoots(cpbRoot: string, { hubRoot, includeHu
 
 // ── runtime-health ──
 import { readFile } from "node:fs/promises";
+import { hostname } from "node:os";
 import { recordValue, type LooseRecord } from "../../shared/types.js";
 import { inspectCurrentRelease } from "./release/release-store.js";
 import { loadQueue } from "./hub/hub-queue.js";
@@ -74,6 +75,7 @@ import { readLeaderStatus } from "../orchestrator/leader-lock.js";
 import { readJobsIndex } from "./job/job-store.js";
 import { listEventFiles, materializeJob, readEventsReadOnly } from "./event/event-store.js";
 import { readLease, isLeaseStale } from "./infra.js";
+import { captureProcessIdentity, sameProcessIdentity, type ProcessIdentity } from "../../core/runtime/process-tree.js";
 
 type RuntimeJob = LooseRecord & {
   jobId?: string;
@@ -143,6 +145,69 @@ function countQueueBlockers(entries: LooseRecord[]) {
 
 function runtimeOpts(dataRoot: string) {
   return { dataRoot, includeLegacyFallback: false };
+}
+
+function errorCode(error: unknown) {
+  return typeof error === "object" && error !== null && "code" in error ? (error as { code?: unknown }).code : null;
+}
+
+function processIdentityFromRecord(value: unknown, expectedPid?: number): ProcessIdentity | null {
+  const candidate = recordValue(value);
+  const pid = Number(candidate.pid);
+  const capturedAt = typeof candidate.capturedAt === "string" ? candidate.capturedAt : "";
+  const processGroupId = Number(candidate.processGroupId);
+  if (
+    !Number.isSafeInteger(pid)
+    || pid <= 0
+    || (expectedPid !== undefined && pid !== expectedPid)
+    || typeof candidate.birthId !== "string"
+    || candidate.birthId.length === 0
+    || candidate.incarnation !== `${pid}:${candidate.birthId}`
+    || !capturedAt
+    || !Number.isFinite(Date.parse(capturedAt))
+    || new Date(Date.parse(capturedAt)).toISOString() !== capturedAt
+    || candidate.birthIdPrecision !== "exact"
+    || (candidate.processGroupId !== undefined
+      && (!Number.isSafeInteger(processGroupId) || processGroupId <= 0))
+  ) return null;
+  return {
+    pid,
+    birthId: candidate.birthId,
+    incarnation: candidate.incarnation,
+    capturedAt,
+    birthIdPrecision: "exact",
+    ...(candidate.processGroupId === undefined ? {} : { processGroupId }),
+  };
+}
+
+function classifyLeaseHealth(lease: LooseRecord | null, now: Date) {
+  if (!lease) return { stale: false, reason: "missing lease", unverified: true };
+  let expired = false;
+  try {
+    expired = isLeaseStale(lease, now);
+  } catch {
+    return { stale: false, reason: "invalid lease", unverified: true };
+  }
+  if (!expired) return { stale: false };
+  const ownerPid = Number(lease.ownerPid);
+  const ownerIdentity = processIdentityFromRecord(lease.ownerIdentity, ownerPid);
+  if (!Number.isSafeInteger(ownerPid) || ownerPid <= 0 || !ownerIdentity || typeof lease.ownerToken !== "string" || !lease.ownerToken) {
+    return { stale: false, reason: "expired lease owner identity missing", unverified: true };
+  }
+  if (lease.ownerHost && lease.ownerHost !== hostname()) {
+    return { stale: false, reason: "expired lease owner is remote and unverified", unverified: true };
+  }
+  try {
+    process.kill(ownerPid, 0);
+  } catch (error) {
+    if (errorCode(error) === "ESRCH") return { stale: true, reason: "stale lease owner dead" };
+    return { stale: false, reason: "expired lease owner liveness unverified", unverified: true };
+  }
+  const current = captureProcessIdentity(ownerPid, { strict: true });
+  if (!current || !sameProcessIdentity(ownerIdentity, current)) {
+    return { stale: false, reason: "expired lease owner identity mismatch", unverified: true };
+  }
+  return { stale: false };
 }
 
 async function countJobsIndexDivergence(cpbRoot: string, hubRoot: string) {
@@ -217,11 +282,17 @@ async function findStaleJobs(cpbRoot: string, hubRoot: string) {
       }
       try {
         const lease = await readLease(cpbRoot, job.leaseId, runtimeOpts(root.dataRoot));
-        if (lease === null || isLeaseStale(lease, now)) {
-          stale.push({ jobId: job.jobId, project: job.project || null, reason: lease === null ? "missing lease" : "stale lease" });
+        const leaseHealth = classifyLeaseHealth(lease, now);
+        if (leaseHealth.stale || leaseHealth.unverified) {
+          stale.push({
+            jobId: job.jobId,
+            project: job.project || null,
+            reason: leaseHealth.reason,
+            unverified: Boolean(leaseHealth.unverified),
+          });
         }
       } catch {
-        stale.push({ jobId: job.jobId, project: job.project || null, reason: "lease read error" });
+        stale.push({ jobId: job.jobId, project: job.project || null, reason: "lease read error", unverified: true });
       }
     }
   }

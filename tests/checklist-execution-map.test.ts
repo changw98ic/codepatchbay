@@ -8,14 +8,14 @@
 
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
 import { LooseRecord, recordValue } from "../shared/types.js";
 
 import { runJob } from "../core/engine/run-job.js";
-import { runExecute } from "../core/phases/execute.js";
+import { runExecute, withExecuteCleanupTestHooksForTests } from "../core/phases/execute.js";
 import { validateCandidateReplayBundle } from "../core/engine/candidate-replay.js";
 import { appendEvent } from "../server/services/event/event-store.js";
 import { buildArtifactIndex } from "../server/services/job/job-projection.js";
@@ -172,6 +172,112 @@ test("high-assurance execute discards unmapped untracked residue before freezing
   assert.deepEqual(executionMap.unmappedChangedFiles, []);
   assert.deepEqual(executionMap.discardedUntrackedFiles, [".tmp-build.log"]);
   assert.deepEqual(recordValue(result.diagnostics?.candidateArtifact).changedFiles, ["README.md"]);
+});
+
+test("high-assurance execute preserves pre-existing untracked residue without current-execution ownership", async () => {
+  const cpbRoot = await tempRoot("cpb-execmap-unowned-residue");
+  const sourcePath = await makeSourceRoot();
+  await execFileAsync("git", ["init", "-q"], { cwd: sourcePath });
+  await execFileAsync("git", ["config", "user.email", "test@example.com"], { cwd: sourcePath });
+  await execFileAsync("git", ["config", "user.name", "Test User"], { cwd: sourcePath });
+  await execFileAsync("git", ["add", "-A"], { cwd: sourcePath });
+  await execFileAsync("git", ["commit", "-q", "-m", "initial fixture"], { cwd: sourcePath });
+  const residuePath = path.join(sourcePath, ".tmp-build.log");
+  await writeFile(residuePath, "pre-existing user data\n", "utf8");
+
+  const result = await runExecute({
+    cpbRoot,
+    dataRoot: path.join(cpbRoot, "runtime", "projects", "flow"),
+    project: "flow",
+    jobId: "job-unowned-residue",
+    task: "Update README",
+    role: "executor",
+    agents: { executor: "codex" },
+    sourcePath,
+    sourceContext: {
+      assurance: { mode: "high" },
+      acceptanceChecklist: checklist(),
+    },
+    previousResults: [],
+    env: { CPB_ASSURANCE_MODE: "high" },
+    pool: {
+      async execute() {
+        await writeFile(path.join(sourcePath, "README.md"), "# fixture\n\nUpdated.\n", "utf8");
+        return {
+          output: JSON.stringify({
+            status: "ok",
+            summary: "Updated README",
+            tests: ["README inspected"],
+            risks: [],
+            checklistMapping: [],
+          }),
+          providerKey: "codex",
+          variant: null,
+        };
+      },
+    },
+  });
+
+  assert.equal(result.status, "failed");
+  assert.match(String(result.failure?.reason), /without exact current-execution ownership/i);
+  assert.equal(await readFile(residuePath, "utf8"), "pre-existing user data\n");
+});
+
+test("high-assurance execute preserves a same-path residue successor at the quarantine boundary", async () => {
+  const cpbRoot = await tempRoot("cpb-execmap-residue-successor");
+  const sourcePath = await makeSourceRoot();
+  await execFileAsync("git", ["init", "-q"], { cwd: sourcePath });
+  await execFileAsync("git", ["config", "user.email", "test@example.com"], { cwd: sourcePath });
+  await execFileAsync("git", ["config", "user.name", "Test User"], { cwd: sourcePath });
+  await execFileAsync("git", ["add", "-A"], { cwd: sourcePath });
+  await execFileAsync("git", ["commit", "-q", "-m", "initial fixture"], { cwd: sourcePath });
+  const residuePath = path.join(sourcePath, ".tmp-build.log");
+  const predecessorPath = `${residuePath}.predecessor`;
+
+  const result = await withExecuteCleanupTestHooksForTests({
+    async beforeQuarantineRename({ sourcePath: target, relativePath }) {
+      if (relativePath !== ".tmp-build.log") return;
+      await rename(target, predecessorPath);
+      await writeFile(target, "same-path successor\n", "utf8");
+    },
+  }, () => runExecute({
+    cpbRoot,
+    dataRoot: path.join(cpbRoot, "runtime", "projects", "flow"),
+    project: "flow",
+    jobId: "job-residue-successor",
+    task: "Update README",
+    role: "executor",
+    agents: { executor: "codex" },
+    sourcePath,
+    sourceContext: {
+      assurance: { mode: "high" },
+      acceptanceChecklist: checklist(),
+    },
+    previousResults: [],
+    env: { CPB_ASSURANCE_MODE: "high" },
+    pool: {
+      async execute() {
+        await writeFile(path.join(sourcePath, "README.md"), "# fixture\n\nUpdated.\n", "utf8");
+        await writeFile(residuePath, "current execution residue\n", "utf8");
+        return {
+          output: JSON.stringify({
+            status: "ok",
+            summary: "Updated README",
+            tests: ["README inspected"],
+            risks: [],
+            checklistMapping: [],
+          }),
+          providerKey: "codex",
+          variant: null,
+        };
+      },
+    },
+  }));
+
+  assert.equal(result.status, "failed");
+  assert.match(String(result.failure?.reason), /failed to isolate current-execution untracked residue/i);
+  assert.equal(await readFile(residuePath, "utf8"), "same-path successor\n");
+  assert.equal(await readFile(predecessorPath, "utf8"), "current execution residue\n");
 });
 
 test("executor checklistMapping cannot authorize files outside frozen allowedFiles", async () => {

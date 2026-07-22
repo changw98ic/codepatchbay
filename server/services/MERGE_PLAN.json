@@ -349,10 +349,22 @@
       "estimatedLines": 224
     },
     {
-      "name": "server/services/setup.ts",
-      "mergedFrom": ["setup-events.ts", "init-project.ts", "install-bin.ts", "apply-variant.ts", "executor.ts", "executor-root.ts", "test-acp-agent.ts"],
-      "exports": ["runInstallPlanWithEvents", "readSetupEvents", "shellQuoteSingle", "renderLauncher", "resolveInstallBinExecutorRoot", "installBin", "resolveVariantConfig", "applyVariantToEnv", "applyVariant", "registerTask", "unregisterTask", "getRunningTasks", "getDurableTasks", "REQUIRED_EXECUTOR_FILES", "resolveExecutorRoot", "executorEnv", "assertExecutorRoot", "readExecutorPackage", "executorMetadata"],
-      "estimatedLines": 940
+      "name": "server/services/setup-events.ts",
+      "mergedFrom": ["setup-events.ts"],
+      "exports": ["runInstallPlanWithEvents", "readSetupEvents"],
+      "estimatedLines": 125
+    },
+    {
+      "name": "server/services/apply-variant.ts",
+      "mergedFrom": ["apply-variant.ts"],
+      "exports": ["resolveVariantConfig", "applyVariantToEnv", "applyVariant"],
+      "estimatedLines": 120
+    },
+    {
+      "name": "server/services/executor-root.ts",
+      "mergedFrom": ["executor-root.ts"],
+      "exports": ["REQUIRED_EXECUTOR_FILES", "resolveExecutorRoot", "executorEnv", "assertExecutorRoot", "readExecutorPackage", "executorMetadata"],
+      "estimatedLines": 155
     },
     {
       "name": "server/services/infra.ts",
@@ -454,14 +466,11 @@
     "server/services/merge-research.ts",
     "server/services/dual-research.ts",
     "server/services/multi-evolve-state.ts",
-    "server/services/setup-events.ts",
     "server/services/init-project.ts",
     "server/services/install-bin.ts",
-    "server/services/apply-variant.ts",
     "server/services/ws-broadcast.ts",
     "server/services/watcher.ts",
     "server/services/local-smoke.ts",
-    "server/services/executor-root.ts",
     "server/services/executor.ts",
     "server/services/test-acp-agent.ts",
     "server/services/demo-runner.ts",
@@ -526,7 +535,7 @@
 
     {"file": "server/orchestrator/hub-orchestrator.ts", "oldImport": "./services/hub-registry.js", "newImport": "../services/hub/hub-registry.js"},
     {"file": "server/orchestrator/hub-orchestrator.ts", "oldImport": "./services/hub-queue.js", "newImport": "../services/hub/hub-queue.js"},
-    {"file": "server/orchestrator/hub-orchestrator.ts", "oldImport": "./services/executor-root.js", "newImport": "../services/setup.js"},
+    {"file": "server/orchestrator/hub-orchestrator.ts", "oldImport": "./services/executor-root.js", "newImport": "../services/executor-root.js"},
     {"file": "server/orchestrator/hub-orchestrator.ts", "oldImport": "./services/codegraph-readiness.js", "newImport": "../services/readiness-checks.js"},
     {"file": "server/orchestrator/hub-orchestrator.ts", "oldImport": "./services/concurrency-limits.js", "newImport": "../services/lease-manager.js"},
     {"file": "server/orchestrator/hub-orchestrator.ts", "oldImport": "./services/index-freshness.js", "newImport": "../services/process-registry.js"},
@@ -535,7 +544,7 @@
     {"file": "bridges/run-pipeline.ts", "oldImport": "./services/hub-queue.js", "newImport": "../server/services/hub/hub-queue.js"},
     {"file": "bridges/run-pipeline.ts", "oldImport": "./services/event-store.js", "newImport": "../server/services/event/event-store.js"},
     {"file": "bridges/run-pipeline.ts", "oldImport": "./services/job-store.js", "newImport": "../server/services/job/job-store.js"},
-    {"file": "bridges/run-pipeline.ts", "oldImport": "./services/executor-root.js", "newImport": "../server/services/setup.js"},
+    {"file": "bridges/run-pipeline.ts", "oldImport": "./services/executor-root.js", "newImport": "../server/services/executor-root.js"},
     {"file": "bridges/run-pipeline.ts", "oldImport": "./services/workflow-definition.js", "newImport": "../server/services/phase/phase-runner.js"},
     {"file": "bridges/run-pipeline.ts", "oldImport": "./services/phase-runner.js", "newImport": "../server/services/phase/phase-runner.js"},
     {"file": "bridges/run-pipeline.ts", "oldImport": "./services/repair-handler.js", "newImport": "../server/services/review/review-dispatch.js"},

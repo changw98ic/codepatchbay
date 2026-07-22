@@ -1,14 +1,51 @@
 import assert from "node:assert/strict";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import os, { tmpdir } from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { test as nodeTest, type TestContext } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
+import { withDirectoryProcessFence } from "../core/runtime/durable-directory-lock.js";
 import { appendEvent } from "../server/services/event/event-store.js";
-import { listJobsFromIndex, readJobsIndex, rebuildJobsIndex } from "../server/services/job/job-store.js";
+import { captureCurrentProcessIdentity, captureProcessIdentity } from "../core/runtime/process-tree.js";
+import {
+  listJobsFromIndex,
+  readJobsIndex,
+  rebuildJobsIndex,
+  withJobsIndexLockTestHooksForTests,
+  type JobsIndexLockTestHooks,
+} from "../server/services/job/job-store.js";
+
+const jobsIndexLockTestHookScope = new AsyncLocalStorage<JobsIndexLockTestHooks>();
+const __jobsIndexLockTestHooks = new Proxy({} as JobsIndexLockTestHooks, {
+  get(_target, property) {
+    return Reflect.get(jobsIndexLockTestHookScope.getStore() || {}, property);
+  },
+  set(_target, property, value) {
+    const hooks = jobsIndexLockTestHookScope.getStore();
+    if (!hooks) throw new Error("jobs-index test hook mutation requires a scoped test");
+    return Reflect.set(hooks, property, value);
+  },
+  deleteProperty(_target, property) {
+    const hooks = jobsIndexLockTestHookScope.getStore();
+    if (!hooks) return true;
+    return Reflect.deleteProperty(hooks, property);
+  },
+});
+
+function test(name: string, fn: (context: TestContext) => void | Promise<void>) {
+  return nodeTest(name, (context) => {
+    const hooks: JobsIndexLockTestHooks = {};
+    return jobsIndexLockTestHookScope.run(
+      hooks,
+      () => withJobsIndexLockTestHooksForTests(hooks, () => fn(context)),
+    );
+  });
+}
 
 function waitForChildJson(child: ReturnType<typeof spawn>, timeoutMs = 60_000) {
   let stdout = "";
@@ -67,6 +104,49 @@ function spawnJobsIndexReader(cpbRoot: string, dataRoot: string, barrierPath: st
     cwd: process.cwd(),
     stdio: ["ignore", "pipe", "pipe"],
   });
+}
+
+function currentProcessIdentity() {
+  const identity = captureProcessIdentity(process.pid, { strict: false });
+  assert.ok(identity);
+  return identity;
+}
+
+function exactCurrentProcessIdentityOrNull() {
+  try {
+    return captureCurrentProcessIdentity();
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "PROCESS_IDENTITY_UNAVAILABLE") return null;
+    throw error;
+  }
+}
+
+async function jobsIndexLockOwner(lockDir: string, ownerToken: string, identity = currentProcessIdentity()) {
+  assert.ok(identity);
+  return {
+    format: "cpb-directory-lock/v1",
+    ownerToken,
+    lockPath: path.join(await realpath(path.dirname(lockDir)), path.basename(lockDir)),
+    pid: identity.pid,
+    host: os.hostname(),
+    acquiredAt: new Date(0).toISOString(),
+    processIdentity: {
+      ...identity,
+      birthIdPrecision: identity.birthIdPrecision === "coarse" ? "coarse" : "exact",
+    },
+  };
+}
+
+async function writeJobsIndexLockOwner(lockDir: string, ownerToken: string, identity = currentProcessIdentity()) {
+  await mkdir(lockDir, { recursive: true });
+  await writeFile(path.join(lockDir, "owner.json"), `${JSON.stringify(await jobsIndexLockOwner(lockDir, ownerToken, identity), null, 2)}\n`, "utf8");
+}
+
+async function retireJobsIndexLockAfter(lockDir: string, delayMs: number) {
+  await delay(delayMs);
+  const quarantineDir = `${lockDir}.released-test-${process.pid}-${Date.now()}`;
+  await withDirectoryProcessFence(lockDir, () => rename(lockDir, quarantineDir), { waitMs: 10_000 });
+  return quarantineDir;
 }
 
 test("concurrent jobs-index readers can merge missing event streams without tmp-file races", async () => {
@@ -210,6 +290,49 @@ test("jobs-index readers ignore stale legacy entries already written into a proj
   }
 });
 
+test("jobs-index preserves corrupt and incompatible files instead of rebuilding over them", async () => {
+  const cpbRoot = await mkdtemp(path.join(tmpdir(), "cpb-jobs-index-invalid-"));
+  try {
+    for (const [name, content, code] of [
+      ["corrupt", "{not-json\n", "JOBS_INDEX_CORRUPT"],
+      [
+        "newer-version",
+        `${JSON.stringify({ _meta: { version: 2, updatedAt: null, jobCount: 0 }, jobs: {} })}\n`,
+        "JOBS_INDEX_INVALID",
+      ],
+    ] as const) {
+      const dataRoot = path.join(cpbRoot, name);
+      const indexFile = path.join(dataRoot, "jobs-index.json");
+      await mkdir(dataRoot, { recursive: true });
+      await writeFile(indexFile, content, "utf8");
+
+      await assert.rejects(readJobsIndex(cpbRoot, { dataRoot }), { code });
+      await assert.rejects(listJobsFromIndex(cpbRoot, { dataRoot }), { code });
+      assert.equal(await readFile(indexFile, "utf8"), content);
+    }
+  } finally {
+    await rm(cpbRoot, { recursive: true, force: true });
+  }
+});
+
+test("jobs-index rejects a symbolic-link index without changing its target", async () => {
+  const cpbRoot = await mkdtemp(path.join(tmpdir(), "cpb-jobs-index-symlink-"));
+  const dataRoot = path.join(cpbRoot, "runtime");
+  const external = path.join(cpbRoot, "external-index.json");
+  const content = `${JSON.stringify({ _meta: { version: 1, updatedAt: null, jobCount: 0 }, jobs: {} })}\n`;
+  try {
+    await mkdir(dataRoot, { recursive: true });
+    await writeFile(external, content, "utf8");
+    await symlink(external, path.join(dataRoot, "jobs-index.json"));
+
+    await assert.rejects(readJobsIndex(cpbRoot, { dataRoot }), { code: "JOBS_INDEX_UNSAFE" });
+    await assert.rejects(listJobsFromIndex(cpbRoot, { dataRoot }), { code: "JOBS_INDEX_UNSAFE" });
+    assert.equal(await readFile(external, "utf8"), content);
+  } finally {
+    await rm(cpbRoot, { recursive: true, force: true });
+  }
+});
+
 test("cross-process jobs-index readers converge on one complete index without lock leaks", async () => {
   const cpbRoot = await mkdtemp(path.join(tmpdir(), "cpb-jobs-index-process-race-"));
   const dataRoot = path.join(cpbRoot, "runtime");
@@ -295,27 +418,17 @@ test("jobs-index readers wait for a fresh lock instead of failing after one seco
       { dataRoot }
     );
     await mkdir(lockDir, { recursive: true });
-    await writeFile(
-      path.join(lockDir, "lock.json"),
-      `${JSON.stringify({
-        acquiredAt: new Date().toISOString(),
-        heartbeatAt: new Date().toISOString(),
-        ownerPid: 999_999,
-        ownerToken: "external-owner",
-      })}\n`,
-      "utf8"
-    );
+    await writeJobsIndexLockOwner(lockDir, "external-owner");
 
-    const release = setTimeout(() => {
-      rm(lockDir, { recursive: true, force: true }).catch(() => {});
-    }, 1_500);
+    const retirement = retireJobsIndexLockAfter(lockDir, 1_500);
     const start = Date.now();
     try {
       const jobs = await listJobsFromIndex(cpbRoot, { dataRoot });
       assert(Date.now() - start >= 1_250);
       assert.deepEqual(jobs.map((job) => job.jobId), [jobId]);
     } finally {
-      clearTimeout(release);
+      const quarantineDir = await retirement;
+      assert.equal(JSON.parse(await readFile(path.join(quarantineDir, "owner.json"), "utf8")).ownerToken, "external-owner");
     }
   } finally {
     await rm(cpbRoot, { recursive: true, force: true });
@@ -323,6 +436,8 @@ test("jobs-index readers wait for a fresh lock instead of failing after one seco
 });
 
 test("jobs-index readers do not steal a stale lock from a live owner process", async () => {
+  const current = exactCurrentProcessIdentityOrNull();
+  if (!current) return;
   const cpbRoot = await mkdtemp(path.join(tmpdir(), "cpb-jobs-index-live-lock-"));
   const dataRoot = path.join(cpbRoot, "runtime");
   const project = "live";
@@ -344,28 +459,171 @@ test("jobs-index readers do not steal a stale lock from a live owner process", a
       { dataRoot }
     );
     await mkdir(lockDir, { recursive: true });
-    await writeFile(
-      path.join(lockDir, "lock.json"),
-      `${JSON.stringify({
-        acquiredAt: "2000-01-01T00:00:00.000Z",
-        heartbeatAt: "2000-01-01T00:00:00.000Z",
-        ownerPid: process.pid,
-        ownerToken: "live-owner",
-      })}\n`,
-      "utf8"
-    );
+    await writeJobsIndexLockOwner(lockDir, "live-owner", current);
+    const old = new Date(0);
+    await utimes(lockDir, old, old);
 
-    const release = setTimeout(() => {
-      rm(lockDir, { recursive: true, force: true }).catch(() => {});
-    }, 1_500);
+    const retirement = retireJobsIndexLockAfter(lockDir, 1_500);
     const start = Date.now();
     try {
       const jobs = await listJobsFromIndex(cpbRoot, { dataRoot });
       assert(Date.now() - start >= 1_250);
       assert.deepEqual(jobs.map((job) => job.jobId), [jobId]);
     } finally {
-      clearTimeout(release);
+      const quarantineDir = await retirement;
+      assert.equal(JSON.parse(await readFile(path.join(quarantineDir, "owner.json"), "utf8")).ownerToken, "live-owner");
     }
+  } finally {
+    await rm(cpbRoot, { recursive: true, force: true });
+  }
+});
+
+test("jobs-index readers recover a stale lock only after PID reuse is disproven by process identity", async () => {
+  const cpbRoot = await mkdtemp(path.join(tmpdir(), "cpb-jobs-index-pid-reuse-"));
+  const dataRoot = path.join(cpbRoot, "runtime");
+  const project = "pid-reuse";
+  const jobId = "job-20260611-032000-reused";
+  const lockDir = path.join(dataRoot, "jobs-index.json.lock");
+  try {
+    await appendEvent(
+      cpbRoot,
+      project,
+      jobId,
+      {
+        type: "job_created",
+        jobId,
+        project,
+        task: "recover reused pid lock",
+        workflow: "standard",
+        ts: "2026-06-11T03:20:00.000Z",
+      },
+      { dataRoot }
+    );
+    const current = exactCurrentProcessIdentityOrNull();
+    if (!current) return;
+    const predecessorBirthId = `${current.birthId}:predecessor`;
+    await writeJobsIndexLockOwner(lockDir, "predecessor-owner", {
+      ...current,
+      birthId: predecessorBirthId,
+      incarnation: `${current.pid}:${predecessorBirthId}`,
+    });
+    const old = new Date(0);
+    await utimes(lockDir, old, old);
+
+    const jobs = await listJobsFromIndex(cpbRoot, { dataRoot });
+
+    assert.deepEqual(jobs.map((job) => job.jobId), [jobId]);
+    assert.equal(existsSync(lockDir), false);
+  } finally {
+    await rm(cpbRoot, { recursive: true, force: true });
+  }
+});
+
+test("jobs-index stale recovery preserves a successor owner during ABA quarantine", async () => {
+  const cpbRoot = await mkdtemp(path.join(tmpdir(), "cpb-jobs-index-aba-"));
+  const dataRoot = path.join(cpbRoot, "runtime");
+  const project = "aba";
+  const jobId = "job-20260611-033000-aba";
+  const lockDir = path.join(dataRoot, "jobs-index.json.lock");
+  try {
+    await appendEvent(
+      cpbRoot,
+      project,
+      jobId,
+      {
+        type: "job_created",
+        jobId,
+        project,
+        task: "preserve successor lock",
+        workflow: "standard",
+        ts: "2026-06-11T03:30:00.000Z",
+      },
+      { dataRoot }
+    );
+    const current = exactCurrentProcessIdentityOrNull();
+    if (!current) return;
+    const predecessorBirthId = `${current.birthId}:aba-predecessor`;
+    await writeJobsIndexLockOwner(lockDir, "predecessor-owner", {
+      ...current,
+      birthId: predecessorBirthId,
+      incarnation: `${current.pid}:${predecessorBirthId}`,
+    });
+    const old = new Date(0);
+    await utimes(lockDir, old, old);
+
+    __jobsIndexLockTestHooks.afterQuarantineRename = async ({ lockDir: originalLockDir }) => {
+      await mkdir(originalLockDir);
+      await writeJobsIndexLockOwner(originalLockDir, "successor-owner");
+    };
+    __jobsIndexLockTestHooks.waitMs = 100;
+    let quarantineDir = "";
+    try {
+      await assert.rejects(
+        listJobsFromIndex(cpbRoot, { dataRoot }),
+        (error: NodeJS.ErrnoException & {
+          committed?: boolean;
+          quarantinePreserved?: boolean;
+          successorPreserved?: boolean;
+          recoveryPaths?: { quarantine?: string };
+        }) => {
+          assert.equal(error.code, "DIRECTORY_LOCK_SUCCESSOR_PRESERVED");
+          assert.equal(error.committed, true);
+          assert.equal(error.quarantinePreserved, true);
+          assert.equal(error.successorPreserved, true);
+          quarantineDir = error.recoveryPaths?.quarantine || "";
+          assert.ok(quarantineDir);
+          return true;
+        },
+      );
+    } finally {
+      __jobsIndexLockTestHooks.afterQuarantineRename = undefined;
+      __jobsIndexLockTestHooks.waitMs = undefined;
+    }
+
+    const successor = JSON.parse(await readFile(path.join(lockDir, "owner.json"), "utf8"));
+    assert.equal(successor.ownerToken, "successor-owner");
+    const predecessor = JSON.parse(await readFile(path.join(quarantineDir, "owner.json"), "utf8"));
+    assert.equal(predecessor.ownerToken, "predecessor-owner");
+  } finally {
+    __jobsIndexLockTestHooks.afterQuarantineRename = undefined;
+    await rm(cpbRoot, { recursive: true, force: true });
+  }
+});
+
+test("jobs-index test hooks stay isolated across overlapping async scopes", async () => {
+  const cpbRoot = await mkdtemp(path.join(tmpdir(), "cpb-jobs-index-hook-scope-"));
+  const blockedRoot = path.join(cpbRoot, "blocked");
+  const independentRoot = path.join(cpbRoot, "independent");
+  const blockedLockDir = path.join(blockedRoot, "jobs-index.json.lock");
+  try {
+    await mkdir(blockedLockDir, { recursive: true });
+    const old = new Date(0);
+    await utimes(blockedLockDir, old, old);
+
+    let observedBlockedScope!: () => void;
+    const blockedScopeObserved = new Promise<void>((resolve) => { observedBlockedScope = resolve; });
+    let resumeBlockedScope!: () => void;
+    const blockedScopeResume = new Promise<void>((resolve) => { resumeBlockedScope = resolve; });
+    let blockedObservations = 0;
+    let independentObservations = 0;
+
+    const blocked = withJobsIndexLockTestHooksForTests({
+      afterRecoveryObserved: async () => {
+        blockedObservations += 1;
+        observedBlockedScope();
+        await blockedScopeResume;
+      },
+    }, () => rebuildJobsIndex(cpbRoot, { dataRoot: blockedRoot }));
+
+    await blockedScopeObserved;
+    await withJobsIndexLockTestHooksForTests({
+      afterRecoveryObserved: () => { independentObservations += 1; },
+    }, () => rebuildJobsIndex(cpbRoot, { dataRoot: independentRoot }));
+    resumeBlockedScope();
+    await blocked;
+
+    assert.equal(blockedObservations, 1);
+    assert.equal(independentObservations, 0);
   } finally {
     await rm(cpbRoot, { recursive: true, force: true });
   }

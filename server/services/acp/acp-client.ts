@@ -16,7 +16,7 @@ import {
   recordPermissionDenial,
 } from "../permission-matrix.js";
 import { createAgentHome } from "../../../core/agents/isolation.js";
-import { getDescriptor } from "../../../core/agents/registry.js";
+import { getDescriptor, resolveAgentEnvPrefix } from "../../../core/agents/registry.js";
 import {
   codexConfiguredSandboxModeForExecution,
   codexExecutionConfigArgs,
@@ -30,6 +30,12 @@ import { buildChildEnv } from "../../../core/policy/child-env.js";
 import { buildAgentSandboxLaunch } from "../../../core/policy/agent-sandbox.js";
 import { redactSecrets } from "../secret-policy.js";
 import { captureNativeUsageCursor, readNativeUsageDelta } from "./native-usage.js";
+import {
+  captureSpawnProcessIdentity,
+  killTree,
+  type ProcessIdentity,
+  type ProcessTreeSystem,
+} from "../../../core/runtime/process-tree.js";
 
 type PermissionDecision = LooseRecord & {
   allowed?: boolean;
@@ -75,7 +81,7 @@ type McpServerSummary = {
   type: string | null;
   url: string | null;
   command: string | null;
-  args: string[] | null;
+  args?: string[] | null;
 };
 
 type UsageRecord = LooseRecord & {
@@ -103,6 +109,7 @@ const USAGE_METRIC_KEYS = [
 ] as const;
 const ACP_STDERR_TAIL_LIMIT = 4000;
 const ACP_TERMINAL_AUDIT_TAIL_LIMIT = 1000;
+const UNIDENTIFIED_CHILD_CLEANUP_VERIFY_MS = 3_000;
 
 type UsageMetricKey = typeof USAGE_METRIC_KEYS[number];
 type UsageMetricCounts = Record<UsageMetricKey, number>;
@@ -196,6 +203,8 @@ type TerminalExitStatus = {
 
 type TerminalEntry = {
   child: ChildProcess;
+  identity: ProcessIdentity;
+  teardown: Promise<void> | null;
   cwd: string;
   detached: boolean;
   output: string;
@@ -204,6 +213,13 @@ type TerminalEntry = {
   exitStatus: TerminalExitStatus | null;
   exitAudit: Promise<void> | null;
   waiters: Array<(status: TerminalExitStatus) => void>;
+};
+
+type ResidualProcessCleanupOptions = {
+  system?: ProcessTreeSystem;
+  graceMs?: number;
+  forceVerifyMs?: number;
+  ownedIdentities?: Iterable<ProcessIdentity | null | undefined>;
 };
 
 type AuditTarget = {
@@ -258,6 +274,42 @@ function isRepeatedDenial(targetPath: string, action: string) {
     if (d.targetPath === targetPath && d.action === action) identicalCount++;
   }
   return identicalCount >= 3;
+}
+
+function normalizedToolPolicySummary(policy: Map<string, string> | null) {
+  if (!policy) return { allow: [], deny: [] };
+  const allow: string[] = [];
+  const deny: string[] = [];
+  for (const [tool, action] of policy.entries()) {
+    if (action === "allow") allow.push(tool);
+    if (action === "deny") deny.push(tool);
+  }
+  return {
+    allow: allow.sort(),
+    deny: deny.sort(),
+  };
+}
+
+function livePreflightPolicySummary(env: NodeJS.ProcessEnv, policy: Map<string, string> | null) {
+  return {
+    terminalPolicy: env.CPB_ACP_TERMINAL === "deny" ? "deny" : "allow",
+    permissionRequests: env.CPB_ACP_PERMISSION === "reject" ? "reject" : "allow",
+    webToolsDisabled: env.CPB_ACP_DISABLE_WEB_TOOLS === "1",
+    toolPolicy: normalizedToolPolicySummary(policy),
+  };
+}
+
+function childEnvWithoutControlPlaneAuditPath(env: NodeJS.ProcessEnv) {
+  const childEnv = { ...env };
+  delete childEnv.CPB_ACP_AUDIT_FILE;
+  delete childEnv.CPB_ACP_AUDIT;
+  if (childEnv.CPB_ACP_CONTROL_PLANE === "1") {
+    delete childEnv.CPB_PROJECT_RUNTIME_ROOT;
+    delete childEnv.CPB_ACP_PROJECT;
+    delete childEnv.CPB_ACP_JOB_ID;
+    delete childEnv.CPB_PROVIDER_PREFLIGHT_NONCE;
+  }
+  return childEnv;
 }
 
 async function enforcePermission(action: string, targetPath: string, env: NodeJS.ProcessEnv = process.env): Promise<PermissionDecision> {
@@ -533,14 +585,17 @@ export function resolveAcpAuditFile(env = process.env) {
   );
 }
 
-function summarizeMcpServers(servers: McpServerConfig[] = []): McpServerSummary[] {
+function summarizeMcpServers(
+  servers: McpServerConfig[] = [],
+  { includeArgs = true }: { includeArgs?: boolean } = {},
+): McpServerSummary[] {
   if (!Array.isArray(servers)) return [];
   return servers.map((server) => ({
     name: server?.name || null,
     type: server?.type || null,
     url: server?.url || null,
     command: server?.command || null,
-    args: Array.isArray(server?.args) ? server.args : null,
+    ...(includeArgs ? { args: Array.isArray(server?.args) ? server.args : null } : {}),
   }));
 }
 
@@ -857,6 +912,7 @@ function defaultAgentCommand(agent: string): AgentCommand | null {
 }
 
 export async function resolveAgentCommand(agent: string, env: NodeJS.ProcessEnv = process.env): Promise<AgentCommand> {
+  const canonicalPrefix = resolveAgentEnvPrefix(agent);
   // Try registry-based resolution first
   try {
     const { loadRegistry, getDescriptor, hasAgent } = await import("../../../core/agents/registry.js");
@@ -867,7 +923,7 @@ export async function resolveAgentCommand(agent: string, env: NodeJS.ProcessEnv 
     if (hasAgent(agent)) {
       const descriptor = getDescriptor(agent);
       if (descriptor) {
-        const prefix = descriptor.envPrefix || `CPB_ACP_${agent.toUpperCase()}`;
+        const prefix = resolveAgentEnvPrefix(agent, descriptor.envPrefix);
         const envCommand = env[`${prefix}_COMMAND`];
         let command = envCommand || descriptor.command;
         let args = parseEnvArgs(env[`${prefix}_ARGS`]) ?? [...(descriptor.args || [])];
@@ -889,12 +945,12 @@ export async function resolveAgentCommand(agent: string, env: NodeJS.ProcessEnv 
 
   // Legacy hardcoded resolution
   const defaults = defaultAgentCommand(agent);
-  if (!defaults) {
-    throw new Error(`Unknown agent: '${agent}'. Register a descriptor or set CPB_ACP_${agent.toUpperCase()}_COMMAND.`);
+  const envCommand = env[`${canonicalPrefix}_COMMAND`];
+  if (!defaults && !envCommand) {
+    throw new Error(`Unknown agent: '${agent}'. Register a descriptor or set ${canonicalPrefix}_COMMAND.`);
   }
-  const upper = agent.toUpperCase();
-  const command = env[`CPB_ACP_${upper}_COMMAND`] || defaults.command;
-  const args = parseEnvArgs(env[`CPB_ACP_${upper}_ARGS`]) ?? [...defaults.args];
+  const command = envCommand || defaults?.command || "";
+  const args = parseEnvArgs(env[`${canonicalPrefix}_ARGS`]) ?? [...(defaults?.args || [])];
 
   appendCodexLaunchConfigArgs(agent, command, args, env);
 
@@ -971,13 +1027,23 @@ function isCodexAcpCommand(command: unknown, args: unknown[] = []): boolean {
   return baseCommand === "npx" && Array.isArray(args) && args.some((arg) => arg === "@zed-industries/codex-acp");
 }
 
+// These bundled transports reject or bypass session/new.mcpServers regardless
+// of registry asset availability. Keep the transport contract fail-closed if
+// descriptors are unavailable during packaging or early bootstrap.
+const BUNDLED_SESSION_MCP_UNSUPPORTED = new Set([
+  "codex",
+  "claude",
+  "claude-glm",
+  "claude-mimo",
+]);
+
 export function buildMcpServers(agent: string, env: NodeJS.ProcessEnv): McpServerConfig[] {
   const server = resolveCodegraphMcpServer(env);
   if (!server) return [];
 
   // Codex ACP rejects non-empty session/new.mcpServers. It receives built-in
   // CodeGraph through process-local launch config instead.
-  if (agent === "codex") return [];
+  if (BUNDLED_SESSION_MCP_UNSUPPORTED.has(agent)) return [];
 
   // ACP adapters must opt in to session/new.mcpServers. Some adapters exit
   // after rejecting this field, so retrying with [] is too late because the
@@ -1257,33 +1323,199 @@ function pathIsWithin(candidatePath: string, rootPath: string): boolean {
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
-export function terminateProcessesMatchingPath(
+function acpProcessCleanupError(message: string, code: string) {
+  return Object.assign(new Error(message), { code });
+}
+
+function processTreeCleanupError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
+}
+
+function isChildPidGone(pid: number, system?: ProcessTreeSystem) {
+  if (system?.platform !== "win32" && process.platform !== "win32") {
+    const result = (system?.spawnSync || spawnSync)("ps", ["-p", String(pid), "-o", "stat="], { encoding: "utf8" });
+    if (result.status !== 0) return true;
+    const state = typeof result.stdout === "string" ? result.stdout.trim() : "";
+    if (!state) return true;
+    if (state.startsWith("Z")) return true;
+  }
+  try {
+    (system?.kill || process.kill)(pid, 0);
+    return false;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | undefined)?.code === "ESRCH") return true;
+    throw error;
+  }
+}
+
+async function waitForChildCloseAndReap(child: ChildProcess, timeoutMs: number, system?: ProcessTreeSystem) {
+  if (!child.pid) return true;
+  const closedOrExited = () => child.exitCode !== null || child.signalCode !== null;
+  const outputDrained = () => [child.stdout, child.stderr].every(
+    (stream) => !stream || stream.readableEnded || stream.destroyed,
+  );
+  if (closedOrExited() && outputDrained() && isChildPidGone(child.pid, system)) return true;
+  return new Promise<boolean>((resolve) => {
+    let settled = false;
+    let closeObserved = false;
+    const finish = (value: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearInterval(poller);
+      clearTimeout(timer);
+      child.removeListener("close", onClose);
+      child.removeListener("exit", maybeDone);
+      resolve(value);
+    };
+    const maybeDone = () => {
+      if (!closedOrExited() || (!closeObserved && !outputDrained())) return;
+      if (!child.pid || isChildPidGone(child.pid, system)) finish(true);
+    };
+    const onClose = () => {
+      closeObserved = true;
+      maybeDone();
+    };
+    child.once("close", onClose);
+    child.once("exit", maybeDone);
+    const poller = setInterval(maybeDone, 10);
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    maybeDone();
+  });
+}
+
+async function cleanupUnidentifiedJustSpawnedChild(child: ChildProcess, system?: ProcessTreeSystem) {
+  if (!child.pid) return;
+  // Arm the waiter before stdio cleanup so a fast child close cannot race past
+  // the listener and be misreported as an unverifiable leaked process.
+  const closeProof = waitForChildCloseAndReap(child, UNIDENTIFIED_CHILD_CLEANUP_VERIFY_MS, system);
+  try {
+    child.stdin?.end();
+    child.stdout?.resume();
+    child.stderr?.resume();
+    child.unref();
+  } catch {
+    // Without an exact spawn-time identity this process is deliberately
+    // unowned. Never fall back to bare-PID signalling; close/wait evidence is
+    // the only safe cleanup signal we can retain.
+  }
+  if (!await closeProof) {
+    throw acpProcessCleanupError(
+      `unidentified spawned process ${child.pid} did not close and disappear after identity capture failed`,
+      "PROCESS_CLEANUP_UNVERIFIED",
+    );
+  }
+  child.stdout?.destroy();
+  child.stderr?.destroy();
+}
+
+async function captureSpawnedProcessIdentity(child: ChildProcess, label: string, system?: ProcessTreeSystem) {
+  if (!child.pid) {
+    throw acpProcessCleanupError(`${label} process did not expose a pid`, "PROCESS_IDENTITY_UNAVAILABLE");
+  }
+  try {
+    const identity = captureSpawnProcessIdentity(child, system);
+    if (!identity) {
+      throw acpProcessCleanupError(`${label} process identity unavailable`, "PROCESS_IDENTITY_UNAVAILABLE");
+    }
+    return identity;
+  } catch (error) {
+    let exitedBeforeIdentityCleanup = child.exitCode !== null || child.signalCode !== null;
+    if (!exitedBeforeIdentityCleanup && child.pid) {
+      try {
+        exitedBeforeIdentityCleanup = isChildPidGone(child.pid, system);
+      } catch {
+        // An unverified liveness read cannot authorize bare-PID signaling and
+        // cannot prove that the child exited independently of cleanup.
+      }
+    }
+    try {
+      await cleanupUnidentifiedJustSpawnedChild(child, system);
+    } catch (cleanupError) {
+      const primary = processTreeCleanupError(error);
+      const cleanup = processTreeCleanupError(cleanupError);
+      throw Object.assign(
+        new AggregateError([primary, cleanup], primary.message, { cause: primary }),
+        {
+          code: (cleanup as NodeJS.ErrnoException).code || "PROCESS_CLEANUP_UNVERIFIED",
+          primaryError: primary,
+          cleanupError: cleanup,
+          exitedBeforeIdentityCleanup,
+        },
+      );
+    }
+    throw Object.assign(processTreeCleanupError(error), {
+      identityCleanupVerified: true,
+      exitedBeforeIdentityCleanup,
+    });
+  }
+}
+
+export async function terminateProcessesMatchingPath(
   targetPath: string | null | undefined,
   signal: NodeJS.Signals,
   excludePids: Set<number> = new Set([process.pid]),
-) {
-  if (process.platform === "win32") return 0;
+  {
+    system,
+    graceMs = 500,
+    forceVerifyMs = 1_500,
+    ownedIdentities = [],
+  }: ResidualProcessCleanupOptions = {},
+): Promise<number> {
+  const platform = system?.platform || process.platform;
+  if (platform === "win32") return 0;
   const variants = processPathVariants(targetPath);
   if (variants.length === 0) return 0;
-  const result = spawnSync("ps", ["-eo", "pid=,command="], { encoding: "utf8" });
-  if (result.error || typeof result.stdout !== "string") return 0;
+  const result = (system?.spawnSync || spawnSync)("ps", ["-eo", "pid=,command="], { encoding: "utf8" });
+  if (result.error || result.status !== 0 || typeof result.stdout !== "string") {
+    throw acpProcessCleanupError(
+      "process enumeration unavailable during ACP residual cleanup",
+      "PROCESS_ENUMERATION_UNAVAILABLE",
+    );
+  }
 
-  let signaled = 0;
+  const ownedByPid = new Map<number, ProcessIdentity>();
+  for (const identity of ownedIdentities) {
+    if (!identity || !Number.isSafeInteger(identity.pid) || identity.pid <= 0 || excludePids.has(identity.pid)) continue;
+    ownedByPid.set(identity.pid, identity);
+  }
+  const identities: ProcessIdentity[] = [];
+  const unownedPids: number[] = [];
   for (const line of result.stdout.split("\n")) {
     const match = line.trim().match(/^(\d+)\s+(.+)$/);
     if (!match) continue;
     const pid = Number(match[1]);
     const command = match[2] || "";
-    if (!Number.isInteger(pid) || pid <= 0 || excludePids.has(pid)) continue;
+    if (!Number.isSafeInteger(pid) || pid <= 0 || excludePids.has(pid)) continue;
     if (!variants.some((variant) => command.includes(variant))) continue;
-    try {
-      process.kill(pid, signal);
-      signaled += 1;
-    } catch {
-      // Process already exited.
-    }
+    const identity = ownedByPid.get(pid);
+    if (identity) identities.push(identity);
+    else unownedPids.push(pid);
   }
-  return signaled;
+  if (unownedPids.length > 0) {
+    throw acpProcessCleanupError(
+      `ACP residual cleanup found unowned matching process(es): ${unownedPids.join(",")}`,
+      "PROCESS_IDENTITY_UNAVAILABLE",
+    );
+  }
+
+  const settled = await Promise.allSettled(identities.map((identity) => killTree(
+    identity.pid,
+    signal === "SIGTERM" ? graceMs : 0,
+    {
+      expectedRootIdentity: identity,
+      requireDescendantScan: true,
+      forceVerifyMs,
+      ...(system ? { system } : {}),
+    },
+  )));
+  const errors = settled
+    .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+    .map((result) => result.reason);
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) {
+    throw new AggregateError(errors, "multiple ACP residual process cleanups failed");
+  }
+  return settled.length;
 }
 
 function auditRuntimeRootFromFile(auditFile: string | null | undefined) {
@@ -1328,6 +1560,12 @@ export class AcpClient {
   closed: boolean;
   initialized: AcpInitializeResult | null;
   child: ChildProcess | null;
+  childIdentity: ProcessIdentity | null;
+  childExitObserved: boolean;
+  childCloseObserved: boolean;
+  childExitCode: number | null;
+  childExitSignal: NodeJS.Signals | null;
+  childSpawnError: Error | null;
   childEnv: NodeJS.ProcessEnv | null;
   lineQueue: Promise<void>;
   idleTimer: NodeJS.Timeout | null;
@@ -1350,6 +1588,8 @@ export class AcpClient {
   executeNoEditToolFingerprints: Set<string>;
   executeNoEditSatisfied: boolean;
   auditUpdateEvents: number;
+  processSystem?: ProcessTreeSystem;
+  agentTeardown: Promise<void> | null;
 
   constructor({
     agent,
@@ -1364,6 +1604,7 @@ export class AcpClient {
     resumeSessionId = null,
     reuseSession = false,
     agentHomeInstanceId = null,
+    processSystem,
   }: {
     agent: string;
     cwd: string;
@@ -1377,6 +1618,7 @@ export class AcpClient {
     resumeSessionId?: string | null;
     reuseSession?: boolean;
     agentHomeInstanceId?: string | null;
+    processSystem?: ProcessTreeSystem;
   }) {
     this.agent = agent;
     this.cwd = cwd;
@@ -1397,6 +1639,12 @@ export class AcpClient {
     this.nextTerminalId = 1;
     this.closed = false;
     this.initialized = null;
+    this.childIdentity = null;
+    this.childExitObserved = false;
+    this.childCloseObserved = false;
+    this.childExitCode = null;
+    this.childExitSignal = null;
+    this.childSpawnError = null;
     this.childEnv = null;
     this.lineQueue = Promise.resolve();
     this.idleTimer = null;
@@ -1407,6 +1655,7 @@ export class AcpClient {
     this.executeNoEditIdleTimeoutMs = executeNoEditIdleTimeoutMs(this.env);
     this.closeSessionTimeoutMs = nonNegativeInteger(this.env.CPB_ACP_CLOSE_SESSION_TIMEOUT_MS, DEFAULT_CLOSE_SESSION_TIMEOUT_MS);
     this.agentHomeInstanceId = agentHomeInstanceId || this.env.CPB_AGENT_HOME_INSTANCE_ID || null;
+    this.processSystem = processSystem;
     this.auditEnv = { ...this.env };
     this.auditFile = resolveAcpAuditFile(this.auditEnv);
     this.activeSessionId = null;
@@ -1419,6 +1668,7 @@ export class AcpClient {
     this.executeNoEditToolFingerprints = new Set();
     this.executeNoEditSatisfied = false;
     this.auditUpdateEvents = 0;
+    this.agentTeardown = null;
   }
 
   setAuditContext(envPatch: NodeJS.ProcessEnv = {}, { cwd = null, writeAllowPaths = undefined }: AuditContextOptions = {}) {
@@ -1447,10 +1697,70 @@ export class AcpClient {
       jobId: auditEnv.CPB_ACP_JOB_ID || null,
       phase: auditEnv.CPB_ACP_PHASE || null,
       role: auditEnv.CPB_ACP_ROLE || null,
+      ...(auditEnv.CPB_PROVIDER_PREFLIGHT_NONCE ? { correlationNonce: auditEnv.CPB_PROVIDER_PREFLIGHT_NONCE } : {}),
       ...details,
     };
     await mkdir(path.dirname(auditFile), { recursive: true });
     await appendFile(auditFile, `${JSON.stringify(entry)}\n`, "utf8");
+  }
+
+  startupExitFailure(cause?: unknown) {
+    const exitCode = this.childExitObserved ? this.childExitCode : this.child?.exitCode ?? null;
+    const signal = this.childExitObserved ? this.childExitSignal : this.child?.signalCode ?? null;
+    const stderrTail = String(redactSecrets(this.stderrTail.trim()) || "").slice(-1000);
+    const detail = stderrTail ? `; stderr tail: ${stderrTail}` : "";
+    const spawnDetail = this.childSpawnError && !this.childExitObserved
+      ? `; spawn error: ${String(redactSecrets(this.childSpawnError.message) || "spawn failed").slice(-500)}`
+      : "";
+    const lifecycle = this.initialized ? "requests" : "startup";
+    return Object.assign(new Error(
+      `ACP agent exited before completing ${lifecycle} (code=${exitCode}, signal=${signal})${detail}${spawnDetail}`,
+      cause === undefined ? undefined : { cause },
+    ), {
+      code: "ACP_AGENT_STARTUP_FAILED",
+      exitCode,
+      signal,
+      stderrTail,
+      ...(cause === undefined ? {} : { startupCause: cause }),
+    });
+  }
+
+  async normalizeStartupFailure(error: unknown) {
+    const failure = processTreeCleanupError(error);
+    const failureCode = (failure as NodeJS.ErrnoException).code || "";
+    const failureDetails = failure as Error & { exitedBeforeIdentityCleanup?: boolean };
+    const shouldAttributeExit = failureDetails.exitedBeforeIdentityCleanup === true
+      || this.childSpawnError !== null
+      || [
+        "ACP_AGENT_STARTUP_FAILED",
+        "ACP_AGENT_TRANSPORT_CLOSED_DURING_STARTUP",
+        "EPIPE",
+        "ERR_STREAM_DESTROYED",
+      ].includes(failureCode);
+    if (
+      this.child
+      && !this.childCloseObserved
+      && (
+        this.childExitObserved
+        || this.childSpawnError
+        || shouldAttributeExit
+      )
+    ) {
+      await waitForChildCloseAndReap(
+        this.child,
+        UNIDENTIFIED_CHILD_CLEANUP_VERIFY_MS,
+        this.processSystem,
+      ).catch(() => false);
+    }
+    if (shouldAttributeExit && (
+      this.childExitObserved
+      || this.childCloseObserved
+      || this.childSpawnError
+      || Boolean(this.child && (this.child.exitCode !== null || this.child.signalCode !== null))
+    )) {
+      return this.startupExitFailure(failure);
+    }
+    return failure;
   }
 
   async start() {
@@ -1459,12 +1769,37 @@ export class AcpClient {
       throw new Error("ACP agent transport is not reusable because stdin is closed");
     }
 
-    const env: NodeJS.ProcessEnv = buildChildEnv(this.env, {}, { agent: this.agent });
+    const env: NodeJS.ProcessEnv = buildChildEnv(this.env, {}, {
+      agent: this.agent,
+      allowKeys: ["CPB_CAPSULE_CODEX_PATH", "CPB_CAPSULE_CLAUDE_CODE_EXECUTABLE"],
+    });
+    if (env.CPB_CAPSULE_CODEX_PATH) {
+      if (!path.isAbsolute(env.CPB_CAPSULE_CODEX_PATH)) {
+        throw new Error("CPB_CAPSULE_CODEX_PATH must be absolute");
+      }
+      env.CODEX_PATH = env.CPB_CAPSULE_CODEX_PATH;
+    }
+    if (env.CPB_CAPSULE_CLAUDE_CODE_EXECUTABLE) {
+      if (!path.isAbsolute(env.CPB_CAPSULE_CLAUDE_CODE_EXECUTABLE)) {
+        throw new Error("CPB_CAPSULE_CLAUDE_CODE_EXECUTABLE must be absolute");
+      }
+      env.CLAUDE_CODE_EXECUTABLE = env.CPB_CAPSULE_CLAUDE_CODE_EXECUTABLE;
+    }
     if (process.platform === "darwin" && !env.SSL_CERT_FILE && existsSync("/etc/ssl/cert.pem")) {
       // sandbox-exec cannot expose the user's login keychain without widening
       // the trust boundary. Codex/rustls accepts this system CA bundle and can
       // establish provider TLS while the rest of HOME remains isolated.
       env.SSL_CERT_FILE = "/etc/ssl/cert.pem";
+    }
+    if (this.agent === "fake-acp") {
+      // The deterministic fake-acp provider is test-only. It exercises CPB's
+      // orchestration contract, not an external untrusted provider binary, and
+      // the managed-worker harness can already wrap the entire job in its own
+      // outer sandbox on macOS. Keeping a second inner sandbox here breaks the
+      // fake provider launch path with sandbox-exec EPERM, so we explicitly
+      // drop the inner provider sandbox regardless of the inherited mode.
+      env.CPB_AGENT_SANDBOX = "off";
+      env.CPB_AGENT_SANDBOX_MODE = "off";
     }
     const isolateAgentHome = shouldIsolateAgentHome(this.agent, env);
     if (isolateAgentHome) {
@@ -1498,7 +1833,9 @@ export class AcpClient {
     const launchCodegraphServers = this.agent === "codex"
       ? codexCodegraphMcpServers(env)
       : buildMcpServers(this.agent, env);
-    const launchCodegraphSummary = summarizeMcpServers(launchCodegraphServers);
+    const launchCodegraphSummary = summarizeMcpServers(launchCodegraphServers, {
+      includeArgs: !this.auditEnv.CPB_PROVIDER_PREFLIGHT_NONCE,
+    });
     const launch = buildAgentSandboxLaunch(command, args, { env, cwd: this.cwd });
     const outerWriteRoots = Array.isArray(launch.sandbox?.writeRoots)
       ? launch.sandbox.writeRoots.map(String)
@@ -1508,6 +1845,7 @@ export class AcpClient {
       mcpServers: launchCodegraphSummary,
       mcpServerNames: launchCodegraphSummary.map((server) => server.name).filter(Boolean),
       codegraphSseUrl: null,
+      livePreflightPolicy: livePreflightPolicySummary(env, this.toolPolicy),
       runtimeGuards: {
         ...resolveAcpRuntimeGuards(env),
         taskRiskPolicy: taskRiskPolicySummary(this.env),
@@ -1532,38 +1870,65 @@ export class AcpClient {
 
     // Agent home isolation keeps provider auth/config available without sharing
     // mutable session history between concurrent ACP jobs.
-    this.childEnv = env;
-    this.child = spawn(launch.command, launch.args, {
+    this.childEnv = childEnvWithoutControlPlaneAuditPath(env);
+    this.stderrTail = "";
+    this.closed = false;
+    this.childIdentity = null;
+    this.childExitObserved = false;
+    this.childCloseObserved = false;
+    this.childExitCode = null;
+    this.childExitSignal = null;
+    this.childSpawnError = null;
+    const child = spawn(launch.command, launch.args, {
       cwd: this.cwd,
-      env,
+      env: this.childEnv,
       detached: process.platform !== "win32",
       stdio: ["pipe", "pipe", "pipe"],
     });
+    this.child = child;
 
-    this.child.stderr.on("data", (chunk: Buffer) => {
+    child.stderr.on("data", (chunk: Buffer) => {
       this.markActivity();
       this.stderrTail = `${this.stderrTail}${chunk.toString()}`.slice(-ACP_STDERR_TAIL_LIMIT);
       this.errorSink(chunk);
     });
 
-    this.child.on("error", (error: Error) => {
+    child.on("error", (error: Error) => {
+      this.childSpawnError = error;
       this.rejectAll(error);
     });
 
-    this.child.on("exit", (code: number | null, signal: NodeJS.Signals | null) => {
+    child.stdin.on("error", (error: Error) => {
+      this.rejectAll(error);
+    });
+
+    child.on("exit", (code: number | null, signal: NodeJS.Signals | null) => {
       this.closed = true;
+      this.childExitObserved = true;
+      this.childExitCode = code;
+      this.childExitSignal = signal;
+      this.childIdentity = null;
       this.clearIdleTimer();
       this.clearSessionUpdateIdleTimer();
       this.clearExecuteNoEditIdleTimer();
       if (this.pending.size > 0) {
-        const stderrTail = String(redactSecrets(this.stderrTail.trim()) || "").slice(-1000);
-        const detail = stderrTail ? `; stderr tail: ${stderrTail}` : "";
-        this.rejectAll(new Error(`ACP agent exited before completing requests (code=${code}, signal=${signal})${detail}`));
+        this.rejectAll(this.startupExitFailure());
+      }
+    });
+
+    child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
+      this.childCloseObserved = true;
+      if (!this.childExitObserved) {
+        this.closed = true;
+        this.childExitObserved = true;
+        this.childExitCode = code;
+        this.childExitSignal = signal;
+        this.childIdentity = null;
       }
     });
 
     const rl = readline.createInterface({
-      input: this.child.stdout,
+      input: child.stdout,
       crlfDelay: Infinity,
     });
     rl.on("line", (line) => {
@@ -1571,23 +1936,42 @@ export class AcpClient {
       this.lineQueue = this.lineQueue.then(() => this.handleLine(line));
     });
 
+    try {
+      this.childIdentity = await captureSpawnedProcessIdentity(child, "ACP agent", this.processSystem);
+    } catch (error) {
+      throw await this.normalizeStartupFailure(error);
+    }
+    if (!this.childIdentity || this.childExitObserved || !this.isUsable()) {
+      throw await this.normalizeStartupFailure(
+        acpProcessCleanupError(
+          "ACP agent transport closed during startup",
+          "ACP_AGENT_TRANSPORT_CLOSED_DURING_STARTUP",
+        ),
+      );
+    }
+
     this.markActivity();
 
-    const initialized = await this.request("initialize", {
-      protocolVersion: PROTOCOL_VERSION,
-      clientCapabilities: {
-        fs: {
-          readTextFile: true,
-          writeTextFile: true,
+    let initialized: AcpInitializeResult;
+    try {
+      initialized = await this.request("initialize", {
+        protocolVersion: PROTOCOL_VERSION,
+        clientCapabilities: {
+          fs: {
+            readTextFile: true,
+            writeTextFile: true,
+          },
+          terminal: true,
         },
-        terminal: true,
-      },
-      clientInfo: {
-        name: "cpb",
-        title: "CodePatchbay",
-        version: "0.1.0",
-      },
-    }) as AcpInitializeResult;
+        clientInfo: {
+          name: "cpb",
+          title: "CodePatchbay",
+          version: "0.1.0",
+        },
+      }) as AcpInitializeResult;
+    } catch (error) {
+      throw await this.normalizeStartupFailure(error);
+    }
 
     if (initialized.protocolVersion !== PROTOCOL_VERSION) {
       throw new Error(`unsupported ACP protocol version: ${initialized.protocolVersion}`);
@@ -1612,6 +1996,9 @@ export class AcpClient {
   async promptOnce(prompt = this.prompt, cwd = this.cwd) {
     const initialized = await this.start();
     const mcpServers = buildMcpServers(this.agent, this.env);
+    const summarizeSessionMcpServers = (servers: McpServerConfig[]) => summarizeMcpServers(servers, {
+      includeArgs: !this.auditEnv.CPB_PROVIDER_PREFLIGHT_NONCE,
+    });
     const usageBefore = cloneUsageTotals(this.usageTotals);
     const usageReportedBefore = { ...this.usageReportedCounts };
     const nativeUsageCursor = await captureNativeUsageCursor(
@@ -1621,16 +2008,16 @@ export class AcpClient {
     const newSession = async (servers: McpServerConfig[]) => {
       await this.recordAudit("session_new_request", {
         cwd,
-        mcpServers: summarizeMcpServers(servers),
-        mcpServerNames: summarizeMcpServers(servers).map((server) => server.name).filter(Boolean),
+        mcpServers: summarizeSessionMcpServers(servers),
+        mcpServerNames: summarizeSessionMcpServers(servers).map((server) => server.name).filter(Boolean),
       });
       try {
         const session = await this.request("session/new", { cwd, mcpServers: servers });
         await this.recordAudit("session_new", {
           cwd,
           sessionId: session.sessionId || null,
-          mcpServers: summarizeMcpServers(servers),
-          mcpServerNames: summarizeMcpServers(servers).map((server) => server.name).filter(Boolean),
+          mcpServers: summarizeSessionMcpServers(servers),
+          mcpServerNames: summarizeSessionMcpServers(servers).map((server) => server.name).filter(Boolean),
         });
         return session;
       } catch (error) {
@@ -1638,7 +2025,7 @@ export class AcpClient {
           await this.recordAudit("session_new_mcp_fallback", {
             cwd,
             reason: error.message || "session/new rejected mcpServers",
-            mcpServerNames: summarizeMcpServers(servers).map((server) => server.name).filter(Boolean),
+            mcpServerNames: summarizeSessionMcpServers(servers).map((server) => server.name).filter(Boolean),
           });
           const session = await this.request("session/new", { cwd, mcpServers: [] });
           await this.recordAudit("session_new", {
@@ -1778,10 +2165,10 @@ export class AcpClient {
   async close() {
     this.clearIdleTimer();
     this.clearSessionUpdateIdleTimer();
-    this.terminateTerminals("SIGTERM");
+    await this.terminateTerminals("SIGTERM");
     if (!this.child || this.closed) {
-      this.terminateTerminals("SIGKILL", { drop: true });
-      this.terminateAgentProcessTree("SIGKILL");
+      await this.terminateTerminals("SIGKILL", { drop: true });
+      await this.terminateAgentProcessTree("SIGKILL");
       return;
     }
     await this.closeActiveSession("client_close");
@@ -1790,21 +2177,27 @@ export class AcpClient {
       child.once("close", resolve);
     });
     child.stdin.end();
+    let terminatePromise: Promise<unknown> = Promise.resolve();
+    let killPromise: Promise<unknown> = Promise.resolve();
     const terminateTimer = setTimeout(() => {
-      if (!this.closed) this.terminateAgentProcessTree("SIGTERM");
+      if (!this.closed) terminatePromise = this.terminateAgentProcessTree("SIGTERM");
     }, 500).unref();
     const killTimer = setTimeout(() => {
       if (!this.closed) {
-        this.terminateTerminals("SIGKILL", { drop: true });
-        this.terminateAgentProcessTree("SIGKILL");
+        killPromise = Promise.all([
+          this.terminateTerminals("SIGKILL", { drop: true }),
+          this.terminateAgentProcessTree("SIGKILL"),
+        ]);
       }
     }, 1_500).unref();
     const waitTimer = new Promise((resolve) => setTimeout(resolve, 2_000));
     await Promise.race([closed, waitTimer]);
     clearTimeout(terminateTimer);
     clearTimeout(killTimer);
-    this.terminateTerminals("SIGKILL", { drop: true });
-    this.terminateAgentProcessTree("SIGKILL");
+    await terminatePromise;
+    await killPromise;
+    await this.terminateTerminals("SIGKILL", { drop: true });
+    await this.terminateAgentProcessTree("SIGKILL");
   }
 
   waitForTerminalExitStatus(terminal: TerminalEntry | null | undefined, timeoutMs: number): Promise<TerminalExitStatus | null> {
@@ -1870,7 +2263,9 @@ export class AcpClient {
     this.clearIdleTimer();
     this.idleTimer = setTimeout(() => {
       void this.recordAudit("prompt_idle_timeout", { timeoutMs: this.idleTimeoutMs });
-      this.terminateAgentProcessTree("SIGTERM");
+      void this.terminateAgentProcessTree("SIGTERM").catch((error) => {
+        this.rejectAll(processTreeCleanupError(error));
+      });
       this.rejectAll(new Error(`ACP prompt idle timed out after ${this.idleTimeoutMs}ms without activity`));
     }, this.idleTimeoutMs);
     this.idleTimer.unref();
@@ -1885,7 +2280,9 @@ export class AcpClient {
         timeoutMs: this.sessionUpdateIdleTimeoutMs,
         reason,
       });
-      this.terminateAgentProcessTree("SIGTERM");
+      void this.terminateAgentProcessTree("SIGTERM").catch((error) => {
+        this.rejectAll(processTreeCleanupError(error));
+      });
       this.rejectAll(new Error(reason));
     }, this.sessionUpdateIdleTimeoutMs);
     this.sessionUpdateIdleTimer.unref();
@@ -1912,26 +2309,39 @@ export class AcpClient {
     }
   }
 
-  terminateAgent(signal: NodeJS.Signals) {
-    if (!this.child?.pid) return;
-    try {
-      if (process.platform !== "win32") {
-        process.kill(-this.child.pid, signal);
-      } else {
-        this.child.kill(signal);
-      }
-    } catch {
-      try {
-        this.child.kill(signal);
-      } catch {
-        // Process already exited.
-      }
-    }
+  async terminateAgent(signal: NodeJS.Signals) {
+    if (!this.child?.pid || !this.childIdentity) return;
+    await killTree(
+      this.childIdentity.pid,
+      signal === "SIGTERM" ? 500 : 0,
+      {
+        expectedRootIdentity: this.childIdentity,
+        requireDescendantScan: true,
+        forceVerifyMs: signal === "SIGTERM" ? 1_500 : 500,
+        ...(this.processSystem ? { system: this.processSystem } : {}),
+      },
+    );
   }
 
-  terminateAgentProcessTree(signal: NodeJS.Signals) {
-    this.terminateAgent(signal);
-    this.terminateResidualProcesses(signal);
+  terminateAgentProcessTree(signal: NodeJS.Signals): Promise<void> {
+    if (this.agentTeardown) return this.agentTeardown;
+    const cleanup = (async () => {
+      const [agent, residual] = await Promise.allSettled([
+        this.terminateAgent(signal),
+        this.terminateResidualProcesses(signal),
+      ]);
+      const errors = [agent, residual]
+        .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+        .map((result) => result.reason);
+      if (errors.length === 1) throw errors[0];
+      if (errors.length > 1) throw new AggregateError(errors, "multiple ACP process tree cleanups failed");
+    })();
+    let tracked: Promise<void>;
+    tracked = cleanup.finally(() => {
+      if (this.agentTeardown === tracked) this.agentTeardown = null;
+    });
+    this.agentTeardown = tracked;
+    return tracked;
   }
 
   residualProcessPaths() {
@@ -1962,7 +2372,7 @@ export class AcpClient {
       .filter(isNarrowResidualProcessPath);
   }
 
-  terminateResidualProcesses(signal: NodeJS.Signals) {
+  async terminateResidualProcesses(signal: NodeJS.Signals) {
     const excludePids = new Set([process.pid]);
     if (this.child?.pid) excludePids.add(this.child.pid);
     const seen = new Set<string>();
@@ -1971,36 +2381,56 @@ export class AcpClient {
       const resolved = path.resolve(candidate);
       if (seen.has(resolved)) continue;
       seen.add(resolved);
-      signaled += terminateProcessesMatchingPath(resolved, signal, excludePids);
+      signaled += await terminateProcessesMatchingPath(resolved, signal, excludePids, {
+        ownedIdentities: this.ownedResidualProcessIdentities(),
+        ...(this.processSystem ? { system: this.processSystem } : {}),
+      });
     }
     return signaled;
   }
 
-  signalTerminal(terminal: TerminalEntry, signal: NodeJS.Signals) {
-    if (!terminal?.child?.pid) return;
-    try {
-      if (terminal.detached && process.platform !== "win32") {
-        process.kill(-terminal.child.pid, signal);
-      } else {
-        terminal.child.kill(signal);
-      }
-    } catch {
-      try {
-        terminal.child.kill(signal);
-      } catch {
-        // Process already exited.
-      }
-    }
+  ownedResidualProcessIdentities() {
+    return [
+      this.childIdentity,
+      ...[...this.terminals.values()].map((terminal) => terminal.identity),
+    ];
   }
 
-  terminateTerminals(signal: NodeJS.Signals, { drop = false, cwd = null }: { drop?: boolean; cwd?: string | null } = {}) {
+  signalTerminal(terminal: TerminalEntry, signal: NodeJS.Signals): Promise<void> {
+    if (!terminal?.identity) return Promise.resolve();
+    if (terminal.teardown) return terminal.teardown;
+    const cleanup = killTree(
+      terminal.identity.pid,
+      signal === "SIGTERM" ? 500 : 0,
+      {
+        expectedRootIdentity: terminal.identity,
+        requireDescendantScan: true,
+        forceVerifyMs: signal === "SIGTERM" ? 1_500 : 500,
+        ...(this.processSystem ? { system: this.processSystem } : {}),
+      },
+    );
+    let tracked: Promise<void>;
+    tracked = cleanup.finally(() => {
+      if (terminal.teardown === tracked) terminal.teardown = null;
+    });
+    terminal.teardown = tracked;
+    return tracked;
+  }
+
+  async terminateTerminals(signal: NodeJS.Signals, { drop = false, cwd = null }: { drop?: boolean; cwd?: string | null } = {}) {
     const target = cwd ? path.resolve(cwd) : null;
+    const cleanups: Promise<void>[] = [];
+    const selectedIds: string[] = [];
     for (const [terminalId, terminal] of this.terminals) {
       if (target && path.resolve(terminal.cwd || this.cwd) !== target) continue;
+      selectedIds.push(terminalId);
       if (!terminal.exitStatus) {
-        this.signalTerminal(terminal, signal);
+        cleanups.push(this.signalTerminal(terminal, signal));
       }
-      if (drop) this.terminals.delete(terminalId);
+    }
+    await Promise.all(cleanups);
+    if (drop) {
+      for (const terminalId of selectedIds) this.terminals.delete(terminalId);
     }
   }
 
@@ -2018,13 +2448,13 @@ export class AcpClient {
     });
 
     for (const [, terminal] of entries) {
-      if (!terminal.exitStatus) this.signalTerminal(terminal, "SIGTERM");
+      if (!terminal.exitStatus) await this.signalTerminal(terminal, "SIGTERM");
     }
     await Promise.all(entries.map(([, terminal]) => this.waitForTerminalExitStatus(terminal, termGraceMs)));
 
     for (const [, terminal] of entries) {
       if (!terminal.exitStatus && terminal.child.exitCode === null && terminal.child.signalCode === null) {
-        this.signalTerminal(terminal, "SIGKILL");
+        await this.signalTerminal(terminal, "SIGKILL");
       }
     }
     await Promise.all(entries.map(([, terminal]) => this.waitForTerminalExitStatus(terminal, killGraceMs)));
@@ -2139,10 +2569,10 @@ export class AcpClient {
           this.respond(message.id, await this.waitForTerminalExit(message.params as TerminalIdParams));
           break;
         case "terminal/kill":
-          this.respond(message.id, this.killTerminal(message.params as TerminalIdParams));
+          this.respond(message.id, await this.killTerminal(message.params as TerminalIdParams));
           break;
         case "terminal/release":
-          this.respond(message.id, this.releaseTerminal(message.params as TerminalIdParams));
+          this.respond(message.id, await this.releaseTerminal(message.params as TerminalIdParams));
           break;
         default:
           if (Object.hasOwn(message, "id")) {
@@ -2244,7 +2674,9 @@ export class AcpClient {
         noEditIdleTimeoutMs: timeoutMs,
         reason,
       });
-      this.terminateAgentProcessTree("SIGTERM");
+      void this.terminateAgentProcessTree("SIGTERM").catch((error) => {
+        this.rejectAll(processTreeCleanupError(error));
+      });
       this.rejectAll(new Error(reason));
     }, timeoutMs);
     // This guard is part of the request's completion contract. Keeping it
@@ -2512,9 +2944,12 @@ export class AcpClient {
       stdio: ["ignore", "pipe", "pipe"],
       detached,
     });
+    const identity = await captureSpawnedProcessIdentity(child, "ACP terminal", this.processSystem);
 
     const terminal: TerminalEntry = {
       child,
+      identity,
+      teardown: null,
       cwd: terminalCwd,
       detached,
       output: "",
@@ -2580,15 +3015,15 @@ export class AcpClient {
     return new Promise<TerminalExitStatus>((resolve) => terminal.waiters.push(resolve));
   }
 
-  killTerminal(params: TerminalIdParams) {
+  async killTerminal(params: TerminalIdParams) {
     const terminal = this.getTerminal(params.terminalId);
-    if (!terminal.exitStatus) this.signalTerminal(terminal, "SIGTERM");
+    if (!terminal.exitStatus) await this.signalTerminal(terminal, "SIGTERM");
     return null;
   }
 
-  releaseTerminal(params: TerminalIdParams) {
+  async releaseTerminal(params: TerminalIdParams) {
     const terminal = this.getTerminal(params.terminalId);
-    if (!terminal.exitStatus) this.signalTerminal(terminal, "SIGTERM");
+    if (!terminal.exitStatus) await this.signalTerminal(terminal, "SIGTERM");
     this.terminals.delete(params.terminalId);
     return null;
   }

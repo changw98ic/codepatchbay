@@ -23,20 +23,19 @@ An adversarial architecture review reclassified two recurring "remaining
 debt" items from the checkpoint log below:
 
 - **"DAG execution is still sequential despite the contract being DAG-shaped"**
-  — Reclassified as **low-ROI-now, not never**. All five built-in workflows
-  (`standard`, `direct`, `complex`, `blocked`, `accelerated`) normalize to
-  single-chain DAGs (`core/workflow/definition.ts:144-153`), and the scheduler
-  `dagSequentialExecutionPlan` (`core/engine/run-job-planning.ts:80`) keeps only
-  the first ready node per round, so `scheduleReadyNodes`
-  (`core/workflow/dag-executor.ts:248`) is effectively dead at runtime — a
-  typical run has exactly **1 ready node**. BUT the contract is not purely
-  sequential by design: `registerDagWorkflow`
-  (`core/workflow/definition.ts:242`) accepts custom DAGs with
-  `maxConcurrentNodes` (default 2). A wide custom workflow would register
-  correctly today but still execute serially, because the scheduler discards
-  extra ready nodes. A parallel executor has real ROI only once a wide
-  workflow is actually registered; none ships today. Sequential execution is
-  the current state, not a closed design decision.
+  — Reclassified as **closed only for the bounded-safe subset, not for arbitrary
+  phases**. The original note was accurate for the early stabilization
+  checkpoints: built-in workflows normalized to single chains, and the runtime
+  scheduler kept one ready node per round. G003 changes the current contract:
+  the materialized DAG now reports `executionMode:
+  "bounded_dependency_parallel"` and allows concurrent ready nodes only for
+  canonical read-only `review` nodes. Mutating, custom, side-effecting, plan,
+  execute, verify, adversarial verify, resume-completed, and
+  `parallelSafe: false` nodes remain exclusive. Conflict keys serialize a stable
+  ready-prefix, durable effects commit in stable topological node order, and
+  cancellation/failure propagates to unexecuted downstream nodes. This closes
+  the previous "parallel not ready at all" blocker without broadening the safety
+  model to arbitrary workflow nodes.
 
 - **"strict mode still excludes `run-job.ts`"** — **Resolved (commit
   `057c4e77`):** `run-job.ts` is now in the strict-engine gate. An earlier
@@ -66,9 +65,9 @@ debt" items from the checkpoint log below:
   keep local narrowed views — intentional, not debt: they don't cross
   function signatures, so they don't force as-assertions.
 
-The only stabilization item that remains open is the flagship GitHub Issue
--> draft PR path, which by design requires a 3-maintainer/team manual
-validation that automation cannot substitute (see
+The remaining stabilization item outside G003 is the flagship GitHub Issue ->
+draft PR path, which by design requires a 3-maintainer/team manual validation
+that automation cannot substitute (see
 `docs/product/cpb-flagship-validation-gate.md`).
 
 ## Baseline Metrics
@@ -739,6 +738,35 @@ Verified after the checkpoint:
 | --- | --- |
 | `npm run build:node && npm run build:tests && node dist/scripts/run-node-tests.js tests/runtime-artifact-events.test.js tests/engine-run-job.test.js tests/strict-engine-gate.test.js tests/verify-p0p1-runner.test.js` | pass, 36 checks |
 | `npm run typecheck` | pass |
+
+## Remediation Checkpoint 14
+
+This checkpoint adds an explicit promotion boundary for live release evidence:
+
+- `scripts/promote-live-release-evidence.ts` promotes a real provider run from a
+  required `--run-root` into a unique repo-local directory under
+  `docs/product/evidence/live-release/runs/`.
+- Promotion rejects source paths outside the declared run root, symlinks,
+  non-regular files, missing artifacts, and byte/SHA-256/fragment mismatches.
+- Provider-only promotion can publish a provider bundle without writing
+  `docs/product/cpb-live-release-validation.json`, which keeps the GitHub
+  rehearsal gate blocking until an explicitly authorized disposable target is
+  available.
+- When draft-PR rehearsal evidence is provided for the same `--run-id`,
+  promotion can reuse an existing provider-only run directory only if it exactly
+  matches a freshly staged canonical promotion of the supplied provider report:
+  regular files only, no extra draft/finalization content, matching artifact
+  paths, byte counts, SHA-256 digests, source manifest, and provider validation.
+- Final promotion copies the draft rehearsal into the same run directory and
+  writes the final live-release manifest only after the existing full verifier
+  passes against a staged manifest. Verification failure removes the draft and
+  manifest candidate while preserving the verified provider-only bundle.
+- This removes manual report copying and manual manifest editing from the live
+  release path.
+
+Verification for this checkpoint is tracked by
+`tests/promote-live-release-evidence.test.ts` and the npm entrypoint
+`promote:live-release-evidence`.
 | `npm run typecheck:strict:engine` | pass |
 | `npm run typecheck:type-debt:engine` | pass |
 | `npm run verify:p0p1` | pass, 195 focused node checks, 2 demo integration checks, 8 managed-worker isolated checks, CLI smoke; live/full skipped by default |
@@ -2016,6 +2044,9 @@ the flagship release gate evidence:
   recording to strict-checked helpers.
 - `core/engine/run-job.ts` is included in `tsconfig.strict-engine.json`; there
   are no remaining strict-engine legacy exclusions.
+- `core/engine/run-job-ports.ts` now owns the explicit state and infrastructure
+  contracts consumed by `runJob`; the production implementation remains wired
+  once in `server/services/engine-runner.ts`.
 - `scripts/type-debt-allowlist.json` is empty, and `npm run
   typecheck:type-debt:engine` is now a zero-allowlist guard for broad type debt
   in the strict execution-kernel scope.
@@ -2048,7 +2079,8 @@ Current stabilization metrics after this checkpoint:
 | Metric | Current |
 | --- | ---: |
 | strict-engine legacy exclusions | 0 |
-| `core/engine/run-job.ts` line count | 276 |
+| `core/engine/run-job.ts` line count | 210 |
+| `core/engine/run-job-ports.ts` line count | 89 |
 | `core/engine/run-job-checklist-dag.ts` line count | 319 |
 | `core/engine/run-job-execute-dag.ts` line count | 508 |
 | `core/engine/run-job-prepare.ts` line count | 268 |
@@ -2087,3 +2119,317 @@ Verified after the checkpoint:
 | `npm test` | pass, 1016 unit checks, 8 isolated unit checks, 17 integration checks, 49 isolated integration checks, shell smoke |
 | `npm run verify:p0p1` | pass, static diff check, 356 focused unit checks, 4 isolated runner self-checks, 2 demo integration checks, 10 managed-worker isolated checks, CLI smoke; live/full skipped by default |
 | `npm run build:node && npm run build:tests && node dist/scripts/run-node-tests.js tests/product-gate.test.js tests/release-readiness-report.test.js` | pass, 14 checks |
+
+## Remediation Checkpoint 36
+
+This checkpoint completes the `runJob` port-boundary evolution without moving
+the modular monolith to services or introducing a second runtime assembly path:
+
+- `RunJobContext` is the exact intersection of core-owned state and ports; the
+  prepare, assurance, checklist, execute, and lifecycle helpers declare only
+  the state and capabilities they consume.
+- checklist decomposition receives the job id materialized by `createJob`, so a
+  caller-supplied provisional id can no longer leak into planner metadata.
+- provider pool, provider service payloads, and process hooks each have one
+  core-owned contract. The artifact-index broker envelope is shared-owned and
+  the core port derives from it, so `shared/` no longer imports `core/`.
+  Server adapters implement those contracts instead of relying on
+  helper-local `unknown` or duplicated shapes.
+- primary, provider-fallback, and ordinary phase-retry execution forward scope,
+  cancellation, child-process registration, progress, and conversation identity
+  explicitly into `runPhase`; verifier hard gates therefore receive the same
+  runtime controls on every path. Phase adapters retain environment construction
+  ownership.
+- `server/services/engine-runner.ts` remains the single production composition
+  root. `bridges/engine-bridge.ts` imports it directly; setup events, provider
+  variants, and executor-root utilities have separate owning modules rather
+  than a broad cross-domain aggregate.
+- project runtime-root artifact lookup and local/broker job-state adapters are
+  covered by composition contract tests. No storage layout, event shape,
+  provider fallback semantics, or sequential DAG behavior was changed.
+
+Current stabilization metrics after this checkpoint:
+
+| Metric | Current |
+| --- | ---: |
+| strict-engine legacy exclusions | 0 |
+| `core/engine/run-job.ts` line count | 210 |
+| `core/engine/run-job-ports.ts` line count | 100 |
+| `core/engine/run-job-prepare.ts` line count | 280 |
+| `core/engine/run-job-assurance.ts` line count | 493 |
+| `core/engine/run-job-checklist-dag.ts` line count | 372 |
+| `core/engine/run-job-execute-dag.ts` line count | 1211 |
+| `core/engine/run-job-lifecycle.ts` line count | 153 |
+| `core/engine/phase-retry.ts` line count | 611 |
+| `core/engine/run-job-shared.ts` line count | 112 |
+| type-debt allowlist entries | 0 |
+
+Remaining debt after this checkpoint:
+
+- DAG execution remains deliberately sequential; the port evolution does not
+  claim readiness for parallel node scheduling.
+- `runPhase` and individual phase adapters still expose dynamic JSON/plugin
+  boundaries outside this `runJob` helper slice.
+- live provider and live draft-PR release rehearsals remain opt-in, and the
+  manual three-maintainer/team product validation gate is still outstanding.
+
+Verified during this checkpoint:
+
+| Command | Result |
+| --- | --- |
+| `npm run build:node` | pass |
+| `npm run build:tests` | pass |
+| `npm run typecheck:node` | pass |
+| `npm run typecheck:strict:engine` | pass |
+| `npm run typecheck:type-debt:engine` | pass, zero allowlist |
+| focused runJob/composition/provider/artifact/boundary/phase-budget suite | pass, 156/156; detached process-tree checks pass 9/9 outside the parent sandbox |
+| `CHOKIDAR_USEPOLLING=1 CHOKIDAR_INTERVAL=100 node dist/scripts/run-node-tests.js tests/integration/managed-worker.test.ts` outside the parent sandbox | pass, 14/14; polling avoids host watcher exhaustion and the outer run permits the test's nested `sandbox-exec` |
+| managed-worker env-forwarding A/B outside the sandbox | removing full default `process.env` forwarding restored the persistent session lifecycle check (1/1 pass); `scope`/`signal`/`processHooks` remain explicit |
+| changed-files `ai-slop-cleaner` | `CLEAN/PASS`; masking provider fallback removed, grounded fail-safe paths retained |
+| `CHOKIDAR_USEPOLLING=1 CHOKIDAR_INTERVAL=100 npm test` outside the parent sandbox | pass, 1525 unit checks, 81 isolated unit checks, 75 integration checks, 104 isolated integration checks, shell smoke |
+
+## Remediation Checkpoint 37
+
+This checkpoint closes the dynamic JSON/plugin/broker boundary debt that
+remained after the `runJob` port evolution:
+
+- pipeline and phase bridges now parse project metadata and worktree-manager
+  output through named fail-closed contracts. Only a genuinely missing optional
+  file can fall back; malformed JSON and malformed fields retain file/command
+  context in their diagnostics.
+- phase adapter identifiers are path-safe, canonical phases require their named
+  exports, custom phases retain the same validated `run<Phase>` convention, and
+  every adapter result is checked as a canonical cross-phase-safe `PhaseResult`
+  before engine state consumes it.
+- the worker broker raw HTTP call is private. Public operations validate the
+  success envelope, operation-specific result shape, and returned project/job
+  identity. The transport injection used by contract tests still traverses the
+  same envelope and result validators.
+- artifact-index entries have one shared broker DTO/guard. Malformed artifact
+  entries and incomplete `artifact_created` events are rejected at ingress
+  instead of being silently ignored or projected as partial evidence.
+- provider quota, legacy rate-limit, and usage JSONL files reject corrupt JSON,
+  invalid status/reset/value fields, and poisoned lines with named durable-file
+  diagnostics. Canonical corruption never falls back to legacy state.
+- prompt source-context, phase environment, and parent-plan cache records are
+  validated before use. Project/cache identifiers are path-safe, cached
+  project/key identities must match the request, and stale or malformed records
+  fail closed.
+
+Remaining debt after this checkpoint:
+
+- DAG execution remains sequential; safe parallel scheduling, deterministic
+  joins, dependency failure propagation, and bounded cancellation are the next
+  architecture gate.
+- live provider and live draft-PR release rehearsals remain opt-in, and release
+  readiness still requires durable live evidence rather than synthetic-only
+  success.
+- the manual three-maintainer/team product validation gate remains outstanding.
+
+Verified during this checkpoint:
+
+| Command | Result |
+| --- | --- |
+| `npm run build:node` | pass |
+| `npm run build:tests` | pass |
+| `npm run typecheck` | pass |
+| `npm run typecheck:strict:engine` | pass |
+| `npm run typecheck:type-debt:engine` | pass, zero allowlist |
+| focused dynamic-contract, phase, provider, artifact, runtime-root and composition suites | pass, 108 unit checks + 1 isolated quota-delegate check |
+| `CHOKIDAR_USEPOLLING=1 CHOKIDAR_INTERVAL=100 node dist/scripts/run-node-tests.js tests/integration/hub-registry-redis.test.ts` outside the parent sandbox | pass, 57/57 real Redis/worker-broker integration checks |
+| `git diff --check` | pass |
+
+## Remediation Checkpoint 38
+
+This checkpoint changes the DAG execution contract from node-first sequential
+execution to bounded dependency-aware execution for the safe subset:
+
+- `workflow_dag_materialized` now reports `executionMode:
+  "bounded_dependency_parallel"`, `dagParallelExecutionReady: true`,
+  `dagUnsafeNodePolicy: "exclusive"`, `dagConflictPolicy:
+  "stable_prefix_serialization"`, and `dagDurableCommitOrder:
+  "stable_topological_node_order"`.
+- Ready-node batching is still conservative. Only canonical read-only `review`
+  nodes can run concurrently; unsafe phases (`plan`, `execute`, `verify`,
+  `adversarial_verify`), custom nodes, side-effecting nodes, resume-completed
+  nodes, and nodes marked `parallelSafe: false` run exclusive.
+- `conflictKey` / `conflictKeys` serialize otherwise safe review nodes by stable
+  ready-prefix, so two nodes touching the same audit surface cannot run in the
+  same wave.
+- Parallel node effects are buffered and replayed in stable DAG order. Actual
+  provider completion order does not decide durable `dag_node_*` ordering or
+  artifact-index visibility.
+- Cancellation, terminal failures, and thrown node errors propagate to active
+  or downstream nodes as `dag_node_cancelled`. The wave seals its buffers and
+  returns on the first terminal signal without waiting for a non-cooperative
+  sibling; thrown errors become one structured DAG failure rather than escaping
+  to the runJob panic barrier.
+- Parallel review artifacts use a two-phase reservation/commit boundary. A
+  successful wave commits each file in stable DAG order; abort, failure, and
+  late sibling completion discard the reservation and cannot leave a review
+  file or durable artifact-index entry.
+- Provider capacity is bounded at two levels: DAG ready-node selection respects
+  workflow concurrency/provider capacity, and ACP pool leases enforce effective
+  provider connection limits.
+
+Current regression coverage for this checkpoint:
+
+| Area | Evidence |
+| --- | --- |
+| Pure DAG scheduler | `tests/dag-executor.test.ts` covers independent overlap, joins, max concurrency, provider capacity including already-running leases, downstream failure blocking, abort-signal handling, and duplicate DAG rejection |
+| DAG builder | `tests/dag-builder.test.ts` covers duplicate IDs and dependency projection through filtered ancestors |
+| Real `runJob` DAG execution | `tests/engine-prepare-task.test.ts` covers overlapping read-only reviews, exclusive mutating execute siblings, conflict-key serialization, non-cooperative abort, terminal failure, thrown rejection, downstream cancellation, deterministic durable ordering, and artifact commit/discard integrity |
+
+Remaining debt after this checkpoint:
+
+- The bounded parallel contract is intentionally narrower than arbitrary DAG
+  parallelism. New phase types or side-effecting custom nodes must prove
+  read-only state isolation before entering the parallel candidate set.
+- Live provider and live draft-PR release rehearsals remain opt-in, and release
+  readiness still requires durable live evidence rather than synthetic-only
+  success.
+- The manual three-maintainer/team product validation gate remains outstanding.
+
+## Remediation Checkpoint 39
+
+This checkpoint reclassifies live release evidence gaps as blocking release
+readiness issues rather than non-blocking residual risks:
+
+- `docs/product/cpb-live-release-validation.json` is now the mandatory live
+  release evidence manifest for the flagship path.
+- `npm run verify:live-release-evidence` validates SHA-256-bound local JSON
+  references for live provider connectivity, disposable draft-PR rehearsal, and
+  representative product evidence.
+- Provider connectivity must come from a fresh live preflight. Structural or
+  synthetic provider checks cannot satisfy release readiness.
+- Draft PR evidence must come from an explicitly marked disposable target
+  repository, must not target the current origin, must create a draft PR, and
+  must prove the PR was closed and the rehearsal branch deleted.
+- Product evidence remains mandatory: at least 3 representative records and at
+  least 1 validated official scorer bundle.
+- `npm run report:release-readiness` and `npm run verify:release-gate` fail
+  closed when the live release evidence manifest or any referenced bundle is
+  missing, stale, malformed, hash-mismatched, or unresolved.
+- `docs/product/cpb-live-release-validation.template.json` documents the
+  manifest shape but is intentionally invalid evidence. Placeholder values must
+  never be counted as release evidence.
+
+Live-release execution notes:
+
+- provider routes and configured provider env keys resolve, but release
+  readiness still requires a fresh zero-retry live provider batch. Earlier
+  diagnostic runs are not release evidence if they used `--dry-run`, failed a
+  live handshake, retained a retry/failure contradiction, omitted the
+  adversarial phase, or left residual runtime evidence.
+- GitHub authentication and the disposable target repository must be verified at
+  execution time. A missing token, inaccessible repository, or repository
+  without the required `.cpb-disposable-target.json` authorization marker is a
+  blocking release-readiness condition.
+
+Therefore live provider connectivity and disposable draft-PR rehearsal remain
+blocking until the required live paths are executed safely. The expected
+readiness result before that evidence exists is `ready: false`.
+
+Required live-readiness commands:
+
+```sh
+RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
+LIVE_ROOT="/private/tmp/cpb-live-release-provider-${RUN_ID}"
+mkdir -p "$LIVE_ROOT"/{hub,cpb,sources}
+
+npm run queue:swebench-batch -- --count 1 --include-existing \
+  --hub-root "$LIVE_ROOT/hub" \
+  --cpb-root "$LIVE_ROOT/cpb" \
+  --source-root "$LIVE_ROOT/sources" \
+  --start-workers 1 \
+  --wait \
+  --wait-timeout-ms 2400000 \
+  --provider-preflight live \
+  --output "$LIVE_ROOT/provider-manifest.json" \
+  --report-output "$LIVE_ROOT/provider-connectivity.json" \
+  --no-notify
+
+npm run promote:live-release-evidence -- \
+  --run-root "$LIVE_ROOT" \
+  --provider-report "$LIVE_ROOT/provider-connectivity.json" \
+  --provider-only \
+  --run-id "$RUN_ID"
+
+CPB_DISPOSABLE_DRAFT_PR_REHEARSAL_ACK=execute-disposable-draft-pr:owner/repo \
+  npm run rehearse:disposable-draft-pr -- --repository owner/repo --execute \
+  --output "$LIVE_ROOT/draft-pr-rehearsal.json"
+
+npm run promote:live-release-evidence -- \
+  --run-root "$LIVE_ROOT" \
+  --provider-report "$LIVE_ROOT/provider-connectivity.json" \
+  --draft-rehearsal "$LIVE_ROOT/draft-pr-rehearsal.json" \
+  --run-id "$RUN_ID"
+
+npm run verify:live-release-evidence
+npm run report:release-readiness
+```
+
+Provider connectivity is valid only when the report shows exactly one completed
+representative job, zero job/phase retries, all five artifacted live phases
+(`prepare_task`, `plan`, `execute`, `verify`, `adversarial_verify`), generated
+patch and regression evidence in the source checkout, and matching
+source-manifest/report provider preflight evidence. Each live provider route
+must retain a hash-bound phase-output JSON equal to its handshake, a derived
+control-plane audit whose output-path binding is recomputed after promotion, and
+a replayable raw audit JSONL; all three must remain ordinary files inside the
+promoted live-evidence run directory. Strict cleanup must report no residuals
+and include the closed
+`runtime/worker/managed-worker.ts#stopAssignmentCodeGraphRuntime` proof from
+cleanup attempt 1, with matching job identity, ordered timestamps, a stopped
+process tree, and removed CodeGraph state.
+
+## Remediation Checkpoint 40
+
+This checkpoint closes process-global environment leakage across the `runJob`
+execution boundary:
+
+- `runJob` snapshots one job-local environment, binds canonical Hub, CPB,
+  project-runtime, and source roots to it, and never publishes those values by
+  mutating `process.env`. Concurrent jobs can therefore carry conflicting
+  roots, retry budgets, phase timeouts, provider handoff limits, and policy
+  markers without observing one another.
+- checklist decomposition, CodeGraph context, high-assurance planning, phase
+  routing, retry/repair limits, provider fallback, completion gates, hard gates,
+  deterministic probes, and evidence-pack commands all consume the job-local
+  environment. Explicit empty environments remain authoritative; ambient
+  fallback is retained only for callers that omit the environment entirely.
+- candidate capture, persisted replay bundles, disposable verification
+  worktrees, clean-oracle worktrees, and all related Git subprocesses receive
+  the same explicit environment. Temporary `GIT_INDEX_FILE` state extends that
+  environment instead of merging ambient process state.
+- session cache reads, writes, clears, and cleanup use an explicit project
+  runtime root. Persistent ACP client/session keys include the effective
+  normalized data root, preventing a live provider process or resumed session
+  from crossing runtime boundaries.
+- ACP execution and provider-slot timeout defaults are resolved from the pool's
+  runtime environment. They are no longer frozen from ambient variables at
+  module import time.
+
+Current stabilization metrics after this checkpoint:
+
+| Metric | Current |
+| --- | ---: |
+| strict-engine legacy exclusions | 0 |
+| `core/engine/run-job.ts` line count | 203 |
+| type-debt allowlist entries | 0 |
+
+Release remains blocked after this checkpoint until a fresh zero-retry,
+five-phase live provider run is promoted and an explicitly authorized,
+marker-bound disposable GitHub repository completes the create-draft/close/
+delete-branch rehearsal in the same evidence run.
+
+Verified during this checkpoint:
+
+| Command | Result |
+| --- | --- |
+| `npm run typecheck` | pass |
+| `npm run build:node` | pass |
+| `npm run build:tests` | pass |
+| focused env/dataRoot/candidate/checklist/retry/provider/verification suite | pass, 164 unit checks + 3 isolated unit checks + 72 isolated integration checks |
+| `npm test` | pass, 1722 unit checks + 98 isolated unit checks + 75 integration checks + 120 isolated integration checks + shell smoke |
+| `git diff --check` and `git diff --cached --check` | pass |

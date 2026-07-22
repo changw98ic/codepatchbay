@@ -7,8 +7,16 @@ import { mkdir } from "node:fs/promises";
 import { open, type FileHandle } from "node:fs/promises";
 import { LooseRecord } from "../../shared/types.js";
 import { WorkerStore } from "../../shared/orchestrator/worker-store.js";
-import { executorEnv, resolveExecutorRoot } from "../services/setup.js";
+import { executorEnv, resolveExecutorRoot } from "../services/executor-root.js";
 import { assertHubWritable } from "../../shared/hub-maintenance.js";
+import {
+  captureProcessIdentity,
+  isProcessIdentityAlive,
+  killTree,
+  sameProcessIdentity,
+  type ProcessIdentity,
+  type ProcessTreeSystem,
+} from "../../core/runtime/process-tree.js";
 
 const IDLE_STOP_MS = 600_000; // 10 min idle → stop worker
 const HEARTBEAT_STALE_MS = 60_000; // 60s without heartbeat → unhealthy
@@ -20,8 +28,12 @@ export class WorkerSupervisor {
   executorRoot: string;
   workers: WorkerStore;
   _children: Map<string, ChildProcess>;
+  _pendingStops: Map<string, { incarnationToken: string | null; processIdentity: ProcessIdentity; reason: string }>;
+  _processSystem?: ProcessTreeSystem;
+  _killGraceMs: number;
+  _forceVerifyMs?: number;
 
-  constructor(hubRoot: string, cpbRoot: string, { workerStore, executorRoot }: LooseRecord = {}) {
+  constructor(hubRoot: string, cpbRoot: string, { workerStore, executorRoot, processSystem, killGraceMs, forceVerifyMs }: LooseRecord = {}) {
     this.hubRoot = path.resolve(hubRoot);
     this.cpbRoot = path.resolve(cpbRoot);
     this.executorRoot = path.resolve(executorRoot || resolveExecutorRoot({
@@ -30,6 +42,10 @@ export class WorkerSupervisor {
     }));
     this.workers = workerStore instanceof WorkerStore ? workerStore : new WorkerStore(this.hubRoot);
     this._children = new Map(); // workerId → ChildProcess
+    this._pendingStops = new Map();
+    this._processSystem = processSystem as ProcessTreeSystem | undefined;
+    this._killGraceMs = Number.isFinite(Number(killGraceMs)) ? Number(killGraceMs) : 2_000;
+    this._forceVerifyMs = Number.isFinite(Number(forceVerifyMs)) ? Number(forceVerifyMs) : undefined;
   }
 
   async ensureWorkerFor(assignment: LooseRecord, worker: LooseRecord | null) {
@@ -109,64 +125,101 @@ export class WorkerSupervisor {
     child.unref();
     await logFd.close().catch(() => {});
 
-    this._children.set(workerId, child);
-
-    child.on("exit", async (code) => {
-      this._children.delete(workerId);
-      const current = await this.workers.getWorker(workerId);
-      const wasDeliberate = current?.status === "draining" || current?.stopReason || current?.exitSignal === "idle";
+    const childPid = child.pid;
+    if (!Number.isInteger(childPid) || Number(childPid) <= 0) {
       await this.workers.updateWorkerIf(workerId, {
         status: "exited",
-        exitCode: code,
         brokerTokenHash: null,
-      }, {
-        incarnationToken,
-      });
+        spawnError: "spawned worker did not expose a valid pid",
+      }, { incarnationToken });
+      throw Object.assign(new Error("spawned worker did not expose a valid pid"), { code: "WORKER_PID_UNAVAILABLE" });
+    }
 
-      const nextRestart = (current?.restartCount || 0) + 1;
-      if (!wasDeliberate && nextRestart <= MAX_RESTARTS) {
-        await this.workers.updateWorkerIf(workerId, {
-          restartCount: nextRestart,
-          status: "restarting",
-        }, {
-          incarnationToken,
-        });
-        try {
-          await this.startWorker({ ...assignment, _restartOf: workerId, _restartCount: nextRestart });
-        } catch (err) {
-          await this.workers.updateWorkerIf(workerId, {
-            status: "exhausted",
-            restartError: err.message,
-          }, {
-            incarnationToken,
-          });
-        }
-      } else if (!wasDeliberate) {
-        await this.workers.updateWorkerIf(workerId, {
-          status: "exhausted",
-        }, {
-          incarnationToken,
-        });
-      }
-    });
+    let processIdentity: ProcessIdentity | null = null;
+    let processIdentityError: Error | null = null;
+    try {
+      processIdentity = this._captureRequiredProcessIdentity(childPid as number);
+    } catch (error) {
+      processIdentityError = error instanceof Error ? error : new Error(String(error));
+    }
+    if (!processIdentity) {
+      const error = Object.assign(
+        new Error("worker process identity unavailable after spawn; cleanup not attempted without exact identity"),
+        {
+          code: "WORKER_PROCESS_IDENTITY_UNAVAILABLE",
+          cleanupVerified: false,
+          unregisteredChildPid: childPid,
+          cause: processIdentityError || undefined,
+        },
+      );
+      await this.workers.updateWorkerIf(workerId, {
+        pid: childPid,
+        processIdentity: null,
+        status: "unhealthy",
+        brokerTokenHash: null,
+        spawnError: error.message,
+        cleanupVerified: false,
+        recoveryError: "missing_process_identity",
+      }, { incarnationToken });
+      throw error;
+    }
 
-    worker = await this.workers.updateWorkerIf(workerId, { pid: child.pid }, { incarnationToken }) || worker;
+    this._children.set(workerId, child);
+    this._attachChildExitHandler({ child, workerId, incarnationToken, processIdentity, assignment });
+
+    const persisted = await this.workers.updateWorkerIf(workerId, { pid: childPid, processIdentity }, { incarnationToken });
+    if (!persisted) {
+      this._pendingStops.set(workerId, { incarnationToken, processIdentity, reason: "spawn_identity_persist_failed" });
+      await this._killIdentity(processIdentity);
+      this._pendingStops.delete(workerId);
+      throw Object.assign(new Error("worker incarnation changed before process identity was persisted"), { code: "WORKER_IDENTITY_PERSIST_FAILED" });
+    }
+    worker = persisted;
 
     return worker;
   }
 
   async stopWorker(workerId: string, reason: string) {
-    const child = this._children.get(workerId);
     const worker = await this.workers.getWorker(workerId);
-    if (!child && ["exited", "exhausted"].includes(String(worker?.status || ""))) return worker;
-    await this.workers.updateWorker(workerId, {
-      status: "draining",
-      stopReason: reason,
-    });
-    const pid = child?.pid || worker?.pid;
-    if (pid && (!worker?.host || worker.host === "local" || worker.host === os.hostname())) {
-      this._killProcessGroup(pid);
+    if (["exited", "exhausted"].includes(String(worker?.status || ""))) return worker;
+    if (!worker) return null;
+    if (!this._isLocalWorker(worker)) {
+      throw Object.assign(new Error(`worker ${workerId} is not local; refusing bare remote stop`), { code: "WORKER_NOT_LOCAL" });
     }
+    const identity = this._workerProcessIdentity(worker);
+    if (!identity) {
+      throw Object.assign(new Error(`worker ${workerId} has no persisted process identity; refusing bare pid stop`), {
+        code: "WORKER_PROCESS_IDENTITY_UNAVAILABLE",
+      });
+    }
+    if (worker.pid !== identity.pid) {
+      throw Object.assign(new Error(`worker ${workerId} pid does not match persisted process identity`), {
+        code: "WORKER_PROCESS_IDENTITY_MISMATCH",
+      });
+    }
+    const incarnationToken = typeof worker.incarnationToken === "string" ? worker.incarnationToken : null;
+    this._pendingStops.set(workerId, { incarnationToken, processIdentity: identity, reason });
+    try {
+      await this._killIdentity(identity);
+    } catch (error) {
+      this._pendingStops.delete(workerId);
+      throw error;
+    }
+    const updated = incarnationToken
+      ? await this.workers.updateWorkerIf(workerId, {
+        status: "exited",
+        stopReason: reason,
+        exitSignal: "stop",
+        brokerTokenHash: null,
+      }, { incarnationToken })
+      : await this.workers.updateWorker(workerId, {
+        status: "exited",
+        stopReason: reason,
+        exitSignal: "stop",
+        brokerTokenHash: null,
+      });
+    this._pendingStops.delete(workerId);
+    return updated;
   }
 
   async checkHealth() {
@@ -199,23 +252,174 @@ export class WorkerSupervisor {
       if (worker.status === "running" || worker.status === "assigned") {
         const lastHb = worker.lastHeartbeatAt ? new Date(worker.lastHeartbeatAt).getTime() : 0;
         if (now - lastHb > HEARTBEAT_STALE_MS * 2) {
-          if (!worker.host || worker.host === "local" || worker.host === os.hostname()) this._killProcessGroup(worker.pid);
-          await this.workers.updateWorker(worker.workerId, { status: "exited" });
+          if (this._isLocalWorker(worker)) {
+            const identity = this._workerProcessIdentity(worker);
+            if (!identity) {
+              await this.workers.updateWorkerIf(worker.workerId, {
+                status: "unhealthy",
+                recoveryError: "missing_process_identity",
+              }, { incarnationToken: worker.incarnationToken });
+              continue;
+            }
+            await this.stopWorker(worker.workerId, "stale_heartbeat");
+          }
         }
       }
       // Check if pid still alive
-      if (worker.pid && worker.status !== "exited" && (!worker.host || worker.host === "local" || worker.host === os.hostname())) {
-        try { process.kill(worker.pid, 0); } catch {
-          this._killProcessGroup(worker.pid);
-          await this.workers.updateWorker(worker.workerId, { status: "exited" });
+      if (worker.pid && worker.status !== "exited" && this._isLocalWorker(worker)) {
+        const identity = this._workerProcessIdentity(worker);
+        if (!identity) {
+          await this.workers.updateWorkerIf(worker.workerId, {
+            status: "unhealthy",
+            recoveryError: "missing_process_identity",
+          }, { incarnationToken: worker.incarnationToken });
+          continue;
+        }
+        try {
+          if (!isProcessIdentityAlive(identity, this._processSystem)) {
+            await this.workers.updateWorkerIf(worker.workerId, { status: "exited" }, { incarnationToken: worker.incarnationToken });
+          }
+        } catch (error) {
+          await this.workers.updateWorkerIf(worker.workerId, {
+            status: "unhealthy",
+            recoveryError: error instanceof Error ? error.message : String(error),
+          }, { incarnationToken: worker.incarnationToken });
         }
       }
     }
   }
 
-  _killProcessGroup(pid: number | null | undefined) {
-    if (!pid) return;
-    try { process.kill(-pid, "SIGTERM"); } catch { /* no group or already dead */ }
-    try { process.kill(pid, "SIGTERM"); } catch { /* already dead */ }
+  _attachChildExitHandler({
+    child,
+    workerId,
+    incarnationToken,
+    processIdentity,
+    assignment,
+  }: {
+    child: ChildProcess;
+    workerId: string;
+    incarnationToken: string;
+    processIdentity: ProcessIdentity;
+    assignment: LooseRecord;
+  }) {
+    child.on("exit", async (code) => {
+      await this._handleChildExit({ workerId, incarnationToken, processIdentity, assignment, code });
+    });
   }
+
+  async _handleChildExit({
+    workerId,
+    incarnationToken,
+    processIdentity,
+    assignment,
+    code,
+  }: {
+    workerId: string;
+    incarnationToken: string;
+    processIdentity: ProcessIdentity;
+    assignment: LooseRecord;
+    code: number | null;
+  }) {
+    this._children.delete(workerId);
+    const current = await this.workers.getWorker(workerId);
+    if (!current || current.incarnationToken !== incarnationToken || !sameProcessIdentity(processIdentity, this._workerProcessIdentity(current))) {
+      return;
+    }
+    const pendingStop = this._pendingStops.get(workerId);
+    const wasDeliberate = Boolean(
+      (pendingStop && pendingStop.incarnationToken === incarnationToken && sameProcessIdentity(pendingStop.processIdentity, processIdentity))
+      || current.status === "draining"
+      || current.stopReason
+      || current.exitSignal === "idle",
+    );
+    await this.workers.updateWorkerIf(workerId, {
+      status: "exited",
+      exitCode: code,
+      brokerTokenHash: null,
+    }, {
+      incarnationToken,
+    });
+
+    const nextRestart = (current?.restartCount || 0) + 1;
+    if (!wasDeliberate && nextRestart <= MAX_RESTARTS) {
+      await this.workers.updateWorkerIf(workerId, {
+        restartCount: nextRestart,
+        status: "restarting",
+      }, {
+        incarnationToken,
+      });
+      try {
+        await this.startWorker({ ...assignment, _restartOf: workerId, _restartCount: nextRestart });
+      } catch (err: unknown) {
+        await this.workers.updateWorkerIf(workerId, {
+          status: "exhausted",
+          restartError: err instanceof Error ? err.message : String(err),
+        }, {
+          incarnationToken,
+        });
+      }
+    } else if (!wasDeliberate) {
+      await this.workers.updateWorkerIf(workerId, {
+        status: "exhausted",
+      }, {
+        incarnationToken,
+      });
+    }
+  }
+
+  _captureRequiredProcessIdentity(pid: number) {
+    return captureProcessIdentity(pid, { strict: true, system: this._processSystem });
+  }
+
+  _workerProcessIdentity(worker: LooseRecord | null | undefined): ProcessIdentity | null {
+    const identity = worker?.processIdentity;
+    if (!identity || typeof identity !== "object" || Array.isArray(identity)) return null;
+    const record = identity as LooseRecord;
+    const pid = Number(record.pid);
+    const birthId = typeof record.birthId === "string" ? record.birthId : "";
+    const incarnation = typeof record.incarnation === "string" ? record.incarnation : "";
+    const capturedAt = typeof record.capturedAt === "string" ? record.capturedAt : "";
+    const birthIdPrecision = typeof record.birthIdPrecision === "string" ? record.birthIdPrecision : undefined;
+    const processGroupId = Number(record.processGroupId);
+    if (
+      !Number.isSafeInteger(pid)
+      || pid <= 0
+      || !birthId
+      || !capturedAt
+      || !Number.isFinite(Date.parse(capturedAt))
+      || new Date(Date.parse(capturedAt)).toISOString() !== capturedAt
+      || incarnation !== `${pid}:${birthId}`
+      || birthIdPrecision !== "exact"
+      || (record.processGroupId !== undefined && (!Number.isSafeInteger(processGroupId) || processGroupId <= 0))
+    ) return null;
+    const parsed: ProcessIdentity = {
+      pid: Number(record.pid),
+      birthId,
+      incarnation,
+      capturedAt,
+      birthIdPrecision: "exact",
+    };
+    if (Number.isSafeInteger(processGroupId) && processGroupId > 0) parsed.processGroupId = processGroupId;
+    return parsed;
+  }
+
+  _isLocalWorker(worker: LooseRecord) {
+    return !worker.host || worker.host === "local" || worker.host === os.hostname();
+  }
+
+  async _killIdentity(identity: ProcessIdentity) {
+    const current = captureProcessIdentity(identity.pid, { strict: true, system: this._processSystem });
+    if (!sameProcessIdentity(identity, current)) {
+      throw Object.assign(new Error(`worker process identity mismatch for pid ${identity.pid}`), {
+        code: "PROCESS_IDENTITY_MISMATCH",
+      });
+    }
+    await killTree(identity.pid, this._killGraceMs, {
+      requireDescendantScan: true,
+      expectedRootIdentity: identity,
+      system: this._processSystem,
+      forceVerifyMs: this._forceVerifyMs,
+    });
+  }
+
 }

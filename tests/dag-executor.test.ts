@@ -29,6 +29,24 @@ function dagOf(nodes: Record<string, unknown>[]) {
   return { name: "test-dag", nodes };
 }
 
+function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+async function waitFor(condition: () => boolean, message: string) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (condition()) return;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  assert.fail(message);
+}
+
 // ---------------------------------------------------------------------------
 // topologicalSort
 // ---------------------------------------------------------------------------
@@ -315,6 +333,25 @@ describe("scheduleReadyNodes", () => {
     const result = scheduleReadyNodes(nodes, new Set(), new Set(["a"]), 2);
     assert.equal(result.length, 1);
   });
+
+  it("deducts running nodes from their provider capacity", () => {
+    const nodes = [
+      N("running", [], { providerKey: "providerA" }),
+      N("same-provider", [], { providerKey: "providerA" }),
+      N("other-provider", [], { providerKey: "providerB" }),
+    ];
+    const result = scheduleReadyNodes(
+      nodes,
+      new Set(),
+      new Set(["running"]),
+      3,
+      {
+        providerCapacity: () => 1,
+        providerKeyForNode: (node) => String(node.providerKey),
+      },
+    );
+    assert.deepEqual(result, ["other-provider"]);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -347,6 +384,48 @@ describe("executeDag", () => {
     assert.equal(result.ok, false);
     assert.equal(result.failedNode, "a");
     assert.equal(result.reason, "boom");
+  });
+
+  it("preserves structured evidence when an executor throws synchronously", async () => {
+    const failure = Object.assign(new TypeError("sync executor crash"), { code: "E_SYNC_EXECUTOR" });
+
+    const result = await executeDag(dagOf([N("a")]), {
+      executor: () => {
+        throw failure;
+      },
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.failedNode, "a");
+    assert.equal(result.reason, "sync executor crash");
+    assert.deepEqual(result.failure, {
+      kind: "executor_exception",
+      thrown: true,
+      name: "TypeError",
+      code: "E_SYNC_EXECUTOR",
+      stack: failure.stack,
+    });
+    assert.deepEqual(result.results.get("a")?.failure, result.failure);
+  });
+
+  it("preserves structured evidence when an executor rejects asynchronously", async () => {
+    const failure = Object.assign(new Error("async executor crash"), { code: "E_ASYNC_EXECUTOR" });
+
+    const result = await executeDag(dagOf([N("a")]), {
+      executor: async () => Promise.reject(failure),
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.failedNode, "a");
+    assert.equal(result.reason, "async executor crash");
+    assert.deepEqual(result.failure, {
+      kind: "executor_exception",
+      thrown: true,
+      name: "Error",
+      code: "E_ASYNC_EXECUTOR",
+      stack: failure.stack,
+    });
+    assert.deepEqual(result.results.get("a")?.failure, result.failure);
   });
 
   it("stops when shouldStop returns true", async () => {
@@ -435,5 +514,199 @@ describe("executeDag", () => {
 
     assert.equal(result.ok, true);
     assert.equal(calls, 3);
+  });
+
+  it("starts independent ready nodes concurrently before awaiting either result", async () => {
+    const started: string[] = [];
+    const releases = new Map<string, ReturnType<typeof deferred>>();
+    const dag = { ...dagOf([N("a"), N("b")]), maxConcurrentNodes: 2 };
+
+    const run = executeDag(dag, {
+      executor: async (node: any) => {
+        started.push(node.id);
+        const release = deferred();
+        releases.set(node.id, release);
+        return release.promise.then(() => ({ ok: true }));
+      },
+    } as any);
+
+    try {
+      await Promise.resolve();
+      assert.deepEqual(
+        [...started].sort(),
+        ["a", "b"],
+        "both independent ready nodes should start before either one resolves",
+      );
+      releases.get("a")?.resolve(undefined);
+      releases.get("b")?.resolve(undefined);
+      assert.equal((await run).ok, true);
+    } finally {
+      releases.get("a")?.resolve(undefined);
+      releases.get("b")?.resolve(undefined);
+    }
+  });
+
+  it("waits for all dependency branches to complete before starting the join node", async () => {
+    const started: string[] = [];
+    const releases = new Map<string, ReturnType<typeof deferred>>();
+    const dag = { ...dagOf([N("a"), N("b"), N("join", ["a", "b"])]), maxConcurrentNodes: 2 };
+
+    const run = executeDag(dag, {
+      executor: async (node: any) => {
+        started.push(node.id);
+        const release = deferred();
+        releases.set(node.id, release);
+        return release.promise.then(() => ({ ok: true }));
+      },
+    } as any);
+
+    try {
+      await Promise.resolve();
+      assert.deepEqual([...started].sort(), ["a", "b"]);
+      assert.equal(started.includes("join"), false, "join must not start while any dependency is unresolved");
+
+      releases.get("a")?.resolve(undefined);
+      await Promise.resolve();
+      assert.equal(started.includes("join"), false, "join must wait for every dependency, not just the first");
+
+      releases.get("b")?.resolve(undefined);
+      await waitFor(
+        () => started.includes("join"),
+        "join should start after both dependencies complete",
+      );
+      releases.get("join")?.resolve(undefined);
+      assert.equal((await run).ok, true);
+    } finally {
+      for (const release of releases.values()) release.resolve(undefined);
+    }
+  });
+
+  it("does not exceed maxConcurrentNodes while launching ready nodes", async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const releases = new Map<string, ReturnType<typeof deferred>>();
+    const dag = { ...dagOf([N("a"), N("b"), N("c")]), maxConcurrentNodes: 2 };
+
+    const run = executeDag(dag, {
+      executor: async (node: any) => {
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        const release = deferred();
+        releases.set(node.id, release);
+        await release.promise;
+        inFlight--;
+        return { ok: true };
+      },
+    } as any);
+
+    try {
+      await Promise.resolve();
+      assert.equal(releases.size, 2, "only two ready nodes should be in flight initially");
+      assert.equal(maxInFlight, 2);
+      releases.get("a")?.resolve(undefined);
+      await Promise.resolve();
+      assert.equal(maxInFlight, 2, "third node must not push in-flight count above the limit");
+      releases.get("b")?.resolve(undefined);
+      await waitFor(() => releases.has("c"), "third node should start after the first wave frees capacity");
+      releases.get("c")?.resolve(undefined);
+      assert.equal((await run).ok, true);
+    } finally {
+      for (const release of releases.values()) release.resolve(undefined);
+    }
+  });
+
+  it("enforces provider capacity for initial ready-node selection", async () => {
+    const started: string[] = [];
+    const releases = new Map<string, ReturnType<typeof deferred>>();
+    const dag = {
+      ...dagOf([
+        { ...N("a"), providerKey: "providerA" },
+        { ...N("b"), providerKey: "providerA" },
+        { ...N("c"), providerKey: "providerB" },
+      ]),
+      maxConcurrentNodes: 3,
+    };
+
+    const run = executeDag(dag, {
+      executor: async (node: any) => {
+        started.push(node.id);
+        const release = deferred();
+        releases.set(node.id, release);
+        return release.promise.then(() => ({ ok: true }));
+      },
+      providerCapacity: (providerKey: string) => {
+        if (providerKey === "providerA") return 1;
+        if (providerKey === "providerB") return 1;
+        return 0;
+      },
+      providerKeyForNode: (node: any) => node.providerKey,
+    } as any);
+
+    try {
+      await Promise.resolve();
+      assert.deepEqual(started.sort(), ["a", "c"], "only one node should start for providerA in the first wave");
+      releases.get("a")?.resolve(undefined);
+      releases.get("c")?.resolve(undefined);
+      await waitFor(
+        () => started.includes("b"),
+        "providerA second node should start after capacity is freed",
+      );
+      releases.get("b")?.resolve(undefined);
+      assert.equal((await run).ok, true);
+    } finally {
+      for (const release of releases.values()) release.resolve(undefined);
+    }
+  });
+
+  it("does not start downstream nodes after a dependency fails", async () => {
+    const visited: string[] = [];
+    const dag = dagOf([N("a"), N("downstream", ["a"])]);
+
+    const result = await executeDag(dag, {
+      executor: async (node: any) => {
+        visited.push(node.id);
+        return node.id === "a" ? { ok: false, reason: "dependency failed" } : { ok: true };
+      },
+    });
+
+    assert.equal(result.ok, false);
+    assert.deepEqual(visited, ["a"]);
+    assert.equal(result.failedNode, "a");
+  });
+
+  it("passes the external AbortSignal into every node context and stops pending nodes after abort", async () => {
+    const controller = new AbortController();
+    const seenSignals: unknown[] = [];
+    const visited: string[] = [];
+    const dag = { ...dagOf([N("a"), N("b")]), maxConcurrentNodes: 2 };
+
+    const result = await executeDag(dag, {
+      signal: controller.signal,
+      executor: async (node: any, ctx: any) => {
+        visited.push(node.id);
+        seenSignals.push(ctx.signal);
+        controller.abort();
+        return { ok: false, reason: "aborted" };
+      },
+    } as any);
+
+    assert.equal(result.ok, false);
+    assert.deepEqual(seenSignals, [controller.signal]);
+    assert.deepEqual(visited, ["a"], "no additional ready nodes should start after abort");
+  });
+
+  it("rejects invalid DAGs before executing any node", async () => {
+    const visited: string[] = [];
+
+    await assert.rejects(
+      () => executeDag(dagOf([N("a"), N("a")]), {
+        executor: async (node: any) => {
+          visited.push(node.id);
+          return { ok: true };
+        },
+      }),
+      /duplicate node id: a/,
+    );
+    assert.deepEqual(visited, []);
   });
 });

@@ -6,9 +6,11 @@ import path from "node:path";
 import { test } from "node:test";
 import { tempRoot } from "../helpers.js";
 import { runAgent } from "../../core/agents/agent-runner.js";
+import { FailureKind } from "../../core/contracts/failure.js";
 import { AcpPool, poolClientKey, readAcpUsageFromAudit, resolvePoolWaitTimeoutMs } from "../../server/services/acp/acp-pool.js";
 import { buildAcpPoolEnv, buildChildEnv } from "../../core/policy/child-env.js";
 import { AcpClient, resolveAgentCommand } from "../../server/services/acp/acp-client.js";
+import { recordValue } from "../../core/contracts/types.js";
 import {
   codexConfiguredSandboxModeForExecution,
   codexExecutionConfigArgs,
@@ -69,6 +71,40 @@ async function runClient(prompt, testAgentArgs = [], envOverrides = {}) {
   });
 }
 
+async function runNodeEval(script: string, envOverrides: Record<string, string> = {}) {
+  return new Promise<ClientRunResult>((resolve, reject) => {
+    const child = spawn(process.execPath, ["--input-type=module", "--eval", script], {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        ...envOverrides,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    const timer = setTimeout(() => {
+      child.kill("SIGTERM");
+      reject(new Error(`node eval timed out\nstdout:\n${stdout}\nstderr:\n${stderr}`));
+    }, 10_000);
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on("close", (code, signal) => {
+      clearTimeout(timer);
+      if (code === 0) resolve({ stdout, stderr });
+      else reject(new Error(`node eval exited code=${code} signal=${signal}\nstdout:\n${stdout}\nstderr:\n${stderr}`));
+    });
+  });
+}
+
 async function readJsonl(filePath) {
   const raw = await readFile(filePath, "utf8");
   return raw.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
@@ -81,6 +117,10 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string)
     timer.unref();
   });
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+function isAbortError(error: unknown) {
+  return error instanceof Error && error.name === "AbortError";
 }
 
 function sandboxTempEnv(root: string) {
@@ -264,6 +304,28 @@ test("ACP client audits codegraph MCP injection and tool call updates", async ()
     ),
     "prompt_usage audit should record per-prompt usage delta",
   );
+});
+
+test("ACP live-preflight audit keeps MCP identity but omits launch arguments", async () => {
+  const tmp = await tempRoot("cpb-acp-live-preflight-audit-redaction");
+  const auditPath = path.join(tmp, "audit.jsonl");
+
+  const result = await runClient("preflight", ["--response", "CPB_PROVIDER_PREFLIGHT_OK"], {
+    CPB_CODEGRAPH_ENABLED: "1",
+    CPB_ACP_AUDIT_FILE: auditPath,
+    CPB_ACP_PROJECT: "cpb-provider-live-preflight",
+    CPB_ACP_JOB_ID: "provider-preflight-planner-fake-acp",
+    CPB_ACP_PHASE: "plan",
+    CPB_ACP_ROLE: "planner",
+    CPB_PROVIDER_PREFLIGHT_NONCE: "a".repeat(32),
+  });
+
+  assert.equal(result.stdout, "CPB_PROVIDER_PREFLIGHT_OK");
+  const events = await readJsonl(auditPath);
+  const summaries = events.flatMap((event) => Array.isArray(event.mcpServers) ? event.mcpServers : []);
+  assert.ok(summaries.some((server) => server.name === "codegraph" && server.command === "codegraph"));
+  assert.ok(summaries.every((server) => !Object.hasOwn(server, "args")));
+  assert.ok(events.every((event) => event.correlationNonce === "a".repeat(32)));
 });
 
 test("ACP client audits and redacts session-close request errors", async () => {
@@ -1759,6 +1821,46 @@ test("AcpPool agent launch audit records isolated HOME under project runtime roo
   }
 });
 
+test("AcpPool runs fake-acp even when the inherited outer sandbox is required", async () => {
+  const tmp = await tempRoot("cpb-acp-required-outer-sandbox");
+  const cpbRoot = path.join(tmp, "cpb");
+  const hubRoot = path.join(tmp, "hub");
+  const scenarioPath = path.join(tmp, "scenario.json");
+  await mkdir(cpbRoot, { recursive: true });
+  await mkdir(hubRoot, { recursive: true });
+  await writeFile(
+    scenarioPath,
+    JSON.stringify({ responses: [{ output: "required-sandbox-response" }] }),
+    "utf8",
+  );
+
+  const pool = new AcpPool({
+    cpbRoot,
+    hubRoot,
+    env: {
+      ...process.env,
+      CPB_AGENT_ISOLATE_HOME: "0",
+      CPB_CODEGRAPH_ENABLED: "0",
+      CPB_AGENT_SANDBOX: "required",
+      CPB_ACP_FAKE_ACP_COMMAND: process.execPath,
+      CPB_ACP_FAKE_ACP_ARGS: JSON.stringify([testAgent, "--scenario-file", scenarioPath]),
+    },
+  });
+
+  try {
+    const result = await pool.execute("fake-acp", "run under required outer sandbox", repoRoot, 10_000, {
+      projectId: "proj",
+      jobId: "job-required-sandbox",
+      phase: "plan",
+      role: "planner",
+    });
+
+    assert.equal(result.output, "required-sandbox-response");
+  } finally {
+    await pool.stop();
+  }
+});
+
 test("AcpPool ignores removed total connection cap and only reports provider limits", async () => {
   const tmp = await tempRoot("cpb-acp-provider-only");
   const cpbRoot = path.join(tmp, "cpb");
@@ -1821,6 +1923,16 @@ test("buildAcpPoolEnv preserves the shared lease root without exposing it to pro
   });
   assert.equal(env.CPB_ACP_POOL_LEASE_ROOT, leaseRoot);
   assert.equal(buildChildEnv(env, { agent: "codex" }).CPB_ACP_POOL_LEASE_ROOT, undefined);
+});
+
+test("buildAcpPoolEnv preserves ACP pool timeout controls", () => {
+  const env = buildAcpPoolEnv({
+    CPB_ACP_POOL_TIMEOUT_MS: "12345",
+    CPB_ACP_POOL_WAIT_TIMEOUT_MS: "67890",
+  });
+
+  assert.equal(env.CPB_ACP_POOL_TIMEOUT_MS, "12345");
+  assert.equal(env.CPB_ACP_POOL_WAIT_TIMEOUT_MS, "67890");
 });
 
 test("buildAcpPoolEnv keeps provider fallback policy in the pool boundary", () => {
@@ -1977,6 +2089,157 @@ test("AcpPool waits indefinitely for provider slots by default", async () => {
   }
 });
 
+test("AcpPool explicit empty env does not inherit ambient pool timeout defaults", async () => {
+  const tmp = await tempRoot("cpb-acp-pool-empty-env");
+  const modulePath = path.join(repoRoot, "server", "services", "acp", "acp-pool.js");
+  const script = String.raw`
+    import { mkdir } from "node:fs/promises";
+    import path from "node:path";
+    import { pathToFileURL } from "node:url";
+
+    const { AcpPool } = await import(pathToFileURL(process.env.CPB_TEST_ACP_POOL_MODULE).href);
+    const tmp = process.env.CPB_TEST_TMP;
+    const cpbRoot = path.join(tmp, "cpb");
+    const hubRoot = path.join(tmp, "hub");
+    await mkdir(cpbRoot, { recursive: true });
+    await mkdir(hubRoot, { recursive: true });
+
+    let observedTimeoutMs = null;
+    const pool = new AcpPool({
+      cpbRoot,
+      hubRoot,
+      env: {},
+      providerConnectionLimit: 1,
+      runner: async ({ timeoutMs }) => {
+        observedTimeoutMs = timeoutMs;
+        return "ok";
+      },
+    });
+
+    const result = await pool.execute("codex", "prompt", cpbRoot);
+    const first = await pool.acquire("codex");
+    const second = pool.acquire("codex");
+    const earlyState = await Promise.race([
+      second.then(() => "acquired", () => "rejected"),
+      new Promise((resolve) => setTimeout(() => resolve("queued"), 35)),
+    ]);
+    first.release();
+    if (earlyState === "queued") {
+      const acquired = await second;
+      acquired.release();
+    }
+    await pool.stop();
+    console.log(JSON.stringify({ output: result.output, observedTimeoutMs, earlyState }));
+  `;
+
+  const result = await runNodeEval(script, {
+    CPB_TEST_ACP_POOL_MODULE: modulePath,
+    CPB_TEST_TMP: tmp,
+    CPB_ACP_POOL_TIMEOUT_MS: "9876",
+    CPB_ACP_POOL_WAIT_TIMEOUT_MS: "10",
+  });
+  const observed = JSON.parse(result.stdout.trim());
+
+  assert.equal(observed.output, "ok");
+  assert.equal(observed.observedTimeoutMs, 0);
+  assert.equal(observed.earlyState, "queued");
+});
+
+test("AcpPool still inherits ambient pool timeout defaults when env is omitted", async () => {
+  const tmp = await tempRoot("cpb-acp-pool-ambient-env");
+  const modulePath = path.join(repoRoot, "server", "services", "acp", "acp-pool.js");
+  const script = String.raw`
+    import { mkdir } from "node:fs/promises";
+    import path from "node:path";
+    import { pathToFileURL } from "node:url";
+
+    const { AcpPool } = await import(pathToFileURL(process.env.CPB_TEST_ACP_POOL_MODULE).href);
+    const tmp = process.env.CPB_TEST_TMP;
+    const cpbRoot = path.join(tmp, "cpb");
+    const hubRoot = path.join(tmp, "hub");
+    await mkdir(cpbRoot, { recursive: true });
+    await mkdir(hubRoot, { recursive: true });
+
+    let observedTimeoutMs = null;
+    const pool = new AcpPool({
+      cpbRoot,
+      hubRoot,
+      providerConnectionLimit: 1,
+      runner: async ({ timeoutMs }) => {
+        observedTimeoutMs = timeoutMs;
+        return "ok";
+      },
+    });
+
+    const result = await pool.execute("codex", "prompt", cpbRoot);
+    const first = await pool.acquire("codex");
+    const second = pool.acquire("codex");
+    const earlyState = await Promise.race([
+      second.then(() => "acquired", () => "rejected"),
+      new Promise((resolve) => setTimeout(() => resolve("queued"), 35)),
+    ]);
+    first.release();
+    if (earlyState === "queued") {
+      const acquired = await second;
+      acquired.release();
+    }
+    await pool.stop();
+    console.log(JSON.stringify({ output: result.output, observedTimeoutMs, earlyState }));
+  `;
+
+  const result = await runNodeEval(script, {
+    CPB_TEST_ACP_POOL_MODULE: modulePath,
+    CPB_TEST_TMP: tmp,
+    CPB_ACP_POOL_TIMEOUT_MS: "2468",
+    CPB_ACP_POOL_WAIT_TIMEOUT_MS: "10",
+  });
+  const observed = JSON.parse(result.stdout.trim());
+
+  assert.equal(observed.output, "ok");
+  assert.equal(observed.observedTimeoutMs, 2468);
+  assert.equal(observed.earlyState, "rejected");
+});
+
+test("AcpPool derives default execute and wait timeouts from explicit pool env", async () => {
+  const tmp = await tempRoot("cpb-acp-pool-explicit-env");
+  const cpbRoot = path.join(tmp, "cpb");
+  const hubRoot = path.join(tmp, "hub");
+  await mkdir(cpbRoot, { recursive: true });
+  await mkdir(hubRoot, { recursive: true });
+
+  let observedTimeoutMs: number | null = null;
+  const pool = new AcpPool({
+    cpbRoot,
+    hubRoot,
+    env: {
+      CPB_ACP_POOL_TIMEOUT_MS: "1234",
+      CPB_ACP_POOL_WAIT_TIMEOUT_MS: "10",
+    },
+    providerConnectionLimit: 1,
+    runner: async ({ timeoutMs }) => {
+      observedTimeoutMs = timeoutMs;
+      return "ok";
+    },
+  });
+
+  try {
+    const result = await pool.execute("codex", "prompt", cpbRoot);
+    assert.equal(result.output, "ok");
+    assert.equal(observedTimeoutMs, 1234);
+    const first = await pool.acquire("codex");
+    try {
+      await assert.rejects(
+        pool.acquire("codex"),
+        /ACP pool exhausted: codex\/codex waited/,
+      );
+    } finally {
+      first.release();
+    }
+  } finally {
+    await pool.stop();
+  }
+});
+
 test("AcpPool still honors explicit provider slot wait timeouts", async () => {
   const tmp = await tempRoot("cpb-acp-pool-wait-timeout");
   const cpbRoot = path.join(tmp, "cpb");
@@ -2068,6 +2331,33 @@ test("runAgent passes cwd while persistent ACP process keys stay reusable", asyn
     poolClientKey("codex", { projectId: "proj", launchPermissionLane: "read-only" }),
     poolClientKey("codex", { projectId: "proj", launchPermissionLane: "workspace-write" }),
   );
+});
+
+test("runAgent classifies AbortError as a runtime interruption", async () => {
+  const abortError = Object.assign(new Error("ACP pool request aborted"), {
+    name: "AbortError",
+    code: "ABORT_ERR",
+  });
+  const result = await runAgent({
+    phase: "verify",
+    role: "verifier",
+    agent: "fake-acp",
+    project: "proj",
+    jobId: "job-run-agent-abort",
+    prompt: "verify",
+    cwd: repoRoot,
+    pool: {
+      async execute() {
+        throw abortError;
+      },
+    },
+    env: {},
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.kind, FailureKind.RUNTIME_INTERRUPTED);
+  assert.equal(result.retryable, false);
+  assert.equal(recordValue(result.diagnostics).cancelled, true);
 });
 
 test("runAgent restricts read-only phases to phase output paths by default", async () => {
@@ -2179,7 +2469,7 @@ test("runAgent restricts read-only phases to phase output paths by default", asy
     env: { CPB_ACP_WRITE_ALLOW: "/custom/phase-output/*" },
   });
 
-  assert.equal(observed[5].options.env.CPB_ACP_WRITE_ALLOW, "/custom/phase-output/*");
+  assert.equal(observed[5].options.env.CPB_ACP_WRITE_ALLOW, `${dataRoot}/phase-io/verify/*`);
 
   await runAgent({
     phase: "verify",
@@ -2237,6 +2527,79 @@ test("runAgent restricts read-only phases to phase output paths by default", asy
   }
   assert.equal(observed[8].options.env.CPB_ACP_WRITE_ALLOW, `${dataRoot}/phase-io/plan/*`);
   assert.equal(observed[9].options.env.CPB_ACP_WRITE_ALLOW, `${dataRoot}/phase-io/review/*`);
+});
+
+test("runAgent allows Bash while denying edit tools for writable Claude verifier replays", async () => {
+  const dataRoot = path.join(await tempRoot("cpb-run-agent-claude-replay-env"), "runtime", "projects", "flow");
+  const observed: any[] = [];
+  const pool = {
+    async execute(agent, prompt, execCwd, timeoutMs, options) {
+      observed.push({ agent, prompt, execCwd, timeoutMs, options });
+      return { output: "ok", providerKey: "fake-acp", variant: null };
+    },
+  };
+
+  await runAgent({
+    phase: "verify",
+    role: "verifier",
+    agent: "claude-mimo",
+    project: "proj",
+    jobId: "job-claude-writable-replay",
+    prompt: "verify",
+    cwd: "/tmp/worktree",
+    pool,
+    dataRoot,
+    env: {
+      CPB_VERIFIER_REPLAY_WORKSPACE_WRITE: "1",
+      CPB_ACP_WRITE_ALLOW: "/unrelated/write-root/*",
+    },
+  });
+
+  assert.deepEqual(JSON.parse(observed[0].options.env.CPB_ACP_CLAUDE_MIMO_ARGS), [
+    "--disallowedTools",
+    "Edit,Write,MultiEdit",
+  ]);
+  assert.equal(
+    observed[0].options.env.CPB_ACP_WRITE_ALLOW,
+    `/tmp/worktree,${dataRoot}/phase-io/verify/*`,
+  );
+});
+
+test("runAgent keeps adversarial verification evidence-only despite inherited write roots", async () => {
+  const dataRoot = path.join(await tempRoot("cpb-run-agent-adversarial-env"), "runtime", "projects", "flow");
+  const observed: any[] = [];
+  const pool = {
+    async execute(agent, prompt, execCwd, timeoutMs, options) {
+      observed.push({ agent, prompt, execCwd, timeoutMs, options });
+      return { output: "ok", providerKey: "fake-acp", variant: null };
+    },
+  };
+
+  await runAgent({
+    phase: "adversarial_verify",
+    role: "adversarial_verifier",
+    agent: "claude-glm",
+    project: "proj",
+    jobId: "job-claude-adversarial-readonly",
+    prompt: "verify",
+    cwd: "/tmp/worktree",
+    pool,
+    dataRoot,
+    env: { CPB_ACP_WRITE_ALLOW: "/tmp/worktree,/unrelated/write-root/*" },
+  });
+
+  assert.equal(
+    observed[0].options.env.CPB_ACP_WRITE_ALLOW,
+    `${dataRoot}/phase-io/adversarial_verify/*`,
+  );
+  assert.equal(
+    observed[0].options.env.CPB_AGENT_SANDBOX_ALLOW_WRITE,
+    `${dataRoot}/phase-io/adversarial_verify/*`,
+  );
+  assert.deepEqual(JSON.parse(observed[0].options.env.CPB_ACP_CLAUDE_GLM_ARGS), [
+    "--disallowedTools",
+    "Bash,Edit,Write,MultiEdit",
+  ]);
 });
 
 test("runAgent can disable Claude web tools without weakening read-only path denial", async () => {
@@ -3025,6 +3388,40 @@ test("AcpPool stop terminates persistent provider when session close hangs", asy
   }
 });
 
+test("AcpPool queued acquire abort removes the waiter and rejects AbortError", async () => {
+  const tmp = await tempRoot("cpb-acp-queued-acquire-abort");
+  const pool = new AcpPool({
+    cpbRoot: path.join(tmp, "cpb"),
+    hubRoot: path.join(tmp, "hub"),
+    providerConnectionLimit: 1,
+    env: {
+      ...process.env,
+      ...sandboxTempEnv(tmp),
+      CPB_AGENT_ISOLATE_HOME: "0",
+      CPB_CODEGRAPH_ENABLED: "0",
+      CPB_ACP_RTK_ENABLED: "0",
+    },
+  });
+  const controller = new AbortController();
+  const providerKey = pool.providerKey("fake-acp");
+  const active = await pool.acquire("fake-acp");
+  try {
+    const queued = pool.acquire("fake-acp", { signal: controller.signal });
+    assert.equal(pool.pending.get(`provider:${providerKey}`)?.length, 1);
+
+    controller.abort();
+
+    await assert.rejects(
+      withTimeout(queued, 500, "queued acquire did not reject promptly after abort"),
+      isAbortError,
+    );
+    assert.equal(pool.pending.get(`provider:${providerKey}`)?.length || 0, 0);
+  } finally {
+    active.release();
+    await pool.stop();
+  }
+});
+
 test("AcpPool stop terminates active one-shot provider child", async () => {
   const tmp = await tempRoot("cpb-acp-oneshot-stop");
   const cpbRoot = path.join(tmp, "cpb");
@@ -3077,6 +3474,174 @@ test("AcpPool stop terminates active one-shot provider child", async () => {
     assert.ok(executionError, "execution should reject when pool.stop terminates its provider child");
   } finally {
     if (!stopped) killProcessTree(childPid);
+  }
+});
+
+test("AcpPool one-shot abort terminates the provider child and rejects AbortError", async () => {
+  const tmp = await tempRoot("cpb-acp-oneshot-abort");
+  const cpbRoot = path.join(tmp, "cpb");
+  const hubRoot = path.join(tmp, "hub");
+  const transcriptPath = path.join(tmp, "transcript.jsonl");
+  await mkdir(cpbRoot, { recursive: true });
+  await mkdir(hubRoot, { recursive: true });
+
+  const controller = new AbortController();
+  const pool = new AcpPool({
+    cpbRoot,
+    hubRoot,
+    env: {
+      ...process.env,
+      ...sandboxTempEnv(tmp),
+      CPB_AGENT_ISOLATE_HOME: "0",
+      CPB_CODEGRAPH_ENABLED: "0",
+      CPB_ACP_RTK_ENABLED: "0",
+      CPB_ACP_PERSISTENT_PROCESS: "0",
+      CPB_ACP_FAKE_ACP_COMMAND: process.execPath,
+      CPB_ACP_FAKE_ACP_ARGS: JSON.stringify([
+        testAgent,
+        "--transcript-file",
+        transcriptPath,
+        "--stall-on-prompt",
+      ]),
+    },
+  });
+
+  let childPid: number | null = null;
+  try {
+    const execution = pool.execute("fake-acp", "prompt that will abort", repoRoot, 10_000, {
+      projectId: "proj",
+      jobId: "job-oneshot-abort",
+      phase: "plan",
+      role: "planner",
+      signal: controller.signal,
+    });
+
+    await waitForPredicate(() => pool.oneShotChildren.size === 1, 2_000, "one-shot child was not tracked");
+    childPid = [...pool.oneShotChildren][0].pid || null;
+    controller.abort();
+
+    await assert.rejects(
+      withTimeout(execution, 1_000, "one-shot execution did not reject promptly after abort"),
+      isAbortError,
+    );
+    await waitForPredicate(() => !processAlive(childPid), 2_000, "aborted one-shot provider child was not cleaned up");
+    assert.equal(pool.oneShotChildren.size, 0);
+  } finally {
+    killProcessTree(childPid);
+    await pool.stop().catch(() => null);
+  }
+});
+
+test("AcpPool persistent request abort closes the reusable client and rejects AbortError", async () => {
+  const tmp = await tempRoot("cpb-acp-persistent-abort");
+  const cpbRoot = path.join(tmp, "cpb");
+  const hubRoot = path.join(tmp, "hub");
+  const transcriptPath = path.join(tmp, "transcript.jsonl");
+  await mkdir(cpbRoot, { recursive: true });
+  await mkdir(hubRoot, { recursive: true });
+
+  const controller = new AbortController();
+  const pool = new AcpPool({
+    cpbRoot,
+    hubRoot,
+    env: {
+      ...process.env,
+      ...sandboxTempEnv(tmp),
+      CPB_AGENT_ISOLATE_HOME: "0",
+      CPB_CODEGRAPH_ENABLED: "0",
+      CPB_ACP_RTK_ENABLED: "0",
+      CPB_ACP_PERSISTENT_PROCESS: "1",
+      CPB_ACP_FAKE_ACP_COMMAND: process.execPath,
+      CPB_ACP_FAKE_ACP_ARGS: JSON.stringify([
+        testAgent,
+        "--transcript-file",
+        transcriptPath,
+        "--stall-on-prompt",
+      ]),
+    },
+  });
+
+  let childPid: number | null = null;
+  try {
+    const execution = pool.execute("fake-acp", "persistent prompt that will abort", repoRoot, 10_000, {
+      projectId: "proj",
+      jobId: "job-persistent-abort",
+      phase: "execute",
+      role: "executor",
+      signal: controller.signal,
+    });
+
+    await waitForPredicate(() => pool.persistentClients.size === 1, 2_000, "persistent client was not started");
+    childPid = [...pool.persistentClients.values()][0].client.child?.pid || null;
+    controller.abort();
+
+    await assert.rejects(
+      withTimeout(execution, 1_000, "persistent execution did not reject promptly after abort"),
+      isAbortError,
+    );
+    await waitForPredicate(() => !processAlive(childPid), 2_000, "aborted persistent provider child was not cleaned up");
+    assert.equal(pool.persistentClients.size, 0);
+  } finally {
+    killProcessTree(childPid);
+    await pool.stop().catch(() => null);
+  }
+});
+
+test("AcpPool persistent abort cannot lose to a prompt that resolves during cancellation", async () => {
+  const tmp = await tempRoot("cpb-acp-persistent-abort-race");
+  const cpbRoot = path.join(tmp, "cpb");
+  const hubRoot = path.join(tmp, "hub");
+  await mkdir(cpbRoot, { recursive: true });
+  await mkdir(hubRoot, { recursive: true });
+
+  const pool = new AcpPool({
+    cpbRoot,
+    hubRoot,
+    env: {
+      ...process.env,
+      ...sandboxTempEnv(tmp),
+      CPB_AGENT_ISOLATE_HOME: "0",
+      CPB_CODEGRAPH_ENABLED: "0",
+      CPB_ACP_RTK_ENABLED: "0",
+      CPB_ACP_PERSISTENT_PROCESS: "1",
+      CPB_ACP_FAKE_ACP_COMMAND: process.execPath,
+      CPB_ACP_FAKE_ACP_ARGS: JSON.stringify([testAgent, "--response", "warmup"]),
+    },
+  });
+
+  let childPid: number | null = null;
+  try {
+    await pool.execute("fake-acp", "warmup", repoRoot, 10_000, {
+      projectId: "proj",
+      jobId: "job-persistent-abort-race",
+      phase: "execute",
+      role: "executor",
+    });
+    const persistent = [...pool.persistentClients.values()][0];
+    assert.ok(persistent);
+    childPid = persistent.client.child?.pid || null;
+
+    const controller = new AbortController();
+    persistent.client.promptOnce = async () => {
+      controller.abort();
+      return "late-success-session";
+    };
+
+    await assert.rejects(
+      pool.execute("fake-acp", "must abort", repoRoot, 10_000, {
+        projectId: "proj",
+        jobId: "job-persistent-abort-race",
+        phase: "execute",
+        role: "executor",
+        signal: controller.signal,
+      }),
+      isAbortError,
+    );
+    await waitForPredicate(() => !processAlive(childPid), 2_000, "race-aborted persistent provider child was not cleaned up");
+    assert.equal(pool.persistentClients.size, 0);
+  } finally {
+    killProcessTree(childPid);
+    await pool.stop().catch(() => null);
   }
 });
 

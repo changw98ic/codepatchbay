@@ -26,6 +26,7 @@
     "core/engine/run-job-checklist-dag.ts",
     "core/engine/run-job-execute-dag.ts",
     "core/engine/run-job-planning.ts",
+    "core/engine/run-job-ports.ts",
     "core/engine/run-job.ts",
     "core/engine/run-job-lifecycle.ts",
     "core/engine/run-job-prepare.ts",

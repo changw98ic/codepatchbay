@@ -13,6 +13,10 @@ import {
   type RedisLeaderFence,
 } from "../../../shared/hub-state-redis.js";
 import { processLeaderFence } from "../../../shared/hub-leader-fence.js";
+import {
+  normalizeGithubRemoteCapability,
+  type GithubRemoteCapability,
+} from "../github/github-remote-capability.js";
 
 type MetadataArtifacts = Array<LooseRecord & {
   kind?: string;
@@ -59,6 +63,8 @@ type QueueMetadata = LooseRecord & {
   retryJobId?: string;
   repo?: string;
   repository?: string;
+  remoteCapability?: GithubRemoteCapability;
+  remoteCapabilityRequired?: boolean;
   finalDisposition?: string;
   sourceContext?: LooseRecord | string | null;
   action?: string;
@@ -312,6 +318,13 @@ type AutomationExclude = {
   labels?: string[];
 };
 
+type AutoEnqueueOptions = {
+  createJobFn?: ((...args: unknown[]) => unknown) | null;
+  dryRun?: boolean;
+  exactIssueNumber?: string | number | null;
+  remoteCapability?: unknown;
+};
+
 type InboxMessageInput = LooseRecord & {
   type?: string;
   jobId?: string;
@@ -502,9 +515,24 @@ export function recoverCodegraphUnavailable(entries: QueueEntry[], retryMs: numb
 // ─── hub-queue.ts ───────────────────────────────────────────────────────────
 
 
-import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { constants as fsConstants } from "node:fs";
+import { lstat, mkdir, open, readFile, readdir, realpath, rename, rmdir, unlink, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { buildMeta, REQUIRED_EXECUTION_BOUNDARY } from "../../../core/job/meta.js";
+import {
+  captureProcessIdentity,
+  isProcessIdentityAlive,
+  sameProcessIdentity,
+  type ProcessIdentity,
+} from "../../../core/runtime/process-tree.js";
+import {
+  readBoundedRegularFileNoFollow,
+  withDirectoryProcessFence,
+  withDurableDirectoryLock,
+} from "../../../core/runtime/durable-directory-lock.js";
 import { ensureIndexFresh } from "../infra.js";
 import { projectCapabilityMapGate } from "../project/project-index.js";
 import { checkCodeGraphReady } from "../infra.js";
@@ -541,89 +569,868 @@ function normalizeQueue(raw: unknown): QueueState {
 const QUEUE_LOCK_TTL_MS = 120_000;
 const QUEUE_MAX_BYTES = 16 * 1024 * 1024;
 const QUEUE_CAS_MAX_ATTEMPTS = 64;
+const QUEUE_LOCK_OWNER_FORMAT = "cpb-hub-queue-lock/v1";
+const QUEUE_LOCK_OWNER_MAX_BYTES = 64 * 1024;
 
-async function queueLockIsStale(lockDir: string) {
-  const now = Date.now();
-  try {
-    const raw = await readFile(path.join(lockDir, "lock.json"), "utf8");
-    const lock = JSON.parse(raw);
-    const acquiredAt = new Date(lock.acquiredAt).getTime();
-    return Number.isNaN(acquiredAt) || now - acquiredAt >= QUEUE_LOCK_TTL_MS;
-  } catch {
+type QueueLockOwner = {
+  format: typeof QUEUE_LOCK_OWNER_FORMAT;
+  ownerToken: string;
+  lockPath: string;
+  ownerPid: number;
+  host: string;
+  acquiredAt: string;
+  processIdentity: ProcessIdentity;
+};
+
+type QueueLockCandidate = {
+  owner: QueueLockOwner | null;
+  ownerSnapshot: string | null;
+  lockGeneration: PathGeneration;
+  kind: "incomplete" | "released" | "stale";
+};
+
+type PathGeneration = {
+  dev: bigint | number;
+  ino: bigint | number;
+  size: bigint | number;
+  mode: bigint | number;
+  mtimeMs: bigint | number;
+  ctimeMs: bigint | number;
+  birthtimeMs: bigint | number;
+};
+
+type QueueLockTestHooks = {
+  afterQuarantineRename?: (context: { lockDir: string; quarantineDir: string; ownerToken: string | null; kind: QueueLockCandidate["kind"] }) => void | Promise<void>;
+  beforeIsolatedCleanup?: (context: { originalPath: string; isolatedPath: string; isDirectory: boolean }) => void | Promise<void>;
+  beforeQuarantineCleanup?: (context: { lockDir: string; quarantineDir: string; ownerToken: string | null; kind: QueueLockCandidate["kind"] }) => void | Promise<void>;
+  beforeOwnerRename?: (context: { tmp: string; ownerFile: string }) => void | Promise<void>;
+  beforeQueueRename?: (context: { tmp: string; filePath: string }) => void | Promise<void>;
+  syncDirectory?: (directory: string) => void | Promise<void>;
+};
+
+const queueLockTestHookStorage = new AsyncLocalStorage<Readonly<QueueLockTestHooks>>();
+const emptyQueueLockTestHooks: Readonly<QueueLockTestHooks> = Object.freeze({});
+
+export async function withQueueLockTestHooks<T>(hooks: QueueLockTestHooks, callback: () => Promise<T>): Promise<T> {
+  return await queueLockTestHookStorage.run(Object.freeze({ ...hooks }), callback);
+}
+
+function queueLockTestHooks() {
+  return queueLockTestHookStorage.getStore() || emptyQueueLockTestHooks;
+}
+
+function queueLockError(message: string, code: string, cause?: unknown) {
+  return Object.assign(new Error(message, cause === undefined ? undefined : { cause }), { code });
+}
+
+function noFollowFlag(filePath: string, code = "HUB_QUEUE_LOCK_UNSAFE") {
+  if (typeof fsConstants.O_NOFOLLOW !== "number") {
+    throw queueLockError(`no-follow opens are unavailable: ${filePath}`, code);
+  }
+  return fsConstants.O_NOFOLLOW;
+}
+
+function directoryOpenFlags(directory: string) {
+  if (typeof fsConstants.O_DIRECTORY !== "number") {
+    throw queueLockError(`directory authority opens are unavailable: ${directory}`, "HUB_QUEUE_LOCK_UNSAFE");
+  }
+  return fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | noFollowFlag(directory);
+}
+
+function exclusiveNoFollowWriteFlags(filePath: string, code = "HUB_QUEUE_LOCK_UNSAFE") {
+  return fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | noFollowFlag(filePath, code);
+}
+
+function pathGeneration(info: Awaited<ReturnType<typeof lstat>>): PathGeneration {
+  return {
+    dev: info.dev,
+    ino: info.ino,
+    size: info.size,
+    mode: info.mode,
+    mtimeMs: info.mtimeMs,
+    ctimeMs: info.ctimeMs,
+    birthtimeMs: info.birthtimeMs,
+  };
+}
+
+async function generationFor(filePath: string) {
+  return pathGeneration(await lstat(filePath));
+}
+
+function sameGeneration(left: PathGeneration, right: PathGeneration) {
+  return String(left.dev) === String(right.dev)
+    && String(left.ino) === String(right.ino)
+    && String(left.size) === String(right.size)
+    && String(left.mode) === String(right.mode)
+    && String(left.mtimeMs) === String(right.mtimeMs)
+    && String(left.ctimeMs) === String(right.ctimeMs)
+    && String(left.birthtimeMs) === String(right.birthtimeMs);
+}
+
+function sameGenerationAcrossRename(left: PathGeneration, right: PathGeneration) {
+  return String(left.dev) === String(right.dev)
+    && String(left.ino) === String(right.ino)
+    && String(left.size) === String(right.size)
+    && String(left.mode) === String(right.mode)
+    && String(left.mtimeMs) === String(right.mtimeMs)
+    && String(left.birthtimeMs) === String(right.birthtimeMs);
+}
+
+function sameDirectoryIdentity(left: PathGeneration, right: PathGeneration) {
+  return String(left.dev) === String(right.dev)
+    && String(left.ino) === String(right.ino)
+    && String(left.mode) === String(right.mode)
+    && String(left.birthtimeMs) === String(right.birthtimeMs);
+}
+
+async function cleanupRecoveryPath(cleanupErrors: unknown[], fallbackPath: string) {
+  const candidates: string[] = [];
+  for (const error of cleanupErrors) {
+    if (!isRecord(error)) continue;
+    const recoveryPaths = isRecord(error.recoveryPaths) ? error.recoveryPaths : null;
+    if (typeof recoveryPaths?.cleanupPath === "string") candidates.push(recoveryPaths.cleanupPath);
+  }
+  candidates.push(fallbackPath);
+  for (const candidate of new Set(candidates)) {
     try {
-      const info = await stat(lockDir);
-      return now - info.mtimeMs >= QUEUE_LOCK_TTL_MS;
+      await lstat(candidate);
+      return candidate;
     } catch {
+      // Only advertise recovery paths that can still be resolved.
+    }
+  }
+  return null;
+}
+
+async function queueLockOwnerSnapshotStillMatches(
+  directory: string,
+  expectedOwnerSnapshot: string | null,
+  cleanupErrors: unknown[],
+) {
+  const ownerFile = path.join(directory, "lock.json");
+  try {
+    const currentOwnerSnapshot = await readQueueLockOwnerSnapshot(ownerFile);
+    if ((currentOwnerSnapshot?.raw ?? null) === expectedOwnerSnapshot) return true;
+    cleanupErrors.push(Object.assign(
+      queueLockError(`queue cleanup lock owner changed; preserved: ${ownerFile}`, "HUB_QUEUE_CLEANUP_SUCCESSOR_PRESERVED"),
+      { recoveryPaths: { cleanupPath: directory } },
+    ));
+  } catch (error) {
+    cleanupErrors.push(Object.assign(
+      queueLockError(`queue cleanup lock owner could not be verified; preserved: ${ownerFile}`, "HUB_QUEUE_CLEANUP_SUCCESSOR_PRESERVED", error),
+      { recoveryPaths: { cleanupPath: directory } },
+    ));
+  }
+  return false;
+}
+
+async function queueLockDirectoryGenerationStillMatches(
+  directory: string,
+  handle: Awaited<ReturnType<typeof open>>,
+  expectedGeneration: PathGeneration,
+  cleanupErrors: unknown[],
+) {
+  try {
+    const pathInfo = await lstat(directory);
+    const descriptorInfo = await handle.stat();
+    if (
+      !pathInfo.isDirectory()
+      || pathInfo.isSymbolicLink()
+      || !descriptorInfo.isDirectory()
+      || !sameGeneration(expectedGeneration, pathGeneration(pathInfo))
+      || !sameGeneration(expectedGeneration, pathGeneration(descriptorInfo))
+    ) {
+      cleanupErrors.push(Object.assign(
+        queueLockError(`queue cleanup directory authority changed; preserved: ${directory}`, "HUB_QUEUE_CLEANUP_SUCCESSOR_PRESERVED"),
+        { recoveryPaths: { cleanupPath: directory } },
+      ));
       return false;
+    }
+    return true;
+  } catch (error) {
+    cleanupErrors.push(Object.assign(
+      queueLockError(`queue cleanup directory authority could not be verified; preserved: ${directory}`, "HUB_QUEUE_CLEANUP_SUCCESSOR_PRESERVED", error),
+      { recoveryPaths: { cleanupPath: directory } },
+    ));
+    return false;
+  }
+}
+
+async function queueLockDirectoryGenerationAfterChildRemoval(
+  directory: string,
+  handle: Awaited<ReturnType<typeof open>>,
+  previousGeneration: PathGeneration,
+  cleanupErrors: unknown[],
+) {
+  try {
+    const pathInfo = await lstat(directory);
+    const descriptorInfo = await handle.stat();
+    const pathGenerationAfterRemoval = pathGeneration(pathInfo);
+    const descriptorGenerationAfterRemoval = pathGeneration(descriptorInfo);
+    if (
+      !pathInfo.isDirectory()
+      || pathInfo.isSymbolicLink()
+      || !descriptorInfo.isDirectory()
+      || !sameDirectoryIdentity(previousGeneration, descriptorGenerationAfterRemoval)
+      || !sameGeneration(descriptorGenerationAfterRemoval, pathGenerationAfterRemoval)
+    ) {
+      cleanupErrors.push(Object.assign(
+        queueLockError(`queue cleanup directory authority changed after child removal; preserved: ${directory}`, "HUB_QUEUE_CLEANUP_SUCCESSOR_PRESERVED"),
+        { recoveryPaths: { cleanupPath: directory } },
+      ));
+      return null;
+    }
+    return descriptorGenerationAfterRemoval;
+  } catch (error) {
+    cleanupErrors.push(Object.assign(
+      queueLockError(`queue cleanup directory authority could not be rebound after child removal; preserved: ${directory}`, "HUB_QUEUE_CLEANUP_SUCCESSOR_PRESERVED", error),
+      { recoveryPaths: { cleanupPath: directory } },
+    ));
+    return null;
+  }
+}
+
+async function removeIfSameGeneration(
+  filePath: string,
+  expected: PathGeneration | null,
+  cleanupErrors: unknown[],
+  expectedOwnerSnapshot?: string | null,
+) {
+  if (!expected) return;
+  const isolatedPath = `${filePath}.cleanup-${process.pid}-${Date.now()}-${randomUUID()}`;
+  let handle: Awaited<ReturnType<typeof open>> | null = null;
+  let isolated = false;
+  try {
+    const pathInfo = await lstat(filePath);
+    if (!sameGeneration(expected, pathGeneration(pathInfo))) {
+      cleanupErrors.push(queueLockError(`queue cleanup successor preserved: ${filePath}`, "HUB_QUEUE_CLEANUP_SUCCESSOR_PRESERVED"));
+      return;
+    }
+    handle = await open(filePath, pathInfo.isDirectory() ? directoryOpenFlags(filePath) : fsConstants.O_RDONLY | noFollowFlag(filePath));
+    const descriptorGeneration = pathGeneration(await handle.stat());
+    if (!sameGeneration(expected, descriptorGeneration)) {
+      cleanupErrors.push(queueLockError(`queue cleanup descriptor mismatch preserved: ${filePath}`, "HUB_QUEUE_CLEANUP_SUCCESSOR_PRESERVED"));
+      return;
+    }
+    if (
+      pathInfo.isDirectory()
+      && expectedOwnerSnapshot !== undefined
+      && !await queueLockOwnerSnapshotStillMatches(filePath, expectedOwnerSnapshot, cleanupErrors)
+    ) return;
+    await rename(filePath, isolatedPath);
+    isolated = true;
+    await syncDirectory(path.dirname(filePath));
+    const isolatedGeneration = await generationFor(isolatedPath);
+    if (!sameGenerationAcrossRename(descriptorGeneration, isolatedGeneration)) {
+      cleanupErrors.push(Object.assign(queueLockError(`queue cleanup isolated successor preserved: ${isolatedPath}`, "HUB_QUEUE_CLEANUP_SUCCESSOR_PRESERVED"), {
+        recoveryPaths: { cleanupPath: isolatedPath, originalPath: filePath },
+      }));
+      return;
+    }
+    const isolatedDescriptorGeneration = pathGeneration(await handle.stat());
+    if (!sameGeneration(isolatedGeneration, isolatedDescriptorGeneration)) {
+      cleanupErrors.push(Object.assign(queueLockError(`queue cleanup isolated descriptor mismatch preserved: ${isolatedPath}`, "HUB_QUEUE_CLEANUP_SUCCESSOR_PRESERVED"), {
+        recoveryPaths: { cleanupPath: isolatedPath, originalPath: filePath },
+      }));
+      return;
+    }
+    await queueLockTestHooks().beforeIsolatedCleanup?.({
+      originalPath: filePath,
+      isolatedPath,
+      isDirectory: pathInfo.isDirectory(),
+    });
+    if (pathInfo.isDirectory()) {
+      await removeIsolatedQueueLockDirectory(
+        isolatedPath,
+        handle,
+        isolatedGeneration,
+        cleanupErrors,
+        expectedOwnerSnapshot,
+      );
+    } else {
+      const currentIsolatedGeneration = await generationFor(isolatedPath);
+      const currentDescriptorGeneration = pathGeneration(await handle.stat());
+      if (
+        !sameGeneration(isolatedGeneration, currentIsolatedGeneration)
+        || !sameGeneration(isolatedGeneration, currentDescriptorGeneration)
+      ) {
+        cleanupErrors.push(Object.assign(queueLockError(`queue cleanup isolated file successor preserved: ${isolatedPath}`, "HUB_QUEUE_CLEANUP_SUCCESSOR_PRESERVED"), {
+          recoveryPaths: { cleanupPath: isolatedPath, originalPath: filePath },
+        }));
+        return;
+      }
+      await handle.close();
+      handle = null;
+      await unlink(isolatedPath);
+    }
+    await handle?.close();
+    handle = null;
+    await syncDirectory(path.dirname(filePath));
+  } catch (error) {
+    if (errnoCode(error) !== "ENOENT") cleanupErrors.push(error);
+  } finally {
+    try {
+      await handle?.close();
+    } catch (cleanupError) {
+      cleanupErrors.push(cleanupError);
+    }
+    if (isolated) {
+      try {
+        await lstat(isolatedPath);
+      } catch (statError) {
+        if (errnoCode(statError) === "ENOENT") return;
+        cleanupErrors.push(statError);
+      }
     }
   }
 }
 
-async function queueLockOwnerPid(lockDir: string) {
+async function removeIsolatedQueueLockDirectory(
+  directory: string,
+  directoryHandle: Awaited<ReturnType<typeof open>>,
+  expectedDirectoryGeneration: PathGeneration,
+  cleanupErrors: unknown[],
+  expectedOwnerSnapshot?: string | null,
+) {
+  const ownerFile = path.join(directory, "lock.json");
+  let currentDirectoryGeneration = expectedDirectoryGeneration;
+  if (!await queueLockDirectoryGenerationStillMatches(
+    directory,
+    directoryHandle,
+    currentDirectoryGeneration,
+    cleanupErrors,
+  )) return;
+  if (
+    expectedOwnerSnapshot !== undefined
+    && !await queueLockOwnerSnapshotStillMatches(directory, expectedOwnerSnapshot, cleanupErrors)
+  ) return;
   try {
-    const raw = await readFile(path.join(lockDir, "lock.json"), "utf8");
-    const lock = JSON.parse(raw);
-    return lock.ownerPid || null;
-  } catch {
-    return null;
+    const ownerInfo = await lstat(ownerFile);
+    if (ownerInfo.isSymbolicLink() || !ownerInfo.isFile()) {
+      cleanupErrors.push(Object.assign(
+        queueLockError(`queue cleanup unsafe lock owner preserved: ${ownerFile}`, "HUB_QUEUE_CLEANUP_SUCCESSOR_PRESERVED"),
+        { recoveryPaths: { cleanupPath: directory } },
+      ));
+      return;
+    }
+    const handle = await open(ownerFile, fsConstants.O_RDONLY | noFollowFlag(ownerFile));
+    try {
+      const descriptorGeneration = pathGeneration(await handle.stat());
+      if (!sameGeneration(pathGeneration(ownerInfo), descriptorGeneration)) {
+        cleanupErrors.push(Object.assign(
+          queueLockError(`queue cleanup lock owner descriptor mismatch preserved: ${ownerFile}`, "HUB_QUEUE_CLEANUP_SUCCESSOR_PRESERVED"),
+          { recoveryPaths: { cleanupPath: directory } },
+        ));
+        return;
+      }
+    } finally {
+      await handle.close();
+    }
+    if (
+      (
+        expectedOwnerSnapshot !== undefined
+        && !await queueLockOwnerSnapshotStillMatches(directory, expectedOwnerSnapshot, cleanupErrors)
+      )
+      || !await queueLockDirectoryGenerationStillMatches(
+        directory,
+        directoryHandle,
+        currentDirectoryGeneration,
+        cleanupErrors,
+      )
+    ) return;
+    await unlink(ownerFile);
+    const generationAfterRemoval = await queueLockDirectoryGenerationAfterChildRemoval(
+      directory,
+      directoryHandle,
+      currentDirectoryGeneration,
+      cleanupErrors,
+    );
+    if (!generationAfterRemoval) return;
+    currentDirectoryGeneration = generationAfterRemoval;
+  } catch (error) {
+    if (errnoCode(error) !== "ENOENT" || (expectedOwnerSnapshot !== undefined && expectedOwnerSnapshot !== null)) {
+      cleanupErrors.push(Object.assign(
+        queueLockError(`queue cleanup lock owner could not be removed safely; preserved: ${ownerFile}`, "HUB_QUEUE_CLEANUP_SUCCESSOR_PRESERVED", error),
+        { recoveryPaths: { cleanupPath: directory } },
+      ));
+      return;
+    }
   }
+  const remaining = await readdir(directory);
+  if (remaining.length > 0) {
+    cleanupErrors.push(Object.assign(queueLockError(`queue cleanup directory not empty preserved: ${directory}`, "HUB_QUEUE_CLEANUP_SUCCESSOR_PRESERVED"), {
+      recoveryPaths: { cleanupPath: directory, remaining },
+    }));
+    return;
+  }
+  if (!await queueLockDirectoryGenerationStillMatches(
+    directory,
+    directoryHandle,
+    currentDirectoryGeneration,
+    cleanupErrors,
+  )) return;
+  await rmdir(directory);
+}
+
+async function delay(ms: number) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function withQueueProcessFence<T>(lockDir: string, callback: () => Promise<T>) {
+  return withDirectoryProcessFence(lockDir, callback, { waitMs: QUEUE_LOCK_TTL_MS });
+}
+
+function processIdentity(value: unknown, expectedPid: number): ProcessIdentity | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const candidate = value as Partial<ProcessIdentity>;
+  const processGroupId = Number(candidate.processGroupId);
+  if (
+    !Number.isSafeInteger(candidate.pid)
+    || candidate.pid !== expectedPid
+    || candidate.birthIdPrecision !== "exact"
+    || typeof candidate.birthId !== "string"
+    || !candidate.birthId
+    || candidate.incarnation !== `${candidate.pid}:${candidate.birthId}`
+    || typeof candidate.capturedAt !== "string"
+    || Number.isNaN(new Date(candidate.capturedAt).getTime())
+    || new Date(Date.parse(candidate.capturedAt)).toISOString() !== candidate.capturedAt
+    || (candidate.processGroupId !== undefined && (!Number.isSafeInteger(processGroupId) || processGroupId <= 0))
+  ) return null;
+  return {
+    pid: candidate.pid,
+    birthId: candidate.birthId,
+    incarnation: candidate.incarnation,
+    capturedAt: candidate.capturedAt,
+    birthIdPrecision: "exact",
+    ...(candidate.processGroupId === undefined ? {} : { processGroupId }),
+  };
+}
+
+function exactProcessIdentity(identity: ProcessIdentity | null): ProcessIdentity | null {
+  if (!identity || identity.birthIdPrecision !== "exact") return null;
+  return identity;
+}
+
+function captureCurrentExactProcessIdentity() {
+  return exactProcessIdentity(captureProcessIdentity(process.pid, { strict: true }));
+}
+
+function sameQueueLockOwner(expected: QueueLockOwner | null, actual: QueueLockOwner | null) {
+  if (!expected || !actual) return expected === actual;
+  return expected.ownerToken === actual.ownerToken
+    && expected.lockPath === actual.lockPath
+    && expected.ownerPid === actual.ownerPid
+    && expected.host === actual.host
+    && sameProcessIdentity(expected.processIdentity, actual.processIdentity);
+}
+
+async function queueOwnerLockPathMatchesDirectory(ownerLockPath: string, lockDir: string) {
+  if (typeof ownerLockPath !== "string" || !ownerLockPath.trim()) return false;
+  const expected = path.resolve(lockDir);
+  const actual = path.resolve(ownerLockPath);
+  if (path.basename(actual) !== path.basename(expected)) return false;
+  try {
+    const expectedParent = await realpath(path.dirname(expected));
+    const actualParent = await realpath(path.dirname(actual));
+    return actualParent === expectedParent;
+  } catch {
+    return false;
+  }
+}
+
+async function syncDirectory(directory: string) {
+  await queueLockTestHooks().syncDirectory?.(directory);
+  let handle: Awaited<ReturnType<typeof open>> | null = null;
+  try {
+    handle = await open(directory, directoryOpenFlags(directory));
+    await handle.sync();
+  } catch (err) {
+    throw err;
+  } finally {
+    await handle?.close();
+  }
+}
+
+async function readQueueLockOwner(ownerFile: string): Promise<QueueLockOwner | null> {
+  return (await readQueueLockOwnerSnapshot(ownerFile))?.owner || null;
+}
+
+async function readQueueLockOwnerSnapshot(ownerFile: string): Promise<{ owner: QueueLockOwner; raw: string } | null> {
+  try {
+    const raw = await readBoundedRegularFileNoFollow(ownerFile, {
+      maxBytes: QUEUE_LOCK_OWNER_MAX_BYTES,
+    });
+    const parsed = JSON.parse(raw) as Partial<QueueLockOwner>;
+    if (
+      parsed.format !== QUEUE_LOCK_OWNER_FORMAT
+      || typeof parsed.ownerToken !== "string"
+      || !parsed.ownerToken
+      || typeof parsed.lockPath !== "string"
+      || !parsed.lockPath
+      || !Number.isSafeInteger(parsed.ownerPid)
+      || Number(parsed.ownerPid) <= 0
+      || typeof parsed.host !== "string"
+      || !parsed.host
+      || typeof parsed.acquiredAt !== "string"
+      || Number.isNaN(new Date(parsed.acquiredAt).getTime())
+      || new Date(Date.parse(parsed.acquiredAt)).toISOString() !== parsed.acquiredAt
+      || !processIdentity(parsed.processIdentity, Number(parsed.ownerPid))
+    ) throw queueLockError(`malformed queue lock owner: ${ownerFile}`, "HUB_QUEUE_LOCK_UNSAFE");
+    return { owner: parsed as QueueLockOwner, raw };
+  } catch (err) {
+    if (errnoCode(err) === "ENOENT") return null;
+    if (err instanceof SyntaxError) {
+      throw queueLockError(`malformed queue lock owner JSON: ${ownerFile}`, "HUB_QUEUE_LOCK_UNSAFE", err);
+    }
+    if (String(errnoCode(err) || "").startsWith("BOUNDED_FILE_")) {
+      throw queueLockError(`unsafe queue lock owner file: ${ownerFile}`, "HUB_QUEUE_LOCK_UNSAFE", err);
+    }
+    throw err;
+  }
+}
+
+async function writeQueueLockOwner(ownerFile: string, owner: QueueLockOwner) {
+  const parent = path.dirname(ownerFile);
+  const tmp = path.join(parent, `.lock-${owner.ownerToken}-${randomUUID()}.tmp`);
+  let handle: Awaited<ReturnType<typeof open>> | null = await open(tmp, exclusiveNoFollowWriteFlags(tmp), 0o600);
+  let tmpGeneration: PathGeneration | null = null;
+  let renamed = false;
+  try {
+    await handle.writeFile(`${JSON.stringify(owner, null, 2)}\n`, "utf8");
+    await handle.sync();
+    await handle.close();
+    handle = null;
+    tmpGeneration = await generationFor(tmp);
+    try {
+      await lstat(ownerFile);
+      throw queueLockError(`queue lock owner successor exists before publish: ${ownerFile}`, "HUB_QUEUE_LOCK_OWNER_CHANGED");
+    } catch (statError) {
+      if (errnoCode(statError) !== "ENOENT") throw statError;
+    }
+    await queueLockTestHooks().beforeOwnerRename?.({ tmp, ownerFile });
+    if (!sameGeneration(tmpGeneration, await generationFor(tmp))) {
+      throw queueLockError(`queue lock owner temp successor preserved: ${tmp}`, "HUB_QUEUE_LOCK_OWNER_TMP_CHANGED");
+    }
+    await rename(tmp, ownerFile);
+    renamed = true;
+    await syncDirectory(parent);
+  } catch (err) {
+    if (renamed) {
+      throw Object.assign(queueLockError(
+        `queue lock owner committed with ambiguous durability: ${ownerFile}`,
+        "HUB_QUEUE_LOCK_OWNER_COMMITTED_AMBIGUOUS",
+        err,
+      ), {
+        committed: true,
+        committedPath: ownerFile,
+        recoveryPaths: { ownerFile, lockDir: parent },
+      });
+    }
+    const cleanupErrors: unknown[] = [];
+    if (handle) {
+      try {
+        await handle.close();
+      } catch (cleanupError) {
+        cleanupErrors.push(cleanupError);
+      }
+    }
+    await removeIfSameGeneration(tmp, tmpGeneration, cleanupErrors);
+    if (cleanupErrors.length > 0) {
+      throw Object.assign(new AggregateError(
+        [err, ...cleanupErrors],
+        `queue lock owner write and cleanup failed: ${ownerFile}`,
+        { cause: err },
+      ), {
+        code: "HUB_QUEUE_LOCK_OWNER_WRITE_CLEANUP_FAILED",
+      });
+    }
+    throw err;
+  }
+}
+
+async function quarantineQueueLock(lockDir: string, candidate: QueueLockCandidate) {
+  const quarantineDir = `${lockDir}.${candidate.kind}-${Date.now()}-${randomUUID()}`;
+  const currentInfo = await lstat(lockDir);
+  if (!currentInfo.isDirectory() || currentInfo.isSymbolicLink() || !sameGeneration(pathGeneration(currentInfo), candidate.lockGeneration)) {
+    throw Object.assign(
+      queueLockError(`queue lock successor preserved before quarantine: ${lockDir}`, "HUB_QUEUE_LOCK_SUCCESSOR_PRESERVED"),
+      {
+        committed: false,
+        recoveryPaths: { lockDir },
+        lockDir,
+        successorPreserved: true,
+      },
+    );
+  }
+  try {
+    await rename(lockDir, quarantineDir);
+  } catch (err) {
+    if (errnoCode(err) === "ENOENT") return false;
+    throw err;
+  }
+  await syncDirectory(path.dirname(lockDir));
+  const hookContext = {
+    lockDir,
+    quarantineDir,
+    ownerToken: candidate.owner?.ownerToken || null,
+    kind: candidate.kind,
+  };
+  await queueLockTestHooks().afterQuarantineRename?.(hookContext);
+  if (candidate.kind !== "released") {
+    try {
+      await lstat(lockDir);
+      await restoreQueueLockQuarantine(
+        quarantineDir,
+        lockDir,
+        queueLockError(`queue lock successor appeared during recovery: ${lockDir}`, "HUB_QUEUE_LOCK_LOST"),
+      );
+    } catch (err) {
+      if (errnoCode(err) !== "ENOENT") throw err;
+    }
+  }
+  const movedInfo = await lstat(quarantineDir);
+  const movedOwnerFile = path.join(quarantineDir, "lock.json");
+  const movedOwnerSnapshot = await readQueueLockOwnerSnapshot(movedOwnerFile);
+  const movedOwner = movedOwnerSnapshot?.owner || null;
+  if (
+    !movedInfo.isDirectory()
+    || movedInfo.isSymbolicLink()
+    || !sameGenerationAcrossRename(candidate.lockGeneration, pathGeneration(movedInfo))
+    || !sameQueueLockOwner(candidate.owner, movedOwner)
+    || movedOwnerSnapshot?.raw !== candidate.ownerSnapshot
+  ) {
+    await restoreQueueLockQuarantine(
+      quarantineDir,
+      lockDir,
+      queueLockError(`queue lock ownership changed during recovery: ${lockDir}`, "HUB_QUEUE_LOCK_LOST"),
+    );
+  }
+  await queueLockTestHooks().beforeQuarantineCleanup?.(hookContext);
+  const cleanupErrors: unknown[] = [];
+  await removeIfSameGeneration(quarantineDir, pathGeneration(movedInfo), cleanupErrors, candidate.ownerSnapshot);
+  if (cleanupErrors.length > 0) {
+    const preservedQuarantineDir = await cleanupRecoveryPath(cleanupErrors, quarantineDir);
+    throw Object.assign(new AggregateError(cleanupErrors, `queue lock quarantine cleanup preserved recovery evidence: ${quarantineDir}`), {
+      code: "HUB_QUEUE_LOCK_QUARANTINE_CLEANUP_PRESERVED",
+      committed: false,
+      recoveryPaths: {
+        ...(preservedQuarantineDir ? { quarantineDir: preservedQuarantineDir } : {}),
+        ...(preservedQuarantineDir && preservedQuarantineDir !== quarantineDir ? { originalQuarantineDir: quarantineDir } : {}),
+        lockDir,
+      },
+      quarantineDir: preservedQuarantineDir || undefined,
+      originalQuarantineDir: preservedQuarantineDir && preservedQuarantineDir !== quarantineDir ? quarantineDir : undefined,
+      lockDir,
+    });
+  }
+  await syncDirectory(path.dirname(lockDir));
+  return true;
+}
+
+async function restoreQueueLockQuarantine(quarantineDir: string, lockDir: string, conflict: Error) {
+  const errors: unknown[] = [conflict];
+  let successorPreserved = false;
+  try {
+    await lstat(lockDir);
+    successorPreserved = true;
+  } catch (restoreError) {
+    if (errnoCode(restoreError) !== "ENOENT") errors.push(restoreError);
+  }
+  try {
+    await syncDirectory(quarantineDir);
+  } catch (syncError) {
+    errors.push(syncError);
+  }
+  try {
+    await syncDirectory(path.dirname(lockDir));
+  } catch (syncError) {
+    errors.push(syncError);
+  }
+  throw Object.assign(new AggregateError(
+    errors,
+    successorPreserved
+      ? `queue lock successor preserved while quarantine remains: ${lockDir}; quarantined=${quarantineDir}`
+      : `queue lock quarantine preserved; canonical restore refused: ${lockDir}; quarantined=${quarantineDir}`,
+    { cause: conflict },
+  ), {
+    code: successorPreserved ? "HUB_QUEUE_LOCK_SUCCESSOR_PRESERVED" : "HUB_QUEUE_LOCK_RESTORE_FAILED",
+    committed: false,
+    recoveryPaths: { quarantineDir, lockDir },
+    quarantineDir,
+    lockDir,
+    successorPreserved,
+  });
+}
+
+async function queueLockRecoveryCandidate(lockDir: string): Promise<QueueLockCandidate | null> {
+  let info: Awaited<ReturnType<typeof lstat>>;
+  try {
+    info = await lstat(lockDir);
+  } catch (err) {
+    if (errnoCode(err) === "ENOENT") return null;
+    throw err;
+  }
+  if (!info.isDirectory() || info.isSymbolicLink()) {
+    throw queueLockError(`unsafe queue lock path: ${lockDir}`, "HUB_QUEUE_LOCK_UNSAFE");
+  }
+  const ownerSnapshot = await readQueueLockOwnerSnapshot(path.join(lockDir, "lock.json"));
+  const owner = ownerSnapshot?.owner || null;
+  const acquiredAt = owner ? new Date(owner.acquiredAt).getTime() : 0;
+  if (Date.now() - Math.max(info.mtimeMs, acquiredAt) < QUEUE_LOCK_TTL_MS) return null;
+  const lockGeneration = pathGeneration(info);
+  if (!owner) return { owner: null, ownerSnapshot: null, lockGeneration, kind: "incomplete" };
+  if (!await queueOwnerLockPathMatchesDirectory(owner.lockPath, lockDir) || owner.host !== os.hostname()) {
+    throw queueLockError(`unsafe queue lock owner scope: ${lockDir}`, "HUB_QUEUE_LOCK_UNSAFE");
+  }
+  try {
+    if (isProcessIdentityAlive(owner.processIdentity)) return null;
+  } catch (err) {
+    throw queueLockError(`queue lock owner liveness probe failed: ${lockDir}`, "HUB_QUEUE_LOCK_UNSAFE", err);
+  }
+  return { owner, ownerSnapshot: ownerSnapshot.raw, lockGeneration, kind: "stale" };
+}
+
+async function releaseQueueLockExact(lockDir: string, owner: QueueLockOwner) {
+  const currentSnapshot = await readQueueLockOwnerSnapshot(path.join(lockDir, "lock.json"));
+  const current = currentSnapshot?.owner || null;
+  if (!sameQueueLockOwner(owner, current)) {
+    throw queueLockError(`queue lock ownership lost: ${lockDir}`, "HUB_QUEUE_LOCK_LOST");
+  }
+  const info = await lstat(lockDir);
+  await quarantineQueueLock(lockDir, {
+    owner: current,
+    ownerSnapshot: currentSnapshot?.raw || null,
+    lockGeneration: pathGeneration(info),
+    kind: "released",
+  });
 }
 
 async function withQueueLock<T>(hubRoot: string, callback: (queue: QueueState) => Promise<T>): Promise<T> {
   await assertHubWritable(hubRoot);
   const file = queuePath(hubRoot);
-  const lockDir = `${file}.lock`;
-  const ownerPid = process.pid;
+  const lockDir = path.resolve(`${file}.lock`);
+  const ownerFile = path.join(lockDir, "lock.json");
+  const processIdentity = captureCurrentExactProcessIdentity();
+  if (!processIdentity) {
+    throw queueLockError(`queue lock process identity unavailable: ${lockDir}`, "HUB_QUEUE_LOCK_IDENTITY_UNAVAILABLE");
+  }
+  const owner: QueueLockOwner = {
+    format: QUEUE_LOCK_OWNER_FORMAT,
+    ownerToken: randomUUID(),
+    lockPath: lockDir,
+    ownerPid: process.pid,
+    host: os.hostname(),
+    acquiredAt: nowIso(),
+    processIdentity,
+  };
   await mkdir(path.dirname(file), { recursive: true });
 
   let acquired = false;
   for (let attempt = 0; attempt < 100; attempt += 1) {
-    try {
-      await mkdir(lockDir);
-      await writeFile(
-        path.join(lockDir, "lock.json"),
-        `${JSON.stringify({ acquiredAt: nowIso(), ownerPid }, null, 2)}\n`,
-        "utf8",
-      );
+    const fenced = await withQueueProcessFence(lockDir, async () => {
+      try {
+        await mkdir(lockDir);
+        const createdInfo = await lstat(lockDir);
+        try {
+          await writeQueueLockOwner(ownerFile, owner);
+          await syncDirectory(path.dirname(lockDir));
+          return true;
+        } catch (err) {
+          if (errnoCode(err) === "HUB_QUEUE_LOCK_OWNER_COMMITTED_AMBIGUOUS") throw err;
+          let partialOwnerSnapshot: Awaited<ReturnType<typeof readQueueLockOwnerSnapshot>> = null;
+          const cleanupErrors: unknown[] = [];
+          try {
+            partialOwnerSnapshot = await readQueueLockOwnerSnapshot(ownerFile);
+          } catch (cleanupError) {
+            cleanupErrors.push(cleanupError);
+          }
+          try {
+            await quarantineQueueLock(lockDir, {
+              owner: partialOwnerSnapshot?.owner || null,
+              ownerSnapshot: partialOwnerSnapshot?.raw || null,
+              lockGeneration: pathGeneration(createdInfo),
+              kind: "incomplete",
+            });
+          } catch (cleanupError) {
+            cleanupErrors.push(cleanupError);
+          }
+          if (cleanupErrors.length > 0) {
+            throw Object.assign(new AggregateError(
+              [err, ...cleanupErrors],
+              `queue lock acquisition cleanup failed: ${lockDir}`,
+              { cause: err },
+            ), {
+              code: "HUB_QUEUE_LOCK_ACQUIRE_CLEANUP_FAILED",
+            });
+          }
+          throw err;
+        }
+      } catch (err) {
+        if (errnoCode(err) !== "EEXIST") throw err;
+        const candidate = await queueLockRecoveryCandidate(lockDir);
+        if (candidate) {
+          await quarantineQueueLock(lockDir, candidate);
+        }
+        return false;
+      }
+    });
+    if (fenced) {
       acquired = true;
       break;
-    } catch (err) {
-      if (errnoCode(err) !== "EEXIST") throw err;
-      if (await queueLockIsStale(lockDir)) {
-        await rm(lockDir, { recursive: true, force: true });
-        continue;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 10));
     }
+    await delay(10);
   }
 
   if (!acquired) {
     throw new Error(`queue lock busy: ${path.basename(file)}`);
   }
 
-  const acquiredAt = nowIso();
+  let value: T | undefined;
+  let primaryError: unknown = null;
   try {
     const queue = await loadLocalQueue(hubRoot);
     const before = serializeQueue(queue);
-    const result = await callback(queue);
+    value = await callback(queue);
     const after = serializeQueue(queue);
     if (after !== before) await saveLocalQueue(hubRoot, queue);
-    return result;
-  } finally {
-    // Check both PID and timestamp window to guard against PID reuse
-    const currentOwner = await queueLockOwnerPid(lockDir);
-    if (currentOwner === ownerPid && !(await queueLockIsStale(lockDir))) {
-      await rm(lockDir, { recursive: true, force: true });
-    }
+  } catch (err) {
+    primaryError = err;
   }
+
+  let releaseError: unknown = null;
+  try {
+    const released = await withQueueProcessFence(lockDir, () => releaseQueueLockExact(lockDir, owner));
+    if (released === null) {
+      throw queueLockError(`queue lock process fence busy during release: ${lockDir}`, "HUB_QUEUE_LOCK_FENCE_BUSY");
+    }
+  } catch (err) {
+    releaseError = err;
+  }
+  if (primaryError) {
+    if (!releaseError) throw primaryError;
+    throw Object.assign(new AggregateError([primaryError, releaseError], `queue mutation and lock release failed: ${lockDir}`, {
+      cause: primaryError,
+    }), {
+      code: errnoCode(primaryError) || "HUB_QUEUE_MUTATION_RELEASE_FAILED",
+      primaryError,
+      releaseError,
+    });
+  }
+  if (releaseError) throw releaseError;
+  return value as T;
 }
 
 async function loadLocalQueue(hubRoot: string) {
   try {
-    const raw = await readFile(queuePath(hubRoot), "utf8");
+    const raw = await readBoundedRegularFileNoFollow(queuePath(hubRoot), { maxBytes: QUEUE_MAX_BYTES });
     return normalizeQueue(JSON.parse(raw));
   } catch (err) {
     if (errnoCode(err) === "ENOENT") return defaultQueue();
+    if (String(errnoCode(err)).startsWith("BOUNDED_FILE_")) {
+      throw Object.assign(new Error(`unsafe local queue file: ${queuePath(hubRoot)}`, { cause: err }), {
+        code: errnoCode(err) === "BOUNDED_FILE_TOO_LARGE" ? "HUB_QUEUE_TOO_LARGE" : "HUB_QUEUE_UNSAFE",
+      });
+    }
     throw err;
   }
 }
@@ -726,9 +1533,62 @@ export async function loadQueue(hubRoot: string) {
 
 async function writeAtomic(filePath: string, content: string) {
   await mkdir(path.dirname(filePath), { recursive: true });
-  const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
-  await writeFile(tmp, content, "utf8");
-  await rename(tmp, filePath);
+  const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}-${randomUUID()}`;
+  let handle: Awaited<ReturnType<typeof open>> | null = null;
+  let tmpGeneration: PathGeneration | null = null;
+  let existingGeneration: PathGeneration | null = null;
+  let renamed = false;
+  try {
+    try {
+      existingGeneration = await generationFor(filePath);
+    } catch (statError) {
+      if (errnoCode(statError) !== "ENOENT") throw statError;
+    }
+    handle = await open(tmp, exclusiveNoFollowWriteFlags(tmp, "HUB_QUEUE_WRITE_UNSAFE"), 0o600);
+    await handle.writeFile(content, "utf8");
+    await handle.sync();
+    await handle.close();
+    handle = null;
+    tmpGeneration = await generationFor(tmp);
+    try {
+      const currentGeneration = await generationFor(filePath);
+      if (!existingGeneration || !sameGeneration(existingGeneration, currentGeneration)) {
+        throw Object.assign(new Error(`queue successor exists before publish: ${filePath}`), { code: "HUB_QUEUE_WRITE_SUCCESSOR_PRESERVED" });
+      }
+    } catch (statError) {
+      if (errnoCode(statError) !== "ENOENT") throw statError;
+      if (existingGeneration) {
+        throw Object.assign(new Error(`queue canonical disappeared before publish: ${filePath}`), { code: "HUB_QUEUE_WRITE_SUCCESSOR_PRESERVED" });
+      }
+    }
+    await queueLockTestHooks().beforeQueueRename?.({ tmp, filePath });
+    if (!sameGeneration(tmpGeneration, await generationFor(tmp))) {
+      throw Object.assign(new Error(`queue temp successor preserved: ${tmp}`), { code: "HUB_QUEUE_WRITE_TMP_CHANGED" });
+    }
+    await rename(tmp, filePath);
+    renamed = true;
+    await syncDirectory(path.dirname(filePath));
+  } catch (err) {
+    await handle?.close().catch(() => undefined);
+    if (renamed) {
+      throw Object.assign(new Error(`atomic write committed with ambiguous durability: ${filePath}`, { cause: err }), {
+        code: "HUB_QUEUE_WRITE_COMMITTED_AMBIGUOUS",
+        committed: true,
+        committedPath: filePath,
+        recoveryPaths: { canonical: filePath },
+      });
+    }
+    const cleanupErrors: unknown[] = [];
+    await removeIfSameGeneration(tmp, tmpGeneration, cleanupErrors);
+    if (cleanupErrors.length > 0) {
+      throw Object.assign(new AggregateError([err, ...cleanupErrors], `queue write cleanup preserved recovery evidence: ${tmp}`, { cause: err }), {
+        code: "HUB_QUEUE_WRITE_CLEANUP_PRESERVED",
+        primaryError: err,
+        cleanupErrors,
+      });
+    }
+    throw err;
+  }
 }
 
 function generateId() {
@@ -1368,7 +2228,11 @@ export function isExcluded(issue: AutomationIssue, exclude: AutomationExclude | 
   return false;
 }
 
-export function issueToNormalizedEvent(issue: AutomationIssue, project: AutomationProject) {
+export function issueToNormalizedEvent(
+  issue: AutomationIssue,
+  project: AutomationProject,
+  remoteCapability: GithubRemoteCapability | null = null,
+) {
   return {
     status: "ok",
     type: "github_issue",
@@ -1383,6 +2247,7 @@ export function issueToNormalizedEvent(issue: AutomationIssue, project: Automati
     url: issue.url || "",
     title: issue.title || "",
     body: issue.body || "",
+    remoteCapability,
   };
 }
 
@@ -1397,15 +2262,70 @@ function issueQueueKey(repo: string | null | undefined, number: string | number 
   return `${repo || ""}#${Number(number)}`;
 }
 
-export async function autoEnqueueSyncedIssues(hubRoot: string, cpbRoot: string, projectId: string, { createJobFn = null, dryRun = false }: { createJobFn?: ((...args: unknown[]) => unknown) | null; dryRun?: boolean } = {}) {
+function normalizeExactIssueNumber(value: AutoEnqueueOptions["exactIssueNumber"]) {
+  if (value === null || value === undefined || value === "") return null;
+  const text = String(value);
+  if (!/^[1-9][0-9]*$/.test(text)) {
+    throw new Error("exactIssueNumber must be one positive issue number");
+  }
+  const number = Number(text);
+  if (!Number.isSafeInteger(number)) {
+    throw new Error("exactIssueNumber must be a safe positive issue number");
+  }
+  return number;
+}
+
+export async function autoEnqueueSyncedIssues(
+  hubRoot: string,
+  cpbRoot: string,
+  projectId: string,
+  {
+    createJobFn = null,
+    dryRun = false,
+    exactIssueNumber: rawExactIssueNumber = null,
+    remoteCapability: rawRemoteCapability = null,
+  }: AutoEnqueueOptions = {},
+) {
+  const exactIssueNumber = normalizeExactIssueNumber(rawExactIssueNumber);
+  const remoteCapability = rawRemoteCapability === null || rawRemoteCapability === undefined
+    ? null
+    : normalizeGithubRemoteCapability(rawRemoteCapability);
+  if (remoteCapability && exactIssueNumber === null) {
+    throw new Error("GitHub remote capability requires exactIssueNumber");
+  }
+  if (remoteCapability && remoteCapability.issueNumber !== exactIssueNumber) {
+    throw new Error("GitHub remote capability issue does not match exactIssueNumber");
+  }
   const project = await getProject(hubRoot, projectId);
   if (!project) return { error: `Project '${projectId}' not found`, enqueued: 0, skipped: 0, duplicates: 0, total: 0 };
 
   const automation = project.github?.automation;
   if (!automation?.enabled) return { enqueued: 0, skipped: 0, duplicates: 0, total: 0, reason: "automation not enabled" };
+  if (remoteCapability && String(project.github?.fullName || "").toLowerCase() !== remoteCapability.repository) {
+    throw new Error("GitHub remote capability repository does not match the bound project");
+  }
 
   const issues: AutomationIssue[] = await readGithubIssues(hubRoot);
-  const projectIssues = issues.filter((i) => i.state === "OPEN" && issueMatchesProject(i, project));
+  const allProjectIssues = issues.filter((i) => i.state === "OPEN" && issueMatchesProject(i, project));
+  const projectIssues = exactIssueNumber === null
+    ? allProjectIssues
+    : allProjectIssues.filter((issue) => Number(issue.number) === exactIssueNumber);
+  if (exactIssueNumber !== null && projectIssues.length !== 1) {
+    return {
+      error: projectIssues.length === 0
+        ? `Exact issue #${exactIssueNumber} is not an open synchronized issue for project '${projectId}'`
+        : `Exact issue #${exactIssueNumber} is ambiguous in synchronized issue state`,
+      enqueued: 0,
+      skipped: 0,
+      duplicates: 0,
+      total: projectIssues.length,
+      scannedTotal: allProjectIssues.length,
+      exactIssueNumber,
+    };
+  }
+  if (remoteCapability && !(projectIssues[0]?.labels || []).includes(remoteCapability.automationLabel)) {
+    throw new Error("GitHub remote capability label is absent from the exact synchronized issue");
+  }
 
   const queue = await loadQueue(hubRoot);
   const queuedIssueKeys = new Set(
@@ -1433,7 +2353,7 @@ export async function autoEnqueueSyncedIssues(hubRoot: string, cpbRoot: string, 
     if (dryRun) { enqueued++; continue; }
 
     try {
-      const event = issueToNormalizedEvent(issue, project);
+      const event = issueToNormalizedEvent(issue, project, remoteCapability);
       const match = { matched: true, workflow: rule.action?.workflow || "standard", ...(rule.action || {}) };
       if (createJobFn) {
         await createJobFn(cpbRoot, event, match, { hubRoot, sourcePath: project.sourcePath });
@@ -1443,18 +2363,25 @@ export async function autoEnqueueSyncedIssues(hubRoot: string, cpbRoot: string, 
       }
       enqueued++;
     } catch (err) {
+      if (exactIssueNumber !== null) throw err;
       const message = isRecord(err) && typeof err.message === "string" ? err.message : "";
       if (message.includes("duplicate")) { duplicates++; }
       else { skipped++; }
     }
   }
 
-  return { enqueued, skipped, duplicates, total: projectIssues.length, matched: dryRun ? matched : undefined };
+  return {
+    enqueued,
+    skipped,
+    duplicates,
+    total: projectIssues.length,
+    scannedTotal: allProjectIssues.length,
+    exactIssueNumber,
+    matched: dryRun ? matched : undefined,
+  };
 }
 
 // ─── inbox-mail.ts ──────────────────────────────────────────────────────────
-
-import { readdir } from "node:fs/promises";
 
 const SCHEMA = "cpb.inbox-mail.v1";
 const VALID_STATUSES = new Set(["pending", "acknowledged", "completed"]);
@@ -1540,42 +2467,11 @@ async function withInboxLock<T>(cpbRoot: string, project: string, callback: () =
   const dir = inboxDir(cpbRoot, project);
   const lockDir = `${dir}.lock`;
   await mkdir(dir, { recursive: true });
-
-  let acquired = false;
-  for (let attempt = 0; attempt < 100; attempt++) {
-    try {
-      await mkdir(lockDir);
-      acquired = true;
-      break;
-    } catch (err) {
-      if (!err || (err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
-      // Check staleness (30s)
-      try {
-        const info = await stat(lockDir);
-        if (Date.now() - info.mtimeMs >= 30_000) {
-          await rm(lockDir, { recursive: true, force: true });
-          continue;
-        }
-      } catch {
-        // Race: someone else removed it, retry
-      }
-      await new Promise((r) => setTimeout(r, 10));
-    }
-  }
-
-  if (!acquired) {
-    throw new Error(`inbox lock busy for project: ${project}`);
-  }
-
-  try {
-    return await callback();
-  } finally {
-    try {
-      await rm(lockDir, { recursive: true, force: true });
-    } catch {
-      // Already cleaned up
-    }
-  }
+  return withDurableDirectoryLock(lockDir, callback, {
+    ttlMs: 30_000,
+    waitMs: 10_000,
+    retryMs: 10,
+  });
 }
 
 interface InboxMessageOutput {

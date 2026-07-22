@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, readdir } from "node:fs/promises";
+import { access, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 
@@ -52,6 +52,16 @@ test("bridges directory contains only runtime boundary adapters", async () => {
     .map((file) => path.relative(REPO_ROOT, file).split(path.sep).join("/"))
     .sort();
   assert.deepEqual(bridgeFiles, BRIDGE_ENTRY_FILES);
+});
+
+test("engine bridge delegates directly to the production composition root", async () => {
+  const source = await readFile(path.join(REPO_ROOT, "bridges", "engine-bridge.js"), "utf8");
+  assert.match(source, /from\s+["']\.\.\/server\/services\/engine-runner\.js["']/);
+  assert.doesNotMatch(
+    source,
+    /from\s+["']\.\.\/server\/services\/setup\.js["']/,
+    "runtime engine assembly must not route through the broad setup aggregate",
+  );
 });
 
 test("runtime old ACP entry files are deleted", async () => {

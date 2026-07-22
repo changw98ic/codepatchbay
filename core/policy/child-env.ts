@@ -49,6 +49,7 @@ const ACP_RUNTIME_ENV = new Set([
   "CPB_ACP_CLIENT", "CPB_ACP_TIMEOUT_MS", "CPB_ACP_IDLE_TIMEOUT_MS", "CPB_ACP_SESSION_UPDATE_IDLE_TIMEOUT_MS", "CPB_ACP_PHASE_TIMEOUT_MS", "CPB_ACP_USE_MANAGED_POOL",
   "CPB_ACP_PERSISTENT_PROCESS", "CPB_ACP_LAUNCH_PROFILE",
   "CPB_ACP_POOL_SCOPE", "CPB_ACP_CONTROL_PLANE",
+  "CPB_ACP_AUDIT_FILE", "CPB_PROVIDER_PREFLIGHT_NONCE",
   "CPB_ACP_UI_LANE", "CPB_ACP_UI_LANE_REASON",
   "CPB_ACP_WRITE_ALLOW", "CPB_ACP_TERMINAL",
   "CPB_ACP_TOOL_POLICY_FILE", "CPB_ACP_DENY_TOOLS", "CPB_ACP_ALLOW_TOOLS",
@@ -132,18 +133,32 @@ const ANTHROPIC_COMPATIBLE_CREDENTIALS = new Set([
   "ANTHROPIC_DEFAULT_OPUS_MODEL",
   "ANTHROPIC_DEFAULT_HAIKU_MODEL",
   "CLAUDE_CODE_SUBAGENT_MODEL",
+]);
+
+const AWS_BEDROCK_CREDENTIALS = new Set([
   "AWS_ACCESS_KEY_ID",
   "AWS_SECRET_ACCESS_KEY",
   "AWS_SESSION_TOKEN",
   "AWS_REGION",
   "AWS_DEFAULT_REGION",
-  // Xiaomi / MiMo is applied as a Claude-compatible provider variant by
-  // server/services/apply-variant.js.
+  "ANTHROPIC_MODEL",
+  "ANTHROPIC_DEFAULT_SONNET_MODEL",
+  "ANTHROPIC_DEFAULT_OPUS_MODEL",
+  "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+  "CLAUDE_CODE_SUBAGENT_MODEL",
+]);
+
+// Variant adapters receive only their raw provider configuration. The trusted
+// adapter converts it to ANTHROPIC_* after launch, so an ambient Anthropic key
+// cannot accompany a GLM or MiMo credential into the child.
+const MIMO_COMPATIBLE_CREDENTIALS = new Set([
   "XIAOMI_BASE_URL", "MIMO_BASE_URL",
   "XIAOMI_API_KEY", "XIAOMI_AUTH_TOKEN",
   "MIMO_API_KEY", "MIMO_AUTH_TOKEN",
   "XIAOMI_MODEL", "MIMO_MODEL",
-  // Zhipu / GLM is applied through the same Claude-compatible variant path.
+]);
+
+const GLM_COMPATIBLE_CREDENTIALS = new Set([
   "ZHIPU_BASE_URL", "GLM_BASE_URL",
   "ZHIPU_API_KEY", "ZHIPU_AUTH_TOKEN",
   "GLM_API_KEY", "GLM_AUTH_TOKEN",
@@ -157,10 +172,27 @@ const GEMINI_COMPATIBLE_CREDENTIALS = new Set([
 
 const PROVIDER_CREDENTIALS_BY_AGENT = new Map([
   ["codex", OPENAI_COMPATIBLE_CREDENTIALS],
+  ["openai", OPENAI_COMPATIBLE_CREDENTIALS],
+  ["openai-codex", OPENAI_COMPATIBLE_CREDENTIALS],
   ["claude", ANTHROPIC_COMPATIBLE_CREDENTIALS],
+  ["anthropic", ANTHROPIC_COMPATIBLE_CREDENTIALS],
+  ["claude-anthropic", ANTHROPIC_COMPATIBLE_CREDENTIALS],
+  ["claude-bedrock", AWS_BEDROCK_CREDENTIALS],
+  ["bedrock", AWS_BEDROCK_CREDENTIALS],
+  ["aws-bedrock", AWS_BEDROCK_CREDENTIALS],
+  ["claude-glm", GLM_COMPATIBLE_CREDENTIALS],
+  ["glm", GLM_COMPATIBLE_CREDENTIALS],
+  ["glm-compatible", GLM_COMPATIBLE_CREDENTIALS],
+  ["zhipu", GLM_COMPATIBLE_CREDENTIALS],
+  ["claude-mimo", MIMO_COMPATIBLE_CREDENTIALS],
+  ["mimo", MIMO_COMPATIBLE_CREDENTIALS],
+  ["mimo-v2.5pro", MIMO_COMPATIBLE_CREDENTIALS],
+  ["xiaomi", MIMO_COMPATIBLE_CREDENTIALS],
   ["gemini", GEMINI_COMPATIBLE_CREDENTIALS],
-  ["kimi", ANTHROPIC_COMPATIBLE_CREDENTIALS],
+  ["google", GEMINI_COMPATIBLE_CREDENTIALS],
 ]);
+
+const NO_PROVIDER_CREDENTIALS = new Set<string>();
 
 const ALLOWED_ENV = new Set([
   ...RUNTIME_BASICS,
@@ -178,6 +210,8 @@ const ACP_POOL_ENV = new Set([
   // A run may host multiple isolated worker processes. This path lets their
   // ACP pools coordinate provider leases without sharing project state.
   "CPB_ACP_POOL_LEASE_ROOT",
+  "CPB_ACP_POOL_TIMEOUT_MS",
+  "CPB_ACP_POOL_WAIT_TIMEOUT_MS",
   "CPB_ACP_RATE_LIMIT_BACKOFF_MS",
   "CPB_ACP_POOL_PROVIDER_MAX",
   "CPB_ACP_POOL_MAX_REQUESTS",
@@ -215,13 +249,16 @@ function agentNameFromOptions(options: ChildEnvOptions = {}) {
 export function providerCredentialKeysForAgent(agent: unknown): Set<string> {
   const normalized = normalizeAgentName(agent);
   const scoped = PROVIDER_CREDENTIALS_BY_AGENT.get(normalized);
-  return new Set(scoped || PROVIDER_CREDENTIALS);
+  return new Set(scoped || NO_PROVIDER_CREDENTIALS);
 }
 
 function allowedProviderCredentialsForOptions(options: ChildEnvOptions = {}) {
+  if (typeof options !== "string" && options.includeProviderCredentials === false) {
+    return NO_PROVIDER_CREDENTIALS;
+  }
   const agent = agentNameFromOptions(options);
   if (!agent) return PROVIDER_CREDENTIALS;
-  return PROVIDER_CREDENTIALS_BY_AGENT.get(agent) || PROVIDER_CREDENTIALS;
+  return PROVIDER_CREDENTIALS_BY_AGENT.get(agent) || NO_PROVIDER_CREDENTIALS;
 }
 
 function isAcpPoolNumericEntry(key: string, value: unknown): boolean {
@@ -283,6 +320,9 @@ export {
   PROVIDER_CREDENTIALS,
   OPENAI_COMPATIBLE_CREDENTIALS,
   ANTHROPIC_COMPATIBLE_CREDENTIALS,
+  AWS_BEDROCK_CREDENTIALS,
+  MIMO_COMPATIBLE_CREDENTIALS,
+  GLM_COMPATIBLE_CREDENTIALS,
   GEMINI_COMPATIBLE_CREDENTIALS,
   PROVIDER_CREDENTIALS_BY_AGENT,
   ALLOWED_ENV,

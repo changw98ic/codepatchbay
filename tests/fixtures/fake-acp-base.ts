@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { writeFile } from "node:fs/promises";
 import readline from "node:readline";
 
 const PROTOCOL_VERSION = 1;
@@ -145,6 +146,15 @@ async function handlePrompt(params) {
 
   if (mode === "permission-terminal") {
     await runTerminalAction(text);
+    return;
+  }
+
+  if (mode === "env-capture") {
+    await writeFile("child-env.json", JSON.stringify({
+      auditFileExposed: "CPB_ACP_AUDIT_FILE" in process.env,
+      auditDerivationExposed: ["CPB_PROJECT_RUNTIME_ROOT", "CPB_ACP_PROJECT", "CPB_ACP_JOB_ID"].some((key) => key in process.env),
+    }), "utf8");
+    sendChunk("done\n");
     return;
   }
 

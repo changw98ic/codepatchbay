@@ -1,10 +1,21 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import {
+  captureProcessIdentity,
+  isProcessIdentityAlive,
+  killTree,
+  sameProcessIdentity,
+  type ProcessIdentity,
+} from "../core/runtime/process-tree.js";
+import {
+  createTemporaryWorkspace,
+  temporaryWorkspaceErrorDetails,
+  type TemporaryWorkspace,
+} from "../core/runtime/temporary-workspace.js";
 import { registerProject } from "../server/services/hub/hub-registry.js";
 import { writeJsonAtomic } from "../shared/fs-utils.js";
 import { AssignmentStore } from "../shared/orchestrator/assignment-store.js";
@@ -46,6 +57,10 @@ type CommandResult = {
   stderr: string;
   timedOut?: boolean;
   errorMessage?: string | null;
+  errorName?: string | null;
+  errorCode?: string | null;
+  errorCause?: unknown;
+  rootIdentity?: ProcessIdentity;
 };
 
 type CodeGraphEvidence = {
@@ -73,6 +88,8 @@ const PRODUCT_EVIDENCE_FILE = process.env.CPB_SWEBENCH_PRODUCT_EVIDENCE_FILE
   ? path.resolve(process.env.CPB_SWEBENCH_PRODUCT_EVIDENCE_FILE)
   : path.join(REPO_ROOT, "docs", "product", "cpb-flagship-product-validation.json");
 const DEFAULT_OUTPUT_DIR = path.join(REPO_ROOT, "docs", "product", "evidence", "swe-bench-real-runs");
+const MANAGED_WORKER_OUTPUT_TAIL_BYTES = 2_000_000;
+const DEFAULT_MANAGED_WORKER_CANCEL_WRITE_TIMEOUT_MS = 2_000;
 export const DEFAULT_PRODUCT_VALIDATION_AGENTS: ProductValidationAgents = {
   planner: "codex",
   executor: "claude-glm",
@@ -91,6 +108,199 @@ function parsePlanMode(value: string | null): ProductValidationPlanMode {
   if (value === "light") return "light";
   throw new Error(`--plan-mode must be "full" or "light", got ${value}`);
 }
+
+function toError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
+}
+
+function productValidationCleanupFailure(primary: unknown, cleanup: unknown, rootPath: string) {
+  const recovery = temporaryWorkspaceErrorDetails(cleanup);
+  return Object.assign(new AggregateError(
+    [primary, cleanup],
+    `SWE-bench product validation and temporary workspace cleanup both failed for ${rootPath}`,
+    { cause: primary },
+  ), {
+    primaryError: primary,
+    cleanupError: cleanup,
+    ...(recovery ? {
+      temporaryWorkspaceRecovery: recovery,
+      recoveryPaths: recovery.recoveryPaths,
+      successorPreserved: recovery.successorPreserved,
+    } : {}),
+  });
+}
+
+function productValidationFailureWithCleanupProof(primary: unknown, cleanup: unknown, rootPath: string) {
+  const recovery = temporaryWorkspaceErrorDetails(cleanup);
+  if (!recovery) return primary;
+  return Object.assign(new AggregateError(
+    [primary],
+    `SWE-bench product validation failed; temporary workspace was retained at ${recovery.recoveryPaths.quarantineRoot || rootPath}`,
+    { cause: primary },
+  ), {
+    primaryError: primary,
+    temporaryWorkspaceRecovery: recovery,
+    recoveryPaths: recovery.recoveryPaths,
+    successorPreserved: recovery.successorPreserved,
+  });
+}
+
+export async function runProductValidationTemporaryWorkspace<T>({
+  keepTemp,
+  task,
+  onKeepTemp = (rootPath) => { console.error(`[keep-temp] ${rootPath}`); },
+  createWorkspace = createTemporaryWorkspace,
+}: {
+  keepTemp: boolean;
+  task: (rootPath: string) => Promise<T>;
+  onKeepTemp?: (rootPath: string) => void | Promise<void>;
+  createWorkspace?: (options: { prefix: string }) => Promise<TemporaryWorkspace>;
+}): Promise<T> {
+  const workspace = await createWorkspace({ prefix: "cpb-swebench-product-" });
+  let value!: T;
+  let primaryError: unknown;
+  let hasPrimaryError = false;
+  try {
+    value = await task(workspace.rootPath);
+  } catch (error) {
+    primaryError = error;
+    hasPrimaryError = true;
+  }
+
+  let cleanupError: unknown;
+  let hasCleanupError = false;
+  let cleanupResult: unknown;
+  try {
+    if (keepTemp) await onKeepTemp(workspace.rootPath);
+    else cleanupResult = await workspace.cleanup();
+  } catch (error) {
+    cleanupError = error;
+    hasCleanupError = true;
+  }
+
+  if (hasPrimaryError && hasCleanupError) {
+    throw productValidationCleanupFailure(primaryError, cleanupError, workspace.rootPath);
+  }
+  if (hasPrimaryError) {
+    throw productValidationFailureWithCleanupProof(primaryError, cleanupResult, workspace.rootPath);
+  }
+  if (hasCleanupError) throw cleanupError;
+  return value;
+}
+
+function concreteCleanupErrors(errors: readonly unknown[]): unknown[] {
+  return errors.flatMap((error) => (
+    error instanceof AggregateError
+      ? concreteCleanupErrors(error.errors)
+      : [error]
+  ));
+}
+
+function errorCode(error: Error): string | null {
+  const code = (error as Error & { code?: unknown }).code;
+  return typeof code === "string" ? code : null;
+}
+
+function managedWorkerAbortError(signal: AbortSignal | undefined): Error {
+  const reason = signal?.reason;
+  if (reason instanceof Error) return reason;
+  const error = new Error(typeof reason === "string" && reason ? reason : "managed worker aborted") as Error & { code?: string };
+  error.name = "AbortError";
+  error.code = "ABORT_ERR";
+  return error;
+}
+
+type ManagedWorkerOutputTail = {
+  chunks: Buffer[];
+  byteLength: number;
+};
+
+function createManagedWorkerOutputTail(): ManagedWorkerOutputTail {
+  return { chunks: [], byteLength: 0 };
+}
+
+function appendManagedWorkerOutput(current: ManagedWorkerOutputTail, chunk: Buffer | string) {
+  const next = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+  if (next.byteLength >= MANAGED_WORKER_OUTPUT_TAIL_BYTES) {
+    current.chunks = [Buffer.from(next.subarray(next.byteLength - MANAGED_WORKER_OUTPUT_TAIL_BYTES))];
+    current.byteLength = MANAGED_WORKER_OUTPUT_TAIL_BYTES;
+    return;
+  }
+  current.chunks.push(next);
+  current.byteLength += next.byteLength;
+  let excess = current.byteLength - MANAGED_WORKER_OUTPUT_TAIL_BYTES;
+  while (excess > 0) {
+    const first = current.chunks[0];
+    if (first.byteLength <= excess) {
+      current.chunks.shift();
+      current.byteLength -= first.byteLength;
+      excess -= first.byteLength;
+      continue;
+    }
+    current.chunks[0] = first.subarray(excess);
+    current.byteLength -= excess;
+    excess = 0;
+  }
+}
+
+function managedWorkerOutputText(output: ManagedWorkerOutputTail) {
+  const text = Buffer.concat(output.chunks, output.byteLength).toString("utf8");
+  if (Buffer.byteLength(text, "utf8") <= MANAGED_WORKER_OUTPUT_TAIL_BYTES) return text;
+  let low = 0;
+  let high = text.length;
+  while (low < high) {
+    const midpoint = Math.floor((low + high) / 2);
+    if (Buffer.byteLength(text.slice(midpoint), "utf8") <= MANAGED_WORKER_OUTPUT_TAIL_BYTES) high = midpoint;
+    else low = midpoint + 1;
+  }
+  return text.slice(low);
+}
+
+function managedWorkerTeardownTimeoutMs() {
+  const parsed = Number.parseInt(process.env.CPB_MANAGED_WORKER_TEARDOWN_TIMEOUT_MS || "15000", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 15_000;
+}
+
+function managedWorkerCancelWriteTimeoutMs() {
+  const parsed = Number.parseInt(
+    process.env.CPB_MANAGED_WORKER_CANCEL_WRITE_TIMEOUT_MS || String(DEFAULT_MANAGED_WORKER_CANCEL_WRITE_TIMEOUT_MS),
+    10,
+  );
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_MANAGED_WORKER_CANCEL_WRITE_TIMEOUT_MS;
+}
+
+type ManagedProcessTeardown = (
+  pid: number,
+  options: {
+    signal: AbortSignal;
+    deadlineAt: number;
+    expectedRootIdentity: ProcessIdentity;
+  },
+) => void | Promise<void>;
+
+type ProductCommandOptions = {
+  teardownProcessTree?: ManagedProcessTeardown;
+  onSpawn?: (identity: ProcessIdentity) => void;
+};
+
+export type ScopedCodegraphCleanupOptions = {
+  listProcesses?: () => Promise<string>;
+  readProcessCommand?: (pid: number) => Promise<string | null>;
+  captureIdentity?: (pid: number) => ProcessIdentity | null;
+  isIdentityAlive?: (identity: ProcessIdentity) => boolean;
+  teardownProcessTree?: ManagedProcessTeardown;
+};
+
+export type ScopedCodegraphCleanupUnresolved = {
+  pid: number;
+  reason:
+    | "identity_unavailable"
+    | "identity_mismatch"
+    | "command_mismatch"
+    | "teardown_failed"
+    | "cleanup_unverified";
+  message: string;
+};
 
 export function resolveProductValidationAgents(args: string[]): ProductValidationAgents {
   const singleAgent = argValue(args, "--agent");
@@ -197,28 +407,163 @@ async function readTextTail(filePath: string, limit = 8000) {
   }
 }
 
-async function runCommand(command: string, args: string[], cwd: string, timeoutMs = 300000): Promise<CommandResult> {
+export async function runCommand(
+  command: string,
+  args: string[],
+  cwd: string,
+  timeoutMs = 300000,
+  options: ProductCommandOptions = {},
+): Promise<CommandResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd,
       env: process.env,
       stdio: ["ignore", "pipe", "pipe"],
+      detached: process.platform !== "win32",
     });
     let stdout = "";
     let stderr = "";
+    let settled = false;
+    let childClosed = false;
+    let childIdentity: ProcessIdentity | null = null;
+    let childIdentityError: unknown = null;
+    let pendingTeardown = false;
+    let teardown: Promise<void> | null = null;
+    const cleanupErrors: unknown[] = [];
     child.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
     child.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
+    const startTeardown = () => {
+      pendingTeardown = true;
+      if (teardown || childClosed || child.exitCode !== null || child.signalCode !== null || !child.pid) return;
+      pendingTeardown = false;
+      const pid = child.pid;
+      const expectedRootIdentity = childIdentity;
+      const teardownTimeoutMs = managedWorkerTeardownTimeoutMs();
+      const deadlineAt = Date.now() + teardownTimeoutMs;
+      const controller = new AbortController();
+      const deadlineError = Object.assign(
+        new Error(`command teardown timed out after ${teardownTimeoutMs}ms`),
+        { name: "AbortError", code: "ABORT_ERR" },
+      );
+      const deadlineTimer = setTimeout(() => controller.abort(deadlineError), teardownTimeoutMs);
+      const cleanup: ManagedProcessTeardown = options.teardownProcessTree || ((cleanupPid, cleanupOptions) => killTree(
+        cleanupPid,
+        10_000,
+        { requireDescendantScan: true, expectedRootIdentity: cleanupOptions.expectedRootIdentity },
+      ));
+      teardown = (async () => {
+        const errors: unknown[] = [];
+        try {
+          if (!expectedRootIdentity) {
+            throw Object.assign(
+              new Error("command process identity was not captured at spawn", {
+                cause: childIdentityError || undefined,
+              }),
+              { code: "PROCESS_IDENTITY_UNAVAILABLE" },
+            );
+          }
+          try {
+            await cleanup(pid, { signal: controller.signal, deadlineAt, expectedRootIdentity });
+            if (controller.signal.aborted) errors.push(controller.signal.reason);
+          } catch (error) {
+            errors.push(error);
+          }
+
+          let stillAlive = true;
+          try {
+            stillAlive = isProcessIdentityAlive(expectedRootIdentity);
+          } catch (error) {
+            errors.push(error);
+          }
+          if (stillAlive && options.teardownProcessTree) {
+            try {
+              await killTree(pid, 10_000, {
+                requireDescendantScan: true,
+                expectedRootIdentity,
+              });
+            } catch (error) {
+              errors.push(error);
+            }
+          }
+          try {
+            if (isProcessIdentityAlive(expectedRootIdentity)) {
+              errors.push(Object.assign(
+                new Error("command process is still running after teardown"),
+                { code: "PROCESS_CLEANUP_UNVERIFIED" },
+              ));
+            }
+          } catch (error) {
+            errors.push(error);
+          }
+          if (errors.length === 1) throw errors[0];
+          if (errors.length > 1) throw new AggregateError(errors, "command teardown failed");
+        } finally {
+          clearTimeout(deadlineTimer);
+        }
+      })().catch((error) => {
+        cleanupErrors.push(error);
+      });
+    };
     const timer = setTimeout(() => {
-      child.kill("SIGTERM");
-      reject(new Error(`${command} ${args.join(" ")} timed out after ${timeoutMs}ms\n${stderr}`));
+      const timeoutError = new Error(`${command} ${args.join(" ")} timed out after ${timeoutMs}ms\n${stderr}`);
+      startTeardown();
+      finish(null, null, timeoutError);
     }, timeoutMs);
-    child.on("error", (error) => {
+    const finish = (code: number | null, childSignal: NodeJS.Signals | null, error: Error | null = null) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
-      reject(error);
+      void (async () => {
+        if (teardown) await teardown;
+        child.stdout.removeAllListeners("data");
+        child.stderr.removeAllListeners("data");
+        if (cleanupErrors.length > 0) {
+          reject(new AggregateError(
+            [...(error ? [error] : []), ...cleanupErrors],
+            "command cleanup failed",
+          ));
+          return;
+        }
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve({
+          command,
+          args,
+          cwd,
+          code,
+          signal: childSignal,
+          stdout,
+          stderr,
+          rootIdentity: childIdentity || undefined,
+        });
+      })();
+    };
+    child.once("spawn", () => {
+      const pid = child.pid;
+      if (pid) {
+        try {
+          childIdentity = captureProcessIdentity(pid, { strict: true });
+          if (!childIdentity) {
+            throw Object.assign(
+              new Error("command process exited before its identity could be captured"),
+              { code: "PROCESS_IDENTITY_UNAVAILABLE" },
+            );
+          }
+          options.onSpawn?.(childIdentity);
+        } catch (error) {
+          childIdentityError = error;
+        }
+      }
+      if (pendingTeardown) startTeardown();
+    });
+    child.on("error", (error) => {
+      finish(null, null, error);
     });
     child.on("close", (code, signal) => {
-      clearTimeout(timer);
-      resolve({ command, args, cwd, code, signal, stdout, stderr });
+      childClosed = true;
+      finish(code, signal);
     });
   });
 }
@@ -239,19 +584,53 @@ function scopedPathVariants(targetPath: string) {
   return [...variants];
 }
 
-async function processAlive(pid: number) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
+function isScopedCodegraphCommand(command: string, variants: string[]) {
+  return command.includes("codegraph")
+    && command.includes("serve")
+    && command.includes("--mcp")
+    && variants.some((variant) => command.includes(variant));
 }
 
-async function cleanupScopedCodegraphDaemons(worktreePath: string) {
+function codegraphCleanupError(
+  message: string,
+  code: string,
+  unresolved: ScopedCodegraphCleanupUnresolved[],
+  cause?: unknown,
+) {
+  const error = cause === undefined ? new Error(message) : new Error(message, { cause });
+  return Object.assign(error, { code, unresolvedCleanup: unresolved });
+}
+
+function decorateCodegraphCleanupError(error: unknown, unresolved: ScopedCodegraphCleanupUnresolved[]) {
+  if (error instanceof Error) {
+    return Object.assign(error, { unresolvedCleanup: unresolved });
+  }
+  return Object.assign(new Error(String(error)), { unresolvedCleanup: unresolved });
+}
+
+function isExactProcessIdentityForPid(identity: ProcessIdentity | null, pid: number) {
+  return Boolean(identity && identity.pid === pid && sameProcessIdentity(identity, identity));
+}
+
+export async function cleanupScopedCodegraphDaemons(
+  worktreePath: string,
+  options: ScopedCodegraphCleanupOptions = {},
+) {
   const variants = scopedPathVariants(worktreePath);
-  const result = await runCommand("ps", ["-axo", "pid=,command="], REPO_ROOT, 30000).catch(() => null);
-  const lines = result?.stdout.split("\n") || [];
+  const listProcesses = options.listProcesses || (async () => {
+    const result = await runCommand("ps", ["-axo", "pid=,command="], REPO_ROOT, 30000);
+    if (result.code !== 0) {
+      throw new Error(`failed to enumerate Codegraph daemons (ps exited ${result.code}): ${result.stderr}`);
+    }
+    return result.stdout;
+  });
+  const readProcessCommand = options.readProcessCommand || (async (pid: number) => {
+    const result = await runCommand("ps", ["-p", String(pid), "-o", "command="], REPO_ROOT, 30000);
+    return result.code === 0 ? result.stdout.trim() : null;
+  });
+  const captureIdentity = options.captureIdentity || ((pid: number) => captureProcessIdentity(pid, { strict: true }));
+  const identityAlive = options.isIdentityAlive || isProcessIdentityAlive;
+  const lines = (await listProcesses()).split("\n");
   const matches = lines
     .map((line) => {
       const match = line.match(/^\s*(\d+)\s+(.+)$/);
@@ -259,32 +638,124 @@ async function cleanupScopedCodegraphDaemons(worktreePath: string) {
       return { pid: Number.parseInt(match[1], 10), command: match[2] };
     })
     .filter((entry): entry is { pid: number; command: string } => Boolean(entry))
-    .filter((entry) => entry.command.includes("codegraph"))
-    .filter((entry) => entry.command.includes("serve"))
-    .filter((entry) => entry.command.includes("--mcp"))
-    .filter((entry) => variants.some((variant) => entry.command.includes(variant)));
+    .filter((entry) => isScopedCodegraphCommand(entry.command, variants));
 
-  for (const entry of matches) {
-    try { process.kill(entry.pid, "SIGTERM"); } catch {}
-  }
-  await new Promise((resolve) => setTimeout(resolve, 500));
-
+  const errors: unknown[] = [];
   const killed: number[] = [];
+  const unresolved: ScopedCodegraphCleanupUnresolved[] = [];
+  const targets: Array<{ pid: number; identity: ProcessIdentity }> = [];
   for (const entry of matches) {
-    if (await processAlive(entry.pid)) {
-      try {
-        process.kill(entry.pid, "SIGKILL");
-        killed.push(entry.pid);
-      } catch {}
-    } else {
-      killed.push(entry.pid);
+    try {
+      const observedIdentity = captureIdentity(entry.pid);
+      if (!isExactProcessIdentityForPid(observedIdentity, entry.pid)) {
+        throw codegraphCleanupError(
+          `failed to capture an exact identity for Codegraph daemon pid ${entry.pid}; refusing to claim cleanup`,
+          "PROCESS_IDENTITY_UNAVAILABLE",
+          [],
+        );
+      }
+      const currentCommand = await readProcessCommand(entry.pid);
+      const confirmedIdentity = captureIdentity(entry.pid);
+      if (!isExactProcessIdentityForPid(confirmedIdentity, entry.pid)) {
+        throw codegraphCleanupError(
+          `failed to re-capture an exact identity for Codegraph daemon pid ${entry.pid}; refusing to signal`,
+          "PROCESS_IDENTITY_UNAVAILABLE",
+          [],
+        );
+      }
+      if (!sameProcessIdentity(observedIdentity, confirmedIdentity)) {
+        throw codegraphCleanupError(
+          `Codegraph daemon pid ${entry.pid} changed identity before cleanup; refusing to signal successor`,
+          "PROCESS_IDENTITY_MISMATCH",
+          [],
+        );
+      }
+      if (!currentCommand || !isScopedCodegraphCommand(currentCommand, variants)) {
+        throw codegraphCleanupError(
+          `Codegraph daemon pid ${entry.pid} no longer matches the scoped command; refusing to signal`,
+          "PROCESS_IDENTITY_MISMATCH",
+          [],
+        );
+      }
+      targets.push({ pid: entry.pid, identity: confirmedIdentity });
+    } catch (error) {
+      const cause = toError(error);
+      const code = errorCode(cause);
+      const reason: ScopedCodegraphCleanupUnresolved["reason"] = code === "PROCESS_IDENTITY_MISMATCH"
+        ? (cause.message.includes("no longer matches") ? "command_mismatch" : "identity_mismatch")
+        : "identity_unavailable";
+      unresolved.push({ pid: entry.pid, reason, message: cause.message });
+      errors.push(new Error(`failed to bind Codegraph daemon pid ${entry.pid} to a process identity`, { cause: error }));
     }
+  }
+
+  for (const target of targets) {
+    const teardownTimeoutMs = managedWorkerTeardownTimeoutMs();
+    const deadlineAt = Date.now() + teardownTimeoutMs;
+    const controller = new AbortController();
+    const deadlineError = Object.assign(
+      new Error(`Codegraph daemon teardown timed out after ${teardownTimeoutMs}ms`),
+      { name: "AbortError", code: "ABORT_ERR" },
+    );
+    const deadlineTimer = setTimeout(() => controller.abort(deadlineError), teardownTimeoutMs);
+    try {
+      const cleanup: ManagedProcessTeardown = options.teardownProcessTree || ((pid, cleanupOptions) => killTree(
+        pid,
+        10_000,
+        { requireDescendantScan: true, expectedRootIdentity: cleanupOptions.expectedRootIdentity },
+      ));
+      await cleanup(target.pid, {
+        signal: controller.signal,
+        deadlineAt,
+        expectedRootIdentity: target.identity,
+      });
+      if (controller.signal.aborted) throw controller.signal.reason;
+      let stillAlive: boolean;
+      try {
+        stillAlive = identityAlive(target.identity);
+      } catch (error) {
+        throw codegraphCleanupError(
+          `could not verify cleanup of Codegraph daemon pid ${target.pid}: ${toError(error).message}`,
+          "PROCESS_CLEANUP_UNVERIFIED",
+          [],
+          error,
+        );
+      }
+      if (stillAlive) {
+        throw codegraphCleanupError(
+          `Codegraph daemon pid ${target.pid} is still running after teardown`,
+          "PROCESS_CLEANUP_UNVERIFIED",
+          [],
+        );
+      }
+      killed.push(target.pid);
+    } catch (error) {
+      const cause = toError(error);
+      unresolved.push({
+        pid: target.pid,
+        reason: errorCode(cause) === "PROCESS_CLEANUP_UNVERIFIED" ? "cleanup_unverified" : "teardown_failed",
+        message: cause.message,
+      });
+      const diagnosticCause = cause.cause === undefined ? error : cause.cause;
+      errors.push(new Error(`failed to clean up Codegraph daemon pid ${target.pid}`, { cause: diagnosticCause }));
+    } finally {
+      clearTimeout(deadlineTimer);
+    }
+  }
+
+  if (errors.length === 1) throw decorateCodegraphCleanupError(errors[0], unresolved);
+  if (errors.length > 1) {
+    throw Object.assign(
+      new AggregateError(errors, "scoped Codegraph daemon cleanup failed"),
+      { unresolvedCleanup: unresolved },
+    );
   }
 
   return {
     worktreePath,
     matchedPids: matches.map((entry) => entry.pid),
     killedPids: killed,
+    unresolvedCleanup: unresolved,
   };
 }
 
@@ -556,6 +1027,9 @@ export async function runManagedWorker({
   timeoutMs,
   distRoot = DIST_ROOT,
   extraEnv = {},
+  signal,
+  teardownProcessTree,
+  onSpawn,
 }: {
   workerId: string;
   hubRoot: string;
@@ -565,9 +1039,13 @@ export async function runManagedWorker({
   timeoutMs: number;
   distRoot?: string;
   extraEnv?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
+  teardownProcessTree?: ManagedProcessTeardown;
+  onSpawn?: (identity: ProcessIdentity) => void;
 }) {
+  if (signal?.aborted) throw managedWorkerAbortError(signal);
   const workerScript = path.join(distRoot, "runtime", "worker", "managed-worker.js");
-  return new Promise<CommandResult>((resolve) => {
+  return new Promise<CommandResult>((resolve, reject) => {
     const child = spawn(process.execPath, [
       workerScript,
       "--worker-id", workerId,
@@ -594,61 +1072,216 @@ export async function runManagedWorker({
         CPB_ACP_POOL_TIMEOUT_MS: String(timeoutMs),
       },
       stdio: ["ignore", "pipe", "pipe"],
+      detached: process.platform !== "win32",
     });
-    let stdout = "";
-    let stderr = "";
+    const stdout = createManagedWorkerOutputTail();
+    const stderr = createManagedWorkerOutputTail();
     let timedOut = false;
-    child.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
-    child.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
-    const timer = setTimeout(() => {
-      timedOut = true;
-      void (async () => {
+    let aborted = false;
+    let finishStarted = false;
+    const cleanupErrors: unknown[] = [];
+    let terminationCause: Error | null = null;
+    let timeoutTimer: NodeJS.Timeout | null = null;
+    let teardown: Promise<void> | null = null;
+    let cancelRequest: Promise<void> | null = null;
+    let pendingTeardown = false;
+    let onAbort = () => {};
+    let childClosed = false;
+    let childPid: number | null = null;
+    let childIdentity: ProcessIdentity | null = null;
+    let childIdentityError: unknown = null;
+    const clearTimers = () => {
+      if (timeoutTimer) {
+        clearTimeout(timeoutTimer);
+        timeoutTimer = null;
+      }
+    };
+    const abortError = () => managedWorkerAbortError(signal);
+    const timeoutError = () => Object.assign(new Error(`managed worker timed out after ${timeoutMs}ms`), { code: "MANAGED_WORKER_TIMEOUT" });
+    const waitForCancelRequest = () => cancelRequest || Promise.resolve();
+    const appendStderr = (message: string) => {
+      appendManagedWorkerOutput(stderr, message);
+    };
+    const requestCancel = () => {
+      if (cancelRequest) return cancelRequest;
+      const cancelTimeoutMs = managedWorkerCancelWriteTimeoutMs();
+      const deadlineAt = Date.now() + cancelTimeoutMs;
+      const controller = new AbortController();
+      const deadlineError = Object.assign(
+        new Error(`managed worker cancel write timed out after ${cancelTimeoutMs}ms`),
+        { name: "AbortError", code: "ABORT_ERR" },
+      );
+      const cancelTimer = setTimeout(() => controller.abort(deadlineError), cancelTimeoutMs);
+      cancelRequest = (async () => {
         try {
           const store = new AssignmentStore(hubRoot);
           await store.init();
-          await store.writeCancel(assignmentId, 1, `product validation timed out after ${timeoutMs}ms`);
+          await store.writeCancel(
+            assignmentId,
+            1,
+            `product validation timed out after ${timeoutMs}ms`,
+            { signal: controller.signal, deadlineAt },
+          );
         } catch (error) {
-          stderr += `\n[product-validation] failed to request worker cancellation: ${error instanceof Error ? error.message : String(error)}\n`;
+          appendStderr(`\n[product-validation] failed to request worker cancellation: ${error instanceof Error ? error.message : String(error)}\n`);
+        } finally {
+          clearTimeout(cancelTimer);
         }
       })();
-      setTimeout(() => {
-        if (timedOut && child.exitCode === null && child.signalCode === null) {
-          child.kill("SIGTERM");
-          setTimeout(() => {
-            if (timedOut && child.exitCode === null && child.signalCode === null) {
-              child.kill("SIGKILL");
+      return cancelRequest;
+    };
+    const startTeardown = () => {
+      pendingTeardown = true;
+      if (!childPid || childClosed || child.exitCode !== null || child.signalCode !== null || teardown) return;
+      pendingTeardown = false;
+      const pid = childPid;
+      const expectedRootIdentity = childIdentity;
+      const teardownTimeoutMs = managedWorkerTeardownTimeoutMs();
+      const deadlineAt = Date.now() + teardownTimeoutMs;
+      const controller = new AbortController();
+      const deadlineError = Object.assign(
+        new Error(`managed worker teardown timed out after ${teardownTimeoutMs}ms`),
+        { name: "AbortError", code: "ABORT_ERR" },
+      );
+      const deadlineTimer = setTimeout(() => controller.abort(deadlineError), teardownTimeoutMs);
+      const cleanup: ManagedProcessTeardown = teardownProcessTree || ((cleanupPid, options) => killTree(
+        cleanupPid,
+        10_000,
+        { requireDescendantScan: true, expectedRootIdentity: options.expectedRootIdentity },
+      ));
+      teardown = (async () => {
+        const teardownErrors: unknown[] = [];
+        try {
+          if (!expectedRootIdentity) {
+            throw Object.assign(
+              new Error("managed worker process identity was not captured at spawn", {
+                cause: childIdentityError || undefined,
+              }),
+              { code: "PROCESS_IDENTITY_UNAVAILABLE" },
+            );
+          }
+          try {
+            await cleanup(pid, { signal: controller.signal, deadlineAt, expectedRootIdentity });
+            if (controller.signal.aborted) teardownErrors.push(controller.signal.reason);
+          } catch (error) {
+            teardownErrors.push(error);
+          }
+
+          let stillAlive = true;
+          try {
+            stillAlive = isProcessIdentityAlive(expectedRootIdentity);
+          } catch (error) {
+            teardownErrors.push(error);
+          }
+          if (stillAlive && teardownProcessTree) {
+            try {
+              await killTree(pid, 10_000, {
+                requireDescendantScan: true,
+                expectedRootIdentity,
+              });
+            } catch (error) {
+              teardownErrors.push(error);
             }
-          }, 5_000).unref();
+          }
+          try {
+            if (isProcessIdentityAlive(expectedRootIdentity)) {
+              teardownErrors.push(Object.assign(
+                new Error("managed worker process is still running after teardown"),
+                { code: "PROCESS_CLEANUP_UNVERIFIED" },
+              ));
+            }
+          } catch (error) {
+            teardownErrors.push(error);
+          }
+          if (teardownErrors.length === 1) throw teardownErrors[0];
+          if (teardownErrors.length > 1) {
+            throw new AggregateError(teardownErrors, "managed worker teardown failed");
+          }
+        } finally {
+          clearTimeout(deadlineTimer);
         }
-      }, 30_000).unref();
-    }, timeoutMs + 30000);
-    child.on("error", (error) => {
-      clearTimeout(timer);
-      resolve({
-        command: process.execPath,
-        args: [workerScript],
-        cwd: REPO_ROOT,
-        code: null,
-        signal: null,
-        stdout,
-        stderr,
-        timedOut,
-        errorMessage: error instanceof Error ? error.message : String(error),
+      })().catch((error) => {
+        cleanupErrors.push(error);
+        throw error;
       });
+      void teardown.then(() => {
+        if (!finishStarted && (timedOut || aborted)) finish(null, null);
+      }, () => {
+        if (!finishStarted) finish(null, null);
+      });
+    };
+    const finish = (code: number | null, childSignal: NodeJS.Signals | null, error: Error | null = null) => {
+      if (finishStarted) return;
+      finishStarted = true;
+      clearTimers();
+      signal?.removeEventListener("abort", onAbort);
+      child.stdout.removeAllListeners("data");
+      child.stderr.removeAllListeners("data");
+      void Promise.allSettled([teardown || Promise.resolve(), waitForCancelRequest()]).then(() => {
+        if (cleanupErrors.length > 0) {
+          const original = error || terminationCause;
+          const concreteErrors = concreteCleanupErrors(cleanupErrors);
+          reject(new AggregateError(
+            [...(original ? [original] : []), ...concreteErrors],
+            "managed worker cleanup failed",
+            { cause: concreteErrors[0] },
+          ));
+          return;
+        }
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve({
+          command: process.execPath,
+          args: [workerScript],
+          cwd: REPO_ROOT,
+          code,
+          signal: childSignal,
+          stdout: managedWorkerOutputText(stdout),
+          stderr: managedWorkerOutputText(stderr),
+          timedOut,
+          errorMessage: timedOut ? `managed worker timed out after ${timeoutMs}ms` : aborted ? abortError().message : null,
+          errorName: aborted ? abortError().name : null,
+          errorCode: aborted ? errorCode(abortError()) : null,
+          errorCause: aborted ? abortError().cause : undefined,
+          rootIdentity: childIdentity || undefined,
+        });
+      });
+    };
+    child.stdout.on("data", (chunk) => { appendManagedWorkerOutput(stdout, chunk); });
+    child.stderr.on("data", (chunk) => { appendManagedWorkerOutput(stderr, chunk); });
+    child.once("spawn", () => {
+      childPid = child.pid || null;
+      if (childPid) {
+        try {
+          childIdentity = captureProcessIdentity(childPid, { strict: true });
+          if (childIdentity) onSpawn?.(childIdentity);
+        } catch (error) {
+          childIdentityError = error;
+        }
+      }
+      if (pendingTeardown) startTeardown();
     });
-    child.on("close", (code, signal) => {
-      clearTimeout(timer);
-      resolve({
-        command: process.execPath,
-        args: [workerScript],
-        cwd: REPO_ROOT,
-        code,
-        signal,
-        stdout,
-        stderr,
-        timedOut,
-        errorMessage: timedOut ? `managed worker timed out after ${timeoutMs}ms` : null,
-      });
+    timeoutTimer = setTimeout(() => {
+      timedOut = true;
+      terminationCause = timeoutError();
+      void requestCancel();
+      if (child.exitCode === null && child.signalCode === null) startTeardown();
+    }, timeoutMs);
+    onAbort = () => {
+      aborted = true;
+      terminationCause = abortError();
+      startTeardown();
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) onAbort();
+    child.on("error", (error) => {
+      finish(null, null, error instanceof Error ? error : new Error(String(error)));
+    });
+    child.on("close", (code, childSignal) => {
+      childClosed = true;
+      finish(code, childSignal);
     });
   });
 }
@@ -691,25 +1324,26 @@ async function main() {
   }
   const previousIndexOnly = process.env.CPB_CODEGRAPH_INDEX_ONLY_OK;
   process.env.CPB_CODEGRAPH_INDEX_ONLY_OK = "1";
-
-  const { rowIndex, row } = await fetchDatasetRow(record);
-  const problemHash = createHash("sha256").update(stringValue(row.problem_statement)).digest("hex");
-  if (problemHash !== record.problemStatementSha256) {
-    throw new Error(`problem statement hash mismatch for ${record.benchmarkInstanceId}: ${problemHash}`);
-  }
-
-  const tmpRoot = path.join(os.tmpdir(), `cpb-swebench-${safeId(record.benchmarkInstanceId || "sample")}-${Date.now()}`);
-  await mkdir(tmpRoot, { recursive: true });
-  const hubRoot = path.join(tmpRoot, "hub");
-  const cpbRoot = path.join(tmpRoot, "cpb");
-  const sourcePath = path.join(tmpRoot, "source");
-  const workerId = "w-swebench";
   let bundlePath: string | null = null;
-  let codegraphEvidence: CodeGraphEvidence | null = null;
-  const failToPassTests = stringArrayFromJson(row.FAIL_TO_PASS);
-  const passToPassTests = stringArrayFromJson(row.PASS_TO_PASS);
 
   try {
+    await runProductValidationTemporaryWorkspace({
+      keepTemp: options.keepTemp,
+      task: async (tmpRoot) => {
+        const { rowIndex, row } = await fetchDatasetRow(record);
+        const problemHash = createHash("sha256").update(stringValue(row.problem_statement)).digest("hex");
+        if (problemHash !== record.problemStatementSha256) {
+          throw new Error(`problem statement hash mismatch for ${record.benchmarkInstanceId}: ${problemHash}`);
+        }
+
+        const hubRoot = path.join(tmpRoot, "hub");
+        const cpbRoot = path.join(tmpRoot, "cpb");
+        const sourcePath = path.join(tmpRoot, "source");
+        const workerId = "w-swebench";
+        let codegraphEvidence: CodeGraphEvidence | null = null;
+        const failToPassTests = stringArrayFromJson(row.FAIL_TO_PASS);
+        const passToPassTests = stringArrayFromJson(row.PASS_TO_PASS);
+
     await new AssignmentStore(hubRoot).init();
     await cloneAtCommit({
       repo: stringValue(record.representativeRepository),
@@ -825,12 +1459,9 @@ async function main() {
     if (worker.code !== 0 || worker.timedOut || summary.jobStatus !== "completed") {
       process.exitCode = 1;
     }
+      },
+    });
   } finally {
-    if (options.keepTemp) {
-      console.error(`[keep-temp] ${tmpRoot}`);
-    } else {
-      await rm(tmpRoot, { recursive: true, force: true }).catch(() => {});
-    }
     if (previousIndexOnly === undefined) delete process.env.CPB_CODEGRAPH_INDEX_ONLY_OK;
     else process.env.CPB_CODEGRAPH_INDEX_ONLY_OK = previousIndexOnly;
   }
