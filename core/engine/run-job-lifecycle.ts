@@ -12,8 +12,8 @@ type FinalizeAuditTrailInput =
   Pick<RunJobState, "cpbRoot" | "project" | "sourceContext">
   & Pick<RunJobPorts, "appendEvent">
   & {
-    jobId: string;
-    attemptId: string;
+    jobId: string | null | undefined;
+    attemptId: string | null | undefined;
     result: JobRunResult;
     now?: () => string;
   };
@@ -42,6 +42,11 @@ export async function finalizeAuditTrail({
   sourceContext,
   now = ts,
 }: FinalizeAuditTrailInput) {
+  // No audit trail for a job that was never created: createJob threw before
+  // resolving a real id, so the panic path carries result.jobId === "unknown"
+  // as a public contract (locked by engine-run-job.test.ts). That sentinel must
+  // NOT be persisted as a durable runtime_context_snapshot / audit_finalized event.
+  if (!jobId || jobId === "unknown") return;
   const assignment = recordValue(sourceContext?.assignment);
   const assignmentMetadata = recordValue(assignment.metadata);
   const resultFailure = recordValue(result.failure);

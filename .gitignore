@@ -18,6 +18,7 @@ server/dist/
 flow-task/
 cpb-task/
 .cpb-evaluations/
+.cpb-recovery/
 logs/
 codepatchbay-*.json
 .omc/

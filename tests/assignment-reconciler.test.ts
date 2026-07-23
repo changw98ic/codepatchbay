@@ -1045,6 +1045,65 @@ test("Reconciler advances assigned assignment from accepted file and queue claim
   assert.equal((await listQueue(hubRoot))[0].status, "in_progress");
 });
 
+test("Reconciler advances an assigned assignment via a same-worker queue claim (dual-path, no accepted file)", async () => {
+  const hubRoot = await tempRoot("cpb-reconciler-dual-same");
+  const assignments = new AssignmentStore(hubRoot);
+  const workers = new WorkerStore(hubRoot);
+  await assignments.init();
+  await workers.init();
+  const entry = await enqueue(hubRoot, { projectId: "proj", description: "dual same" });
+  const assignment = await assignments.getOrCreateAssignmentForEntry({
+    entryId: entry.id,
+    projectId: "proj",
+    task: "dual same",
+  });
+  await assignments.createAttempt(assignment.assignmentId, {
+    workerId: "w-owner",
+    orchestratorEpoch: 1,
+  });
+  await updateEntry(hubRoot, entry.id, {
+    status: "in_progress",
+    claimedBy: "w-owner",
+    workerId: "w-owner",
+    claimedAt: new Date().toISOString(),
+  });
+
+  await reconciler(hubRoot, assignments, workers).reconcileAssignments();
+
+  assert.equal((await assignments.getAssignment(assignment.assignmentId)).status, "running");
+});
+
+test("Reconciler does not resurrect an orphaned attempt via a foreign queue claim (dual-path)", async () => {
+  const hubRoot = await tempRoot("cpb-reconciler-dual-foreign");
+  const assignments = new AssignmentStore(hubRoot);
+  const workers = new WorkerStore(hubRoot);
+  await assignments.init();
+  await workers.init();
+  const entry = await enqueue(hubRoot, { projectId: "proj", description: "dual foreign" });
+  const assignment = await assignments.getOrCreateAssignmentForEntry({
+    entryId: entry.id,
+    projectId: "proj",
+    task: "dual foreign",
+  });
+  await assignments.createAttempt(assignment.assignmentId, {
+    workerId: "w-owner",
+    orchestratorEpoch: 1,
+  });
+  // The original worker (w-owner) died; a DIFFERENT worker (w-restart) now holds
+  // a fresh queue claim. The orphaned attempt must NOT be resurrected into running.
+  await updateEntry(hubRoot, entry.id, {
+    status: "in_progress",
+    claimedBy: "w-restart",
+    workerId: "w-restart",
+    claimedAt: new Date().toISOString(),
+  });
+
+  await reconciler(hubRoot, assignments, workers).reconcileAssignments();
+
+  const after = await assignments.getAssignment(assignment.assignmentId);
+  assert.notEqual(after.status, "running");
+});
+
 test("Reconciler ignores an uncommitted result file and finalizes only after assignment-store acceptance", async () => {
   const hubRoot = await tempRoot("cpb-reconciler-result");
   const assignments = new AssignmentStore(hubRoot);

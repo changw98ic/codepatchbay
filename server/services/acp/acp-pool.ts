@@ -5115,7 +5115,15 @@ export class AcpPool {
   async #getPersistentClient(key: string, agent: string, cwd: string, options: PoolRequestOptions = {}) {
     throwIfAborted(options.signal);
     const existing = this.persistentClients.get(key);
-    if (existing && existing.client.isUsable()) return existing;
+    // Defense-in-depth: never reuse a persistent client spawned for a different
+    // provider. poolClientKey is agent+conversation-scoped and does NOT encode
+    // providerKey, so an exotic same-agent/same-conversation request with a
+    // different providerKey would otherwise inherit the stale client. On
+    // mismatch, fall through to close + respawn for the now-different provider.
+    if (existing && existing.client.isUsable()
+      && existing.providerKey === this.#providerKeyForRequest(agent, options)) {
+      return existing;
+    }
     if (existing) await this.#closePersistentClient(key);
 
     // Load cached sessionId for cached lifecycle agents

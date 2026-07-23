@@ -1273,7 +1273,15 @@ export class Reconciler {
             const match = claimed.find((e) => e.id === assignment.entryId);
             if (match?.claimedAt) {
               const claimedAtMs = new Date(match.claimedAt).getTime();
-              if (now - claimedAtMs < ASSIGN_ACCEPT_TTL_MS) {
+              // Only advance when the queue claim is held by the SAME worker that owns
+              // the attempt. A foreign claim (the original worker died and a different
+              // worker now holds the entry) must not resurrect an orphaned attempt into
+              // "running"; let it fall through to the TTL synthetic-failure path below.
+              if (
+                now - claimedAtMs < ASSIGN_ACCEPT_TTL_MS
+                && match.claimedBy != null
+                && match.claimedBy === attempt.workerId
+              ) {
                 await this.assignments.markRunning(assignment.assignmentId, attempt.attempt);
                 break;
               }

@@ -48,6 +48,7 @@
     "typecheck:type-debt:engine": "npm run build:node && node dist/scripts/type-debt-guard.js",
     "verify:dependency-audit": "npm audit --omit=dev --audit-level=moderate && npm audit --audit-level=high",
     "verify:patch-integrity": "npm run build:node && node dist/scripts/verify-patch-integrity.js",
+    "verify:commit-size": "npm run build:node && node dist/scripts/verify-commit-size.js",
     "verify:product-gate": "npm run build:node && node dist/scripts/verify-product-gate.js",
     "promote:live-release-evidence": "npm run build:node && node dist/scripts/promote-live-release-evidence.js",
     "validate:swebench-product": "npm run build:node && node dist/scripts/run-swebench-product-validation.js",

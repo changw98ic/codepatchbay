@@ -1,0 +1,73 @@
+{
+  "benchmarkedAt": "2026-07-23T07:24:12.713Z",
+  "environment": {
+    "platform": "darwin",
+    "node": "v24.4.1",
+    "disk": "ORICO external APFS (assumed)"
+  },
+  "tickBudgetMs": 2000,
+  "reconcileAssignments": [
+    {
+      "assignments": 10,
+      "runs": 5,
+      "meanMs": 7.42,
+      "p50Ms": 7.44,
+      "p99Ms": 8.01
+    },
+    {
+      "assignments": 50,
+      "runs": 5,
+      "meanMs": 35.41,
+      "p50Ms": 36.16,
+      "p99Ms": 39.19
+    },
+    {
+      "assignments": 100,
+      "runs": 5,
+      "meanMs": 71.87,
+      "p50Ms": 69.88,
+      "p99Ms": 79.43
+    },
+    {
+      "assignments": 200,
+      "runs": 5,
+      "meanMs": 158.52,
+      "p50Ms": 159.06,
+      "p99Ms": 162.14
+    }
+  ],
+  "readJobProjection": [
+    {
+      "eventCount": 11,
+      "runs": 5,
+      "meanMs": 0.32,
+      "p50Ms": 0.32,
+      "p99Ms": 0.36
+    },
+    {
+      "eventCount": 101,
+      "runs": 5,
+      "meanMs": 1.02,
+      "p50Ms": 0.64,
+      "p99Ms": 2.38
+    },
+    {
+      "eventCount": 1001,
+      "runs": 5,
+      "meanMs": 2.63,
+      "p50Ms": 2.37,
+      "p99Ms": 4
+    },
+    {
+      "eventCount": 5001,
+      "runs": 5,
+      "meanMs": 8.13,
+      "p50Ms": 7.73,
+      "p99Ms": 9.41
+    }
+  ],
+  "notes": [
+    "reconcileAssignments uses getActiveAttempt (assignment-store), NOT getJob — so it does not trigger readJobProjection.",
+    "This benchmark does not create or read a checkpoint; the source checkpoint path still materializes the full event log for CHECKPOINT_REPLAY_MISMATCH, so the performance impact of P1-b remains unmeasured."
+  ]
+}
