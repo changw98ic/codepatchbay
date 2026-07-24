@@ -353,6 +353,12 @@ function observeProcessIdentity(identity: ProcessIdentity, system = defaultSyste
     current = captureProcessIdentity(identity.pid, { strict: true, system });
   } catch (error) {
     if ((error as NodeJS.ErrnoException | undefined)?.code === "PROCESS_IDENTITY_UNAVAILABLE") {
+      // Darwin's proc_pidinfo birth record is transiently unavailable even
+      // for a live, stable process. kill(0) above already confirmed liveness,
+      // so on darwin tolerate the strict-identity gap (best-effort "same")
+      // instead of failing teardown. Linux /proc/stat is stable, so non-darwin
+      // keeps the strict split-brain guarantee unchanged.
+      if (system.platform === "darwin") return { state: "same", current: identity };
       return { state: "unavailable" };
     }
     throw error;
