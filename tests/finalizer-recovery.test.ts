@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -15,6 +15,7 @@ import {
 } from "../server/services/finalizer-contract.js";
 import {
   appendFinalizerJournal,
+  finalizerJournalClaimId,
   finalizerJournalFinalizationId,
   readFinalizerJournal,
   type FinalizerJournalRecord,
@@ -22,7 +23,6 @@ import {
   type FinalizerJournalStage,
 } from "../server/services/finalizer-journal.js";
 
-const ORIGINAL_CLAIM_ID = createHash("sha256").update("claim-original").digest("hex");
 const ORIGIN_JOB_ID = "job-recovery-origin";
 const execFileAsync = promisify(execFile);
 
@@ -112,11 +112,20 @@ async function fixture() {
     preRemoteHead: sourceHead,
     targetBranch: "main",
   });
+  const originalClaimId = finalizerJournalClaimId({
+    finalizationId,
+    ownerDigest: "2".repeat(64),
+    claimGeneration: 1,
+  });
   const capsulePath = path.join(dataRoot, "finalizer-journals", `${finalizationId}.bundle`);
   await mkdir(path.dirname(capsulePath), { recursive: true });
   await execFileAsync("git", ["bundle", "create", capsulePath, "HEAD"], { cwd: repositoryPath });
   await chmod(capsulePath, 0o600);
-  const capsuleBytes = await readFile(capsulePath);
+  // Resolve the macOS tmpdir symlink (/var/folders -> /private/var/folders) so
+  // the recorded capsule path matches the canonical authority realpath the
+  // finalizer checks (auto-finalizer.ts realpath guard). No-op on Linux /tmp.
+  const capsuleRealPath = await realpath(capsulePath);
+  const capsuleBytes = await readFile(capsuleRealPath);
   const initial: FinalizerJournalRecord = {
     schema: "cpb.finalizer-mutation-receipt.v1",
     finalizationId,
@@ -131,13 +140,13 @@ async function fixture() {
     capabilityDigest: finalizerCapabilityDigest(capability),
     principal,
     claim: {
-      claimId: ORIGINAL_CLAIM_ID,
+      claimId: originalClaimId,
       claimGeneration: 1,
       ownerDigest: "2".repeat(64),
     },
     source: { branch: "main", head: sourceHead },
     capsule: {
-      path: capsulePath,
+      path: capsuleRealPath,
       sha256: createHash("sha256").update(capsuleBytes).digest("hex"),
       bytes: capsuleBytes.length,
     },
@@ -154,7 +163,7 @@ async function fixture() {
     expected: snapshot,
     assertMutationLease,
   });
-  return { cpbRoot, dataRoot, initial, snapshot, assertMutationLease };
+  return { cpbRoot, dataRoot, initial, snapshot, assertMutationLease, originalClaimId };
 }
 
 async function advance(
@@ -188,7 +197,7 @@ test("finalizer recovery takes a fenced claim but never blindly resends an ambig
   let prCreateCalls = 0;
   try {
     await advance(state, "repository.push.intent");
-    const fence = mutationFence(ORIGINAL_CLAIM_ID);
+    const fence = mutationFence(state.originalClaimId);
     const leaseOperations: string[] = [];
     const result = await recoverFinalizerOnly({
       cpbRoot: state.cpbRoot,
@@ -245,6 +254,10 @@ test("completed finalizer recovery publishes a canonical receipt owned by the fr
           committed: true,
           principal,
           evidence: {
+            repository: capability.repository,
+            repositoryId: capability.repositoryId,
+            issueNumber: capability.issueNumber,
+            capabilityDigest: finalizerCapabilityDigest(capability),
             targetBranch: state.initial.targetBranch,
             expectedRef: `refs/heads/${state.initial.targetBranch}`,
             actualRef: `refs/heads/${state.initial.targetBranch}`,
@@ -265,6 +278,10 @@ test("completed finalizer recovery publishes a canonical receipt owned by the fr
           committed: true,
           principal,
           evidence: {
+            repository: capability.repository,
+            repositoryId: capability.repositoryId,
+            issueNumber: capability.issueNumber,
+            capabilityDigest: finalizerCapabilityDigest(capability),
             number: capability.issueNumber,
             state: "CLOSED",
             url: `https://github.com/${capability.repository}/issues/${capability.issueNumber}`,
@@ -283,7 +300,7 @@ test("completed finalizer recovery publishes a canonical receipt owned by the fr
         actualHead: state.initial.commit,
       }),
     });
-    const fence = mutationFence(ORIGINAL_CLAIM_ID);
+    const fence = mutationFence(state.originalClaimId);
     const result = await recoverFinalizerOnly({
       cpbRoot: state.cpbRoot,
       dataRoot: state.dataRoot,
