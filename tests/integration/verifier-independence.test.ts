@@ -17,6 +17,9 @@ import { parseVerdict } from "../../bridges/run-pipeline.js";
 const execFileAsync = promisify(execFile);
 const distRoot = path.resolve(import.meta.dirname, "..", "..");
 const repoRoot = path.resolve(distRoot, "..");
+// dist/ (build:node) carries the cpb CLI + full REQUIRED_EXECUTOR_FILES;
+// dist-tests/ lacks cpb, so executor root must point at dist/.
+const execRoot = path.resolve(repoRoot, "dist");
 const verifierBridge = path.join(repoRoot, "bridges", "verifier.sh");
 const commonBridge = path.join(repoRoot, "bridges", "common.sh");
 const pipelineBridge = path.join(distRoot, "bridges", "run-pipeline.js");
@@ -86,7 +89,7 @@ describe("verifier independence from deliverable artifacts", () => {
           env: {
             ...process.env,
             CPB_ROOT: fixture.cpbRoot,
-            CPB_EXECUTOR_ROOT: distRoot,
+            CPB_EXECUTOR_ROOT: execRoot,
             CPB_HUB_ROOT: fixture.hubRoot,
             CPB_PROJECT_RUNTIME_ROOT: fixture.dataRoot,
             CPB_DANGEROUS: "1",
@@ -130,7 +133,7 @@ describe("verifier independence from deliverable artifacts", () => {
           env: {
             ...process.env,
             CPB_ROOT: fixture.cpbRoot,
-            CPB_EXECUTOR_ROOT: distRoot,
+            CPB_EXECUTOR_ROOT: execRoot,
             CPB_HUB_ROOT: fixture.hubRoot,
             CPB_PROJECT_RUNTIME_ROOT: fixture.dataRoot,
             CPB_ACP_CLIENT: stub,
@@ -179,7 +182,7 @@ describe("verifier independence from deliverable artifacts", () => {
           env: {
             ...process.env,
             CPB_ROOT: fixture.cpbRoot,
-            CPB_EXECUTOR_ROOT: distRoot,
+            CPB_EXECUTOR_ROOT: execRoot,
             CPB_HUB_ROOT: fixture.hubRoot,
             CPB_PROJECT_RUNTIME_ROOT: fixture.dataRoot,
             CPB_ACP_CLIENT: stub,
