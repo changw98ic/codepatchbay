@@ -251,6 +251,10 @@ const isolatedIntegrationFiles = new Set([
   "tests/integration/managed-worker.test.js",
   "tests/integration/worker-supervisor.test.js",
   "tests/integration/reconcile.test.js",
+  // Spawns real ACP/managed-worker subprocesses whose process-identity
+  // teardown contends under the parallel integration batch (flake only in the
+  // full --integration run, passes standalone). Run serially.
+  "tests/integration/phase-runner.test.js",
 ]);
 const isolatedUnitTestFiles = unitFiles.filter((f) => isolatedUnitFiles.has(f));
 const slowUnitTestFiles = unitFiles.filter((f) => slowUnitFiles.has(f));
