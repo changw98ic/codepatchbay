@@ -59,13 +59,52 @@ async function runTests(files: string[], opts: LooseRecord = {}) {
 
   console.log(`Running ${label}: ${files.length} file(s)`);
   return new Promise((resolve, reject) => {
+    // detached:true makes the child its own process-group leader (child.pid is
+    // the pgid). On a signal to the runner, process.kill(-pgid, "SIGKILL")
+    // tears down the whole subtree (node --test plus the grandchildren it
+    // spawns — git/npm/ACP). Without this, killing the runner (pkill, agent
+    // crash, session exit) orphans node --test children that keep running and
+    // contend for cpb-task/runtime state. SIGKILL on the runner itself still
+    // escapes (cannot be caught), but SIGTERM/SIGINT/SIGHUP are covered.
     const child = spawn(process.execPath, args, {
       cwd: sourceRoot,
       stdio: "inherit",
       env,
+      detached: true,
     });
+    const killTree = () => {
+      if (child.pid) {
+        try { process.kill(-child.pid, "SIGKILL"); } catch { /* already gone */ }
+      }
+    };
+    const onTerm = () => { killTree(); process.exit(130); };
+    const onInt = () => { killTree(); process.exit(130); };
+    const onHup = () => { killTree(); process.exit(129); };
+    // Crash guard: if the runner itself exits (uncaught throw, OOM, SEGV —
+    // 'exit' still fires, unlike SIGKILL), tear down the test subtree so it
+    // cannot orphan and contend for cpb-task/runtime state.
+    const onExit = () => { killTree(); };
+    process.on("SIGTERM", onTerm);
+    process.on("SIGINT", onInt);
+    process.on("SIGHUP", onHup);
+    process.on("exit", onExit);
+
+    // Watchdog: bound the subtree's runtime so a hung batch is closed on a
+    // timer instead of leaking. CPB_TEST_TIMEOUT_MS (default 30m) must exceed
+    // the slowest legitimate suite; 0 disables.
+    const timeoutMs = Number.parseInt(process.env.CPB_TEST_TIMEOUT_MS ?? "", 10) || 30 * 60 * 1000;
+    const watchdog = timeoutMs > 0 ? setTimeout(() => {
+      console.error(`${label}: subtree exceeded ${timeoutMs}ms, killing it`);
+      killTree();
+      reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+    }, timeoutMs) : null;
 
     child.on("close", (code) => {
+      if (watchdog) clearTimeout(watchdog);
+      process.off("SIGTERM", onTerm);
+      process.off("SIGINT", onInt);
+      process.off("SIGHUP", onHup);
+      process.off("exit", onExit);
       if (code !== 0) {
         reject(new Error(`${label} exited with code ${code}`));
       } else {
