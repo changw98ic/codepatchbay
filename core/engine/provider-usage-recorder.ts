@@ -1,16 +1,15 @@
 import { FailureKind } from "../contracts/failure.js";
 import { isPhasePassed } from "../contracts/phase-result.js";
 import {
-  normalizeProviderServices,
   resolveProviderKey,
   resolveRawAgent,
   type ProviderAgents,
+  type ProviderPool,
+  type ProviderServices,
 } from "./provider-handoff.js";
 import type { PhaseResult, PhaseFailure } from "../../shared/types.js";
 import { recordValue } from "../contracts/types.js";
 import { classifyRoutingTaskCategory } from "../agents/outcome-routing.js";
-
-type ProviderPool = Parameters<typeof resolveProviderKey>[0];
 
 type PhaseUsageOptions = {
   hardGateFailed?: boolean;
@@ -37,7 +36,7 @@ type ProviderHandoffState = {
 };
 
 type RecordPhaseProviderUsageInput = {
-  providerServices?: unknown;
+  providerServices?: ProviderServices | null;
   hubRoot?: string | null;
   pool?: ProviderPool | null;
   agent?: string | null;
@@ -141,7 +140,7 @@ export async function recordPhaseProviderUsage({
   if (!hubRoot) return;
 
   try {
-    const providerServices = normalizeProviderServices(rawProviderServices);
+    const providerServices = rawProviderServices || {};
     if (typeof providerServices.delegateEnqueueProviderUsage !== "function") return;
 
     const agents = phaseAgents || {};

@@ -1,6 +1,11 @@
 import type { LooseRecord } from "../../shared/types.js";
 import { spawn } from "node:child_process";
 import path from "node:path";
+import { readBoundedRegularFileNoFollow } from "../../shared/primitives/durable-directory-lock.js";
+import { captureProcessIdentity, sameProcessIdentity, type ProcessIdentity } from "../../shared/primitives/process-tree.js";
+import { readLeaderStatusDiagnostic } from "./hub.js";
+
+const DOCTOR_METADATA_MAX_BYTES = 64 * 1024;
 
 type CommandResult = { ok: boolean; output: string };
 type DoctorSmokeResult = {
@@ -16,6 +21,65 @@ type DoctorResults = LooseRecord & {
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+function errorCode(error: unknown) {
+  return typeof error === "object" && error !== null && "code" in error ? (error as { code?: unknown }).code : null;
+}
+
+async function readDoctorJsonFile(filePath: string) {
+  return JSON.parse(await readBoundedRegularFileNoFollow(filePath, {
+    maxBytes: DOCTOR_METADATA_MAX_BYTES,
+  }));
+}
+
+export const _readDoctorJsonFileForTests = readDoctorJsonFile;
+
+function processIdentityFromRecord(value: unknown, expectedPid?: number): ProcessIdentity | null {
+  const candidate = value && typeof value === "object" && !Array.isArray(value) ? value as LooseRecord : {};
+  const pid = Number(candidate.pid);
+  const capturedAt = typeof candidate.capturedAt === "string" ? candidate.capturedAt : "";
+  const processGroupId = Number(candidate.processGroupId);
+  if (
+    !Number.isSafeInteger(pid)
+    || pid <= 0
+    || (expectedPid !== undefined && pid !== expectedPid)
+    || typeof candidate.birthId !== "string"
+    || candidate.birthId.length === 0
+    || candidate.incarnation !== `${pid}:${candidate.birthId}`
+    || !capturedAt
+    || !Number.isFinite(Date.parse(capturedAt))
+    || new Date(Date.parse(capturedAt)).toISOString() !== capturedAt
+    || candidate.birthIdPrecision !== "exact"
+    || (candidate.processGroupId !== undefined
+      && (!Number.isSafeInteger(processGroupId) || processGroupId <= 0))
+  ) return null;
+  return {
+    pid,
+    birthId: candidate.birthId,
+    incarnation: candidate.incarnation,
+    capturedAt,
+    birthIdPrecision: "exact",
+    ...(candidate.processGroupId === undefined ? {} : { processGroupId }),
+  };
+}
+
+function processOfflineStatus(record: LooseRecord, label: string) {
+  const pid = Number(record.pid || record.runnerPid);
+  if (!Number.isSafeInteger(pid) || pid <= 0) return null;
+  const identity = processIdentityFromRecord(record.processIdentity || record.ownerIdentity, pid);
+  if (!identity) return `${label} PID ${pid} lacks process identity`;
+  try {
+    process.kill(pid, 0);
+  } catch (error) {
+    if (errorCode(error) === "ESRCH") return null;
+    return `${label} PID ${pid} liveness is unverified: ${errorMessage(error)}`;
+  }
+  const current = captureProcessIdentity(pid, { strict: true });
+  if (!current || !sameProcessIdentity(identity, current)) {
+    return `${label} PID ${pid} identity mismatched`;
+  }
+  return `${label} PID ${pid} is alive`;
 }
 
 function runCmd(cmd: string, args: string[], cwd = process.cwd()): Promise<CommandResult> {
@@ -42,6 +106,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
   const results: DoctorResults = { errors: [], warnings: [] };
 
   await Promise.all([
+    checkLeaderState(hubRoot, results),
     checkQueueAssignments(hubRoot, results),
     checkZombieWorkers(hubRoot, results),
     checkOrphanLeases(hubRoot, results),
@@ -85,6 +150,19 @@ export async function run(args, { cpbRoot, executorRoot }) {
 
   return result.summary.success ? 0 : 1;
 }
+
+async function checkLeaderState(hubRoot: string, results: DoctorResults) {
+  const diagnostic = await readLeaderStatusDiagnostic(hubRoot);
+  results.leaderState = diagnostic;
+  if (!diagnostic.blocked) return;
+
+  const code = typeof diagnostic.error?.code === "string"
+    ? diagnostic.error.code
+    : diagnostic.reason || "HUB_LEADER_STATUS_UNAVAILABLE";
+  results.errors.push(`Orchestrator leader state is blocked (${code})`);
+}
+
+export const _checkLeaderStateForTests = checkLeaderState;
 
 async function checkQueueAssignments(hubRoot, results: DoctorResults) {
   const { listQueue } = await import("../../server/services/hub/hub-queue.js");
@@ -161,17 +239,16 @@ async function checkZombieWorkers(hubRoot, results: DoctorResults) {
   let zombies = 0;
   for (const w of workers) {
     if (w.status === "exited") continue;
-    if (w.pid) {
-      try { process.kill(w.pid, 0); } catch {
-        zombies++;
-        results.errors.push(`Worker ${w.workerId} PID ${w.pid} is dead but status is ${w.status}`);
-      }
+    const status = processOfflineStatus(w, `Worker ${w.workerId}`);
+    if (status) {
+      zombies++;
+      results.errors.push(`${status} but status is ${w.status}`);
     }
   }
 }
 
 async function checkOrphanLeases(hubRoot, results: DoctorResults) {
-  const { readdir, readFile } = await import("node:fs/promises");
+  const { readdir } = await import("node:fs/promises");
   const path = await import("node:path");
   const leasesDir = path.join(hubRoot, "providers", "acp-leases");
 
@@ -181,9 +258,11 @@ async function checkOrphanLeases(hubRoot, results: DoctorResults) {
     for (const file of files) {
       if (!file.endsWith(".json")) continue;
       try {
-        const lease = JSON.parse(await readFile(path.join(leasesDir, file), "utf8"));
-        if (lease.pid) {
-          try { process.kill(lease.pid, 0); } catch { orphans++; }
+        const lease = await readDoctorJsonFile(path.join(leasesDir, file));
+        const status = processOfflineStatus(lease, `ACP lease ${file}`);
+        if (status) {
+          orphans++;
+          results.warnings.push(status);
         }
       } catch (err) { results.warnings.push(`orphan lease file read failed: ${errorMessage(err)}`); }
     }
@@ -202,7 +281,6 @@ async function checkOrphanLeases(hubRoot, results: DoctorResults) {
 
 async function checkDeadPidAssignments(hubRoot, results: DoctorResults) {
   const { AssignmentStore } = await import("../../shared/orchestrator/assignment-store.js");
-  const { readFile } = await import("node:fs/promises");
   const path = await import("node:path");
 
   const store = new AssignmentStore(hubRoot);
@@ -213,15 +291,13 @@ async function checkDeadPidAssignments(hubRoot, results: DoctorResults) {
     if (!a.activeAttempt) continue;
     const attemptDir = String(a.activeAttempt).padStart(3, "0");
     try {
-      const hb = JSON.parse(await readFile(
+      const hb = await readDoctorJsonFile(
         path.join(hubRoot, "assignments", a.assignmentId, "attempts", attemptDir, "heartbeat.json"),
-        "utf8",
-      ));
-      if (hb.pid) {
-        try { process.kill(hb.pid, 0); } catch {
-          deadRunning++;
-          results.errors.push(`Assignment ${a.assignmentId} running but worker PID ${hb.pid} is dead`);
-        }
+      );
+      const status = processOfflineStatus(hb, `Assignment ${a.assignmentId} heartbeat`);
+      if (status) {
+        deadRunning++;
+        results.errors.push(`Assignment ${a.assignmentId} running but ${status}`);
       }
     } catch (err) { results.warnings.push(`heartbeat read failed for ${a.assignmentId}: ${errorMessage(err)}`); }
   }

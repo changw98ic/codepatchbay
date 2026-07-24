@@ -46,6 +46,9 @@ export type EventRecord = LooseRecord & {
   worktreeBranch?: string;
   baseBranch?: string;
   worktreeBaseBranch?: string;
+  baseCommit?: string;
+  worktreeBaseCommit?: string;
+  worktreeOwnership?: LooseRecord;
   riskMap?: LooseRecord & {
     riskLevel?: unknown;
     verificationDepth?: unknown;
@@ -143,6 +146,26 @@ export type EventStoreOptions = LooseRecord & {
   dataRoot?: string;
   legacyOnly?: boolean;
   includeLegacyFallback?: boolean;
+  externalJournal?: boolean;
+};
+
+export type EventStreamCursor = {
+  eventCount: number;
+  eventDigest: string;
+};
+
+export type EventStreamDurabilityResult = {
+  backend: "filesystem" | "redis";
+  committed: true;
+  exists: boolean;
+  cursor: EventStreamCursor;
+  file: string;
+};
+
+export type ConditionalEventAppendResult = {
+  committed: boolean;
+  conflict: boolean;
+  cursor: EventStreamCursor;
 };
 
 export type EventWriteNotification = {

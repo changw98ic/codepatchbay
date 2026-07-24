@@ -6,12 +6,15 @@ import { FailureKind, failure } from "../contracts/failure.js";
 const RATE_LIMIT_PATTERN = /\b(?:429|529)\b|rate.?limit|too many requests|capacity|overloaded|over.?capacity|ProviderQuotaError|访问量过大|模型当前访问量|当前访问量过大|temporar(?:y|ily) unavailable/i;
 const DEFAULT_TIMEOUT_MS = 0;
 const MUTATING_PHASES = new Set(["execute", "remediate", "executor", "remediator"]);
+const VALIDATION_PHASES = new Set(["verify", "review"]);
 
 function isReadOnlyPhase(phase: string) {
   return Boolean(phase) && !MUTATING_PHASES.has(phase);
 }
 const CLAUDE_COMPATIBLE_AGENT = /^(?:claude|claude-.+)$/;
-const READ_ONLY_DENY_TOOLS = ["--disallowedTools", "Edit,MultiEdit"];
+const REPLAY_DENY_TOOLS = ["--disallowedTools", "Edit,Write,MultiEdit"];
+const VERIFIER_DENY_TOOLS = ["--disallowedTools", "Edit,MultiEdit"];
+const READ_ONLY_DENY_TOOLS = ["--disallowedTools", "Bash,Edit,Write,MultiEdit"];
 const WEB_DENY_TOOLS = ["--disallowedTools", "WebSearch,WebFetch"];
 const WEB_MCP_DISABLE_ARGS = ["--strict-mcp-config", "--mcp-config", "{\"mcpServers\":{}}"];
 const MUTATING_TOOL_TITLE = /^(?:Edit|Write|MultiEdit)\s+(.+)$/;
@@ -370,12 +373,9 @@ function phaseWriteAllowOverride(
     const phaseOutput = typeof dataRoot === "string" && dataRoot
       ? `${dataRoot}/phase-io/${phase}/*`
       : "";
-    const writeAllow = mergeCommaList(baseEnv.CPB_ACP_WRITE_ALLOW, cwd, phaseOutput);
+    const writeAllow = mergeCommaList(cwd, phaseOutput);
     baseEnv.CPB_ACP_WRITE_ALLOW = writeAllow;
-    baseEnv.CPB_AGENT_SANDBOX_ALLOW_WRITE = mergeCommaList(
-      baseEnv.CPB_AGENT_SANDBOX_ALLOW_WRITE,
-      writeAllow,
-    );
+    baseEnv.CPB_AGENT_SANDBOX_ALLOW_WRITE = writeAllow;
     if (typeof dataRoot === "string" && dataRoot) {
       const isolatedTemp = path.join(dataRoot, "phase-io", phase, ".tmp", safePathPart(jobId, "job"));
       baseEnv.TMPDIR = isolatedTemp;
@@ -383,18 +383,16 @@ function phaseWriteAllowOverride(
       baseEnv.TMP = isolatedTemp;
     }
     if (CLAUDE_COMPATIBLE_AGENT.test(agentName)) {
-      installClaudeReadOnlyToolDeny(baseEnv, agentName);
+      installClaudeToolDeny(baseEnv, agentName, REPLAY_DENY_TOOLS);
     }
     if (!baseEnv.PYTHONDONTWRITEBYTECODE) baseEnv.PYTHONDONTWRITEBYTECODE = "1";
     return baseEnv;
   }
-  const writeAllow = typeof baseEnv.CPB_ACP_WRITE_ALLOW === "string" && baseEnv.CPB_ACP_WRITE_ALLOW.trim()
-    ? baseEnv.CPB_ACP_WRITE_ALLOW.trim()
-    : typeof dataRoot === "string" && dataRoot
+  const writeAllow = typeof dataRoot === "string" && dataRoot
     ? `${dataRoot}/phase-io/${phase}/*`
     : "__cpb_no_worktree_writes__";
   baseEnv.CPB_ACP_WRITE_ALLOW = writeAllow;
-  baseEnv.CPB_AGENT_SANDBOX_ALLOW_WRITE = mergeCommaList(baseEnv.CPB_AGENT_SANDBOX_ALLOW_WRITE, writeAllow);
+  baseEnv.CPB_AGENT_SANDBOX_ALLOW_WRITE = writeAllow;
   if (typeof dataRoot === "string" && dataRoot) {
     const isolatedTemp = path.join(dataRoot, "phase-io", phase, ".tmp", safePathPart(jobId, "job"));
     baseEnv.TMPDIR = isolatedTemp;
@@ -402,7 +400,9 @@ function phaseWriteAllowOverride(
     baseEnv.TMP = isolatedTemp;
   }
   if (CLAUDE_COMPATIBLE_AGENT.test(agentName)) {
-    installClaudeReadOnlyToolDeny(baseEnv, agentName);
+    if (phase === "verify") installClaudeToolDeny(baseEnv, agentName, VERIFIER_DENY_TOOLS);
+    else if (VALIDATION_PHASES.has(phase)) installClaudeToolDeny(baseEnv, agentName, REPLAY_DENY_TOOLS);
+    else installClaudeReadOnlyToolDeny(baseEnv, agentName);
   }
   if (!baseEnv.PYTHONDONTWRITEBYTECODE) baseEnv.PYTHONDONTWRITEBYTECODE = "1";
   return baseEnv;
@@ -442,6 +442,7 @@ export async function runAgent({
   onProgress = null,
   conversationKey = null,
   attemptId = null,
+  signal = null,
 }: LooseRecord) {
   const startedAt = Date.now();
   const agentName = agent === undefined || agent === null ? "" : String(agent);
@@ -489,6 +490,7 @@ export async function runAgent({
       policyHash: typeof scopeRecord.policyHash === "string" ? scopeRecord.policyHash : undefined,
       dataRoot,
       onProgress: typeof onProgress === "function" ? onProgress : undefined,
+      signal,
     });
     const execRecord = recordValue(execResult);
     const output = typeof execResult === "string" ? execResult : execRecord.output;
@@ -640,6 +642,22 @@ async function classifyError(err: unknown, { agent, role, phase, env, startedAt 
   }
 
   // Signal / interrupt
+  const aborted = errorRecord.name === "AbortError" || errorRecord.code === "ABORT_ERR";
+  if (aborted) {
+    return {
+      ok: false,
+      kind: FailureKind.RUNTIME_INTERRUPTED,
+      reason: "interrupted by abort signal",
+      retryable: false,
+      agent,
+      signal: errorRecord.signal || null,
+      diagnostics: diagnostics({
+        exitCode: typeof errorRecord.exitCode === "number" ? errorRecord.exitCode : null,
+        signal: errorRecord.signal || null,
+        cancelled: true,
+      }),
+    };
+  }
   if (errorRecord.signal || lowerMsg.includes("sigterm") || lowerMsg.includes("sigkill") || lowerMsg.includes("interrupted")) {
     return {
       ok: false,

@@ -8,6 +8,7 @@ import { listRuntimeDataRoots } from "../runtime.js";
 import { normalizeWorkflow } from "../../../core/workflow/definition.js";
 import { parseVerdictEnvelope } from "../../../core/workflow/verdict.js";
 import type { LooseRecord } from "../../../core/contracts/types.js";
+import type { BrokerArtifactEntry, BrokerArtifactIndex } from "../../../shared/orchestrator/artifact-index.js";
 
 type ProjectionRecord = LooseRecord & {
   id?: string;
@@ -204,6 +205,22 @@ function artifactIdFor(artifact: string) {
   return withoutKnownExtension(basename(artifact));
 }
 
+function artifactIndexString(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function artifactIndexTimestamp(value: unknown): string | null {
+  if (typeof value === "number" && Number.isFinite(value)) return new Date(value).toISOString();
+  if (typeof value === "string" && Number.isFinite(Date.parse(value))) return value;
+  return null;
+}
+
+function artifactProducer(event: ProjectionRecord): string | null {
+  return artifactIndexString(event.agent)
+    || artifactIndexString(event.producerAgent)
+    || artifactIndexString(event.executor);
+}
+
 function hasKnownExtension(fileName: string) {
   return /\.(?:md|patch|diff|txt|json)$/i.test(fileName);
 }
@@ -287,10 +304,10 @@ function artifactReferences(events: ProjectionRecord[]) {
   return refs;
 }
 
-export async function buildArtifactIndex(cpbRoot: string, project: string, jobId: string, { events, dataRoot, wikiDir, restrictToWiki = false }: ArtifactIndexOptions = {}) {
+export async function buildArtifactIndex(cpbRoot: string, project: string, jobId: string, { events, dataRoot, wikiDir, restrictToWiki = false }: ArtifactIndexOptions = {}): Promise<BrokerArtifactIndex> {
   const sourceEvents = (events || await readEvents(cpbRoot, project, jobId, { dataRoot })).filter(isRecord);
   const effectiveWikiDir = wikiDir || (dataRoot ? runtimeWikiDir(dataRoot) : undefined);
-  const entries: ProjectionRecord[] = [];
+  const entries: BrokerArtifactEntry[] = [];
   const seen = new Set();
 
   const CHECKLIST_KINDS = new Set(["acceptance-checklist", "execution-map", "evidence-ledger", "checklist-verdict"]);
@@ -306,17 +323,17 @@ export async function buildArtifactIndex(cpbRoot: string, project: string, jobId
       entries.push({
         id: artifactIdFor(artifact),
         kind,
-        phase: event.phase || null,
+        phase: artifactIndexString(event.phase),
         path: blocked.path,
         sha256: null,
-        createdAt: event.ts || null,
-        producerAgent: event.agent || event.producerAgent || event.executor || null,
+        createdAt: artifactIndexTimestamp(event.ts),
+        producerAgent: artifactProducer(event),
         exists: false,
         broken: true,
         reason: blocked.reason,
-        eventType: event.type || null,
-        attemptId: event.attemptId || null,
-        artifactKind: event.artifactKind || kind,
+        eventType: artifactIndexString(event.type),
+        attemptId: artifactIndexString(event.attemptId),
+        artifactKind: artifactIndexString(event.artifactKind) || kind,
       });
       continue;
     }
@@ -332,17 +349,17 @@ export async function buildArtifactIndex(cpbRoot: string, project: string, jobId
     entries.push({
       id: artifactIdFor(artifact),
       kind,
-      phase: event.phase || null,
+      phase: artifactIndexString(event.phase),
       path: artifactPath,
       sha256: inspected.sha256,
-      createdAt: event.ts || null,
-      producerAgent: event.agent || event.producerAgent || event.executor || null,
+      createdAt: artifactIndexTimestamp(event.ts),
+      producerAgent: artifactProducer(event),
       exists: inspected.exists,
       broken: inspected.broken,
       reason: inspected.reason,
-      eventType: event.type || null,
-      attemptId: event.attemptId || null,
-      artifactKind: event.artifactKind || kind,
+      eventType: artifactIndexString(event.type),
+      attemptId: artifactIndexString(event.attemptId),
+      artifactKind: artifactIndexString(event.artifactKind) || kind,
     });
   }
 
@@ -360,7 +377,7 @@ export async function buildArtifactIndex(cpbRoot: string, project: string, jobId
 // job-artifact-detail.ts (merged)
 // ──────────────────────────────────────────────────────────────────────────────
 
-function warningForBrokenArtifact(entry: ProjectionRecord) {
+function warningForBrokenArtifact(entry: BrokerArtifactEntry) {
   const name = entry.path ? entry.path.split(/[\\/]/).pop() : entry.id || entry.kind || "artifact";
   return {
     kind: entry.kind || "artifact",
@@ -370,7 +387,7 @@ function warningForBrokenArtifact(entry: ProjectionRecord) {
   };
 }
 
-async function parseVerdictEntry(entry: ProjectionRecord | null | undefined) {
+async function parseVerdictEntry(entry: BrokerArtifactEntry | null | undefined) {
   if (!entry || entry.broken || !entry.path) return null;
   try {
     const parsed = parseVerdictEnvelope(await readFile(entry.path, "utf8"));
@@ -404,7 +421,7 @@ export async function buildJobArtifactDetail(cpbRoot: string, project: string, j
   const verdictEntry = [...artifactIndex.entries].reverse().find((entry) => entry.kind === "verdict");
   const verdict = await parseVerdictEntry(verdictEntry);
   const warnings = artifactIndex.entries
-    .filter((entry: ProjectionRecord) => entry.broken)
+    .filter((entry) => entry.broken)
     .map(warningForBrokenArtifact);
 
   return {

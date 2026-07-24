@@ -17,6 +17,9 @@ import { parseVerdict } from "../../bridges/run-pipeline.js";
 const execFileAsync = promisify(execFile);
 const distRoot = path.resolve(import.meta.dirname, "..", "..");
 const repoRoot = path.resolve(distRoot, "..");
+// dist/ (build:node) carries the cpb CLI + full REQUIRED_EXECUTOR_FILES;
+// dist-tests/ lacks cpb, so executor root must point at dist/.
+const execRoot = path.resolve(repoRoot, "dist");
 const verifierBridge = path.join(repoRoot, "bridges", "verifier.sh");
 const commonBridge = path.join(repoRoot, "bridges", "common.sh");
 const pipelineBridge = path.join(distRoot, "bridges", "run-pipeline.js");
@@ -86,7 +89,7 @@ describe("verifier independence from deliverable artifacts", () => {
           env: {
             ...process.env,
             CPB_ROOT: fixture.cpbRoot,
-            CPB_EXECUTOR_ROOT: distRoot,
+            CPB_EXECUTOR_ROOT: execRoot,
             CPB_HUB_ROOT: fixture.hubRoot,
             CPB_PROJECT_RUNTIME_ROOT: fixture.dataRoot,
             CPB_DANGEROUS: "1",
@@ -113,10 +116,9 @@ describe("verifier independence from deliverable artifacts", () => {
       await writeFile(
         stub,
         [
-          "#!/usr/bin/env bash",
-          "cat >/dev/null",
-          `echo "VERDICT: PASS" > "${expectedVerdict}"`,
-          "exit 0",
+          "#!/usr/bin/env node",
+          "process.stdin.resume();",
+          `process.stdin.on("end", () => { require("fs").writeFileSync(${JSON.stringify(expectedVerdict)}, "VERDICT: PASS\\n"); process.exit(0); });`,
         ].join("\n"),
         "utf8",
       );
@@ -130,7 +132,7 @@ describe("verifier independence from deliverable artifacts", () => {
           env: {
             ...process.env,
             CPB_ROOT: fixture.cpbRoot,
-            CPB_EXECUTOR_ROOT: distRoot,
+            CPB_EXECUTOR_ROOT: execRoot,
             CPB_HUB_ROOT: fixture.hubRoot,
             CPB_PROJECT_RUNTIME_ROOT: fixture.dataRoot,
             CPB_ACP_CLIENT: stub,
@@ -162,10 +164,9 @@ describe("verifier independence from deliverable artifacts", () => {
       await writeFile(
         stub,
         [
-          "#!/usr/bin/env bash",
-          "cat >/dev/null",
-          `echo "VERDICT: PARTIAL" > "${expectedVerdict}"`,
-          "exit 0",
+          "#!/usr/bin/env node",
+          "process.stdin.resume();",
+          `process.stdin.on("end", () => { require("fs").writeFileSync(${JSON.stringify(expectedVerdict)}, "VERDICT: PARTIAL\\n"); process.exit(0); });`,
         ].join("\n"),
         "utf8",
       );
@@ -179,7 +180,7 @@ describe("verifier independence from deliverable artifacts", () => {
           env: {
             ...process.env,
             CPB_ROOT: fixture.cpbRoot,
-            CPB_EXECUTOR_ROOT: distRoot,
+            CPB_EXECUTOR_ROOT: execRoot,
             CPB_HUB_ROOT: fixture.hubRoot,
             CPB_PROJECT_RUNTIME_ROOT: fixture.dataRoot,
             CPB_ACP_CLIENT: stub,
@@ -291,36 +292,35 @@ describe("verifier independence from deliverable artifacts", () => {
       const dataRoot = projectRegistration.projectRuntimeRoot;
       await writeFile(
         stub,
-        `#!/usr/bin/env bash
-set -euo pipefail
-agent=""
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --agent) agent="$2"; shift 2 ;;
-    --cwd) shift 2 ;;
-    *) shift ;;
-  esac
-done
-prompt="$(cat)"
-output_file="$(printf '%s\\n' "$prompt" | sed -n -E 's/^([0-9]+\\. )?Write the (plan|deliverable|verdict) to: (.*)$/\\3/p' | tail -1)"
-mkdir -p "$(dirname "$output_file")"
-case "$agent" in
-  codex)
-    if printf '%s\\n' "$prompt" | grep -q "Job ID:"; then
-      printf 'VERDICT: PASS\\nVerified current job state without executor deliverable.\\n' > "$output_file"
-    else
-      printf '# Plan: verifier independence regression\\n\\nTask: verifier independence regression\\n\\nAcceptance-Criteria:\\n- verifier runs by job id when execute has no deliverable\\n' > "$output_file"
-    fi
-    ;;
-  claude)
-    # Intentionally produce no deliverable: this is the regression path.
-    rm -f "$output_file"
-    ;;
-  *)
-    echo "unexpected agent: $agent" >&2
-    exit 1
-    ;;
-esac
+        `#!/usr/bin/env node
+const fs = require("fs"); const path = require("path");
+let agent = "";
+for (let i = 2; i < process.argv.length; i++) {
+  if (process.argv[i] === "--agent") { agent = process.argv[++i]; }
+  else if (process.argv[i] === "--cwd") { i++; }
+}
+let prompt = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (c) => { prompt += c; });
+process.stdin.on("end", () => {
+  const m = prompt.match(/^(?:[0-9]+\\. )?Write the (?:plan|deliverable|verdict) to: (.*)$/m);
+  const outputFile = m ? m[1].trim() : "";
+  if (!outputFile) { process.exit(0); }
+  fs.mkdirSync(path.dirname(outputFile), { recursive: true });
+  if (agent === "codex") {
+    if (/Job ID:/.test(prompt)) {
+      fs.writeFileSync(outputFile, "VERDICT: PASS\\nVerified current job state without executor deliverable.\\n");
+    } else {
+      fs.writeFileSync(outputFile, "# Plan: verifier independence regression\\n\\nTask: verifier independence regression\\n\\nAcceptance-Criteria:\\n- verifier runs by job id when execute has no deliverable\\n");
+    }
+  } else if (agent === "claude") {
+    try { fs.unlinkSync(outputFile); } catch {}
+  } else {
+    console.error("unexpected agent: " + agent);
+    process.exit(1);
+  }
+  process.exit(0);
+});
 `,
         "utf8",
       );
@@ -337,6 +337,7 @@ esac
         env: {
           ...process.env,
           CPB_ROOT: cpbRoot,
+          CPB_EXECUTOR_ROOT: execRoot,
           CPB_HUB_ROOT: hubRoot,
           CPB_PROJECT_RUNTIME_ROOT: dataRoot,
           CPB_ACP_CLIENT: stub,

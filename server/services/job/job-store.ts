@@ -1,15 +1,17 @@
 // Merged from: job-store.ts, job-recovery.ts, jobs-index.ts
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomBytes } from "node:crypto";
-import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import {
   checkpointJob,
   materializeJob,
-  readCheckpoint,
+  readJobProjection,
   readEvents,
   listEventFiles,
   appendEvent,
+  withLockedJobProjection,
 } from "../event/event-store.js";
 import type { EventRecord } from "../event/event-types.js";
 import { getWorkflow, isWorkflowName } from "../../../core/workflow/definition.js";
@@ -25,6 +27,12 @@ import { runtimeDataPath, runtimeDataRoot, resolveProjectDataRoot } from "../run
 import { isRecord, type LooseRecord } from "../../../core/contracts/types.js";
 import { AssignmentStore } from "../../../shared/orchestrator/assignment-store.js";
 import { openPinnedHubRedisStateBackend } from "../../../shared/hub-state-redis.js";
+import type { ProcessIdentity } from "../../../core/runtime/process-tree.js";
+import {
+  readBoundedRegularFileNoFollow,
+  withDurableDirectoryLock,
+} from "../../../core/runtime/durable-directory-lock.js";
+import { writeJsonDurableAtomic } from "../../../shared/hub-maintenance.js";
 
 // ──────────────────────────────────────────────────────────────────────────────
 // jobs-index.ts (merged)
@@ -34,6 +42,38 @@ const INDEX_VERSION = 1;
 const LOCK_TTL_MS = 30_000;
 const LOCK_RETRY_COUNT = 6_000;
 const LOCK_RETRY_DELAY_MS = 10;
+const JOBS_INDEX_MAX_BYTES = 64 * 1024 * 1024;
+const JOBS_INDEX_READ_RETRIES = 3;
+
+export type JobsIndexLockTestHooks = {
+  afterRecoveryObserved?: (context: { lockDir: string; owner: LooseRecord | null }) => void | Promise<void>;
+  afterQuarantineRename?: (context: { lockDir: string; quarantineDir: string; ownerToken: string | null }) => void | Promise<void>;
+  captureProcessIdentity?: () => ProcessIdentity | null;
+  waitMs?: number;
+  afterProjectionRead?: (context: {
+    project: string;
+    jobId: string;
+    eventCount: number;
+    state: LooseRecord;
+  }) => void | Promise<void>;
+};
+
+const jobsIndexLockTestHookStorage = new AsyncLocalStorage<JobsIndexLockTestHooks>();
+
+export function withJobsIndexLockTestHooksForTests<T>(hooks: JobsIndexLockTestHooks, fn: () => T): T {
+  const parent = jobsIndexLockTestHookStorage.getStore();
+  return jobsIndexLockTestHookStorage.run(parent ? { ...parent, ...hooks } : hooks, fn);
+}
+
+function jobsIndexLockTestHooks() {
+  return jobsIndexLockTestHookStorage.getStore() || {};
+}
+
+function lockErrno(error: unknown) {
+  return error && typeof error === "object" && "code" in error
+    ? String((error as NodeJS.ErrnoException).code || "")
+    : "";
+}
 
 type RuntimePathOptions = LooseRecord & {
   dataRoot?: string;
@@ -164,33 +204,28 @@ type JobsIndex = {
 type IndexOpts = RuntimePathOptions;
 
 async function withIndexLock<T>(lockDir: string, callback: () => Promise<T>): Promise<T> {
-  await mkdir(path.dirname(lockDir), { recursive: true });
-  let acquired = false;
-  for (let attempt = 0; attempt < LOCK_RETRY_COUNT; attempt++) {
-    try {
-      await mkdir(lockDir);
-      acquired = true;
-      break;
-    } catch (err) {
-      if (!err || err.code !== "EEXIST") throw err;
-      try {
-        const info = await stat(lockDir);
-        if (Date.now() - info.mtimeMs >= LOCK_TTL_MS) {
-          await rm(lockDir, { recursive: true, force: true });
-          continue;
-        }
-      } catch {
-        // Race: someone else removed it, retry
-      }
-      await new Promise((r) => setTimeout(r, LOCK_RETRY_DELAY_MS));
-    }
-  }
-  if (!acquired) throw new Error(`jobs-index lock busy: ${path.basename(lockDir)}`);
-  try {
-    return await callback();
-  } finally {
-    try { await rm(lockDir, { recursive: true, force: true }); } catch {}
-  }
+  const testHooks = jobsIndexLockTestHooks();
+  return withDurableDirectoryLock(lockDir, callback, {
+    ttlMs: LOCK_TTL_MS,
+    waitMs: testHooks.waitMs ?? LOCK_RETRY_COUNT * LOCK_RETRY_DELAY_MS,
+    retryMs: LOCK_RETRY_DELAY_MS,
+    hooks: {
+      afterRecoveryObserved: ({ lockDir: observedLockDir }) => jobsIndexLockTestHooks().afterRecoveryObserved?.({
+        lockDir: observedLockDir,
+        owner: null,
+      }),
+      afterQuarantineRename: ({ lockDir: quarantinedLockDir, quarantineDir, ownerToken }) => (
+        jobsIndexLockTestHooks().afterQuarantineRename?.({
+          lockDir: quarantinedLockDir,
+          quarantineDir,
+          ownerToken,
+        })
+      ),
+    },
+    captureIdentity: testHooks.captureProcessIdentity
+      ? () => jobsIndexLockTestHooks().captureProcessIdentity?.() ?? null
+      : undefined,
+  });
 }
 
 const _writeQueues = new Map<string, Promise<unknown>>();
@@ -200,7 +235,11 @@ function enqueueWrite<T>(cpbRoot: string, opts: IndexOpts, fn: () => Promise<T>)
   const lockDir = `${key}.lock`;
   const prev = _writeQueues.get(key) || Promise.resolve();
   const next = prev.then(() => withIndexLock(lockDir, fn));
-  _writeQueues.set(key, next.catch(() => {}));
+  const tail = next.catch(() => {});
+  _writeQueues.set(key, tail);
+  void tail.then(() => {
+    if (_writeQueues.get(key) === tail) _writeQueues.delete(key);
+  });
   return next;
 }
 
@@ -214,79 +253,130 @@ function indexFilePath(cpbRoot: string, opts: IndexOpts = {}) {
   return path.join(_base(cpbRoot, opts), "jobs-index.json");
 }
 
-function tempIndexFilePath(cpbRoot: string, opts: IndexOpts = {}) {
-  const suffix = `${process.pid}.${Date.now()}.${randomBytes(6).toString("hex")}`;
-  return path.join(_base(cpbRoot, opts), `jobs-index.${suffix}.tmp`);
-}
-
 function compositeKey(project: string, jobId: string) {
   return `${project}/${jobId}`;
 }
 
 export async function readJobsIndex(cpbRoot: string, opts: IndexOpts = {}): Promise<JobsIndex | null> {
   const indexFile = indexFilePath(cpbRoot, opts);
-  try {
-    const raw = await readFile(indexFile, "utf8");
-    const parsed = JSON.parse(raw);
-    if (!parsed || parsed._meta?.version !== INDEX_VERSION || typeof parsed.jobs !== "object") {
-      return null;
+  let raw: string | null = null;
+  for (let attempt = 0; attempt < JOBS_INDEX_READ_RETRIES; attempt += 1) {
+    try {
+      raw = await readBoundedRegularFileNoFollow(indexFile, { maxBytes: JOBS_INDEX_MAX_BYTES });
+      break;
+    } catch (cause) {
+      const code = lockErrno(cause);
+      if (code === "ENOENT") return null;
+      if (code === "BOUNDED_FILE_CHANGED" && attempt + 1 < JOBS_INDEX_READ_RETRIES) continue;
+      throw Object.assign(new Error(`jobs index could not be read safely: ${indexFile}`, { cause }), {
+        code: code === "BOUNDED_FILE_CHANGED"
+          ? "JOBS_INDEX_READ_RACE"
+          : code === "BOUNDED_FILE_UNSAFE" || code === "BOUNDED_FILE_TOO_LARGE"
+            ? "JOBS_INDEX_UNSAFE"
+            : "JOBS_INDEX_READ_FAILED",
+        committed: false,
+        recoveryPaths: { indexFile },
+      });
     }
-    return parsed as JobsIndex;
-  } catch (err) {
-    if (err?.code === "ENOENT") return null;
-    return null;
   }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw!);
+  } catch (cause) {
+    throw Object.assign(new Error(`jobs index contains invalid JSON: ${indexFile}`, { cause }), {
+      code: "JOBS_INDEX_CORRUPT",
+      committed: false,
+      recoveryPaths: { indexFile },
+    });
+  }
+  if (
+    !isRecord(parsed)
+    || !isRecord(parsed._meta)
+    || parsed._meta.version !== INDEX_VERSION
+    || (parsed._meta.updatedAt !== null && typeof parsed._meta.updatedAt !== "string")
+    || typeof parsed._meta.jobCount !== "number"
+    || !Number.isSafeInteger(parsed._meta.jobCount)
+    || parsed._meta.jobCount < 0
+    || !isRecord(parsed.jobs)
+    || Object.values(parsed.jobs).some((job) => !isRecord(job))
+    || parsed._meta.jobCount !== Object.keys(parsed.jobs).length
+  ) {
+    throw Object.assign(new Error(`jobs index has an unsupported or invalid shape: ${indexFile}`), {
+      code: "JOBS_INDEX_INVALID",
+      committed: false,
+      recoveryPaths: { indexFile },
+    });
+  }
+  return parsed as JobsIndex;
 }
 
 async function writeJobsIndex(cpbRoot: string, index: JobsIndex, opts: IndexOpts = {}) {
   const target = indexFilePath(cpbRoot, opts);
-  const tmp = tempIndexFilePath(cpbRoot, opts);
-  await mkdir(path.dirname(target), { recursive: true });
-  await writeFile(tmp, JSON.stringify(index) + "\n", "utf8");
-  await rename(tmp, target);
+  await writeJsonDurableAtomic(target, index);
 }
 
 export async function updateJobsIndexEntry(cpbRoot: string, project: string, jobId: string, state: LooseRecord, opts: IndexOpts = {}) {
   return enqueueWrite(cpbRoot, opts, async () => {
-    const index = await readJobsIndex(cpbRoot, opts) || {
-      _meta: { version: INDEX_VERSION, updatedAt: null, jobCount: 0 },
-      jobs: {},
-    } satisfies JobsIndex;
+    const afterProjectionRead = jobsIndexLockTestHooks().afterProjectionRead;
+    if (afterProjectionRead) {
+      const observed = await readJobProjection(cpbRoot, project, jobId, opts);
+      await afterProjectionRead({
+        project,
+        jobId,
+        eventCount: observed.eventCount,
+        state: observed.eventCount > 0 ? observed.state : state,
+      });
+    }
 
-    index.jobs[compositeKey(project, jobId)] = state as JobState;
-    index._meta.updatedAt = new Date().toISOString();
-    index._meta.jobCount = Object.keys(index.jobs).length;
+    // Lock order is jobs-index -> event file. appendEvent never acquires the
+    // jobs-index lock while holding the event lock, so publication is atomic
+    // with respect to event appends without introducing a reverse lock edge.
+    return withLockedJobProjection(cpbRoot, project, jobId, opts, async (projection) => {
+      const authoritativeState = projection.eventCount > 0 ? projection.state : state;
+      const index = await readJobsIndex(cpbRoot, opts) || {
+        _meta: { version: INDEX_VERSION, updatedAt: null, jobCount: 0 },
+        jobs: {},
+      } satisfies JobsIndex;
 
-    await writeJobsIndex(cpbRoot, index, opts);
+      index.jobs[compositeKey(project, jobId)] = authoritativeState as JobState;
+      index._meta.updatedAt = new Date().toISOString();
+      index._meta.jobCount = Object.keys(index.jobs).length;
+
+      await writeJobsIndex(cpbRoot, index, opts);
+      return authoritativeState as JobState;
+    });
   });
 }
 
-export async function rebuildJobsIndex(cpbRoot: string, opts: IndexOpts = {}) {
-  return enqueueWrite(cpbRoot, opts, async () => {
-    const files = await listEventFiles(cpbRoot, opts);
-    const jobs: Record<string, JobState> = {};
+async function rebuildJobsIndexLocked(cpbRoot: string, opts: IndexOpts = {}) {
+  const files = await listEventFiles(cpbRoot, opts);
+  const jobs: Record<string, JobState> = {};
 
-    for (const { project, jobId } of files) {
-      const events = await readEvents(cpbRoot, project, jobId, opts);
-      if (events.length === 0) continue;
-      const state = materializeJob(events) as JobState;
-      if (state.createdAt && state.project && state.jobId) {
-        jobs[compositeKey(project, jobId)] = state;
-      }
+  for (const { project, jobId } of files) {
+    const events = await readEvents(cpbRoot, project, jobId, opts);
+    if (events.length === 0) continue;
+    const state = materializeJob(events) as JobState;
+    if (state.createdAt && state.project && state.jobId) {
+      jobs[compositeKey(project, jobId)] = state;
     }
+  }
 
-    const index = {
-      _meta: {
-        version: INDEX_VERSION,
-        updatedAt: new Date().toISOString(),
-        jobCount: Object.keys(jobs).length,
-      },
-      jobs,
-    };
+  const index = {
+    _meta: {
+      version: INDEX_VERSION,
+      updatedAt: new Date().toISOString(),
+      jobCount: Object.keys(jobs).length,
+    },
+    jobs,
+  };
 
-    await writeJobsIndex(cpbRoot, index, opts);
-    return index;
-  });
+  await writeJobsIndex(cpbRoot, index, opts);
+  return index;
+}
+
+export async function rebuildJobsIndex(cpbRoot: string, opts: IndexOpts = {}) {
+  return enqueueWrite(cpbRoot, opts, () => rebuildJobsIndexLocked(cpbRoot, opts));
 }
 
 async function mergeMissingEventStreams(cpbRoot: string, index: JobsIndex, opts: IndexOpts = {}) {
@@ -323,16 +413,18 @@ async function mergeMissingEventStreams(cpbRoot: string, index: JobsIndex, opts:
 }
 
 export async function listJobsFromIndex(cpbRoot: string, opts: IndexOpts = {}) {
-  let index = await readJobsIndex(cpbRoot, opts);
-  if (!index) {
-    index = await rebuildJobsIndex(cpbRoot, opts);
-  } else {
-    index = await mergeMissingEventStreams(cpbRoot, index, opts);
-  }
+  return enqueueWrite(cpbRoot, opts, async () => {
+    let index = await readJobsIndex(cpbRoot, opts);
+    if (!index) {
+      index = await rebuildJobsIndexLocked(cpbRoot, opts);
+    } else {
+      index = await mergeMissingEventStreams(cpbRoot, index, opts);
+    }
 
-  return Object.values(index.jobs)
-    .filter((job) => job.createdAt && job.project && job.jobId)
-    .sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
+    return Object.values(index.jobs)
+      .filter((job) => job.createdAt && job.project && job.jobId)
+      .sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
+  });
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -372,11 +464,10 @@ async function assertNoLocalJobEventFiles(cpbRoot: string, dataRoot?: string) {
   }
 }
 
-async function retryUpdate(fn: () => Promise<void>, maxRetries = 3) {
+async function retryUpdate<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
   for (let i = 0; i < maxRetries; i++) {
     try {
-      await fn();
-      return;
+      return await fn();
     } catch (err) {
       if (i === maxRetries - 1) {
         const ts = new Date().toISOString();
@@ -387,6 +478,7 @@ async function retryUpdate(fn: () => Promise<void>, maxRetries = 3) {
       }
     }
   }
+  throw new Error("index update retry loop exhausted");
 }
 
 function nowIso() {
@@ -414,9 +506,10 @@ async function requireNotTerminal(cpbRoot: string, project: string, jobId: strin
 
 
 async function getJobAndUpdateIndex(cpbRoot: string, project: string, jobId: string, { dataRoot }: RuntimePathOptions = {}) {
-  const state = await getJob(cpbRoot, project, jobId, { dataRoot });
-  await retryUpdate(() => updateJobsIndexEntry(cpbRoot, project, jobId, state, { dataRoot }));
-  return state;
+  return retryUpdate(async () => {
+    const state = await getJob(cpbRoot, project, jobId, { dataRoot });
+    return updateJobsIndexEntry(cpbRoot, project, jobId, state, { dataRoot });
+  });
 }
 
 async function extractJobExperienceBestEffort(cpbRoot: string, project: string, jobId: string, { dataRoot }: RuntimePathOptions = {}) {
@@ -1106,10 +1199,20 @@ export async function recordWorktreeCreated(
   cpbRoot: string,
   project: string,
   jobId: string,
-  { worktree, branch, baseBranch = null, ts = nowIso(), dataRoot }: RuntimePathOptions & {
+  {
+    worktree,
+    branch,
+    baseBranch = null,
+    baseCommit = null,
+    worktreeOwnership = null,
+    ts = nowIso(),
+    dataRoot,
+  }: RuntimePathOptions & {
     worktree: string;
     branch: string;
     baseBranch?: string | null;
+    baseCommit?: string | null;
+    worktreeOwnership?: LooseRecord | null;
     ts?: string;
   }
 ) {
@@ -1121,6 +1224,8 @@ export async function recordWorktreeCreated(
     worktree,
     branch,
     baseBranch,
+    baseCommit,
+    ...(worktreeOwnership ? { worktreeOwnership } : {}),
     ts,
   }, { dataRoot });
   return getJobAndUpdateIndex(cpbRoot, project, jobId, { dataRoot });
@@ -1298,9 +1403,7 @@ export async function getJob(cpbRoot: string, project: string, jobId: string, { 
     return record.data as JobState;
   }
   const opts = { dataRoot };
-  const checkpoint = await readCheckpoint(cpbRoot, project, jobId, opts);
-  if (checkpoint) return checkpoint as JobState;
-  return materializeJob(await readEvents(cpbRoot, project, jobId, opts)) as JobState;
+  return (await readJobProjection(cpbRoot, project, jobId, opts)).state as JobState;
 }
 
 export async function listJobs(cpbRoot: string, options: RuntimePathOptions & { project?: string } = {}): Promise<JobState[]> {

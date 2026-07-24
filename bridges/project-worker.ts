@@ -2,7 +2,7 @@
 // project-worker.js — Per-project worker that polls Hub queue and runs pipeline
 // Usage: node bridges/project-worker.js --project <id> [--once] [--workflow blocked]
 
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { LooseRecord } from "../core/contracts/types.js";
@@ -17,9 +17,15 @@ import {
   markDispatchStarted,
   recordDispatch,
 } from "../server/services/dispatch/dispatch.js";
-import { executorEnv, resolveExecutorRoot } from "../server/services/setup.js";
+import { executorEnv, resolveExecutorRoot } from "../server/services/executor-root.js";
 import { AssignmentStore } from "../shared/orchestrator/assignment-store.js";
 import { recoverOrphanedJobs } from "../server/services/cleanup/cleanup.js";
+import {
+  captureProcessIdentity,
+  killTree,
+  type ProcessIdentity,
+  type ProcessTreeSystem,
+} from "../core/runtime/process-tree.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CPB_ROOT = path.resolve(process.env.CPB_ROOT || path.join(__dirname, ".."));
@@ -54,74 +60,223 @@ type AgentSmokeResult = {
   stderr: string;
 };
 
-function runAgentSmoke({ agent, cpbRoot, executorRoot, cwd, timeoutMs }: { agent: string; cpbRoot: string; executorRoot: string; cwd: string; timeoutMs: number }): Promise<AgentSmokeResult> {
-  return new Promise((resolve) => {
-    const startedAt = Date.now();
-    const script = [
-      'source "$CPB_EXECUTOR_ROOT/bridges/common.sh"',
-      'printf "%s" "$CPB_AGENT_PREFLIGHT_PROMPT" | CPB_ACP_TIMEOUT_MS="$CPB_AGENT_PREFLIGHT_TIMEOUT_MS" acp_run "$CPB_AGENT_PREFLIGHT_AGENT"',
-    ].join("; ");
-    const child = spawn("bash", ["-lc", script], {
+type AgentSmokeOptions = {
+  agent: string;
+  cpbRoot: string;
+  executorRoot: string;
+  cwd: string;
+  timeoutMs: number;
+  termGraceMs?: number;
+  forceVerifyMs?: number;
+  closeGraceMs?: number;
+  /** Test seam for identity capture and tree signaling. */
+  processTreeSystem?: ProcessTreeSystem;
+  spawnSpec?: {
+    command: string;
+    args: string[];
+    env?: NodeJS.ProcessEnv;
+  };
+};
+
+type ChildCloseRecord = {
+  code: number | null;
+  signal: NodeJS.Signals | null;
+  error: Error | null;
+};
+
+function childLifecycleError(message: string, code: string, cause?: unknown) {
+  return Object.assign(new Error(message, cause === undefined ? undefined : { cause }), { code });
+}
+
+function monitorChildClose(child: ChildProcess) {
+  let processError: Error | null = null;
+  const closed = new Promise<ChildCloseRecord>((resolve) => {
+    child.once("error", (error) => { processError = error; });
+    child.once("close", (code, signal) => resolve({ code, signal, error: processError }));
+  });
+  return closed;
+}
+
+async function waitForChildCloseBounded(
+  closed: Promise<ChildCloseRecord>,
+  timeoutMs: number,
+  label: string,
+) {
+  let timer: NodeJS.Timeout | null = null;
+  try {
+    return await Promise.race([
+      closed,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(childLifecycleError(
+          `${label} did not emit close after verified teardown`,
+          "CHILD_CLOSE_TIMEOUT",
+        )), Math.max(1, timeoutMs));
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function terminateSmokeChild(
+  child: ChildProcess,
+  identity: ProcessIdentity | null,
+  { termGraceMs, forceVerifyMs }: Required<Pick<AgentSmokeOptions, "termGraceMs" | "forceVerifyMs">>,
+  system?: ProcessTreeSystem,
+) {
+  if (!child.pid || !identity) {
+    throw childLifecycleError(
+      child.pid
+        ? `smoke child ${child.pid} has no verified process identity; refusing to signal`
+        : "smoke child did not expose a pid; refusing to signal",
+      "CHILD_PROCESS_IDENTITY_UNAVAILABLE",
+    );
+  }
+  await killTree(child.pid, termGraceMs, {
+    requireDescendantScan: true,
+    forceVerifyMs,
+    expectedRootIdentity: identity,
+    ...(system ? { system } : {}),
+  });
+}
+
+function aggregateChildFailure(label: string, primary: Error, cleanupErrors: unknown[]) {
+  const normalized = cleanupErrors.map((error) => error instanceof Error ? error : new Error(String(error)));
+  return Object.assign(
+    new AggregateError([primary, ...normalized], `${label} failed and child cleanup was not clean`, { cause: primary }),
+    { code: "CHILD_LIFECYCLE_CLEANUP_FAILED", primaryError: primary, cleanupErrors: normalized },
+  );
+}
+
+export async function runAgentSmoke({
+  agent,
+  cpbRoot,
+  executorRoot,
+  cwd,
+  timeoutMs,
+  termGraceMs = 1_000,
+  forceVerifyMs = 1_000,
+  closeGraceMs = 1_000,
+  processTreeSystem,
+  spawnSpec,
+}: AgentSmokeOptions): Promise<AgentSmokeResult> {
+  const startedAt = Date.now();
+  const script = [
+    'export CPB_EXECUTOR_ROOT="$1"',
+    'export CPB_ROOT="$2"',
+    'source "$CPB_EXECUTOR_ROOT/bridges/common.sh"',
+    'printf "%s" "$CPB_AGENT_PREFLIGHT_PROMPT" | CPB_ACP_TIMEOUT_MS="$CPB_AGENT_PREFLIGHT_TIMEOUT_MS" acp_run "$CPB_AGENT_PREFLIGHT_AGENT"',
+  ].join("; ");
+  let child: ChildProcess;
+  try {
+    child = spawn(spawnSpec?.command || "bash", spawnSpec?.args || ["-lc", script, "cpb-agent-smoke", executorRoot, cpbRoot], {
       cwd: cpbRoot,
-      env: {
+      env: spawnSpec?.env || {
         ...executorEnv(process.env, { cpbRoot, executorRoot }),
         CPB_ACP_CWD: cwd || cpbRoot,
         CPB_AGENT_PREFLIGHT_AGENT: agent,
         CPB_AGENT_PREFLIGHT_TIMEOUT_MS: String(timeoutMs),
         CPB_AGENT_PREFLIGHT_PROMPT: "Reply with OK only. Do not use tools.\n",
       },
+      detached: process.platform !== "win32",
       stdio: ["ignore", "pipe", "pipe"],
     });
+  } catch (error) {
+    return {
+      ok: false,
+      agent,
+      code: 1,
+      error: error instanceof Error ? error.message : String(error),
+      elapsedMs: Date.now() - startedAt,
+      stdout: "",
+      stderr: "",
+    };
+  }
 
-    let stdout = "";
-    let stderr = "";
-    let settled = false;
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      try { child.kill("SIGTERM"); } catch {}
-      resolve({
-        ok: false,
-        agent,
-        code: null,
-        timedOut: true,
-        elapsedMs: Date.now() - startedAt,
-        stdout: truncateOutput(stdout),
-        stderr: truncateOutput(stderr),
-      });
-    }, timeoutMs);
-    timer.unref?.();
+  const closed = monitorChildClose(child);
+  let stdout = "";
+  let stderr = "";
+  child.stdout?.on("data", (chunk) => { stdout += chunk; });
+  child.stderr?.on("data", (chunk) => { stderr += chunk; });
 
-    child.stdout.on("data", (chunk) => { stdout += chunk; });
-    child.stderr.on("data", (chunk) => { stderr += chunk; });
-    child.on("error", (error) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve({
-        ok: false,
-        agent,
-        code: 1,
-        error: error.message,
-        elapsedMs: Date.now() - startedAt,
-        stdout: truncateOutput(stdout),
-        stderr: truncateOutput(stderr),
+  let identity: ProcessIdentity | null = null;
+  let identityError: Error | null = null;
+  if (!child.pid) {
+    identityError = childLifecycleError("smoke child did not expose a pid", "CHILD_PROCESS_IDENTITY_UNAVAILABLE");
+  } else {
+    try {
+      identity = captureProcessIdentity(child.pid, {
+        strict: true,
+        ...(processTreeSystem ? { system: processTreeSystem } : {}),
       });
-    });
-    child.on("close", (code) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve({
-        ok: code === 0,
-        agent,
-        code,
-        elapsedMs: Date.now() - startedAt,
-        stdout: truncateOutput(stdout),
-        stderr: truncateOutput(stderr),
-      });
-    });
-  });
+      if (!identity) {
+        identityError = childLifecycleError(
+          `smoke child ${child.pid} exited before its process identity was captured`,
+          "CHILD_PROCESS_IDENTITY_UNAVAILABLE",
+        );
+      }
+    } catch (error) {
+      identityError = childLifecycleError(
+        `smoke child ${child.pid} process identity could not be captured`,
+        "CHILD_PROCESS_IDENTITY_UNAVAILABLE",
+        error,
+      );
+    }
+  }
+
+  const timeoutMarker = Symbol("agent-smoke-timeout");
+  let timeout: NodeJS.Timeout | null = null;
+  const first = identityError
+    ? identityError
+    : await Promise.race([
+      closed,
+      new Promise<typeof timeoutMarker>((resolve) => {
+        timeout = setTimeout(() => resolve(timeoutMarker), Math.max(0, timeoutMs));
+      }),
+    ]);
+  if (timeout) clearTimeout(timeout);
+
+  if (typeof first === "object" && !(first instanceof Error)) {
+    return {
+      ok: first.code === 0 && !first.error,
+      agent,
+      code: first.code,
+      ...(first.error ? { error: first.error.message } : {}),
+      elapsedMs: Date.now() - startedAt,
+      stdout: truncateOutput(stdout),
+      stderr: truncateOutput(stderr),
+    };
+  }
+
+  let primary = first instanceof Error
+    ? first
+    : childLifecycleError(`agent ${agent} smoke check timed out after ${timeoutMs}ms`, "AGENT_SMOKE_TIMEOUT");
+  const cleanupErrors: unknown[] = [];
+  try {
+    await terminateSmokeChild(child, identity, { termGraceMs, forceVerifyMs }, processTreeSystem);
+  } catch (error) {
+    cleanupErrors.push(error);
+  }
+
+  let closeRecord: ChildCloseRecord | null = null;
+  try {
+    closeRecord = await waitForChildCloseBounded(closed, closeGraceMs, `agent ${agent} smoke child`);
+  } catch (error) {
+    cleanupErrors.push(error);
+  }
+  if (!child.pid && closeRecord?.error) primary = closeRecord.error;
+  else if (closeRecord?.error && closeRecord.error !== primary) cleanupErrors.push(closeRecord.error);
+  if (cleanupErrors.length > 0) throw aggregateChildFailure(`agent ${agent} smoke check`, primary, cleanupErrors);
+
+  return {
+    ok: false,
+    agent,
+    code: closeRecord?.code ?? null,
+    ...(first === timeoutMarker ? { timedOut: true } : { error: primary.message }),
+    elapsedMs: Date.now() - startedAt,
+    stdout: truncateOutput(stdout),
+    stderr: truncateOutput(stderr),
+  };
 }
 
 async function defaultAgentHealth({ cpbRoot, executorRoot, cwd, timeoutMs }: { cpbRoot: string; executorRoot: string; cwd: string; timeoutMs: number }) {

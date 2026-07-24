@@ -1,8 +1,19 @@
 // ── evolve-policy ──
 import { execSync } from "node:child_process";
-import { mkdir, readFile, writeFile, rename, stat } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { lstat, mkdir, open, readFile, writeFile, rename } from "node:fs/promises";
 import path from "node:path";
 import type { LooseRecord } from "../../../core/contracts/types.js";
+import {
+  readBoundedRegularFileNoFollow,
+  withDurableDirectoryLock,
+} from "../../../core/runtime/durable-directory-lock.js";
+import {
+  createTemporaryGitWorktree,
+  createTemporaryWorkspace,
+} from "../../../core/runtime/temporary-workspace.js";
+import { fsyncDirectory } from "../../../shared/hub-maintenance.js";
+import { allocateArtifactId } from "../artifact-locator.js";
 import { listJobs } from "../job/job-store.js";
 
 type EvolveIssue = LooseRecord & {
@@ -141,8 +152,9 @@ export function checkPolicy(issue: EvolveIssue, opts: EvolveOptions = {}) {
       if (dirtyLines.length > 0) {
         reasons.push(`dirty worktree: ${dirtyLines.length} uncommitted change(s)`);
       }
-    } catch {
-      // Not a git repo or git unavailable - skip check
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      reasons.push(`worktree cleanliness check failed: ${detail}`);
     }
   }
 
@@ -150,23 +162,25 @@ export function checkPolicy(issue: EvolveIssue, opts: EvolveOptions = {}) {
 }
 
 // ── evolve-multi-cli ──
-import { spawn } from "node:child_process";
 import { buildChildEnv } from "../../../core/policy/child-env.js";
+import { runCommandTree } from "../../../core/runtime/process-tree.js";
 
-export async function runEvolveMultiCli(args: string[], { cpbRoot, executorRoot, env = process.env }: { cpbRoot?: string; executorRoot?: string; env?: NodeJS.ProcessEnv } = {}) {
+export async function runEvolveMultiCli(args: string[], { cpbRoot, executorRoot, env = process.env, signal, timeoutMs }: { cpbRoot?: string; executorRoot?: string; env?: NodeJS.ProcessEnv; signal?: AbortSignal; timeoutMs?: number } = {}) {
   const root = path.resolve(cpbRoot || env.CPB_ROOT || process.cwd());
   const execRoot = path.resolve(executorRoot || env.CPB_EXECUTOR_ROOT || root);
-  const child = spawn(process.execPath, [path.join(execRoot, "runtime", "evolve", "multi-evolve.js"), ...args], {
-    stdio: "inherit",
+  const result = await runCommandTree(process.execPath, [path.join(execRoot, "runtime", "evolve", "multi-evolve.js"), ...args], {
+    cwd: root,
     env: buildChildEnv(env, {
       CPB_ROOT: root,
       CPB_EXECUTOR_ROOT: execRoot,
       CPB_HUB_ROOT: env.CPB_HUB_ROOT || "",
     }),
+    signal,
+    timeoutMs,
+    onStdout: (chunk) => process.stdout.write(chunk),
+    onStderr: (chunk) => process.stderr.write(chunk),
   });
-  return new Promise((resolve) => {
-    child.on("close", (code) => resolve(Number.isInteger(code) ? code : 1));
-  });
+  return result.exitCode;
 }
 
 // ── task-brain ──
@@ -326,9 +340,8 @@ export { classifyCategory, isSafeAuto, isRisky, SAFE_AUTO_CATEGORIES, RISKY_CATE
 
 // ── merge-steward ──
 import { execFile } from "node:child_process";
-import { constants as fsConstants } from "node:fs";
-import { access, mkdtemp, realpath, rm } from "node:fs/promises";
-import os from "node:os";
+import { constants as fsConstants, type BigIntStats } from "node:fs";
+import { access, realpath } from "node:fs/promises";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -395,8 +408,9 @@ async function pathExists(targetPath: string) {
   try {
     await access(targetPath, fsConstants.F_OK);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    if (["ENOENT", "ENOTDIR"].includes(String((error as NodeJS.ErrnoException).code || ""))) return false;
+    throw error;
   }
 }
 
@@ -521,13 +535,17 @@ export async function previewMerge({ repoRoot = process.cwd(), baseRef = "HEAD",
     (await runGit(canonicalRepoRoot, ["diff", "--name-only", baseHead, candidateInfo.commit])).stdout,
   );
 
-  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-merge-preview-"));
-  const worktreePath = path.join(tempRoot, "worktree");
+  const temporaryWorktree = await createTemporaryGitWorktree({
+    sourcePath: canonicalRepoRoot,
+    revision: baseHead,
+    prefix: "cpb-merge-preview-",
+  });
+  const worktreePath = temporaryWorktree.worktreePath;
   let mergeResult = { exitCode: 1, stdout: "", stderr: "" };
   let conflictFiles = [];
+  let primaryError: unknown = null;
 
   try {
-    await runGit(canonicalRepoRoot, ["worktree", "add", "--detach", worktreePath, baseHead]);
     mergeResult = await runGit(worktreePath, ["merge", "--no-commit", "--no-ff", candidateInfo.commit], {
       allowFailure: true,
     });
@@ -537,12 +555,29 @@ export async function previewMerge({ repoRoot = process.cwd(), baseRef = "HEAD",
       })).stdout,
     );
     await runGit(worktreePath, ["merge", "--abort"], { allowFailure: true });
-  } finally {
-    await runGit(canonicalRepoRoot, ["worktree", "remove", "--force", worktreePath], {
-      allowFailure: true,
-    });
-    await rm(tempRoot, { recursive: true, force: true });
+  } catch (error) {
+    primaryError = error;
   }
+
+  let cleanupError: unknown = null;
+  try {
+    await temporaryWorktree.cleanup();
+  } catch (error) {
+    cleanupError = error;
+  }
+  if (primaryError && cleanupError) {
+    throw Object.assign(new AggregateError(
+      [primaryError, cleanupError],
+      "merge preview and temporary worktree cleanup both failed",
+      { cause: primaryError },
+    ), {
+      code: "EVOLVE_MERGE_PREVIEW_CLEANUP_FAILED",
+      primaryError,
+      cleanupError,
+    });
+  }
+  if (primaryError) throw primaryError;
+  if (cleanupError) throw cleanupError;
 
   const changedSummary = summarizeMergeFiles(changedFiles);
   const conflictSummary = summarizeMergeFiles(conflictFiles);
@@ -579,9 +614,7 @@ export async function previewMerge({ repoRoot = process.cwd(), baseRef = "HEAD",
 // runResearch function in dual-research.ts which calls this via child_process.
 
 // ── dual-research ──
-import { mkdtempSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { tmpdir } from "node:os";
 
 const RED = "\x1b[0;31m";
 const GREEN = "\x1b[0;32m";
@@ -594,55 +627,31 @@ function isValidName(name: string) {
 }
 
 async function nextId(dir: string, prefix: string) {
-  await mkdir(dir, { recursive: true });
-  const lockDir = path.join(dir, ".cpb-id.lock");
-  let acquired = false;
-  for (let attempt = 0; attempt < 100; attempt++) {
-    try {
-      await mkdir(lockDir);
-      acquired = true;
-      break;
-    } catch (err) {
-      if (!isErrnoException(err) || err.code !== "EEXIST") throw err;
-      await new Promise((r) => setTimeout(r, 100));
-    }
-  }
-  try {
-    const { readdir } = await import("node:fs/promises");
-    const files = (await readdir(dir)).filter((f) => f.startsWith(`${prefix}-`) && f.endsWith(".md"));
-    let last = 0;
-    for (const f of files) {
-      const m = f.match(new RegExp(`^${prefix}-(\\d+)\\.md$`));
-      if (m) last = Math.max(last, parseInt(m[1], 10));
-    }
-    const newId = String(last + 1).padStart(3, "0");
-    await writeFile(path.join(dir, `${prefix}-${newId}.md`), "");
-    return newId;
-  } finally {
-    try { await rm(lockDir, { recursive: true }); } catch {}
-  }
+  return allocateArtifactId(dir, prefix);
 }
 
-async function logAppend(wikiDir: string, msg: string) {
+async function logAppend(wikiDir: string, msg: string, { signal }: { signal?: AbortSignal } = {}) {
   const logFile = path.join(wikiDir, "log.md");
   const lockDir = path.join(wikiDir, ".cpb-log.lock");
-  let acquired = false;
-  for (let attempt = 0; attempt < 60; attempt++) {
-    try {
-      await mkdir(lockDir);
-      acquired = true;
-      break;
-    } catch (err) {
-      if (!isErrnoException(err) || err.code !== "EEXIST") throw err;
-      await new Promise((r) => setTimeout(r, 50));
-    }
-  }
   const ts = new Date().toISOString();
-  try {
-    await writeFile(logFile, `- **${ts}** | ${msg}\n`, { flag: "a" });
-  } finally {
-    try { await rm(lockDir, { recursive: true }); } catch {}
-  }
+  const entry = `- **${ts}** | ${msg}\n`;
+  return withDurableDirectoryLock(lockDir, async () => {
+    throwIfAborted(signal);
+    const previous = await readTextIfExists(logFile, "", 64 * 1024 * 1024);
+    await writeAtomic(logFile, `${previous}${entry}`);
+    if (!signal?.aborted) return entry;
+    const cancellation = abortError();
+    try {
+      await writeAtomic(logFile, previous);
+    } catch (rollbackError) {
+      throw new AggregateError(
+        [cancellation, rollbackError],
+        `research log cancellation and rollback both failed: ${logFile}`,
+        { cause: cancellation },
+      );
+    }
+    throw cancellation;
+  }, { signal, ttlMs: 30_000, waitMs: 3_000, retryMs: 50 });
 }
 
 async function buildSkillsSection(executorRoot: string, role: string) {
@@ -669,8 +678,9 @@ async function buildSkillsSection(executorRoot: string, role: string) {
       }
     }
     return lines.join("\n");
-  } catch {
-    return "";
+  } catch (error) {
+    if (isErrnoException(error) && error.code === "ENOENT") return "";
+    throw error;
   }
 }
 
@@ -712,94 +722,217 @@ Be concise and evidence-based. If the task is too vague to analyze, say so expli
 `;
 }
 
-function acpRun(agent: string, cwd: string, executorRoot: string, cpbRoot: string, input: string): Promise<{ code: number; stdout: string; stderr: string }> {
-  const acp = path.join(executorRoot, "server", "services", "acp", "acp-client.js");
-  return new Promise((resolve) => {
-    const child = spawn(process.execPath, [acp, "--agent", agent, "--cwd", cwd], {
-      env: buildChildEnv(process.env, { CPB_EXECUTOR_ROOT: executorRoot, CPB_ROOT: cpbRoot }, { agent }),
-    });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (d) => { stdout += d; });
-    child.stderr.on("data", (d) => { stderr += d; });
-    child.on("close", (code) => {
-      resolve({ code: code ?? 1, stdout, stderr });
-    });
-    child.stdin.write(input);
-    child.stdin.end();
-  });
+function abortError() {
+  const err = new Error("operation aborted");
+  err.name = "AbortError";
+  return err;
 }
 
-export async function runResearch({ project, task, executorRoot, cpbRoot }: { project: string; task: string; executorRoot: string; cpbRoot: string }) {
+function throwIfAborted(signal?: AbortSignal) {
+  if (signal?.aborted) throw abortError();
+}
+
+type ResearchOptions = {
+  project: string;
+  task: string;
+  executorRoot: string;
+  cpbRoot: string;
+  signal?: AbortSignal;
+  acpTimeoutMs?: number;
+  mergeTimeoutMs?: number;
+};
+
+async function acpRun(agent: string, cwd: string, executorRoot: string, cpbRoot: string, input: string, { signal, timeoutMs }: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<{ code: number; stdout: string; stderr: string; aborted: boolean; timedOut: boolean }> {
+  const acp = path.join(executorRoot, "server", "services", "acp", "acp-client.js");
+  const result = await runCommandTree(process.execPath, [acp, "--agent", agent, "--cwd", cwd], {
+    cwd,
+    env: buildChildEnv(process.env, { CPB_EXECUTOR_ROOT: executorRoot, CPB_ROOT: cpbRoot }, { agent }),
+    input,
+    signal,
+    timeoutMs,
+  });
+  return {
+    code: result.exitCode,
+    stdout: result.stdout,
+    stderr: result.stderr,
+    aborted: result.aborted,
+    timedOut: result.timedOut,
+  };
+}
+
+export async function runResearch({ project, task, executorRoot, cpbRoot, signal, acpTimeoutMs, mergeTimeoutMs }: ResearchOptions) {
+  throwIfAborted(signal);
   if (!isValidName(project)) {
-    console.error(`${RED}Error: Invalid project name: '${project}'${NC}`);
-    process.exit(1);
+    throw Object.assign(new Error(`Invalid project name: '${project}'`), {
+      code: "EVOLVE_PROJECT_INVALID",
+      project,
+    });
   }
   const wikiDir = path.join(cpbRoot, "wiki/projects", project);
   try {
-    await access(wikiDir, fsConstants.F_OK);
-  } catch {
-    console.error(`${RED}Error: Project '${project}' not found${NC}`);
-    process.exit(1);
+    const info = await lstat(wikiDir);
+    if (!info.isDirectory() || info.isSymbolicLink()) {
+      throw Object.assign(new Error(`Unsafe project wiki directory: '${wikiDir}'`), {
+        code: "EVOLVE_PROJECT_UNSAFE",
+        project,
+      });
+    }
+  } catch (error) {
+    if (!isErrnoException(error) || error.code !== "ENOENT") throw error;
+    throw Object.assign(new Error(`Project '${project}' not found`, { cause: error }), {
+      code: "EVOLVE_PROJECT_NOT_FOUND",
+      project,
+    });
   }
 
-  let sourcePath = "";
-  try {
-    const meta = JSON.parse(await readFile(path.join(wikiDir, "project.json"), "utf8"));
-    sourcePath = meta.sourcePath || "";
-  } catch {}
+  const meta = await readJSON(path.join(wikiDir, "project.json"), {});
+  if (!isRecord(meta) || (meta.sourcePath !== undefined && typeof meta.sourcePath !== "string")) {
+    throw Object.assign(new Error(`Invalid project metadata for '${project}'`), {
+      code: "EVOLVE_STATE_INVALID",
+      project,
+    });
+  }
+  const sourcePath = typeof meta.sourcePath === "string" ? meta.sourcePath : "";
   const cwd = sourcePath || process.cwd();
 
-  const researchId = await nextId(path.join(wikiDir, "inbox"), "research");
-  const researchFile = path.join(wikiDir, "inbox", `research-${researchId}.md`);
-  const tmpDir = mkdtempSync(path.join(tmpdir(), "cpb-research-"));
+  const temporaryWorkspace = await createTemporaryWorkspace({ prefix: "cpb-research-" });
+  const tmpDir = temporaryWorkspace.rootPath;
+  let researchFile: string | null = null;
+  let researchPublished = false;
+  let completed = false;
+  let primaryError: unknown = null;
 
-  const prompt = await buildResearchPrompt(executorRoot, project, task);
+  try {
+    const prompt = await buildResearchPrompt(executorRoot, project, task);
+    throwIfAborted(signal);
 
-  console.log(`Research [${project}]: ${task}`);
-  console.log("Running dual-agent research (Codex + Claude in parallel)...");
+    console.log(`Research [${project}]: ${task}`);
+    console.log("Running dual-agent research (Codex + Claude in parallel)...");
 
-  const [codexResult, claudeResult] = await Promise.all([
-    acpRun("codex", cwd, executorRoot, cpbRoot, prompt),
-    acpRun("claude", cwd, executorRoot, cpbRoot, prompt),
-  ]);
+    const [codexResult, claudeResult] = await Promise.all([
+      acpRun("codex", cwd, executorRoot, cpbRoot, prompt, { signal, timeoutMs: acpTimeoutMs }),
+      acpRun("claude", cwd, executorRoot, cpbRoot, prompt, { signal, timeoutMs: acpTimeoutMs }),
+    ]);
 
-  const codexOk = codexResult.code === 0;
-  const claudeOk = claudeResult.code === 0;
-  console.log(`  Codex: ${codexOk ? "done" : `failed (exit ${codexResult.code})`}`);
-  console.log(`  Claude: ${claudeOk ? "done" : `failed (exit ${claudeResult.code})`}`);
+    if (codexResult.aborted || claudeResult.aborted || signal?.aborted) {
+      throw abortError();
+    }
 
-  if (!codexOk && !claudeOk) {
-    console.error(`${RED}Error: Both research agents failed.${NC}`);
-    process.exit(1);
-  }
+    const codexOk = codexResult.code === 0;
+    const claudeOk = claudeResult.code === 0;
+    console.log(`  Codex: ${codexOk ? "done" : `failed (exit ${codexResult.code})`}`);
+    console.log(`  Claude: ${claudeOk ? "done" : `failed (exit ${claudeResult.code})`}`);
 
-  const codexOut = path.join(tmpDir, "codex.txt");
-  const claudeOut = path.join(tmpDir, "claude.txt");
-  await writeFile(codexOut, codexResult.stdout);
-  await writeFile(claudeOut, claudeResult.stdout);
+    if (!codexOk && !claudeOk) {
+      throw Object.assign(new Error("Both research agents failed"), {
+        code: "EVOLVE_RESEARCH_PROVIDERS_FAILED",
+        codexExitCode: codexResult.code,
+        claudeExitCode: claudeResult.code,
+      });
+    }
 
-  const mergeScript = path.join(executorRoot, "server", "services", "merge-research.js");
-  await new Promise((resolve) => {
-    const child = spawn(process.execPath, [
+    const researchId = await nextId(path.join(wikiDir, "inbox"), "research");
+    researchFile = path.join(wikiDir, "inbox", `research-${researchId}.md`);
+    const codexOut = path.join(tmpDir, "codex.txt");
+    const claudeOut = path.join(tmpDir, "claude.txt");
+    const mergeOut = path.join(tmpDir, "merged.md");
+    await writeFile(codexOut, codexResult.stdout);
+    await writeFile(claudeOut, claudeResult.stdout);
+    throwIfAborted(signal);
+
+    const mergeScript = path.join(executorRoot, "server", "services", "merge-research.js");
+    const mergeResult = await runCommandTree(process.execPath, [
       mergeScript,
       "--codex", codexOut,
       "--codex-exit", String(codexResult.code),
       "--claude", claudeOut,
       "--claude-exit", String(claudeResult.code),
       "--task", task,
-      "--output", researchFile,
-    ], { stdio: "inherit" });
-    child.on("close", resolve);
-  });
+      "--output", mergeOut,
+    ], {
+      cwd,
+      signal,
+      timeoutMs: mergeTimeoutMs,
+      onStdout: (chunk) => process.stdout.write(chunk),
+      onStderr: (chunk) => process.stderr.write(chunk),
+    });
+    if (mergeResult.aborted || signal?.aborted) {
+      throw abortError();
+    }
+    if (mergeResult.exitCode !== 0) {
+      throw Object.assign(new Error(`Research merge failed with exit ${mergeResult.exitCode}`), {
+        code: "EVOLVE_RESEARCH_MERGE_FAILED",
+        exitCode: mergeResult.exitCode,
+        stderr: mergeResult.stderr,
+      });
+    }
+    const merged = await readTextFile(mergeOut, 64 * 1024 * 1024);
+    throwIfAborted(signal);
+    await writeAtomic(researchFile, merged);
+    researchPublished = true;
 
-  const status = codexOk && claudeOk ? "FULL" : "PARTIAL";
-  await logAppend(wikiDir, `research | dual | research-${researchId} for: ${task} | ${status}`);
+    const status = codexOk && claudeOk ? "FULL" : "PARTIAL";
+    await logAppend(wikiDir, `research | dual | research-${researchId} for: ${task} | ${status}`, { signal });
+    completed = true;
 
-  try { await rm(tmpDir, { recursive: true }); } catch {}
+    console.log("");
+    console.log(`Research: ${researchFile}`);
+  } catch (error) {
+    primaryError = error;
+    if (error && typeof error === "object" && (error as { committed?: unknown }).committed === true) {
+      researchPublished = true;
+    }
+  }
 
-  console.log("");
-  console.log(`Research: ${researchFile}`);
+  const cleanupErrors: unknown[] = [];
+  try {
+    await temporaryWorkspace.cleanup();
+  } catch (error) {
+    cleanupErrors.push(error);
+  }
+
+  if (primaryError) {
+    if (researchPublished && researchFile) {
+      const evidence = {
+        committed: true,
+        researchFile,
+        recoveryPaths: { publishedResearch: researchFile },
+      };
+      if (primaryError && typeof primaryError === "object") Object.assign(primaryError, evidence);
+      if (cleanupErrors.length === 0) throw primaryError;
+      const aggregate = Object.assign(new AggregateError(
+        [primaryError, ...cleanupErrors],
+        "research artifact was published and temporary cleanup also failed",
+        { cause: primaryError },
+      ), {
+        ...evidence,
+        code: String((primaryError as NodeJS.ErrnoException | undefined)?.code || "EVOLVE_RESEARCH_PUBLISHED_FOLLOWUP_FAILED"),
+        primaryError,
+        cleanupErrors,
+      });
+      if (primaryError instanceof Error && primaryError.name === "AbortError") aggregate.name = "AbortError";
+      throw aggregate;
+    }
+    if (cleanupErrors.length === 0) throw primaryError;
+    throw Object.assign(new AggregateError(
+      [primaryError, ...cleanupErrors],
+      "research operation and cleanup both failed",
+      { cause: primaryError },
+    ), {
+      code: String((primaryError as NodeJS.ErrnoException | undefined)?.code || "EVOLVE_RESEARCH_FAILED"),
+      primaryError,
+      cleanupErrors,
+      researchFile,
+    });
+  }
+  if (cleanupErrors.length > 0) {
+    throw Object.assign(new AggregateError(cleanupErrors, "research committed but temporary cleanup failed"), {
+      code: "EVOLVE_RESEARCH_COMMITTED_CLEANUP_FAILED",
+      committed: completed,
+      researchFile,
+      cleanupErrors,
+    });
+  }
 }
 
 // ── multi-evolve-state ──
@@ -829,20 +962,179 @@ function statePath(projectRoot: string, project: string, file: string, options: 
 }
 
 async function readJSON(filePath: string, fallback: unknown) {
+  let raw: string;
   try {
-    const raw = await readFile(filePath, "utf8");
-    return JSON.parse(raw);
+    raw = await readTextFile(filePath, 16 * 1024 * 1024);
   } catch (err) {
     if (isErrnoException(err) && err.code === "ENOENT") return fallback;
-    return fallback;
+    throw err;
+  }
+  try {
+    return JSON.parse(raw);
+  } catch (error) {
+    throw Object.assign(new Error(`invalid evolve JSON: ${filePath}`, { cause: error }), {
+      code: "EVOLVE_STATE_INVALID",
+      filePath,
+    });
   }
 }
 
+async function readTextFile(filePath: string, maxBytes: number) {
+  try {
+    return await readBoundedRegularFileNoFollow(filePath, { maxBytes });
+  } catch (error) {
+    const code = isErrnoException(error) ? error.code : "";
+    if (code === "ENOENT") throw error;
+    if (code === "BOUNDED_FILE_TOO_LARGE") {
+      throw Object.assign(new Error(`evolve state file exceeds ${maxBytes} bytes: ${filePath}`, { cause: error }), {
+        code: "EVOLVE_STATE_TOO_LARGE",
+        filePath,
+      });
+    }
+    if (["BOUNDED_FILE_UNSAFE", "BOUNDED_FILE_CHANGED", "BOUNDED_FILE_READ_FAILED"].includes(code)) {
+      throw Object.assign(new Error(`unsafe or unstable evolve state file: ${filePath}`, { cause: error }), {
+        code: "EVOLVE_STATE_UNSAFE",
+        filePath,
+      });
+    }
+    throw error;
+  }
+}
+
+async function readTextIfExists(filePath: string, fallback: string, maxBytes: number) {
+  try {
+    return await readTextFile(filePath, maxBytes);
+  } catch (error) {
+    if (isErrnoException(error) && error.code === "ENOENT") return fallback;
+    throw error;
+  }
+}
+
+type EvolveTemporaryGeneration = {
+  dev: bigint;
+  ino: bigint;
+  mode: bigint;
+  uid: bigint;
+  gid: bigint;
+  size: bigint;
+  mtimeNs: bigint;
+  ctimeNs: bigint;
+  birthtimeNs: bigint;
+};
+
+function evolveTemporaryGeneration(info: BigIntStats): EvolveTemporaryGeneration {
+  return {
+    dev: info.dev,
+    ino: info.ino,
+    mode: info.mode,
+    uid: info.uid,
+    gid: info.gid,
+    size: info.size,
+    mtimeNs: info.mtimeNs,
+    ctimeNs: info.ctimeNs,
+    birthtimeNs: info.birthtimeNs,
+  };
+}
+
+function sameEvolveTemporaryGeneration(expected: EvolveTemporaryGeneration, current: BigIntStats) {
+  return expected.dev === current.dev
+    && expected.ino === current.ino
+    && expected.mode === current.mode
+    && expected.uid === current.uid
+    && expected.gid === current.gid
+    && expected.size === current.size
+    && expected.mtimeNs === current.mtimeNs
+    && expected.ctimeNs === current.ctimeNs
+    && expected.birthtimeNs === current.birthtimeNs;
+}
+
 async function writeAtomic(filePath: string, content: string) {
-  await mkdir(path.dirname(filePath), { recursive: true });
-  const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
-  await writeFile(tmp, content, "utf8");
-  await rename(tmp, filePath);
+  const parent = path.dirname(filePath);
+  await mkdir(parent, { recursive: true });
+  const tmp = path.join(parent, `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`);
+  let handle: Awaited<ReturnType<typeof open>> | null = null;
+  let temporaryCreated = false;
+  let temporaryGeneration: EvolveTemporaryGeneration | null = null;
+  let renamed = false;
+  let primaryError: unknown = null;
+  try {
+    handle = await open(tmp, "wx", 0o600);
+    temporaryCreated = true;
+    await handle.writeFile(content, "utf8");
+    await handle.sync();
+    const temporaryInfo = await handle.stat({ bigint: true });
+    if (!temporaryInfo.isFile()) {
+      throw Object.assign(new Error(`evolve atomic temporary is not a regular file: ${tmp}`), {
+        code: "EVOLVE_WRITE_TEMP_UNSAFE",
+      });
+    }
+    temporaryGeneration = evolveTemporaryGeneration(temporaryInfo);
+    await handle.close();
+    handle = null;
+    await rename(tmp, filePath);
+    renamed = true;
+    await fsyncDirectory(parent);
+  } catch (error) {
+    primaryError = error;
+  }
+
+  const cleanupErrors: unknown[] = [];
+  if (handle) {
+    try {
+      await handle.close();
+      handle = null;
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+  }
+  if (!primaryError && cleanupErrors.length === 0) return;
+
+  if (renamed) {
+    const errors = [primaryError, ...cleanupErrors].filter((error) => error !== null);
+    const cause = errors.length === 1
+      ? errors[0]
+      : new AggregateError(errors, `evolve atomic write and cleanup failed: ${filePath}`, {
+        cause: primaryError ?? errors[0],
+      });
+    throw Object.assign(new Error(`evolve state committed with ambiguous durability: ${filePath}`, { cause }), {
+      code: "EVOLVE_WRITE_COMMITTED_DURABILITY_AMBIGUOUS",
+      committed: true,
+      filePath,
+    });
+  }
+  let temporaryPreserved = false;
+  let successorPreserved = false;
+  if (temporaryCreated && temporaryGeneration) {
+    try {
+      const current = await lstat(tmp, { bigint: true });
+      temporaryPreserved = current.isFile()
+        && !current.isSymbolicLink()
+        && sameEvolveTemporaryGeneration(temporaryGeneration, current);
+      successorPreserved = !temporaryPreserved;
+    } catch (error) {
+      if (!isErrnoException(error) || error.code !== "ENOENT") cleanupErrors.push(error);
+    }
+  }
+  const errors = [primaryError, ...cleanupErrors].filter((error) => error !== null);
+  const cause = errors.length === 1
+    ? errors[0]
+    : new AggregateError(errors, `evolve atomic write and recovery inspection failed: ${filePath}`, {
+      cause: primaryError ?? errors[0],
+    });
+  throw Object.assign(new Error(`evolve atomic write failed before publication: ${filePath}`, { cause }), {
+    code: String((primaryError as NodeJS.ErrnoException | undefined)?.code || "EVOLVE_WRITE_RECOVERY_REQUIRED"),
+    committed: false,
+    cleanupDeferred: true,
+    temporaryCreated,
+    temporaryPreserved,
+    successorPreserved,
+    recoveryPaths: temporaryPreserved
+      ? { destination: filePath, temporary: tmp }
+      : { destination: filePath },
+    attemptedPaths: temporaryPreserved ? undefined : { temporary: tmp },
+    primaryError,
+    cleanupErrors,
+  });
 }
 
 export async function loadProjectState(projectRoot: string, project: string, options: EvolveOptions = {}): Promise<EvolveState> {
@@ -853,53 +1145,53 @@ export async function loadProjectState(projectRoot: string, project: string, opt
     enabled: true,
     updatedAt: null,
   });
-  return isRecord(state) ? state : {};
+  if (!isRecord(state)) {
+    throw Object.assign(new Error(`invalid evolve project state for ${project}`), {
+      code: "EVOLVE_STATE_INVALID",
+      project,
+    });
+  }
+  return state;
 }
 
 export async function saveProjectState(projectRoot: string, project: string, state: EvolveState, options: EvolveOptions = {}) {
   const next = { ...state, updatedAt: new Date().toISOString() };
-  await writeAtomic(statePath(projectRoot, project, "state.json", options), `${JSON.stringify(next, null, 2)}\n`);
+  const filePath = statePath(projectRoot, project, "state.json", options);
+  await withDurableDirectoryLock(
+    `${filePath}.lock`,
+    () => writeAtomic(filePath, `${JSON.stringify(next, null, 2)}\n`),
+    { ttlMs: EVOLVE_LOCK_TTL_MS, waitMs: 5_000, retryMs: 25 },
+  );
   return next;
 }
 
 export async function loadBacklog(projectRoot: string, project: string, options: EvolveOptions = {}) {
-  return toIssueList(await readJSON(statePath(projectRoot, project, "backlog.json", options), []));
+  const value = await readJSON(statePath(projectRoot, project, "backlog.json", options), []);
+  if (!Array.isArray(value) || value.some((item) => !isEvolveIssue(item))) {
+    throw Object.assign(new Error(`invalid evolve backlog for ${project}`), {
+      code: "EVOLVE_STATE_INVALID",
+      project,
+    });
+  }
+  return value as EvolveIssue[];
 }
 
-export async function saveBacklog(projectRoot: string, project: string, backlog: EvolveIssue[], options: EvolveOptions = {}) {
+async function saveBacklogUnlocked(projectRoot: string, project: string, backlog: EvolveIssue[], options: EvolveOptions = {}) {
   await writeAtomic(statePath(projectRoot, project, "backlog.json", options), `${JSON.stringify(backlog, null, 2)}\n`);
   return backlog;
 }
 
+export async function saveBacklog(projectRoot: string, project: string, backlog: EvolveIssue[], options: EvolveOptions = {}) {
+  return withBacklogLock(projectRoot, project, () => saveBacklogUnlocked(projectRoot, project, backlog, options), options);
+}
+
 async function withBacklogLock<T>(projectRoot: string, project: string, callback: () => Promise<T>, options: EvolveOptions = {}): Promise<T> {
   const lockDir = statePath(projectRoot, project, "backlog.json.lock", options);
-  await mkdir(path.dirname(lockDir), { recursive: true });
-  let acquired = false;
-  for (let attempt = 0; attempt < 50; attempt += 1) {
-    try {
-      await mkdir(lockDir, { recursive: false });
-      acquired = true;
-      break;
-    } catch (err) {
-      if (!isErrnoException(err) || err.code !== "EEXIST") throw err;
-      try {
-        const info = await stat(lockDir);
-        if (Date.now() - info.mtimeMs >= EVOLVE_LOCK_TTL_MS) {
-          await rm(lockDir, { recursive: true, force: true });
-          continue;
-        }
-      } catch {
-        continue;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-  }
-  if (!acquired) throw new Error(`backlog lock busy: ${project}`);
-  try {
-    return await callback();
-  } finally {
-    await rm(lockDir, { recursive: true, force: true });
-  }
+  return withDurableDirectoryLock(lockDir, callback, {
+    ttlMs: EVOLVE_LOCK_TTL_MS,
+    waitMs: 5_000,
+    retryMs: 25,
+  });
 }
 
 function issueKeyFn2(issue: EvolveIssue) {
@@ -924,7 +1216,7 @@ export async function pushIssues(projectRoot: string, project: string, issues: E
       existing.add(key);
       added += 1;
     }
-    await saveBacklog(projectRoot, project, backlog, options);
+    await saveBacklogUnlocked(projectRoot, project, backlog, options);
     return { added, total: backlog.length, backlog };
   }, options);
 }
@@ -945,7 +1237,7 @@ export async function popIssue(projectRoot: string, project: string, options: Ev
     if (!issue) return null;
     issue.status = "in_progress";
     issue.updatedAt = new Date().toISOString();
-    await saveBacklog(projectRoot, project, backlog, options);
+    await saveBacklogUnlocked(projectRoot, project, backlog, options);
     return { issue, backlog };
   }, options);
 }
@@ -965,7 +1257,7 @@ export async function updateIssueStatus(projectRoot: string, project: string, id
     if (detail && Object.keys(detail).length > 0) {
       issue.detail = { ...(issue.detail || {}), ...detail };
     }
-    await saveBacklog(projectRoot, project, backlog, options);
+    await saveBacklogUnlocked(projectRoot, project, backlog, options);
     return { issue, backlog };
   }, options);
 }
@@ -978,7 +1270,7 @@ export async function claimIssue(projectRoot: string, project: string, identity:
     issue.status = "in_progress";
     issue.claimedAt = new Date().toISOString();
     issue.updatedAt = issue.claimedAt;
-    await saveBacklog(projectRoot, project, backlog, options);
+    await saveBacklogUnlocked(projectRoot, project, backlog, options);
     return { issue, backlog };
   }, options);
 }
@@ -993,18 +1285,28 @@ export async function completeIssue(projectRoot: string, project: string, identi
 }
 
 export async function appendHistory(projectRoot: string, project: string, entry: LooseRecord, options: EvolveOptions = {}) {
-  await mkdir(evolveDir(projectRoot, project, options), { recursive: true });
   const filePath = statePath(projectRoot, project, "history.jsonl", options);
   const line = JSON.stringify({ ...entry, project, timestamp: new Date().toISOString() }) + "\n";
-  await writeFile(filePath, line, { flag: "a", encoding: "utf8" });
+  await withDurableDirectoryLock(`${filePath}.lock`, async () => {
+    const previous = await readTextIfExists(filePath, "", 64 * 1024 * 1024);
+    await writeAtomic(filePath, `${previous}${line}`);
+  }, { ttlMs: EVOLVE_LOCK_TTL_MS, waitMs: 5_000, retryMs: 25 });
 }
 
 export async function loadGlobalConfig(hubRoot: string) {
-  return readJSON(path.join(path.resolve(hubRoot), "evolve", "global", "config.json"), { projects: {} });
+  const config = await readJSON(path.join(path.resolve(hubRoot), "evolve", "global", "config.json"), { projects: {} });
+  if (!isRecord(config)) {
+    throw Object.assign(new Error("invalid global evolve config"), { code: "EVOLVE_STATE_INVALID" });
+  }
+  return config;
 }
 
 export async function saveGlobalConfig(hubRoot: string, config: LooseRecord) {
   const filePath = path.join(path.resolve(hubRoot), "evolve", "global", "config.json");
-  await writeAtomic(filePath, `${JSON.stringify(config, null, 2)}\n`);
+  await withDurableDirectoryLock(
+    `${filePath}.lock`,
+    () => writeAtomic(filePath, `${JSON.stringify(config, null, 2)}\n`),
+    { ttlMs: EVOLVE_LOCK_TTL_MS, waitMs: 5_000, retryMs: 25 },
+  );
   return config;
 }

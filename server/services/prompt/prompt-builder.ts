@@ -173,14 +173,56 @@ async function projectInstructionsSection(wikiDir: string): Promise<string> {
   return `\n\n## Project Instructions\n${content}`;
 }
 
-function parseJsonEnv(name: string): LooseRecord | null {
-  const raw = process.env[name];
+function parseJsonObject(name: string, raw: string | undefined): LooseRecord | null {
   if (!raw) return null;
+  let parsed: unknown;
   try {
-    return JSON.parse(raw);
-  } catch {
-    return null;
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new Error(`${name} must contain valid JSON`, { cause: error });
   }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new TypeError(`${name} must contain a JSON object`);
+  }
+  return parsed as LooseRecord;
+}
+
+function requireNonEmptyString(record: LooseRecord, field: string, name: string): void {
+  if (typeof record[field] !== "string" || !String(record[field]).trim()) {
+    throw new TypeError(`${name}.${field} must be a non-empty string`);
+  }
+}
+
+export function parseParentPlanCacheJson(raw: string | undefined): LooseRecord | null {
+  const cache = parseJsonObject("CPB_PARENT_PLAN_CACHE_JSON", raw);
+  if (!cache) return null;
+  requireNonEmptyString(cache, "planGroupId", "CPB_PARENT_PLAN_CACHE_JSON");
+  requireNonEmptyString(cache, "planCacheKey", "CPB_PARENT_PLAN_CACHE_JSON");
+  if (typeof cache.cacheHit !== "boolean") {
+    throw new TypeError("CPB_PARENT_PLAN_CACHE_JSON.cacheHit must be a boolean");
+  }
+  return cache;
+}
+
+export function parseSourceContextJson(raw: string | undefined): LooseRecord | null {
+  const sourceContext = parseJsonObject("CPB_SOURCE_CONTEXT_JSON", raw);
+  if (!sourceContext) return null;
+
+  if (Object.hasOwn(sourceContext, "contextPackPath")) {
+    requireNonEmptyString(sourceContext, "contextPackPath", "CPB_SOURCE_CONTEXT_JSON");
+  }
+  if (Object.hasOwn(sourceContext, "contextPack")) {
+    const contextPack = sourceContext.contextPack;
+    if (contextPack === null || typeof contextPack !== "object" || Array.isArray(contextPack)) {
+      throw new TypeError("CPB_SOURCE_CONTEXT_JSON.contextPack must be an object");
+    }
+    const contextPackRecord = contextPack as LooseRecord;
+    if (Object.hasOwn(contextPackRecord, "path")) {
+      requireNonEmptyString(contextPackRecord, "path", "CPB_SOURCE_CONTEXT_JSON.contextPack");
+    }
+  }
+
+  return sourceContext;
 }
 
 function plannerModeSection() {
@@ -200,7 +242,7 @@ Produce a concise plan for low-risk work. This mode enforces hard limits:
 - Skip context preamble — assume the executor has read this plan file.`;
   }
   if (planMode === "parent") {
-    const cache = parseJsonEnv("CPB_PARENT_PLAN_CACHE_JSON");
+    const cache = parseParentPlanCacheJson(process.env.CPB_PARENT_PLAN_CACHE_JSON);
     const cacheLines = cache
       ? [
           `- Parent plan group: ${cache.planGroupId || "unavailable"}`,
@@ -240,7 +282,7 @@ async function resolveContextPackLocator(cpbRoot: string, project: string, jobId
   const jobPath = contextPackPathFromSourceContext(sourceContext);
   if (jobPath) return { path: jobPath, source: "job" };
 
-  const envSource = parseJsonEnv("CPB_SOURCE_CONTEXT_JSON");
+  const envSource = parseSourceContextJson(process.env.CPB_SOURCE_CONTEXT_JSON);
   const envSourcePath = contextPackPathFromSourceContext(envSource);
   if (envSourcePath) return { path: envSourcePath, source: "job" };
 
@@ -361,7 +403,7 @@ function executionIntensitySection(phase: string): string {
 ${phaseLine}
 - Start with CodeGraph lookup when available; otherwise use \`rg --files\` and focused \`rg\`. Avoid broad recursive reading.
 - If a CodeGraph MCP tool is available, call it first (for example codegraph_context or mcp__codegraph__codegraph_context) before shell/file fallback.
-- First-pass source inspection budget: max 5 files or 3 symbol/index lookups before naming the concrete files you will touch or verify.
+- Inspect as many relevant files and symbols as needed to establish the exact scope and acceptance probes; do not stop discovery because of an arbitrary lookup count.
 - Prefer loaded role skills/profile guidance when relevant; record which index/skill path you used in the artifact.
 - Create 2-5 task-specific acceptance probes from the request before broad regression. A generic \`npm test\` pass is not enough when the request asks for a concrete artifact/API/UI behavior.
 - Stop after this phase's artifact is written. Do not continue into the next phase's responsibilities.`;

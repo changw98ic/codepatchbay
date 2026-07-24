@@ -331,6 +331,43 @@ function providerRetryDelayMs(result: Awaited<ReturnType<ExecuteRun>>, attempt: 
   return Math.min(120_000, 1_000 * (2 ** Math.max(0, attempt - 1)));
 }
 
+function abortReason(signal?: AbortSignal) {
+  const reason = signal?.reason;
+  if (reason instanceof Error && reason.message) return `plan tournament aborted: ${reason.message}`;
+  if (typeof reason === "string" && reason.trim()) return `plan tournament aborted: ${reason.trim()}`;
+  return "plan tournament aborted";
+}
+
+function abortedRunResult(runs: LooseRecord[], signal?: AbortSignal) {
+  return {
+    ok: false as const,
+    reason: abortReason(signal),
+    kind: "runtime_interrupted",
+    retryable: false,
+    runs,
+  };
+}
+
+function waitForProviderBackoff(ms: number, signal?: AbortSignal) {
+  if (signal?.aborted) return Promise.resolve(false);
+  if (ms <= 0) return Promise.resolve(true);
+  return new Promise<boolean>((resolve) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const finish = (completed: boolean) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      resolve(completed);
+    };
+    const onAbort = () => finish(false);
+    timer = setTimeout(() => finish(true), ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) finish(false);
+  });
+}
+
 function proposalSchemaExample(proposalId: "A" | "B") {
   return JSON.stringify({
     status: "ok",
@@ -696,10 +733,12 @@ async function executeParsedRun<T>({
   run,
   execute,
   parse,
+  signal,
 }: {
   run: PlanTournamentRun;
   execute: ExecuteRun;
   parse: ContractParse<T>;
+  signal?: AbortSignal;
 }): Promise<{
   ok: true;
   value: T;
@@ -716,6 +755,7 @@ async function executeParsedRun<T>({
   let contractAttempt = 0;
   let providerAttempt = 0;
   while (contractAttempt <= CONTRACT_REPAIR_LIMIT) {
+    if (signal?.aborted) return abortedRunResult(runs, signal);
     const result = await execute(currentRun);
     runs.push(runRecord(currentRun, result));
     if (!result.ok) {
@@ -731,7 +771,8 @@ async function executeParsedRun<T>({
       ) {
         providerAttempt += 1;
         const delayMs = providerRetryDelayMs(result, providerAttempt);
-        if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
+        const completedBackoff = await waitForProviderBackoff(delayMs, signal);
+        if (!completedBackoff || signal?.aborted) return abortedRunResult(runs, signal);
         const retryLabel = result.kind === "agent_rate_limited" ? "provider-retry" : "transport-retry";
         currentRun = {
           ...currentRun,
@@ -785,6 +826,7 @@ export async function runPlanTournament({
   policy,
   execute,
   repositoryContract,
+  signal,
 }: {
   task: string;
   basePrompt: string;
@@ -792,6 +834,7 @@ export async function runPlanTournament({
   policy: HighAssurancePolicy;
   execute: ExecuteRun;
   repositoryContract?: PlanRepositoryContract;
+  signal?: AbortSignal;
 }): Promise<PlanTournamentResult> {
   const [agentA, agentB] = policy.planning.candidates;
   const runs: LooseRecord[] = [];
@@ -816,6 +859,7 @@ export async function runPlanTournament({
   const initialResults = await Promise.all(initialRuns.map((run, index) => executeParsedRun({
     run,
     execute,
+    signal,
     parse: (output) => {
       const parsed = parsePlanProposal(output, index === 0 ? "A" : "B", task);
       if (parsed.ok === false) return { ok: false as const, reason: parsed.reason };
@@ -843,6 +887,7 @@ export async function runPlanTournament({
     const critiqueResults = await Promise.all(critiqueRuns.map((run, index) => executeParsedRun({
       run,
       execute,
+      signal,
       parse: (output) => {
         const parsed = parsePlanCritique(output, index === 0 ? "A" : "B", index === 0 ? "B" : "A");
         if (parsed.ok === false) return { ok: false as const, reason: parsed.reason };
@@ -864,6 +909,7 @@ export async function runPlanTournament({
     const revisionResults = await Promise.all(revisionRuns.map((run, index) => executeParsedRun({
       run,
       execute,
+      signal,
       parse: (output) => {
         const parsed = parsePlanProposal(output, index === 0 ? "A" : "B", task);
         if (parsed.ok === false) return { ok: false as const, reason: parsed.reason };
@@ -894,6 +940,7 @@ export async function runPlanTournament({
   const arbitrationResult = await executeParsedRun({
     run: arbitrationRun,
     execute,
+    signal,
     parse: (output) => {
       const parsed = parseArbitration(output, task);
       if (parsed.ok === false) return { ok: false as const, reason: parsed.reason };

@@ -1,10 +1,8 @@
 import { readActiveChecklistArtifacts } from "../workflow/checklist-artifacts.js";
 
 import { recordValue, type LooseRecord } from "../contracts/types.js";
-
-type ArtifactIndex = {
-  entries?: LooseRecord[];
-};
+import type { GetArtifactIndexPort, RunJobArtifactIndex } from "./run-job-ports.js";
+import type { BrokerArtifactEntry } from "../../shared/orchestrator/artifact-index.js";
 
 export type CompletionChecklistArtifactMap = {
   ok?: boolean;
@@ -16,20 +14,13 @@ export type CompletionChecklistArtifactMap = {
   [key: string]: unknown;
 };
 
-type GetArtifactIndex = (
-  cpbRoot: string,
-  project: string,
-  jobId: string,
-  options: { dataRoot?: string },
-) => Promise<ArtifactIndex | null> | ArtifactIndex | null;
-
 type CompletionChecklistArtifactsInput = {
   cpbRoot: string;
   project: string;
   jobId: string;
   dataRoot?: string;
   attemptId?: string | null;
-  getArtifactIndex?: GetArtifactIndex | unknown;
+  getArtifactIndex?: GetArtifactIndexPort | null;
 };
 
 type CompletionChecklistArtifactsResult = {
@@ -44,11 +35,11 @@ const REQUIRED_CHECKLIST_ARTIFACT_KINDS = [
   "checklist-verdict",
 ];
 
-function artifactEntries(artifactIndex: ArtifactIndex | null): LooseRecord[] {
+function artifactEntries(artifactIndex: RunJobArtifactIndex | null): BrokerArtifactEntry[] {
   return Array.isArray(artifactIndex?.entries) ? artifactIndex.entries : [];
 }
 
-function hasChecklistAnchor(artifactIndex: ArtifactIndex | null) {
+function hasChecklistAnchor(artifactIndex: RunJobArtifactIndex | null) {
   return artifactEntries(artifactIndex).some((entry) => entry.kind === "acceptance-checklist");
 }
 

@@ -1,10 +1,17 @@
 // ── dispatch-state ──
-import { appendFile, mkdir, readFile, readdir, rm, stat } from "node:fs/promises";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { appendFile, mkdir, readFile, readdir } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { buildMeta } from "../../../core/job/meta.js";
 import { listJobs } from "../job/job-store.js";
 import { recordValue, type LooseRecord } from "../../../core/contracts/types.js";
+import type { ProcessIdentity } from "../../../core/runtime/process-tree.js";
+import {
+  readBoundedRegularFileNoFollow,
+  withDurableDirectoryLock,
+} from "../../../core/runtime/durable-directory-lock.js";
+import { removeDurable } from "../../../shared/hub-maintenance.js";
 
 type DispatchEvent = LooseRecord & {
   type: string;
@@ -156,6 +163,25 @@ function dispatchFile(hubRoot: string, dispatchId: string) {
 
 const DISPATCH_LOCK_TTL_MS = 30_000;
 
+export type DispatchLockTestHooks = {
+  afterRecoveryObserved?: (context: { lockDir: string; owner: LooseRecord | null }) => void | Promise<void>;
+  afterQuarantineRename?: (context: { lockDir: string; quarantineDir: string; ownerToken: string | null }) => void | Promise<void>;
+  captureProcessIdentity?: () => ProcessIdentity | null;
+  afterDeleteSnapshot?: (context: { filePath: string }) => void | Promise<void>;
+  beforeDeleteFinalRename?: (context: { filePath: string; quarantinePath: string }) => void | Promise<void>;
+};
+
+const dispatchLockTestHookStorage = new AsyncLocalStorage<DispatchLockTestHooks>();
+
+export function withDispatchLockTestHooksForTests<T>(hooks: DispatchLockTestHooks, operation: () => T): T {
+  const parent = dispatchLockTestHookStorage.getStore();
+  return dispatchLockTestHookStorage.run(parent ? { ...parent, ...hooks } : hooks, operation);
+}
+
+function dispatchLockTestHooks() {
+  return dispatchLockTestHookStorage.getStore() || {};
+}
+
 export function makeDispatchId(ts = nowIso(), suffix = randomBytes(3).toString("hex")) {
   const date = new Date(ts);
   if (Number.isNaN(date.getTime())) throw new Error("invalid timestamp");
@@ -168,47 +194,39 @@ const mutationChains = new Map<string, Promise<unknown>>();
 async function withDispatchFileLock(hubRoot: string, dispatchId: string, fn: () => Promise<unknown>) {
   const file = dispatchFile(hubRoot, dispatchId);
   const lockDir = `${file}.lock`;
-  await mkdir(path.dirname(lockDir), { recursive: true });
-
-  let acquired = false;
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    try {
-      await mkdir(lockDir);
-      acquired = true;
-      break;
-    } catch (err) {
-      if (!err || err.code !== "EEXIST") throw err;
-      try {
-        const info = await stat(lockDir);
-        if (Date.now() - info.mtimeMs >= DISPATCH_LOCK_TTL_MS) {
-          await rm(lockDir, { recursive: true, force: true });
-          continue;
-        }
-      } catch {
-        // The lock disappeared between mkdir and stat; retry.
-      }
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-  }
-
-  if (!acquired) throw new Error(`dispatch lock busy: ${path.basename(file)}`);
-
-  try {
-    return await fn();
-  } finally {
-    await rm(lockDir, { recursive: true, force: true });
-  }
+  const testHooks = dispatchLockTestHooks();
+  return withDurableDirectoryLock(lockDir, fn, {
+    ttlMs: DISPATCH_LOCK_TTL_MS,
+    waitMs: DISPATCH_LOCK_TTL_MS,
+    retryMs: 10,
+    hooks: {
+      afterRecoveryObserved: ({ lockDir: observedLockDir }) => dispatchLockTestHooks().afterRecoveryObserved?.({
+        lockDir: observedLockDir,
+        owner: null,
+      }),
+      afterQuarantineRename: ({ lockDir: quarantinedLockDir, quarantineDir, ownerToken }) => (
+        dispatchLockTestHooks().afterQuarantineRename?.({
+          lockDir: quarantinedLockDir,
+          quarantineDir,
+          ownerToken,
+        })
+      ),
+    },
+    captureIdentity: testHooks.captureProcessIdentity
+      ? () => dispatchLockTestHooks().captureProcessIdentity?.() ?? null
+      : undefined,
+  });
 }
 
 function serialized(hubRoot: string, dispatchId: string, fn: () => Promise<unknown>) {
   const key = `${path.resolve(hubRoot)}:${dispatchId}`;
   const prev = mutationChains.get(key) || Promise.resolve();
   const next = prev.then(() => fn());
-  mutationChains.set(key, next.catch(() => {}));
-  const cleanup = () => {
-    if (mutationChains.get(key) === next) mutationChains.delete(key);
-  };
-  next.then(cleanup, cleanup);
+  const tail = next.catch(() => {});
+  mutationChains.set(key, tail);
+  void tail.then(() => {
+    if (mutationChains.get(key) === tail) mutationChains.delete(key);
+  });
   return next;
 }
 
@@ -283,6 +301,20 @@ async function readDispatchEvents(hubRoot: string, dispatchId: string): Promise<
     if (err?.code === "ENOENT") return [];
     throw err;
   }
+}
+
+async function readDispatchEventsForDeletion(file: string) {
+  let raw: string;
+  try {
+    raw = await readBoundedRegularFileNoFollow(file, { maxBytes: 64 * 1024 * 1024 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return { events: [] as DispatchEvent[], raw: "" };
+    throw error;
+  }
+  return {
+    events: raw.split("\n").filter((line) => line.trim()).map((line) => JSON.parse(line)) as DispatchEvent[],
+    raw,
+  };
 }
 
 export function materializeDispatch(events: DispatchEvent[]): DispatchState {
@@ -429,7 +461,34 @@ export async function listDispatches(hubRoot: string, { projectId, status }: Dis
 
 export async function deleteDispatchFile(hubRoot: string, dispatchId: string) {
   const file = dispatchFile(hubRoot, dispatchId);
-  await rm(file, { force: true });
+  return serialized(hubRoot, dispatchId, () => withDispatchFileLock(hubRoot, dispatchId, async () => {
+    const snapshot = await readDispatchEventsForDeletion(file);
+    const events = snapshot.events;
+    if (events.length === 0) return undefined;
+    const state = materializeDispatch(events);
+    if (!TERMINAL_STATUSES.has(String(state.status || ""))) {
+      throw Object.assign(new Error(`refusing to remove active dispatch history: ${dispatchId}`), {
+        code: "DISPATCH_DELETE_NON_TERMINAL",
+        committed: false,
+        recoveryPaths: { canonical: file },
+      });
+    }
+    await dispatchLockTestHooks().afterDeleteSnapshot?.({ filePath: file });
+    return removeDurable(file, {
+      beforeFinalRename: async (context) => {
+        const current = await readDispatchEventsForDeletion(file);
+        if (current.raw !== snapshot.raw) {
+          throw Object.assign(new Error(`dispatch history changed after delete authorization: ${dispatchId}`), {
+            code: "DISPATCH_DELETE_SNAPSHOT_CHANGED",
+            committed: false,
+            successorPreserved: true,
+            recoveryPaths: { canonical: file },
+          });
+        }
+        await dispatchLockTestHooks().beforeDeleteFinalRename?.(context);
+      },
+    });
+  }));
 }
 
 // ── worker-dispatch ──

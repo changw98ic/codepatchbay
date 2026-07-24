@@ -33,6 +33,24 @@ async function sourceFixture({ withFocusedTest }: { withFocusedTest: boolean }) 
   return sourcePath;
 }
 
+async function fullTestFixture() {
+  const sourcePath = await tempRoot("cpb-verify-full-env-source");
+  await writeFile(path.join(sourcePath, "package.json"), JSON.stringify({
+    type: "module",
+    scripts: {
+      test: "node -e \"if (process.env.CPB_VERIFY_FULL) process.exit(11); if (process.env.CPB_AMBIENT_SECRET) process.exit(12); process.exit(process.env.CPB_CODEGRAPH_ENABLED === 'job-env' ? 7 : 0)\"",
+    },
+  }), "utf8");
+  await writeFile(path.join(sourcePath, "feature.js"), "export const value = 1;\n", "utf8");
+  await execFileAsync("git", ["init", "-q"], { cwd: sourcePath });
+  await execFileAsync("git", ["config", "user.email", "test@example.com"], { cwd: sourcePath });
+  await execFileAsync("git", ["config", "user.name", "Test User"], { cwd: sourcePath });
+  await execFileAsync("git", ["add", "-A"], { cwd: sourcePath });
+  await execFileAsync("git", ["commit", "-q", "-m", "initial fixture"], { cwd: sourcePath });
+  await writeFile(path.join(sourcePath, "feature.js"), "export const value = 2;\n", "utf8");
+  return sourcePath;
+}
+
 function checklist() {
   return {
     schemaVersion: 1,
@@ -57,6 +75,44 @@ function checklist() {
     assumptions: [],
   };
 }
+
+test("verify hard gates use ctx.env for full-test decisions and child env over ambient env", async () => {
+  const cpbRoot = await tempRoot("cpb-verify-full-env");
+  const sourcePath = await fullTestFixture();
+  const result = await runVerify({
+    cpbRoot,
+    dataRoot: path.join(cpbRoot, "runtime"),
+    project: "flow",
+    jobId: "job-full-env",
+    task: "Verify full-test env isolation",
+    sourcePath,
+    workflow: "standard",
+    planMode: "light",
+    env: {
+      PATH: process.env.PATH,
+      HOME: process.env.HOME,
+      TMPDIR: process.env.TMPDIR,
+      CPB_VERIFY_FULL: "1",
+      CPB_CODEGRAPH_ENABLED: "job-env",
+    },
+    pool: {
+      async execute() {
+        throw new Error("full-test hard gate must fail before verifier agent execution");
+      },
+    },
+    previousResults: [],
+  });
+
+  assert.equal(result.status, "failed");
+  assert.match(String(result.failure?.reason), /npm test failed/);
+  const diagnostics = recordValue(result.diagnostics);
+  const hardGate = recordValue(diagnostics.hardGate);
+  const npmGate = (Array.isArray(hardGate.checks) ? hardGate.checks : [])
+    .map(recordValue)
+    .find((entry) => entry.gate === "npm test");
+  assert.equal(npmGate?.ok, false);
+  assert.equal(npmGate?.exitCode, "7");
+});
 
 test("light verification uses deterministic evidence when a focused test actually ran", async () => {
   const cpbRoot = await tempRoot("cpb-deterministic-light");
@@ -86,11 +142,12 @@ test("light verification uses deterministic evidence when a focused test actuall
     previousResults: [],
   });
 
-  assert.equal(result.status, "passed", result.failure?.reason);
+  assert.equal(result.status, "passed", String(result.failure?.reason || ""));
   assert.equal(verifierCalls, 0);
-  assert.equal(result.diagnostics.verificationMode, "deterministic_light");
-  const evidenceEntry = recordValue(result.diagnostics.evidenceLedgerArtifact);
-  const verdictEntry = recordValue(result.diagnostics.checklistVerdictArtifact);
+  const diagnostics = recordValue(result.diagnostics);
+  assert.equal(diagnostics.verificationMode, "deterministic_light");
+  const evidenceEntry = recordValue(diagnostics.evidenceLedgerArtifact);
+  const verdictEntry = recordValue(diagnostics.checklistVerdictArtifact);
   assert.ok(evidenceEntry?.path);
   assert.ok(verdictEntry?.path);
   const evidence = JSON.parse(await readFile(evidenceEntry.path, "utf8"));
@@ -103,6 +160,7 @@ test("light verification keeps the verifier agent when no focused test ran", asy
   const cpbRoot = await tempRoot("cpb-light-no-focused-test");
   const sourcePath = await sourceFixture({ withFocusedTest: false });
   let verifierCalls = 0;
+  let verifierPrompt = "";
   const result = await runVerify({
     cpbRoot,
     dataRoot: path.join(cpbRoot, "runtime"),
@@ -112,14 +170,16 @@ test("light verification keeps the verifier agent when no focused test ran", asy
     sourcePath,
     workflow: "standard",
     planMode: "light",
+    agents: { verifier: "claude-glm" },
     sourceContext: {
       riskMap: { riskLevel: "medium", adversarialRequired: false },
       acceptanceChecklist: checklist(),
       acceptanceChecklistArtifact: { name: "acceptance-checklist-light" },
     },
     pool: {
-      async execute() {
+      async execute(_agent: unknown, prompt: unknown) {
         verifierCalls += 1;
+        verifierPrompt = String(prompt || "");
         return {
           output: "```json\n{\"status\":\"ok\",\"verdict\":\"pass\",\"reason\":\"manual semantic review\",\"details\":\"checked\",\"confidence\":0.9}\n```",
           providerKey: "fake",
@@ -131,6 +191,8 @@ test("light verification keeps the verifier agent when no focused test ran", asy
   });
 
   assert.equal(verifierCalls, 1);
-  assert.equal(result.status, "passed", result.failure?.reason);
-  assert.notEqual(result.diagnostics.verificationMode, "deterministic_light");
+  assert.doesNotMatch(verifierPrompt, /VERIFIER_JSON_OUTPUT_FILE=/);
+  assert.equal(result.status, "passed", String(result.failure?.reason || ""));
+  const diagnostics = recordValue(result.diagnostics);
+  assert.notEqual(diagnostics.verificationMode, "deterministic_light");
 });

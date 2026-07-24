@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -204,7 +204,7 @@ await registerProject(hubRoot, {
   skipCodeGraphGate: true,
 });
 
-const dummyScript = path.join(dispatchRoot, "dummy-bridge.sh");
+const dummyScript = path.join(realProjectRoot, "bridges", `phase-runner-test-dummy-${process.pid}.sh`);
 await writeFile(dummyScript, "#!/bin/bash\nexit 0\n", "utf8");
 await chmod(dummyScript, 0o755);
 
@@ -246,7 +246,7 @@ assert.equal(jobAfterDispatch.phase, "plan");
 assert.equal(jobAfterDispatch.leaseId, null, "lease released after phase completion");
 
 // dispatchPhase returns error exit when bridge script fails
-const failScript = path.join(dispatchRoot, "fail-bridge.sh");
+const failScript = path.join(realProjectRoot, "bridges", `phase-runner-test-fail-${process.pid}.sh`);
 await writeFile(failScript, "#!/bin/bash\nexit 1\n", "utf8");
 await chmod(failScript, 0o755);
 
@@ -272,5 +272,8 @@ const failEvents = await readEvents(dispatchRoot, dispatchProject, failJob.jobId
 const failTypes = failEvents.map((e) => e.type);
 assert.ok(failTypes.includes("phase_started"), "phase_started recorded even for failing bridge");
 assert.ok(failTypes.includes("phase_failed"), "phase_failed recorded via Node API for failed bridge");
+
+await rm(dummyScript, { force: true });
+await rm(failScript, { force: true });
 
 console.log("phase-runner: all tests passed");

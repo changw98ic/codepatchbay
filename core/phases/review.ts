@@ -41,7 +41,20 @@ function stringValue(value: unknown, fallback = ""): string {
   return typeof value === "string" && value ? value : fallback;
 }
 
+function phaseAbortError(signal?: AbortSignal) {
+  const reason = signal?.reason;
+  if (reason instanceof Error && reason.name === "AbortError") return reason;
+  const err = new Error("review phase aborted");
+  err.name = "AbortError";
+  return err;
+}
+
+function throwIfPhaseAborted(signal?: AbortSignal) {
+  if (signal?.aborted) throw phaseAbortError(signal);
+}
+
 export async function runReview(ctx: LooseRecord) {
+  throwIfPhaseAborted(ctx.signal as AbortSignal | undefined);
   const { project, cpbRoot, pool, sourcePath, jobId } = ctx;
   const { dataRoot } = ctx;
   const role = stringValue(ctx.role, "reviewer");
@@ -49,6 +62,7 @@ export async function runReview(ctx: LooseRecord) {
 
   const prompt = await buildReviewPrompt(ctx, deliverableArtifact) + JSON_INSTRUCTION;
 
+  throwIfPhaseAborted(ctx.signal as AbortSignal | undefined);
   const agentResult = await runAgent({
     phase: "review",
     role,
@@ -63,8 +77,10 @@ export async function runReview(ctx: LooseRecord) {
     timeoutMs: typeof recordValue(ctx.timeouts).review === "number" ? recordValue(ctx.timeouts).review : 0,
     dataRoot,
     onProgress: ctx.onProgress,
+    signal: ctx.signal as AbortSignal | undefined,
   });
 
+  throwIfPhaseAborted(ctx.signal as AbortSignal | undefined);
   if (!agentResult.ok) {
     const failed = recordValue(agentResult);
     const failureKind = typeof failed.kind === "string" ? failed.kind : FailureKind.UNKNOWN;
@@ -81,6 +97,7 @@ export async function runReview(ctx: LooseRecord) {
     });
   }
 
+  throwIfPhaseAborted(ctx.signal as AbortSignal | undefined);
   const success = recordValue(agentResult);
   const parsed = recordValue(parseAgentJson(success.output));
   if (!parsed.ok) {
@@ -98,14 +115,19 @@ export async function runReview(ctx: LooseRecord) {
 
   const parsedData = recordValue(parsed.data);
   const content = renderReviewMarkdown(parsedData);
-  const artifact = await writeArtifact(cpbRoot, {
+  const artifactInput = {
+    signal: ctx.signal as AbortSignal | undefined,
     project,
     jobId,
     kind: "review",
     content,
     dataRoot,
     metadata: parsedData,
-  });
+  };
+  throwIfPhaseAborted(ctx.signal as AbortSignal | undefined);
+  const artifact = typeof ctx.writeArtifact === "function"
+    ? recordValue(await ctx.writeArtifact(cpbRoot, artifactInput))
+    : await writeArtifact(cpbRoot, artifactInput);
 
   return phasePassed({
     phase: "review",

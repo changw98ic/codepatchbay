@@ -42,6 +42,26 @@ function nonEmptyString(value: unknown): string | null {
 export function buildWorkflowDag({ workflow, phases, phaseRoleMap }: { workflow: string; phases: string[]; phaseRoleMap: Record<string, string> }): WorkflowDag {
   const base = normalizeWorkflow(workflow);
   const baseNodes = Array.isArray(base?.nodes) ? base.nodes : [];
+  const baseNodeById = new Map<string, DagNode>();
+  const seenIds = new Set<string>();
+
+  for (const rawNode of baseNodes) {
+    const phase = nonEmptyString(rawNode.phase) || nonEmptyString(rawNode.id);
+    const id = nonEmptyString(rawNode.id) || phase;
+    if (!phase || !id) continue;
+    if (baseNodeById.has(id)) {
+      throw new Error(`workflow ${workflow} has duplicate node id: ${id}`);
+    }
+    baseNodeById.set(id, {
+      ...rawNode,
+      id,
+      phase,
+      role: nonEmptyString(rawNode.role) || undefined,
+      dependsOn: Array.isArray(rawNode.dependsOn)
+        ? rawNode.dependsOn.map(String).filter(Boolean)
+        : [],
+    });
+  }
 
   const phaseBudget = new Map<string, number>();
   for (const phase of phases) {
@@ -49,6 +69,18 @@ export function buildWorkflowDag({ workflow, phases, phaseRoleMap }: { workflow:
   }
 
   const nodes: DagNode[] = [];
+  const pushNode = (node: DagNode) => {
+    const id = nonEmptyString(node.id) || "";
+    if (!id) {
+      throw new Error(`workflow ${workflow} has node missing id`);
+    }
+    if (seenIds.has(id)) {
+      throw new Error(`workflow ${workflow} has duplicate node id: ${id}`);
+    }
+    seenIds.add(id);
+    nodes.push(node);
+  };
+
   for (const existing of baseNodes) {
     const phase = nonEmptyString(existing.phase) || nonEmptyString(existing.id);
     if (!phase) continue;
@@ -58,7 +90,7 @@ export function buildWorkflowDag({ workflow, phases, phaseRoleMap }: { workflow:
     phaseBudget.set(phase, remaining - 1);
     const id = nonEmptyString(existing.id) || phase;
     const role = nonEmptyString(existing.role) || phaseRoleMap[phase] || phase;
-    nodes.push({
+    pushNode({
       ...existing,
       id,
       phase,
@@ -72,20 +104,50 @@ export function buildWorkflowDag({ workflow, phases, phaseRoleMap }: { workflow:
   for (const [phase, remaining] of phaseBudget.entries()) {
     for (let idx = 0; idx < remaining; idx++) {
       const previous = nodes[nodes.length - 1];
-      nodes.push({
+      const fallbackNode = {
         id: idx === 0 ? phase : `${phase}_${idx + 1}`,
         phase,
         role: phaseRoleMap[phase] || phase,
         dependsOn: previous ? [previous.id] : [],
-      });
+      };
+      pushNode(fallbackNode);
     }
   }
 
   const includedIds = new Set(nodes.map((n) => n.id));
-  const normalizedNodes = nodes.map((n) => ({
-    ...n,
-    dependsOn: (n.dependsOn || []).filter((depId): depId is string => includedIds.has(depId)),
-  }));
+  const projectedDependencies = (
+    ownerId: string,
+    dependencies: string[],
+    visiting: Set<string> = new Set(),
+  ): string[] => {
+    const projected: string[] = [];
+    for (const dependencyId of dependencies) {
+      if (includedIds.has(dependencyId)) {
+        if (!projected.includes(dependencyId)) projected.push(dependencyId);
+        continue;
+      }
+      const dependency = baseNodeById.get(dependencyId);
+      if (!dependency) {
+        throw new Error(`workflow ${workflow} has unknown dependency for node ${ownerId}: ${dependencyId}`);
+      }
+      if (visiting.has(dependencyId)) {
+        throw new Error(`workflow ${workflow} has cyclic projected dependency at node ${dependencyId}`);
+      }
+      const nextVisiting = new Set(visiting);
+      nextVisiting.add(dependencyId);
+      for (const ancestorId of projectedDependencies(ownerId, dependency.dependsOn || [], nextVisiting)) {
+        if (!projected.includes(ancestorId)) projected.push(ancestorId);
+      }
+    }
+    return projected;
+  };
+  const normalizedNodes = nodes.map((n) => {
+    const dependsOn = (n.dependsOn || []).filter((depId) => typeof depId === "string");
+    return {
+      ...n,
+      dependsOn: projectedDependencies(n.id, dependsOn, new Set([n.id])),
+    };
+  });
 
   return {
     name: base?.name || workflow || "standard",

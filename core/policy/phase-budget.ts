@@ -50,9 +50,10 @@ const RISK_PROFILES: Record<RiskLevel, RiskBudgetProfile> = {
     phases: {
       prepare_task: { toolCallBudget: 20, toolEventBudget: 80, idleTimeoutMs: 90_000 },
       plan: { toolCallBudget: 20, toolEventBudget: 80, idleTimeoutMs: 90_000 },
-      execute: { toolCallBudget: 40, toolEventBudget: 160, idleTimeoutMs: 90_000, noEditToolLimit: 8, noEditIdleTimeoutMs: 45_000 },
+      execute: { toolCallBudget: 40, toolEventBudget: 160, idleTimeoutMs: 90_000, noEditToolLimit: 0, noEditIdleTimeoutMs: 0 },
       review: { toolCallBudget: 20, toolEventBudget: 80, idleTimeoutMs: 90_000 },
       verify: { toolCallBudget: 20, toolEventBudget: 80, idleTimeoutMs: 90_000 },
+      adversarial_verify: { toolCallBudget: 20, toolEventBudget: 80, idleTimeoutMs: 90_000 },
       remediate: { toolCallBudget: 35, toolEventBudget: 140, idleTimeoutMs: 90_000 },
     },
   },
@@ -62,9 +63,10 @@ const RISK_PROFILES: Record<RiskLevel, RiskBudgetProfile> = {
     phases: {
       prepare_task: { toolCallBudget: 40, toolEventBudget: 160, idleTimeoutMs: 120_000 },
       plan: { toolCallBudget: 40, toolEventBudget: 160, idleTimeoutMs: 120_000 },
-      execute: { toolCallBudget: 70, toolEventBudget: 280, idleTimeoutMs: 120_000, noEditToolLimit: 8, noEditIdleTimeoutMs: 60_000 },
+      execute: { toolCallBudget: 70, toolEventBudget: 280, idleTimeoutMs: 120_000, noEditToolLimit: 0, noEditIdleTimeoutMs: 0 },
       review: { toolCallBudget: 30, toolEventBudget: 120, idleTimeoutMs: 120_000 },
       verify: { toolCallBudget: 30, toolEventBudget: 120, idleTimeoutMs: 120_000 },
+      adversarial_verify: { toolCallBudget: 30, toolEventBudget: 120, idleTimeoutMs: 120_000 },
       remediate: { toolCallBudget: 60, toolEventBudget: 240, idleTimeoutMs: 120_000 },
     },
   },
@@ -74,7 +76,7 @@ const RISK_PROFILES: Record<RiskLevel, RiskBudgetProfile> = {
     phases: {
       prepare_task: { toolCallBudget: 60, toolEventBudget: 240, idleTimeoutMs: 150_000 },
       plan: { toolCallBudget: 60, toolEventBudget: 240, idleTimeoutMs: 150_000 },
-      execute: { toolCallBudget: 100, toolEventBudget: 400, idleTimeoutMs: 150_000, noEditToolLimit: 8, noEditIdleTimeoutMs: 90_000 },
+      execute: { toolCallBudget: 100, toolEventBudget: 400, idleTimeoutMs: 150_000, noEditToolLimit: 0, noEditIdleTimeoutMs: 0 },
       review: { toolCallBudget: 35, toolEventBudget: 140, idleTimeoutMs: 150_000 },
       verify: { toolCallBudget: 45, toolEventBudget: 180, idleTimeoutMs: 150_000 },
       adversarial_verify: { toolCallBudget: 35, toolEventBudget: 140, idleTimeoutMs: 150_000 },
@@ -87,7 +89,7 @@ const RISK_PROFILES: Record<RiskLevel, RiskBudgetProfile> = {
     phases: {
       prepare_task: { toolCallBudget: 80, toolEventBudget: 320, idleTimeoutMs: 180_000 },
       plan: { toolCallBudget: 80, toolEventBudget: 320, idleTimeoutMs: 180_000 },
-      execute: { toolCallBudget: 120, toolEventBudget: 480, idleTimeoutMs: 180_000, noEditToolLimit: 10, noEditIdleTimeoutMs: 120_000 },
+      execute: { toolCallBudget: 120, toolEventBudget: 480, idleTimeoutMs: 180_000, noEditToolLimit: 0, noEditIdleTimeoutMs: 0 },
       review: { toolCallBudget: 45, toolEventBudget: 180, idleTimeoutMs: 180_000 },
       verify: { toolCallBudget: 60, toolEventBudget: 240, idleTimeoutMs: 180_000 },
       adversarial_verify: { toolCallBudget: 45, toolEventBudget: 180, idleTimeoutMs: 180_000 },
@@ -212,7 +214,6 @@ export function derivePhaseBudgetPolicy(ctx: LooseRecord = {}) {
     phases.execute = {
       ...phases.execute,
       idleTimeoutMs: Math.max(phases.execute.idleTimeoutMs, 360_000),
-      noEditIdleTimeoutMs: Math.max(phases.execute.noEditIdleTimeoutMs || 0, 300_000),
     };
   }
   return {
@@ -252,11 +253,20 @@ function setPhaseBudgetDefault(env: EnvMap, phase: string, keyBase: string, valu
   env[phaseKey] = String(value);
 }
 
-export function buildRiskBudgetAcpEnv(ctx: LooseRecord = {}, phase: string, baseEnv: EnvMap = {}): NodeJS.ProcessEnv {
+// A zero ACP budget means unlimited. The derived policy records zero for the
+// execute no-edit guards too, so projections and runtime enforcement agree.
+// Operators can still opt into those guards through explicit env overrides.
+// Keep mutation and repository-discovery phases unconstrained by an artificial
+// work ceiling, but bound the closed adversarial judgment over an already-
+// frozen candidate/evidence snapshot.
+const UNLIMITED_TOOL_BUDGET = 0;
+
+export function buildRiskBudgetAcpEnv(ctx: unknown = {}, phase: string, baseEnv: EnvMap = {}): NodeJS.ProcessEnv {
+  const context = recordValue(ctx);
   const env = { ...baseEnv } as NodeJS.ProcessEnv;
-  const policy = derivePhaseBudgetPolicy(ctx);
+  const policy = derivePhaseBudgetPolicy(context);
   const phasePolicy = recordValue(recordValue(policy.phases)[phase]);
-  const allowedAgents = resolveAllowedAgentNames(ctx.sourceContext, ctx);
+  const allowedAgents = resolveAllowedAgentNames(context.sourceContext, context);
 
   setDefault(env, "CPB_TASK_RISK_LEVEL", policy.riskLevel);
   setDefault(env, "CPB_TASK_VERIFICATION_DEPTH", policy.verificationDepth);
@@ -265,20 +275,30 @@ export function buildRiskBudgetAcpEnv(ctx: LooseRecord = {}, phase: string, base
   if (allowedAgents !== null) setDefault(env, "CPB_ALLOWED_AGENTS_JSON", JSON.stringify(allowedAgents));
 
   if (typeof phasePolicy.toolCallBudget === "number") {
-    setPhaseBudgetDefault(env, phase, "CPB_ACP_TOOL_CALL_BUDGET", phasePolicy.toolCallBudget);
+    setPhaseBudgetDefault(
+      env,
+      phase,
+      "CPB_ACP_TOOL_CALL_BUDGET",
+      phase === "adversarial_verify" ? phasePolicy.toolCallBudget : UNLIMITED_TOOL_BUDGET,
+    );
   }
   if (typeof phasePolicy.toolEventBudget === "number") {
-    setPhaseBudgetDefault(env, phase, "CPB_ACP_TOOL_EVENT_BUDGET", phasePolicy.toolEventBudget);
+    setPhaseBudgetDefault(
+      env,
+      phase,
+      "CPB_ACP_TOOL_EVENT_BUDGET",
+      phase === "adversarial_verify" ? phasePolicy.toolEventBudget : UNLIMITED_TOOL_BUDGET,
+    );
   }
   if (typeof phasePolicy.idleTimeoutMs === "number" && !hasEnv(env, "CPB_ACP_IDLE_TIMEOUT_MS") && !hasEnv(env, "CPB_ACP_TIMEOUT_MS")) {
     env.CPB_ACP_IDLE_TIMEOUT_MS = String(phasePolicy.idleTimeoutMs);
   }
   if (phase === "execute") {
     if (typeof phasePolicy.noEditToolLimit === "number" && !hasEnv(env, "CPB_ACP_EXECUTE_NO_EDIT_TOOL_LIMIT")) {
-      env.CPB_ACP_EXECUTE_NO_EDIT_TOOL_LIMIT = String(phasePolicy.noEditToolLimit);
+      env.CPB_ACP_EXECUTE_NO_EDIT_TOOL_LIMIT = String(UNLIMITED_TOOL_BUDGET);
     }
     if (typeof phasePolicy.noEditIdleTimeoutMs === "number" && !hasEnv(env, "CPB_ACP_EXECUTE_NO_EDIT_IDLE_TIMEOUT_MS")) {
-      env.CPB_ACP_EXECUTE_NO_EDIT_IDLE_TIMEOUT_MS = String(phasePolicy.noEditIdleTimeoutMs);
+      env.CPB_ACP_EXECUTE_NO_EDIT_IDLE_TIMEOUT_MS = String(UNLIMITED_TOOL_BUDGET);
     }
   }
 

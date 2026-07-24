@@ -30,16 +30,30 @@ process.env.CPB_DELEGATE_ACK_TIMEOUT_MS = "80";
 test("readProviderQuotas only falls back to legacy rate-limits when quotas file is missing", async () => {
   const hubRoot = await tempRoot("cpb-provider-quota-fallback");
   await mkdir(path.join(hubRoot, "providers"), { recursive: true });
+  const untilTs = "2027-01-02T03:04:05.000Z";
   await writeFile(
     path.join(hubRoot, "providers", "rate-limits.json"),
-    `${JSON.stringify({ legacy: { reason: "old" } })}\n`,
+    `${JSON.stringify({ legacy: { untilTs, reason: "old" } })}\n`,
     "utf8",
   );
 
-  assert.deepEqual(await readProviderQuotas(hubRoot), { legacy: { reason: "old" } });
+  assert.deepEqual(await readProviderQuotas(hubRoot), {
+    legacy: {
+      untilTs,
+      reason: "old",
+      providerKey: "legacy",
+      agent: "legacy",
+      status: "rate_limited",
+      nextEligibleAt: Date.parse(untilTs),
+      source: "legacy-rate-limits",
+      confidence: 1,
+    },
+  });
 
   await writeFile(path.join(hubRoot, "providers", "quotas.json"), "{bad json", "utf8");
-  assert.deepEqual(await readProviderQuotas(hubRoot), {});
+  await assert.rejects(readProviderQuotas(hubRoot), {
+    code: "PROVIDER_QUOTAS_CONTRACT_INVALID",
+  });
 });
 
 let runJobPromise: Promise<any> | null = null;

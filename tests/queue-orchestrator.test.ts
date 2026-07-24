@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdir, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { chmod, lstat, mkdir, readFile, readdir, rename, symlink, unlink, utimes, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { promisify } from "node:util";
 
 import {
   claimEligible,
@@ -9,14 +12,17 @@ import {
   listQueue,
   queueStatus,
   updateEntry,
+  withQueueLockTestHooks,
 } from "../server/services/hub/hub-queue.js";
 import { HubOrchestrator, normalizedSourceContext } from "../server/orchestrator/hub-orchestrator.js";
 import { hubConcurrencyEnv, resolveHubConcurrencyLimits } from "../server/services/infra.js";
 import { registerProject } from "../server/services/hub/hub-registry.js";
+import { captureProcessIdentity } from "../core/runtime/process-tree.js";
 import { tempRoot, oldIso, readJson, writeJson } from "./helpers.js";
 
 // Mock assignmentStore: always returns null (no active assignment)
 const noAssignmentStore = { getAssignment: async () => null };
+const execFileAsync = promisify(execFile);
 
 test("normalizedSourceContext carries the durable scheduler decision into the assignment", () => {
   const schedulerDecision = {
@@ -58,8 +64,11 @@ async function sourceWithCodeGraphIndexButNoLiveState(prefix) {
 
 async function sourceWithLiveCodeGraphState(prefix) {
   const sourcePath = await sourceWithCodeGraphIndexButNoLiveState(prefix);
+  const processIdentity = captureProcessIdentity(process.pid, { strict: true });
+  assert.ok(processIdentity, "expected current process identity");
   await writeJson(path.join(sourcePath, ".codegraph", "daemon.pid"), {
     pid: process.pid,
+    processIdentity,
     codebaseRoot: sourcePath,
     source: "test",
   });
@@ -75,6 +84,82 @@ async function registerReadyProject(hubRoot, id, prefix) {
     metadata: highConfidenceCapabilityMetadata(),
   });
   return sourcePath;
+}
+
+function workerIdentity(pid, birthId) {
+  return {
+    pid,
+    birthId,
+    incarnation: `${pid}:${birthId}`,
+    capturedAt: "2026-07-20T00:00:00.000Z",
+    birthIdPrecision: "exact",
+  };
+}
+
+function queueLockDir(hubRoot) {
+  return path.join(hubRoot, "queue", "queue.json.lock");
+}
+
+async function writeQueueLockOwner(lockDir, owner) {
+  await mkdir(lockDir, { recursive: true });
+  await writeFile(path.join(lockDir, "lock.json"), `${JSON.stringify(owner, null, 2)}\n`, "utf8");
+}
+
+function queueOwnerRecord(lockDir, ownerToken, identity = captureProcessIdentity(process.pid, { strict: true })) {
+  assert.ok(identity, "expected process identity");
+  const processIdentity = { ...identity, birthIdPrecision: "exact" };
+  return {
+    format: "cpb-hub-queue-lock/v1",
+    ownerToken,
+    lockPath: path.resolve(lockDir),
+    ownerPid: processIdentity.pid,
+    host: os.hostname(),
+    acquiredAt: new Date(0).toISOString(),
+    processIdentity,
+  };
+}
+
+async function ageQueueLock(lockDir) {
+  const old = new Date(0);
+  await utimes(lockDir, old, old);
+}
+
+async function assertOnlyCtimeChanged(filePath: string, before: Awaited<ReturnType<typeof lstat>>) {
+  const after = await lstat(filePath);
+
+  assert.equal(String(after.dev), String(before.dev));
+  assert.equal(String(after.ino), String(before.ino));
+  assert.equal(String(after.size), String(before.size));
+  assert.equal(String(after.mode), String(before.mode));
+  assert.equal(String(after.mtimeMs), String(before.mtimeMs));
+  assert.equal(String(after.birthtimeMs), String(before.birthtimeMs));
+  assert.notEqual(String(after.ctimeMs), String(before.ctimeMs));
+}
+
+async function mutateOnlyCtime(filePath: string) {
+  const before = await lstat(filePath);
+  const permissions = before.mode & 0o7777;
+  await chmod(filePath, permissions ^ 0o040);
+  await chmod(filePath, permissions);
+  await assertOnlyCtimeChanged(filePath, before);
+}
+
+async function rewriteSameSizeWithRestoredMtime(filePath: string, mutate: (content: string) => string) {
+  const before = await lstat(filePath);
+  const original = await readFile(filePath, "utf8");
+  const mutated = mutate(original);
+  const timestampReference = `${filePath}.timestamp-reference`;
+  assert.notEqual(mutated, original);
+  assert.equal(Buffer.byteLength(mutated), Buffer.byteLength(original));
+  await writeFile(timestampReference, "", "utf8");
+  try {
+    await execFileAsync("touch", ["-r", filePath, timestampReference]);
+    await writeFile(filePath, mutated, "utf8");
+    await execFileAsync("touch", ["-r", timestampReference, filePath]);
+  } finally {
+    await unlink(timestampReference).catch(() => undefined);
+  }
+  await assertOnlyCtimeChanged(filePath, before);
 }
 
 test("enqueue dedupes pending entries and requires UI lane reason", async () => {
@@ -101,6 +186,675 @@ test("enqueue dedupes pending entries and requires UI lane reason", async () => 
     }),
     /ui profile requires a non-empty uiLaneReason/,
   );
+});
+
+test("local queue lock recovers a stale predecessor after PID reuse", async () => {
+  const hubRoot = await tempRoot("cpb-queue-lock-pid-reuse");
+  const lockDir = queueLockDir(hubRoot);
+  const current = captureProcessIdentity(process.pid, { strict: true });
+  assert.ok(current, "expected current process identity");
+  const predecessorBirthId = `${current.birthId}-predecessor`;
+  await writeQueueLockOwner(lockDir, queueOwnerRecord(lockDir, "predecessor", {
+    ...current,
+    birthId: predecessorBirthId,
+    incarnation: `${current.pid}:${predecessorBirthId}`,
+  }));
+  await ageQueueLock(lockDir);
+
+  const entry = await enqueue(hubRoot, { projectId: "proj", description: "after stale lock" });
+
+  assert.equal(entry.status, "pending");
+  assert.equal((await listQueue(hubRoot)).length, 1);
+  await assert.rejects(readFile(path.join(lockDir, "lock.json"), "utf8"), { code: "ENOENT" });
+});
+
+test("local queue lock owner publish reports committed ambiguity after rename", async () => {
+  const hubRoot = await tempRoot("cpb-queue-lock-owner-fsync");
+  const lockDir = queueLockDir(hubRoot);
+  const ownerFile = path.join(lockDir, "lock.json");
+  const failureCause = Object.assign(new Error("simulated lock owner directory sync failure"), { code: "EIO" });
+
+  await withQueueLockTestHooks({
+    syncDirectory: async (directory) => {
+      if (directory === lockDir) throw failureCause;
+    },
+  }, async () => {
+    await assert.rejects(
+      enqueue(hubRoot, { projectId: "proj", description: "ambiguous lock owner publish" }),
+      (error: unknown) => {
+        const actual = error as {
+          code?: unknown;
+          cause?: unknown;
+          committed?: unknown;
+          committedPath?: unknown;
+          recoveryPaths?: { ownerFile?: unknown; lockDir?: unknown };
+        };
+        assert.equal(actual.code, "HUB_QUEUE_LOCK_OWNER_COMMITTED_AMBIGUOUS");
+        assert.equal(actual.cause, failureCause);
+        assert.equal(actual.committed, true);
+        assert.equal(actual.committedPath, ownerFile);
+        assert.deepEqual(actual.recoveryPaths, { ownerFile, lockDir });
+        return true;
+      },
+    );
+  });
+
+  const owner = JSON.parse(await readFile(ownerFile, "utf8"));
+  assert.equal(owner.lockPath, lockDir);
+  assert.deepEqual(await readdir(lockDir), ["lock.json"]);
+});
+
+test("local queue write reports committed ambiguity after rename", async () => {
+  const hubRoot = await tempRoot("cpb-queue-write-fsync");
+  const queueDir = path.join(hubRoot, "queue");
+  const canonical = path.join(queueDir, "queue.json");
+  const failureCause = Object.assign(new Error("simulated queue directory sync failure"), { code: "EIO" });
+  let queueDirectorySyncs = 0;
+
+  await withQueueLockTestHooks({
+    syncDirectory: async (directory) => {
+      if (directory === queueDir && ++queueDirectorySyncs === 2) throw failureCause;
+    },
+  }, async () => {
+    await assert.rejects(
+      enqueue(hubRoot, { projectId: "proj", description: "ambiguous queue publish" }),
+      (error: unknown) => {
+        const actual = error as {
+          code?: unknown;
+          cause?: unknown;
+          committed?: unknown;
+          committedPath?: unknown;
+          recoveryPaths?: { canonical?: unknown };
+        };
+        assert.equal(actual.code, "HUB_QUEUE_WRITE_COMMITTED_AMBIGUOUS");
+        assert.equal(actual.cause, failureCause);
+        assert.equal(actual.committed, true);
+        assert.equal(actual.committedPath, canonical);
+        assert.deepEqual(actual.recoveryPaths, { canonical });
+        return true;
+      },
+    );
+  });
+
+  const persisted = JSON.parse(await readFile(canonical, "utf8"));
+  assert.equal(persisted.entries.length, 1);
+  assert.equal(persisted.entries[0].description, "ambiguous queue publish");
+  assert.deepEqual((await readdir(queueDir)).filter((entry) => entry.includes(".tmp-")), []);
+});
+
+test("local queue write rejects symlink canonical queue state", async () => {
+  const hubRoot = await tempRoot("cpb-queue-canonical-symlink");
+  const queueDir = path.join(hubRoot, "queue");
+  const outside = await tempRoot("cpb-queue-canonical-symlink-target");
+  const target = path.join(outside, "queue.json");
+  await mkdir(queueDir, { recursive: true });
+  await writeFile(target, "{\"version\":1,\"entries\":[]}\n", "utf8");
+  await symlink(target, path.join(queueDir, "queue.json"));
+
+  await assert.rejects(
+    enqueue(hubRoot, { projectId: "proj", description: "must not follow queue symlink" }),
+    { code: "HUB_QUEUE_UNSAFE" },
+  );
+  assert.equal(await readFile(target, "utf8"), "{\"version\":1,\"entries\":[]}\n");
+});
+
+test("local queue lock owner publish preserves a replaced temp generation", async () => {
+  const hubRoot = await tempRoot("cpb-queue-owner-temp-successor");
+  let successorTemp = "";
+  await withQueueLockTestHooks({
+    beforeOwnerRename: async ({ tmp }) => {
+      await rename(tmp, `${tmp}.saved`);
+      await writeFile(tmp, "successor temp\n", "utf8");
+      successorTemp = tmp;
+    },
+  }, async () => {
+    await assert.rejects(
+      enqueue(hubRoot, { projectId: "proj", description: "owner temp successor" }),
+      { code: "HUB_QUEUE_LOCK_ACQUIRE_CLEANUP_FAILED" },
+    );
+  });
+  assert.equal(await readFile(successorTemp, "utf8"), "successor temp\n");
+});
+
+test("local queue write preserves a replaced temp generation", async () => {
+  const hubRoot = await tempRoot("cpb-queue-write-temp-successor");
+  let successorTemp = "";
+  await withQueueLockTestHooks({
+    beforeQueueRename: async ({ tmp }) => {
+      await rename(tmp, `${tmp}.saved`);
+      await writeFile(tmp, "successor queue temp\n", "utf8");
+      successorTemp = tmp;
+    },
+  }, async () => {
+    await assert.rejects(
+      enqueue(hubRoot, { projectId: "proj", description: "queue temp successor" }),
+      { code: "HUB_QUEUE_WRITE_CLEANUP_PRESERVED" },
+    );
+  });
+  assert.equal(await readFile(successorTemp, "utf8"), "successor queue temp\n");
+});
+
+test("local queue temp publication rejects a same-inode same-size rewrite with restored mtime", async () => {
+  const hubRoot = await tempRoot("cpb-queue-write-temp-ctime");
+  let mutatedTemp = "";
+
+  await withQueueLockTestHooks({
+    beforeQueueRename: async ({ tmp }) => {
+      await rewriteSameSizeWithRestoredMtime(tmp, (original) => original.replace(
+        "temp publication ctime",
+        "temp publication xtime",
+      ));
+      mutatedTemp = tmp;
+    },
+  }, async () => {
+    await assert.rejects(
+      enqueue(hubRoot, { projectId: "proj", description: "temp publication ctime" }),
+      (error: unknown) => {
+        const actual = error as { code?: unknown; primaryError?: { code?: unknown } };
+        assert.equal(actual.code, "HUB_QUEUE_WRITE_CLEANUP_PRESERVED");
+        assert.equal(actual.primaryError?.code, "HUB_QUEUE_WRITE_TMP_CHANGED");
+        return true;
+      },
+    );
+  });
+
+  assert.match(await readFile(mutatedTemp, "utf8"), /temp publication xtime/);
+});
+
+test("local queue write cleanup preserves a symlink temp successor and its target", async () => {
+  const hubRoot = await tempRoot("cpb-queue-write-temp-symlink-successor");
+  const outside = await tempRoot("cpb-queue-write-temp-symlink-target");
+  const sentinel = path.join(outside, "sentinel.txt");
+  await writeFile(sentinel, "preserve target\n", "utf8");
+  let successorTemp = "";
+
+  await withQueueLockTestHooks({
+    beforeQueueRename: async ({ tmp }) => {
+      await rename(tmp, `${tmp}.saved`);
+      await symlink(sentinel, tmp);
+      successorTemp = tmp;
+    },
+  }, async () => {
+    await assert.rejects(
+      enqueue(hubRoot, { projectId: "proj", description: "queue temp symlink successor" }),
+      { code: "HUB_QUEUE_WRITE_CLEANUP_PRESERVED" },
+    );
+  });
+
+  assert.equal((await lstat(successorTemp)).isSymbolicLink(), true);
+  assert.equal(await readFile(sentinel, "utf8"), "preserve target\n");
+});
+
+test("local queue lock cleanup preserves quarantine when extra recovery evidence appears", async () => {
+  const hubRoot = await tempRoot("cpb-queue-lock-extra-evidence");
+  const lockDir = queueLockDir(hubRoot);
+  let quarantineDir = "";
+  let preservedQuarantineDir = "";
+
+  await withQueueLockTestHooks({
+    afterQuarantineRename: async (context) => {
+      if (context.kind !== "released") return;
+      quarantineDir = context.quarantineDir;
+    },
+    beforeIsolatedCleanup: async (context) => {
+      if (!context.isDirectory || context.originalPath !== quarantineDir) return;
+      await writeFile(path.join(context.isolatedPath, "evidence.txt"), "preserve evidence\n", "utf8");
+    },
+  }, async () => {
+    await assert.rejects(
+      enqueue(hubRoot, { projectId: "proj", description: "release with extra evidence" }),
+      (error: unknown) => {
+        const actual = error as { code?: unknown; recoveryPaths?: { quarantineDir?: unknown; originalQuarantineDir?: unknown; lockDir?: unknown } };
+        assert.equal(actual.code, "HUB_QUEUE_LOCK_QUARANTINE_CLEANUP_PRESERVED");
+        assert.equal(actual.recoveryPaths?.originalQuarantineDir, quarantineDir);
+        assert.equal(actual.recoveryPaths?.lockDir, lockDir);
+        assert.equal(typeof actual.recoveryPaths?.quarantineDir, "string");
+        preservedQuarantineDir = String(actual.recoveryPaths?.quarantineDir);
+        return true;
+      },
+    );
+  });
+
+  assert.ok(quarantineDir);
+  assert.notEqual(preservedQuarantineDir, quarantineDir);
+  assert.equal(await readFile(path.join(preservedQuarantineDir, "evidence.txt"), "utf8"), "preserve evidence\n");
+  assert.deepEqual((await readdir(lockDir).catch((err) => {
+    assert.equal(err.code, "ENOENT");
+    return [];
+  })), []);
+});
+
+test("local queue lock cleanup preserves a whole-directory same-owner ABA successor", async () => {
+  const hubRoot = await tempRoot("cpb-queue-lock-isolated-directory-aba");
+  const lockDir = queueLockDir(hubRoot);
+  const current = captureProcessIdentity(process.pid, { strict: true });
+  assert.ok(current);
+  const predecessorBirthId = `${current.birthId}-predecessor`;
+  const predecessor = queueOwnerRecord(lockDir, "isolated-directory-aba", {
+    ...current,
+    birthId: predecessorBirthId,
+    incarnation: `${current.pid}:${predecessorBirthId}`,
+  });
+  await writeQueueLockOwner(lockDir, predecessor);
+  await ageQueueLock(lockDir);
+  const ownerRaw = await readFile(path.join(lockDir, "lock.json"), "utf8");
+
+  let quarantineDir = "";
+  let isolatedDir = "";
+  let displacedDir = "";
+  await withQueueLockTestHooks({
+    afterQuarantineRename: async (context) => {
+      if (context.kind !== "stale") return;
+      quarantineDir = context.quarantineDir;
+    },
+    beforeIsolatedCleanup: async (context) => {
+      if (!context.isDirectory || context.originalPath !== quarantineDir) return;
+      isolatedDir = context.isolatedPath;
+      displacedDir = `${isolatedDir}.predecessor`;
+      await rename(isolatedDir, displacedDir);
+      await mkdir(isolatedDir);
+      await writeFile(path.join(isolatedDir, "lock.json"), ownerRaw, "utf8");
+    },
+  }, async () => {
+    await assert.rejects(
+      enqueue(hubRoot, { projectId: "proj", description: "isolated directory ABA" }),
+      (error: unknown) => {
+        const actual = error as {
+          code?: unknown;
+          committed?: unknown;
+          recoveryPaths?: { quarantineDir?: unknown; originalQuarantineDir?: unknown; lockDir?: unknown };
+        };
+        assert.equal(actual.code, "HUB_QUEUE_LOCK_QUARANTINE_CLEANUP_PRESERVED");
+        assert.equal(actual.committed, false);
+        assert.equal(actual.recoveryPaths?.quarantineDir, isolatedDir);
+        assert.equal(actual.recoveryPaths?.originalQuarantineDir, quarantineDir);
+        assert.equal(actual.recoveryPaths?.lockDir, lockDir);
+        return true;
+      },
+    );
+  });
+
+  assert.ok(isolatedDir);
+  assert.ok(displacedDir);
+  assert.equal((await lstat(isolatedDir)).isDirectory(), true);
+  assert.equal((await lstat(displacedDir)).isDirectory(), true);
+  assert.equal(await readFile(path.join(isolatedDir, "lock.json"), "utf8"), ownerRaw);
+  assert.equal(await readFile(path.join(displacedDir, "lock.json"), "utf8"), ownerRaw);
+  await assert.rejects(lstat(lockDir), { code: "ENOENT" });
+  assert.equal((await listQueue(hubRoot)).length, 0);
+});
+
+test("local queue lock cleanup preserves an isolated directory ctime-only mutation", async () => {
+  const hubRoot = await tempRoot("cpb-queue-lock-isolated-directory-ctime");
+  const lockDir = queueLockDir(hubRoot);
+  const current = captureProcessIdentity(process.pid, { strict: true });
+  assert.ok(current);
+  const predecessorBirthId = `${current.birthId}-predecessor`;
+  const predecessor = queueOwnerRecord(lockDir, "isolated-directory-ctime", {
+    ...current,
+    birthId: predecessorBirthId,
+    incarnation: `${current.pid}:${predecessorBirthId}`,
+  });
+  await writeQueueLockOwner(lockDir, predecessor);
+  await ageQueueLock(lockDir);
+  const ownerRaw = await readFile(path.join(lockDir, "lock.json"), "utf8");
+
+  let quarantineDir = "";
+  let isolatedDir = "";
+  await withQueueLockTestHooks({
+    afterQuarantineRename: async (context) => {
+      if (context.kind !== "stale") return;
+      quarantineDir = context.quarantineDir;
+    },
+    beforeIsolatedCleanup: async (context) => {
+      if (!context.isDirectory || context.originalPath !== quarantineDir) return;
+      isolatedDir = context.isolatedPath;
+      await mutateOnlyCtime(isolatedDir);
+    },
+  }, async () => {
+    await assert.rejects(
+      enqueue(hubRoot, { projectId: "proj", description: "isolated directory ctime" }),
+      (error: unknown) => {
+        const actual = error as {
+          code?: unknown;
+          committed?: unknown;
+          recoveryPaths?: { quarantineDir?: unknown; originalQuarantineDir?: unknown; lockDir?: unknown };
+        };
+        assert.equal(actual.code, "HUB_QUEUE_LOCK_QUARANTINE_CLEANUP_PRESERVED");
+        assert.equal(actual.committed, false);
+        assert.equal(actual.recoveryPaths?.quarantineDir, isolatedDir);
+        assert.equal(actual.recoveryPaths?.originalQuarantineDir, quarantineDir);
+        assert.equal(actual.recoveryPaths?.lockDir, lockDir);
+        return true;
+      },
+    );
+  });
+
+  assert.ok(isolatedDir);
+  assert.equal((await lstat(isolatedDir)).isDirectory(), true);
+  assert.equal(await readFile(path.join(isolatedDir, "lock.json"), "utf8"), ownerRaw);
+  await assert.rejects(lstat(lockDir), { code: "ENOENT" });
+  assert.equal((await listQueue(hubRoot)).length, 0);
+});
+
+test("local queue quarantine cleanup rejects a same-inode same-size mutation with stable mtime", async () => {
+  const hubRoot = await tempRoot("cpb-queue-lock-quarantine-ctime");
+  let quarantineDir = "";
+
+  await withQueueLockTestHooks({
+    beforeQuarantineCleanup: async (context) => {
+      if (context.kind !== "released") return;
+      quarantineDir = context.quarantineDir;
+      await mutateOnlyCtime(quarantineDir);
+    },
+  }, async () => {
+    await assert.rejects(
+      enqueue(hubRoot, { projectId: "proj", description: "quarantine cleanup ctime" }),
+      (error: unknown) => {
+        const actual = error as { code?: unknown; recoveryPaths?: { quarantineDir?: unknown } };
+        assert.equal(actual.code, "HUB_QUEUE_LOCK_QUARANTINE_CLEANUP_PRESERVED");
+        assert.equal(actual.recoveryPaths?.quarantineDir, quarantineDir);
+        return true;
+      },
+    );
+  });
+
+  assert.ok(quarantineDir);
+  assert.equal((await lstat(quarantineDir)).isDirectory(), true);
+  assert.match(await readFile(path.join(quarantineDir, "lock.json"), "utf8"), /cpb-hub-queue-lock\/v1/);
+});
+
+test("local queue quarantine cleanup preserves owner evidence mutated after validation", async () => {
+  const hubRoot = await tempRoot("cpb-queue-lock-cleanup-owner-mutation");
+  const lockDir = queueLockDir(hubRoot);
+  const current = captureProcessIdentity(process.pid, { strict: true });
+  assert.ok(current);
+  const predecessorBirthId = `${current.birthId}-predecessor`;
+  const predecessor = queueOwnerRecord(lockDir, "cleanup-owner", {
+    ...current,
+    birthId: predecessorBirthId,
+    incarnation: `${current.pid}:${predecessorBirthId}`,
+  });
+  await writeQueueLockOwner(lockDir, predecessor);
+  await ageQueueLock(lockDir);
+
+  let quarantineDir = "";
+  let mutatedRaw = "";
+  await withQueueLockTestHooks({
+    beforeQuarantineCleanup: async (context) => {
+      if (context.kind !== "stale") return;
+      quarantineDir = context.quarantineDir;
+      mutatedRaw = `${JSON.stringify({
+        ...predecessor,
+        acquiredAt: "1971-01-01T00:00:00.000Z",
+      }, null, 2)}\n`;
+      await writeFile(path.join(quarantineDir, "lock.json"), mutatedRaw, "utf8");
+    },
+  }, async () => {
+    await assert.rejects(
+      enqueue(hubRoot, { projectId: "proj", description: "cleanup owner mutation" }),
+      (error: unknown) => {
+        const actual = error as { code?: unknown; committed?: unknown; recoveryPaths?: { quarantineDir?: unknown; lockDir?: unknown } };
+        assert.equal(actual.code, "HUB_QUEUE_LOCK_QUARANTINE_CLEANUP_PRESERVED");
+        assert.equal(actual.committed, false);
+        assert.equal(actual.recoveryPaths?.quarantineDir, quarantineDir);
+        assert.equal(actual.recoveryPaths?.lockDir, lockDir);
+        return true;
+      },
+    );
+  });
+
+  assert.ok(quarantineDir);
+  assert.equal((await lstat(quarantineDir)).isDirectory(), true);
+  assert.equal(await readFile(path.join(quarantineDir, "lock.json"), "utf8"), mutatedRaw);
+  await assert.rejects(lstat(lockDir), { code: "ENOENT" });
+  assert.equal((await listQueue(hubRoot)).length, 0);
+});
+
+test("local queue lock test hooks are scoped to the async caller", async () => {
+  const failingHubRoot = await tempRoot("cpb-queue-hooks-failing");
+  const passingHubRoot = await tempRoot("cpb-queue-hooks-passing");
+  let failingTemp = "";
+
+  const failing = withQueueLockTestHooks({
+    beforeQueueRename: async ({ tmp }) => {
+      await rename(tmp, `${tmp}.saved`);
+      await writeFile(tmp, "scoped successor\n", "utf8");
+      failingTemp = tmp;
+    },
+  }, async () => assert.rejects(
+    enqueue(failingHubRoot, { projectId: "proj", description: "scoped failing hook" }),
+    { code: "HUB_QUEUE_WRITE_CLEANUP_PRESERVED" },
+  ));
+
+  const passing = enqueue(passingHubRoot, { projectId: "proj", description: "no hook leakage" });
+  await Promise.all([failing, passing]);
+
+  assert.equal(await readFile(failingTemp, "utf8"), "scoped successor\n");
+  assert.equal((await listQueue(passingHubRoot))[0].description, "no hook leakage");
+});
+
+test("local queue lock preserves an empty successor created during quarantine", async () => {
+  const hubRoot = await tempRoot("cpb-queue-lock-empty-successor");
+  const lockDir = queueLockDir(hubRoot);
+  const current = captureProcessIdentity(process.pid, { strict: true });
+  assert.ok(current);
+  const predecessorBirthId = `${current.birthId}-predecessor`;
+  await writeQueueLockOwner(lockDir, queueOwnerRecord(lockDir, "predecessor", {
+    ...current,
+    birthId: predecessorBirthId,
+    incarnation: `${current.pid}:${predecessorBirthId}`,
+  }));
+  await ageQueueLock(lockDir);
+
+  await withQueueLockTestHooks({
+    afterQuarantineRename: async ({ lockDir: originalLockDir }) => {
+      await mkdir(originalLockDir);
+    },
+  }, async () => {
+    await assert.rejects(
+      enqueue(hubRoot, { projectId: "proj", description: "after empty successor" }),
+      { code: "HUB_QUEUE_LOCK_SUCCESSOR_PRESERVED" },
+    );
+  });
+
+  await assert.rejects(readFile(path.join(lockDir, "lock.json"), "utf8"), { code: "ENOENT" });
+  const siblings = await readdir(path.dirname(lockDir));
+  assert.equal(siblings.some((entry) => entry.startsWith(`${path.basename(lockDir)}.stale-`)), true);
+});
+
+test("local queue lock preserves a same-token successor created during quarantine", async () => {
+  const hubRoot = await tempRoot("cpb-queue-lock-same-token-successor");
+  const lockDir = queueLockDir(hubRoot);
+  const current = captureProcessIdentity(process.pid, { strict: true });
+  assert.ok(current);
+  const predecessorBirthId = `${current.birthId}-predecessor`;
+  await writeQueueLockOwner(lockDir, queueOwnerRecord(lockDir, "same-token-owner", {
+    ...current,
+    birthId: predecessorBirthId,
+    incarnation: `${current.pid}:${predecessorBirthId}`,
+  }));
+  await ageQueueLock(lockDir);
+  let quarantineDir = "";
+
+  await withQueueLockTestHooks({
+    afterQuarantineRename: async (context) => {
+      quarantineDir = context.quarantineDir;
+      await writeQueueLockOwner(context.lockDir, queueOwnerRecord(context.lockDir, "same-token-owner", current));
+    },
+  }, async () => {
+    await assert.rejects(
+      enqueue(hubRoot, { projectId: "proj", description: "after same-token successor" }),
+      (error: unknown) => {
+        const actual = error as { code?: unknown; committed?: unknown; recoveryPaths?: { quarantineDir?: unknown; lockDir?: unknown } };
+        assert.equal(actual.code, "HUB_QUEUE_LOCK_SUCCESSOR_PRESERVED");
+        assert.equal(actual.committed, false);
+        assert.equal(actual.recoveryPaths?.quarantineDir, quarantineDir);
+        assert.equal(actual.recoveryPaths?.lockDir, lockDir);
+        return true;
+      },
+    );
+  });
+
+  const successor = JSON.parse(await readFile(path.join(lockDir, "lock.json"), "utf8"));
+  assert.equal(successor.ownerToken, "same-token-owner");
+  assert.equal(successor.processIdentity.incarnation, current.incarnation);
+  assert.equal(JSON.parse(await readFile(path.join(quarantineDir, "lock.json"), "utf8")).processIdentity.birthId, predecessorBirthId);
+});
+
+test("local queue lock preserves quarantine when ownership changes during recovery", async () => {
+  const hubRoot = await tempRoot("cpb-queue-lock-restore-fsync");
+  const lockDir = queueLockDir(hubRoot);
+  const current = captureProcessIdentity(process.pid, { strict: true });
+  assert.ok(current);
+  const predecessorBirthId = `${current.birthId}-predecessor`;
+  const predecessor = queueOwnerRecord(lockDir, "predecessor", {
+    ...current,
+    birthId: predecessorBirthId,
+    incarnation: `${current.pid}:${predecessorBirthId}`,
+  });
+  await writeQueueLockOwner(lockDir, predecessor);
+  await ageQueueLock(lockDir);
+
+  let quarantineDir = "";
+  await withQueueLockTestHooks({
+    afterQuarantineRename: async (context) => {
+      quarantineDir = context.quarantineDir;
+      await writeFile(path.join(context.quarantineDir, "lock.json"), `${JSON.stringify({
+        ...predecessor,
+        ownerToken: "changed-during-quarantine",
+      }, null, 2)}\n`, "utf8");
+    },
+  }, async () => {
+    await assert.rejects(
+      enqueue(hubRoot, { projectId: "proj", description: "after ambiguous restore" }),
+      (err) => {
+        const actual = err as { code?: unknown; committed?: unknown; recoveryPaths?: { lockDir?: unknown; quarantineDir?: unknown } };
+        assert.equal(actual.code, "HUB_QUEUE_LOCK_RESTORE_FAILED");
+        assert.equal(actual.committed, false);
+        assert.equal(actual.recoveryPaths?.lockDir, lockDir);
+        assert.equal(actual.recoveryPaths?.quarantineDir, quarantineDir);
+        return true;
+      },
+    );
+  });
+
+  assert.ok(quarantineDir);
+  await assert.rejects(readFile(path.join(lockDir, "lock.json"), "utf8"), { code: "ENOENT" });
+  assert.deepEqual(JSON.parse(await readFile(path.join(quarantineDir, "lock.json"), "utf8")), {
+    ...predecessor,
+    ownerToken: "changed-during-quarantine",
+  });
+  const siblings = await readdir(path.dirname(lockDir));
+  assert.equal(siblings.includes(path.basename(quarantineDir)), true);
+  assert.equal((await listQueue(hubRoot)).length, 0);
+});
+
+test("local queue lock preserves quarantine when owner evidence mutates without identity change", async () => {
+  const hubRoot = await tempRoot("cpb-queue-lock-owner-raw-mutation");
+  const lockDir = queueLockDir(hubRoot);
+  const current = captureProcessIdentity(process.pid, { strict: true });
+  assert.ok(current);
+  const predecessorBirthId = `${current.birthId}-predecessor`;
+  const predecessor = queueOwnerRecord(lockDir, "same-owner-token", {
+    ...current,
+    birthId: predecessorBirthId,
+    incarnation: `${current.pid}:${predecessorBirthId}`,
+  });
+  await writeQueueLockOwner(lockDir, predecessor);
+  await ageQueueLock(lockDir);
+
+  let quarantineDir = "";
+  await withQueueLockTestHooks({
+    afterQuarantineRename: async (context) => {
+      quarantineDir = context.quarantineDir;
+      await writeFile(path.join(context.quarantineDir, "lock.json"), `${JSON.stringify({
+        ...predecessor,
+        acquiredAt: "1971-01-01T00:00:00.000Z",
+      }, null, 2)}\n`, "utf8");
+    },
+  }, async () => {
+    await assert.rejects(
+      enqueue(hubRoot, { projectId: "proj", description: "after owner evidence mutation" }),
+      (err) => {
+        const actual = err as { code?: unknown; committed?: unknown; recoveryPaths?: { lockDir?: unknown; quarantineDir?: unknown } };
+        assert.equal(actual.code, "HUB_QUEUE_LOCK_RESTORE_FAILED");
+        assert.equal(actual.committed, false);
+        assert.equal(actual.recoveryPaths?.lockDir, lockDir);
+        assert.equal(actual.recoveryPaths?.quarantineDir, quarantineDir);
+        return true;
+      },
+    );
+  });
+
+  assert.ok(quarantineDir);
+  await assert.rejects(readFile(path.join(lockDir, "lock.json"), "utf8"), { code: "ENOENT" });
+  const preserved = JSON.parse(await readFile(path.join(quarantineDir, "lock.json"), "utf8"));
+  assert.equal(preserved.ownerToken, predecessor.ownerToken);
+  assert.equal(preserved.processIdentity.incarnation, predecessor.processIdentity.incarnation);
+  assert.equal(preserved.acquiredAt, "1971-01-01T00:00:00.000Z");
+  assert.equal((await listQueue(hubRoot)).length, 0);
+});
+
+test("local queue lock does not force through a timed-out live owner", async () => {
+  const hubRoot = await tempRoot("cpb-queue-lock-live-owner");
+  const lockDir = queueLockDir(hubRoot);
+  await writeQueueLockOwner(lockDir, queueOwnerRecord(lockDir, "live-owner"));
+  await ageQueueLock(lockDir);
+
+  await assert.rejects(
+    enqueue(hubRoot, { projectId: "proj", description: "blocked by live owner" }),
+    /queue lock busy/,
+  );
+
+  const owner = JSON.parse(await readFile(path.join(lockDir, "lock.json"), "utf8"));
+  assert.equal(owner.ownerToken, "live-owner");
+});
+
+test("local queue lock fails closed on persisted coarse owner identity", async () => {
+  const hubRoot = await tempRoot("cpb-queue-lock-coarse-owner");
+  const lockDir = queueLockDir(hubRoot);
+  const owner = queueOwnerRecord(lockDir, "coarse-owner");
+  await writeQueueLockOwner(lockDir, {
+    ...owner,
+    processIdentity: {
+      ...owner.processIdentity,
+      birthIdPrecision: "coarse",
+    },
+  });
+  await ageQueueLock(lockDir);
+
+  await assert.rejects(
+    enqueue(hubRoot, { projectId: "proj", description: "coarse owner" }),
+    { code: "HUB_QUEUE_LOCK_UNSAFE" },
+  );
+});
+
+test("local queue lock fails closed on unsafe symlink and malformed owner", async () => {
+  const symlinkHubRoot = await tempRoot("cpb-queue-lock-symlink");
+  const external = await tempRoot("cpb-queue-lock-target");
+  const sentinel = path.join(external, "sentinel.txt");
+  await writeFile(sentinel, "preserve\n", "utf8");
+  await mkdir(path.dirname(queueLockDir(symlinkHubRoot)), { recursive: true });
+  await symlink(external, queueLockDir(symlinkHubRoot));
+
+  await assert.rejects(
+    enqueue(symlinkHubRoot, { projectId: "proj", description: "unsafe symlink" }),
+    { code: "HUB_QUEUE_LOCK_UNSAFE" },
+  );
+  assert.equal(await readFile(sentinel, "utf8"), "preserve\n");
+
+  const malformedHubRoot = await tempRoot("cpb-queue-lock-malformed");
+  const malformedLockDir = queueLockDir(malformedHubRoot);
+  await mkdir(malformedLockDir, { recursive: true });
+  await writeFile(path.join(malformedLockDir, "lock.json"), "{not json\n", "utf8");
+  await ageQueueLock(malformedLockDir);
+
+  await assert.rejects(
+    enqueue(malformedHubRoot, { projectId: "proj", description: "malformed lock" }),
+    { code: "HUB_QUEUE_LOCK_UNSAFE" },
+  );
+  assert.equal(await readFile(path.join(malformedLockDir, "lock.json"), "utf8"), "{not json\n");
 });
 
 test("claimEligible reports provider slot exhaustion without mutating pending queue", async () => {
@@ -423,6 +1177,141 @@ test("HubOrchestrator.start releases leadership when initialization fails", asyn
   await assert.rejects(orchestrator.start(), /assignment init failed/);
   assert.equal(released, 1);
   assert.equal(orchestrator.running, false);
+});
+
+test("HubOrchestrator publishes readiness only after every initialization stage", async () => {
+  const hubRoot = await tempRoot("cpb-orch-ready-order");
+  const cpbRoot = await tempRoot("cpb-orch-ready-order-root");
+  const orchestrator = new HubOrchestrator(hubRoot, cpbRoot, { executorRoot: process.cwd() });
+  const order = [];
+  orchestrator.leaderLock = {
+    acquire: async () => { order.push("lease"); return { epoch: 1, ready: false }; },
+    startRenewal: () => { order.push("renewal"); },
+    markReady: async () => { order.push("ready"); return true; },
+    release: async () => true,
+  } as any;
+  orchestrator.assignmentStore = { init: async () => { order.push("assignments"); } } as any;
+  orchestrator.workerStore = { init: async () => { order.push("workers"); } } as any;
+  orchestrator._startSupervisor = async () => { order.push("supervisor"); return null; };
+  orchestrator.reconciler = { recoverRuntime: async () => { order.push("recovery"); } } as any;
+  orchestrator.reconcileQueueVsAssignments = async () => { order.push("reconciliation"); };
+  orchestrator._scheduleTick = () => { order.push("tick"); };
+  orchestrator._scheduleJanitor = () => { order.push("janitor"); };
+
+  await orchestrator.start();
+  await orchestrator.stop();
+
+  assert.deepEqual(order, [
+    "lease",
+    "renewal",
+    "assignments",
+    "workers",
+    "supervisor",
+    "recovery",
+    "reconciliation",
+    "ready",
+    "tick",
+    "janitor",
+  ]);
+});
+
+test("HubOrchestrator supervisor initialization failure prevents readiness and releases leadership", async () => {
+  const hubRoot = await tempRoot("cpb-orch-supervisor-failure");
+  const cpbRoot = await tempRoot("cpb-orch-supervisor-failure-root");
+  const orchestrator = new HubOrchestrator(hubRoot, cpbRoot, { executorRoot: process.cwd() });
+  let readyCalls = 0;
+  let releaseCalls = 0;
+  orchestrator.leaderLock = {
+    acquire: async () => ({ epoch: 1, ready: false }),
+    startRenewal: () => {},
+    markReady: async () => { readyCalls += 1; return true; },
+    release: async () => { releaseCalls += 1; return true; },
+  } as any;
+  orchestrator.assignmentStore = { init: async () => {} } as any;
+  orchestrator.workerStore = { init: async () => {} } as any;
+  orchestrator._startSupervisor = async () => {
+    throw new Error("resident supervisor failed");
+  };
+
+  await assert.rejects(orchestrator.start(), /resident supervisor failed/);
+  assert.equal(readyCalls, 0);
+  assert.equal(releaseCalls, 1);
+  assert.equal(orchestrator.running, false);
+});
+
+test("startup reconciliation preserves a successor worker incarnation", async () => {
+  const hubRoot = await tempRoot("cpb-orch-worker-successor");
+  const cpbRoot = await tempRoot("cpb-orch-worker-successor-root");
+  const entry = await enqueue(hubRoot, { projectId: "proj", description: "successor race" });
+  await updateEntry(hubRoot, entry.id, { status: "in_progress" });
+  const assignment = {
+    assignmentId: `a-${entry.id}`,
+    workerId: "worker-successor",
+    status: "running",
+    activeAttempt: 1,
+  };
+  const original = workerIdentity(46001, "original");
+  const successor = workerIdentity(46002, "successor");
+  let workerReads = 0;
+  let syntheticFailures = 0;
+  let workerUpdates = 0;
+  const orchestrator = new HubOrchestrator(hubRoot, cpbRoot, { executorRoot: process.cwd() });
+  orchestrator.assignmentStore = {
+    getAssignment: async () => assignment,
+    writeSyntheticFailure: async () => { syntheticFailures += 1; },
+  } as any;
+  orchestrator.workerStore = {
+    getWorker: async () => {
+      workerReads += 1;
+      return workerReads === 1
+        ? { workerId: assignment.workerId, pid: original.pid, processIdentity: original, incarnationToken: "old", host: "local" }
+        : { workerId: assignment.workerId, pid: successor.pid, processIdentity: successor, incarnationToken: "new", host: "local" };
+    },
+    updateWorkerIf: async () => { workerUpdates += 1; },
+  } as any;
+  orchestrator._isProcessIdentityAlive = () => false;
+
+  await orchestrator.reconcileQueueVsAssignments();
+
+  assert.equal(syntheticFailures, 0);
+  assert.equal(workerUpdates, 0);
+  assert.equal((await listQueue(hubRoot)).find((candidate) => candidate.id === entry.id).status, "in_progress");
+});
+
+test("startup reconciliation fails closed on an unverified worker liveness probe", async () => {
+  const hubRoot = await tempRoot("cpb-orch-worker-eperm");
+  const cpbRoot = await tempRoot("cpb-orch-worker-eperm-root");
+  const entry = await enqueue(hubRoot, { projectId: "proj", description: "eperm probe" });
+  await updateEntry(hubRoot, entry.id, { status: "in_progress" });
+  const processIdentity = workerIdentity(47001, "eperm");
+  const assignment = {
+    assignmentId: `a-${entry.id}`,
+    workerId: "worker-eperm",
+    status: "running",
+    activeAttempt: 1,
+  };
+  let syntheticFailures = 0;
+  const orchestrator = new HubOrchestrator(hubRoot, cpbRoot, { executorRoot: process.cwd() });
+  orchestrator.assignmentStore = {
+    getAssignment: async () => assignment,
+    writeSyntheticFailure: async () => { syntheticFailures += 1; },
+  } as any;
+  orchestrator.workerStore = {
+    getWorker: async () => ({
+      workerId: assignment.workerId,
+      pid: processIdentity.pid,
+      processIdentity,
+      incarnationToken: "eperm-token",
+      host: "local",
+    }),
+  } as any;
+  orchestrator._isProcessIdentityAlive = () => {
+    throw Object.assign(new Error("permission denied"), { code: "EPERM" });
+  };
+
+  await assert.rejects(orchestrator.reconcileQueueVsAssignments(), { code: "EPERM" });
+  assert.equal(syntheticFailures, 0);
+  assert.equal((await listQueue(hubRoot)).find((candidate) => candidate.id === entry.id).status, "in_progress");
 });
 
 test("HubOrchestrator scheduler applies provider capacity per provider", async () => {

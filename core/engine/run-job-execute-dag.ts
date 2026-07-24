@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { runPhase } from "./run-phase.js";
 import type { PhaseResult } from "../../shared/types.js";
 import { isPhasePassed, phaseFailed } from "../contracts/phase-result.js";
@@ -19,6 +20,10 @@ import { resolveAgentPhaseTimeoutMs } from "../policy/phase-budget.js";
 import { resolveHighAssurancePolicy } from "../policy/high-assurance.js";
 import { buildConversationKey } from "../agents/conversation-key.js";
 import { classifyRoutingTaskCategory, providerFamilyFor } from "../agents/outcome-routing.js";
+import {
+  isArtifactCommitOutcome,
+  prepareArtifactWrite,
+} from "../artifacts/artifact-store.js";
 import {
   completionGateFailureFingerprint,
   completionGateFeedbackFromFailure,
@@ -44,16 +49,13 @@ import {
 } from "./run-job-planning.js";
 
 import { recordValue, type LooseRecord } from "../contracts/types.js";
+import type { RunJobPorts, RunJobState } from "./run-job-ports.js";
 import {
   reportProgress,
   ts,
-  type CompleteJob,
-  type CompletePhase,
-  type FailJob,
   type JobRunResult,
-  type ProgressReporter,
-  type ProviderPool,
 } from "./run-job-shared.js";
+import type { ProviderPool } from "./provider-handoff.js";
 
 type HandoffState = {
   count: number;
@@ -70,35 +72,49 @@ type ProviderAttempt = {
   at: string;
 };
 
-type ExecuteWorkflowDagContext = LooseRecord & {
-  cpbRoot: string;
-  hubRoot?: string;
-  project: string;
-  task: string;
-  workflow?: string;
-  planMode?: string;
-  sourcePath?: string;
-  sourceContext?: LooseRecord;
-  dataRoot?: string;
-  timeoutMin?: number;
-  startPhase?: (cpbRoot: string, project: string, jobId: string, payload: LooseRecord) => Promise<unknown> | unknown;
-  completePhase: CompletePhase;
-  completeJob: CompleteJob;
-  failJob: FailJob;
-  appendEvent: (cpbRoot: string, project: string, jobId: string, event: LooseRecord) => Promise<unknown> | unknown;
-  getPool: () => ProviderPool | null | undefined;
-  onProgress?: ProgressReporter | null;
-  providerServices?: unknown;
-  agent?: string | null;
-  agents?: ProviderAgents;
-  dynamicAgentPlan?: unknown;
-  routing?: LooseRecord | null;
-  agentAvailability?: LooseRecord | null;
-  agentHealth?: LooseRecord | null;
-  teamPolicy?: LooseRecord | null;
-  getArtifactIndex?: unknown;
-  _currentPhase?: string | null;
-};
+type ExecuteWorkflowDagContext =
+  Pick<RunJobState,
+    | "cpbRoot"
+    | "hubRoot"
+    | "project"
+    | "task"
+    | "workflow"
+    | "planMode"
+    | "sourcePath"
+    | "sourceContext"
+    | "dataRoot"
+    | "timeoutMin"
+    | "env"
+    | "agent"
+    | "agents"
+    | "dynamicAgentPlan"
+    | "routing"
+    | "agentAvailability"
+    | "agentHealth"
+    | "teamPolicy"
+    | "scope"
+    | "signal"
+    | "_currentPhase"
+  >
+  & Pick<RunJobPorts,
+    | "startPhase"
+    | "completePhase"
+    | "completeJob"
+    | "failJob"
+    | "appendEvent"
+    | "getPool"
+    | "onProgress"
+    | "providerServices"
+    | "getArtifactIndex"
+    | "processHooks"
+  >
+  & {
+    writeArtifact?: (
+      cpbRoot: string,
+      input: Parameters<typeof prepareArtifactWrite>[1],
+    ) => Promise<LooseRecord>;
+    readArtifactFile?: (path: string, encoding: BufferEncoding) => Promise<string>;
+  };
 
 type ExecuteWorkflowDagInput = {
   job: LooseRecord;
@@ -127,6 +143,7 @@ type DagRunSession = {
   riskMap: unknown;
   phaseSourceContext: LooseRecord;
   dynamicAgentPlan: unknown;
+  workflowDag: WorkflowDag;
   workflow: string;
   planMode: string;
   sourcePath: string | undefined;
@@ -161,13 +178,50 @@ function stringValue(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
+function exceptionCauseEvidence(value: unknown, depth = 0): unknown {
+  if (!(value instanceof Error)) return value ?? null;
+  const code = "code" in value ? (value as Error & { code?: unknown }).code : null;
+  return {
+    name: value.name,
+    message: value.message,
+    code,
+    ...(depth < 2 && "cause" in value
+      ? { cause: exceptionCauseEvidence((value as Error & { cause?: unknown }).cause, depth + 1) }
+      : {}),
+  };
+}
+
+function parallelAbortError(signal?: AbortSignal, message = "parallel DAG wave aborted") {
+  const reason = signal?.reason;
+  if (reason instanceof Error && reason.name === "AbortError") return reason;
+  const error = new Error(reason instanceof Error ? reason.message : reason ? String(reason) : message);
+  error.name = "AbortError";
+  const reasonCode = reason instanceof Error && "code" in reason
+    ? (reason as Error & { code?: unknown }).code
+    : undefined;
+  Object.assign(error, {
+    code: typeof reasonCode === "string" && reasonCode ? reasonCode : "ABORT_ERR",
+    ...(reason !== undefined ? { cause: reason, reason } : {}),
+  });
+  return error;
+}
+
+function isAbortLikeException(value: unknown) {
+  const error = recordValue(value);
+  return stringValue(error.name) === "AbortError"
+    || stringValue(error.code) === "ABORT_ERR";
+}
+
 function requiresIndependentVerification(session: DagRunSession, phase: string, role: string): boolean {
   if (role !== "verifier" && role !== "adversarial_verifier" && phase !== "verify" && phase !== "adversarial_verify") {
     return false;
   }
   const risk = recordValue(session.riskMap);
   const plan = recordValue(session.dynamicAgentPlan);
-  const assurancePolicy = resolveHighAssurancePolicy({ sourceContext: session.phaseSourceContext });
+  const assurancePolicy = resolveHighAssurancePolicy({
+    sourceContext: session.phaseSourceContext,
+    env: session.ctx.env,
+  });
   return risk.riskLevel === "high"
     || risk.riskLevel === "critical"
     || risk.adversarialRequired === true
@@ -266,6 +320,7 @@ async function preflightAndRunPhase(
   },
 ): Promise<PhaseResult> {
   const { ctx, hubRoot, pool, providerServices, cpbRoot, project, jobId, task, job, workflow, planMode, dataRoot, sourcePath, phaseSourceContext, state, phaseResults, attemptId, phaseTimeouts } = session;
+  const runtimeEnv = ctx.env ?? process.env;
   let result: PhaseResult | null = await runProviderPreflight({
     hubRoot, pool, providerServices, cpbRoot, project, jobId, phase: n.phase, role: n.role,
     phaseAgents: n.phaseAgents, agent: ctx.agent, dynamicAgent: n.dynamicAgent ? { required: Boolean(recordValue(n.dynamicAgent).required) } : null,
@@ -288,17 +343,22 @@ async function preflightAndRunPhase(
     planMode,
     cpbRoot,
     dataRoot,
-    sourcePath: sourcePath || process.env.CPB_PROJECT_PATH_OVERRIDE,
+    sourcePath: sourcePath || runtimeEnv.CPB_PROJECT_PATH_OVERRIDE,
     sourceContext: phaseSourceContext,
     pool,
+    scope: ctx.scope,
+    signal: ctx.signal,
+    processHooks: ctx.processHooks,
+    env: ctx.env,
     state,
     previousResults: phaseResults,
     agent: ctx.agent,
     agents: n.phaseAgents,
     attemptId,
-    conversationKey: buildConversationKey({ project, jobId, attemptId, role: n.role }),
+    conversationKey: buildConversationKey({ project, jobId, attemptId, role: `${n.role}::${n.nodeId}` }),
     timeouts: phaseTimeouts,
     onProgress: ctx.onProgress || null,
+    writeArtifact: ctx.writeArtifact,
   });
 
   return result;
@@ -332,7 +392,13 @@ async function applyQuotaFallback(
   }, {
     hubRoot, pool, phase: n.phase, role: n.role, nodeId: n.nodeId, dagNode: n.dagNode, project, task, jobId, job,
     workflow, planMode, cpbRoot, dataRoot, sourcePath, phaseSourceContext,
-    state, phaseResults, attemptId, phaseTimeout,
+    state, phaseResults, attemptId,
+    scope: ctx.scope,
+    signal: ctx.signal,
+    processHooks: ctx.processHooks,
+    env: ctx.env,
+    conversationKey: buildConversationKey({ project, jobId, attemptId, role: `${n.role}::${n.nodeId}` }),
+    phaseTimeout,
     handoffState: n.handoffState, providerAttempts: n.providerAttempts, phaseAgents: n.phaseAgents, result: n.result,
     excludeProviderFamily: n.excludeProviderFamily, allowedAgents: n.allowedAgents,
   }, {
@@ -364,6 +430,9 @@ async function applyPhaseRetryLoops(
     result: PhaseResult;
   },
 ): Promise<PhaseResult> {
+  if (n.result.failure?.kind === FailureKind.RUNTIME_INTERRUPTED) {
+    return n.result;
+  }
   const { ctx, project, task, jobId, job, workflow, planMode, cpbRoot, dataRoot, sourcePath, phaseSourceContext, state, phaseResults, attemptId, phaseTimeout } = session;
   return runPhaseRetryLoops({
     agent: ctx.agent,
@@ -373,7 +442,11 @@ async function applyPhaseRetryLoops(
     phase: n.phase, role: n.role, nodeId: n.nodeId, dagNode: n.dagNode, project, task, jobId, job,
     workflow, planMode, cpbRoot, dataRoot, sourcePath, phaseSourceContext,
     state, phaseResults, attemptId,
-    conversationKey: buildConversationKey({ project, jobId, attemptId, role: n.role }),
+    scope: ctx.scope,
+    signal: ctx.signal,
+    processHooks: ctx.processHooks,
+    env: ctx.env,
+    conversationKey: buildConversationKey({ project, jobId, attemptId, role: `${n.role}::${n.nodeId}` }),
     phaseTimeout, phaseAgents: n.phaseAgents, result: n.result, pool: n.pool,
   }, {
     runPhase: runPhase,
@@ -392,6 +465,36 @@ async function runDagNode(
   const fallbackRole = phaseRoleMap[phase] || phase;
   const nodeId = dagNode.id || phase;
   const role = stringValue(dagNode.role) || fallbackRole;
+
+  if (ctx.signal?.aborted === true) {
+    const result = phaseFailed({
+      phase,
+      failure: failure({
+        kind: FailureKind.RUNTIME_INTERRUPTED,
+        phase,
+        reason: "execution signal aborted",
+        retryable: false,
+        cause: { reason: "abort_signal", role, nodeId },
+      }),
+    });
+    const terminal = await handleDagNodeFailure({
+      cpbRoot: session.cpbRoot,
+      project: session.project,
+      jobId,
+      nodeId,
+      phase,
+      role,
+      attemptId,
+      dagNode,
+      phaseResult: result,
+      phaseResults: session.phaseResults,
+      appendEvent: ctx.appendEvent,
+      failJob: ctx.failJob,
+      onProgress: ctx.onProgress || null,
+      now: ts,
+    });
+    return { terminal, result, deferredVerificationFailure: false, phase, role, nodeId, dagNode };
+  }
 
   if (!options.ignoreResume && await tryResumeCompletedNode(session, dagNode, { phase, nodeId, role })) {
     return { terminal: null, result: null, deferredVerificationFailure: false, phase, role, nodeId, dagNode };
@@ -421,6 +524,7 @@ async function runDagNode(
     outcomeMetrics,
     taskCategory,
     excludedProviderFamily: excludeProviderFamily,
+    env: ctx.env,
     phase,
     role,
   });
@@ -532,7 +636,7 @@ async function runDagNode(
     agent: ctx.agent || null, providerServices, hubRoot, pool, job, phaseSourceContext,
     handoffState, providerAttempts,
     appendEvent: ctx.appendEvent, onProgress: ctx.onProgress || null, completePhase,
-    now: ts, legacyAgentForPhase, phaseRoutingDecision,
+    now: ts, legacyAgentForPhase, phaseRoutingDecision, readArtifactFile: ctx.readArtifactFile,
   });
 
   if (!isPhasePassed(result)) {
@@ -609,7 +713,7 @@ async function runVerificationRepairLoop(
     return finishDeferredVerificationFailure(session, initialFailure);
   }
 
-  const maxRepairs = solverRepairLimit();
+  const maxRepairs = solverRepairLimit(session.ctx.env ?? process.env);
   const originalSourceContext = session.phaseSourceContext;
   let verificationOutcome = initialFailure;
   let previousFailureFingerprint = verificationFailureFingerprint(initialFailure.result);
@@ -776,7 +880,7 @@ async function runVerificationInfrastructureRetryLoop(
 ): Promise<JobRunResult | null> {
   if (!initialFailure.result) return finishDeferredVerificationFailure(session, initialFailure);
 
-  const maxRetries = verificationInfrastructureRetryLimit();
+  const maxRetries = verificationInfrastructureRetryLimit(session.ctx.env ?? process.env);
   const originalSourceContext = session.phaseSourceContext;
   const frozenCandidateId = candidateIdFromLatestExecute(session.phaseResults);
   let verificationOutcome = initialFailure;
@@ -804,14 +908,21 @@ async function runVerificationInfrastructureRetryLoop(
       ts: ts(),
     });
 
-    const retryOutcome = await runDagNode(session, verificationOutcome.dagNode, {
-      deferVerificationFailure: true,
-      ignoreResume: true,
-    });
-    if (retryOutcome.terminal) {
-      session.phaseSourceContext = originalSourceContext;
-      return retryOutcome.terminal;
+    const retryNodes = verificationInfrastructureRetrySuffix(verificationNodes, verificationOutcome);
+    let retryOutcome: DagNodeRunOutcome | null = null;
+    for (const retryNode of retryNodes) {
+      const outcome = await runDagNode(session, retryNode, {
+        deferVerificationFailure: true,
+        ignoreResume: true,
+      });
+      retryOutcome = outcome;
+      if (outcome.terminal) {
+        session.phaseSourceContext = originalSourceContext;
+        return outcome.terminal;
+      }
+      if (outcome.deferredVerificationFailure) break;
     }
+    if (!retryOutcome) retryOutcome = verificationOutcome;
 
     const currentCandidateId = candidateIdFromLatestExecute(session.phaseResults);
     if (currentCandidateId !== frozenCandidateId) {
@@ -910,6 +1021,17 @@ async function runVerificationInfrastructureRetryLoop(
   return finishDeferredVerificationFailure(session, verificationOutcome);
 }
 
+export function verificationInfrastructureRetrySuffix(
+  verificationNodes: WorkflowDagNode[],
+  verificationOutcome: DagNodeRunOutcome,
+): WorkflowDagNode[] {
+  const infrastructure = recordValue(recordValue(verificationOutcome.result?.failure?.cause).verificationInfrastructure);
+  const retryPhase = typeof infrastructure.retryPhase === "string" ? infrastructure.retryPhase : "";
+  const startIndex = verificationNodes.findIndex((node) => node.phase === retryPhase);
+  if (startIndex < 0) return [verificationOutcome.dagNode];
+  return verificationNodes.slice(startIndex);
+}
+
 function candidateIdFromLatestExecute(phaseResults: PhaseResult[]) {
   for (let index = phaseResults.length - 1; index >= 0; index -= 1) {
     const result = phaseResults[index];
@@ -926,11 +1048,449 @@ function completionRetryPhase(result: JobRunResult) {
   return typeof cause.routingRetryPhase === "string" ? cause.routingRetryPhase : null;
 }
 
+export type BufferedDagEffect = {
+  kind: "artifact_write" | "start_phase" | "complete_phase" | "append_event" | "fail_job" | "complete_job" | "progress";
+  eventType: string | null;
+  replay: () => Promise<unknown>;
+  discard?: () => Promise<unknown>;
+  publicationState?: "buffered" | "published";
+  reservationState?: "reserved" | "settled" | "none";
+  cleanupPending?: boolean;
+  commitWarnings?: unknown[];
+};
+
+type IsolatedDagNodeRun = {
+  session: DagRunSession;
+  effects: BufferedDagEffect[];
+  seal: () => void;
+};
+
+const PARALLEL_START_EVENT_TYPES = new Set([
+  "phase_started",
+  "dag_node_started",
+  "agent_routing_decision",
+]);
+
+function isParallelNodeCandidate(
+  node: WorkflowDagNode,
+  resumeCompletedNodes: Set<string>,
+): boolean {
+  // Review is the only canonical phase whose source contract is read-only and
+  // whose solver state is not consumed as a singular mutable artifact.
+  // Mutating and repair-owning phases remain exclusive by construction.
+  if (node.phase !== "review") return false;
+  if (resumeCompletedNodes.has(node.id)) return false;
+  if (node.custom === true || node.sideEffecting === true) return false;
+  if (node.parallelSafe === false) return false;
+  return true;
+}
+
+function parallelConflictKeys(node: WorkflowDagNode): string[] {
+  const keys = Array.isArray(node.conflictKeys)
+    ? node.conflictKeys.map(String).filter(Boolean)
+    : [];
+  if (typeof node.conflictKey === "string" && node.conflictKey) keys.unshift(node.conflictKey);
+  return [...new Set(keys)];
+}
+
+function executionIndexById(executionNodes: WorkflowDagNode[]) {
+  const indexById = new Map<string, number>();
+  for (let index = 0; index < executionNodes.length; index += 1) {
+    indexById.set(executionNodes[index].id, index);
+  }
+  return indexById;
+}
+
+function stableReadyNodes(
+  executionNodes: WorkflowDagNode[],
+  completedNodeIds: Set<string>,
+  executedNodeIds: Set<string>,
+): WorkflowDagNode[] {
+  const ready: WorkflowDagNode[] = [];
+  for (const node of executionNodes) {
+    if (executedNodeIds.has(node.id)) continue;
+    const deps = Array.isArray(node.dependsOn) ? node.dependsOn : [];
+    if (deps.every((dep) => completedNodeIds.has(dep))) {
+      ready.push(node);
+    }
+  }
+  return ready;
+}
+
+function pickExecutionBatch(
+  ready: WorkflowDagNode[],
+  maxConcurrentNodes: number,
+  resumeCompletedNodes: Set<string>,
+): WorkflowDagNode[] {
+  if (ready.length === 0) return [];
+  const capacity = Number.isFinite(maxConcurrentNodes) ? Math.max(1, Math.floor(maxConcurrentNodes)) : 1;
+  if (capacity <= 1) return [ready[0]];
+  const [first] = ready;
+  if (!first || !isParallelNodeCandidate(first, resumeCompletedNodes)) {
+    return [first];
+  }
+  const batch: WorkflowDagNode[] = [];
+  const heldConflicts = new Set<string>();
+  for (const node of ready) {
+    if (batch.length >= capacity) break;
+    if (!isParallelNodeCandidate(node, resumeCompletedNodes)) break;
+    const conflicts = parallelConflictKeys(node);
+    if (conflicts.some((key) => heldConflicts.has(key))) break;
+    batch.push(node);
+    for (const key of conflicts) heldConflicts.add(key);
+  }
+  return batch;
+}
+
+function maxConcurrentFromDag(workflowDag: WorkflowDag): number {
+  const maxFromPlan = Number((workflowDag as { maxConcurrentNodes?: unknown }).maxConcurrentNodes);
+  if (Number.isFinite(maxFromPlan)) return Math.max(1, Math.floor(maxFromPlan));
+  return 1;
+}
+
+function isolatedParallelNodeRun(session: DagRunSession, signal: AbortSignal): IsolatedDagNodeRun {
+  const effects: BufferedDagEffect[] = [];
+  const deferredArtifactContents = new Map<string, string>();
+  let acceptingEffects = true;
+  const bufferEffect = (effect: BufferedDagEffect) => {
+    if (acceptingEffects) {
+      effects.push({
+        ...effect,
+        publicationState: "buffered",
+        reservationState: effect.discard ? "reserved" : "none",
+      });
+    }
+  };
+  const original = session.ctx;
+  const appendEvent: ExecuteWorkflowDagContext["appendEvent"] = async (cpbRoot, project, jobId, event) => {
+    const eventType = typeof event.type === "string" ? event.type : null;
+    bufferEffect({
+      kind: "append_event",
+      eventType,
+      replay: () => Promise.resolve(original.appendEvent(cpbRoot, project, jobId, {
+        ...event,
+        ...(event.ts ? { ts: ts() } : {}),
+      })),
+    });
+    return event;
+  };
+  const completePhase: ExecuteWorkflowDagContext["completePhase"] = async (cpbRoot, project, jobId, payload) => {
+    bufferEffect({
+      kind: "complete_phase",
+      eventType: null,
+      replay: () => Promise.resolve(original.completePhase(cpbRoot, project, jobId, payload)),
+    });
+    return payload;
+  };
+  const failJob: ExecuteWorkflowDagContext["failJob"] = async (cpbRoot, project, jobId, payload) => {
+    bufferEffect({
+      kind: "fail_job",
+      eventType: "job_failed",
+      replay: () => Promise.resolve(original.failJob(cpbRoot, project, jobId, payload)),
+    });
+    return payload;
+  };
+  const completeJob: ExecuteWorkflowDagContext["completeJob"] = async (cpbRoot, project, jobId) => {
+    bufferEffect({
+      kind: "complete_job",
+      eventType: "job_completed",
+      replay: () => Promise.resolve(original.completeJob(cpbRoot, project, jobId)),
+    });
+    return undefined;
+  };
+  const startPhase: ExecuteWorkflowDagContext["startPhase"] = original.startPhase
+    ? async (cpbRoot, project, jobId, payload) => {
+        bufferEffect({
+          kind: "start_phase",
+          eventType: "phase_started",
+          replay: () => Promise.resolve(original.startPhase?.(cpbRoot, project, jobId, payload)),
+        });
+        return payload;
+      }
+    : undefined;
+  const onProgress: ExecuteWorkflowDagContext["onProgress"] = original.onProgress
+    ? async (event) => {
+        bufferEffect({
+          kind: "progress",
+          eventType: typeof event.type === "string" ? event.type : null,
+          replay: () => Promise.resolve(original.onProgress?.({
+            ...event,
+            ...(event.ts ? { ts: ts() } : {}),
+          })),
+        });
+        return event;
+      }
+    : null;
+  const writeArtifact: NonNullable<ExecuteWorkflowDagContext["writeArtifact"]> = async (cpbRoot, input) => {
+    if (!acceptingEffects || signal.aborted) {
+      throw parallelAbortError(signal, "parallel DAG node artifact write rejected after cancellation");
+    }
+    const signaledInput = { ...input, signal };
+    const prepared = await prepareArtifactWrite(cpbRoot, signaledInput);
+    if (!acceptingEffects || signal.aborted) {
+      await prepared.discard();
+      throw parallelAbortError(signal, "parallel DAG node artifact reservation discarded after cancellation");
+    }
+    bufferEffect({
+      kind: "artifact_write",
+      eventType: null,
+      replay: prepared.commit,
+      discard: prepared.discard,
+    });
+    deferredArtifactContents.set(prepared.artifact.path, input.content);
+    return prepared.artifact;
+  };
+  const isolatedCtx: ExecuteWorkflowDagContext = {
+    ...original,
+    _currentPhase: null,
+    signal,
+    appendEvent,
+    completePhase,
+    failJob,
+    completeJob,
+    startPhase,
+    onProgress,
+    writeArtifact,
+    readArtifactFile: async (filePath, encoding) => deferredArtifactContents.has(filePath)
+      ? deferredArtifactContents.get(filePath) || ""
+      : readFile(filePath, encoding),
+  };
+  return {
+    effects,
+    seal: () => {
+      acceptingEffects = false;
+    },
+    session: {
+      ...session,
+      ctx: isolatedCtx,
+      state: { ...session.state },
+      phaseResults: [...session.phaseResults],
+    },
+  };
+}
+
+export async function replayBufferedEffects(
+  effects: BufferedDagEffect[],
+  mode: "all" | "start_only" = "all",
+) {
+  for (const effect of effects) {
+    if (
+      mode === "start_only"
+      && effect.kind !== "start_phase"
+      && !(effect.kind === "append_event" && effect.eventType && PARALLEL_START_EVENT_TYPES.has(effect.eventType))
+    ) {
+      continue;
+    }
+    if (effect.publicationState === "published") continue;
+    try {
+      const result = await effect.replay();
+      effect.publicationState = "published";
+      if (isArtifactCommitOutcome(result)) {
+        effect.cleanupPending = result.cleanupPending;
+        effect.commitWarnings = result.commitWarnings;
+        if (!result.cleanupPending) effect.reservationState = "settled";
+      } else if (effect.kind === "artifact_write" && effect.discard) {
+        effect.cleanupPending = false;
+        effect.reservationState = "settled";
+      }
+    } catch (replayError) {
+      try {
+        await discardBufferedEffects(effects);
+      } catch (cleanupError) {
+        throw bufferedEffectFailure(
+          "buffered DAG effect replay failed and reservation cleanup also failed",
+          [replayError, ...flattenAggregateErrors(cleanupError)],
+          replayError,
+        );
+      }
+      throw replayError;
+    }
+  }
+}
+
+export async function discardBufferedEffects(effects: BufferedDagEffect[]) {
+  const reservations = effects.filter((effect) => (
+    Boolean(effect.discard)
+    && effect.reservationState !== "settled"
+  ));
+  const settled = await Promise.allSettled(reservations.map(async (effect) => {
+    const result = await effect.discard?.();
+    if (isArtifactCommitOutcome(result) && result.cleanupPending) {
+      effect.publicationState = "published";
+      effect.cleanupPending = true;
+      effect.commitWarnings = [
+        ...(effect.commitWarnings || []),
+        ...result.commitWarnings,
+      ];
+      return;
+    }
+    effect.cleanupPending = false;
+    effect.reservationState = "settled";
+  }));
+  const cleanupErrors = settled
+    .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+    .flatMap((result) => flattenAggregateErrors(result.reason));
+  if (cleanupErrors.length > 0) {
+    throw bufferedEffectFailure(
+      "buffered DAG reservation cleanup failed",
+      cleanupErrors,
+      cleanupErrors[0],
+    );
+  }
+}
+
+function flattenAggregateErrors(error: unknown): unknown[] {
+  if (error instanceof AggregateError) {
+    return error.errors.flatMap((nested) => flattenAggregateErrors(nested));
+  }
+  return [error];
+}
+
+function bufferedEffectFailure(message: string, errors: unknown[], cause: unknown) {
+  const aggregate = new AggregateError(errors, message);
+  (aggregate as AggregateError & { cause?: unknown }).cause = cause;
+  return aggregate;
+}
+
+async function replayAndDiscardBufferedEffectGroups(
+  runs: IsolatedDagNodeRun[],
+  modes: Array<"all" | "start_only">,
+  primaryCause?: unknown,
+) {
+  let replayError: unknown;
+  for (let index = 0; index < runs.length; index += 1) {
+    try {
+      await replayBufferedEffects(runs[index].effects, modes[index] || "all");
+    } catch (error) {
+      replayError = error;
+      break;
+    }
+  }
+
+  const cleanupSettled = await Promise.allSettled(
+    runs.map((run) => discardBufferedEffects(run.effects)),
+  );
+  const cleanupErrors = cleanupSettled
+    .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+    .flatMap((result) => flattenAggregateErrors(result.reason));
+
+  if (replayError === undefined && cleanupErrors.length === 0) return;
+  const errors: unknown[] = [];
+  if (primaryCause !== undefined) errors.push(primaryCause);
+  if (replayError !== undefined) errors.push(...flattenAggregateErrors(replayError));
+  errors.push(...cleanupErrors);
+  throw bufferedEffectFailure(
+    "parallel DAG buffered effects did not settle cleanly",
+    errors,
+    primaryCause ?? replayError ?? cleanupErrors[0],
+  );
+}
+
+function checklistIdsForNode(node: WorkflowDagNode): string[] {
+  return Array.isArray(node.checklistIds) ? node.checklistIds.map(String).filter(Boolean) : [];
+}
+
+async function emitDagNodeCancellation(
+  session: DagRunSession,
+  node: WorkflowDagNode,
+  reason: string,
+  failedNodeId: string | null,
+) {
+  const role = stringValue(node.role) || session.phaseRoleMap[node.phase] || node.phase;
+  await session.ctx.appendEvent(session.cpbRoot, session.project, session.jobId, {
+    type: "dag_node_cancelled",
+    jobId: session.jobId,
+    project: session.project,
+    nodeId: node.id,
+    phase: node.phase,
+    role,
+    attemptId: session.attemptId || null,
+    reason,
+    ...(failedNodeId ? { failedNodeId } : {}),
+    checklistIds: checklistIdsForNode(node),
+    ts: ts(),
+  });
+}
+
+type ParallelWaveSettlement =
+  | { kind: "outcome"; index: number; outcome: DagNodeRunOutcome }
+  | { kind: "rejection"; index: number; error: unknown };
+
+function createParallelWaveAbort(externalSignal: AbortSignal | null | undefined) {
+  const controller = new AbortController();
+  const forwardAbort = () => controller.abort(externalSignal?.reason);
+  if (externalSignal?.aborted) controller.abort(externalSignal.reason);
+  else externalSignal?.addEventListener("abort", forwardAbort, { once: true });
+  return {
+    controller,
+    detach() {
+      externalSignal?.removeEventListener("abort", forwardAbort);
+    },
+  };
+}
+
+async function failParallelNodeFromException(
+  session: DagRunSession,
+  dagNode: WorkflowDagNode,
+  thrown: unknown,
+  signal?: AbortSignal,
+): Promise<DagNodeRunOutcome> {
+  const error = recordValue(thrown);
+  const code = stringValue(error.code);
+  const name = stringValue(error.name) || (thrown instanceof Error ? thrown.name : "Error");
+  const reason = thrown instanceof Error ? thrown.message : String(thrown ?? "unknown parallel DAG node error");
+  const aborted = isAbortLikeException(thrown) || Boolean(signal?.aborted) || Boolean(session.ctx.signal?.aborted);
+  const poolExhausted = code === "POOL_EXHAUSTED" || name === "PoolExhaustedError";
+  const phase = dagNode.phase;
+  const nodeId = dagNode.id || phase;
+  const role = stringValue(dagNode.role) || session.phaseRoleMap[phase] || phase;
+  const result = phaseFailed({
+    phase,
+    failure: failure({
+      kind: aborted ? FailureKind.RUNTIME_INTERRUPTED : poolExhausted ? FailureKind.AGENT_UNAVAILABLE : FailureKind.UNKNOWN,
+      phase,
+      reason,
+      retryable: aborted ? false : poolExhausted,
+      cause: {
+        code: code || null,
+        exceptionName: name,
+        stack: thrown instanceof Error ? thrown.stack?.slice(0, 2000) || null : null,
+        exceptionCause: exceptionCauseEvidence(
+          thrown instanceof Error && "cause" in thrown
+            ? (thrown as Error & { cause?: unknown }).cause
+            : error.cause,
+        ),
+        parallelWave: true,
+        ...(aborted ? { reason: "abort_signal" } : {}),
+      },
+    }),
+  });
+  session.phaseResults.push(result);
+  const terminal = await handleDagNodeFailure({
+    cpbRoot: session.cpbRoot,
+    project: session.project,
+    jobId: session.jobId,
+    nodeId,
+    phase,
+    role,
+    attemptId: session.attemptId,
+    dagNode,
+    phaseResult: result,
+    phaseResults: session.phaseResults,
+    appendEvent: session.ctx.appendEvent,
+    failJob: session.ctx.failJob,
+    onProgress: session.ctx.onProgress || null,
+    now: ts,
+  });
+  return { terminal, result, deferredVerificationFailure: false, phase, role, nodeId, dagNode };
+}
+
 function completionGateArgs(
   session: DagRunSession,
   workflowDag: WorkflowDag,
   options: { deferRepairableFailure: boolean; repairContext?: LooseRecord | null },
 ) {
+  const runtimeEnv = session.ctx.env ?? process.env;
   return {
     cpbRoot: session.cpbRoot,
     project: session.project,
@@ -941,7 +1501,8 @@ function completionGateArgs(
     dynamicAgentPlan: session.dynamicAgentPlan ? recordValue(session.dynamicAgentPlan) : null,
     phaseResults: session.phaseResults,
     dataRoot: session.dataRoot,
-    sourcePath: session.sourcePath || process.env.CPB_PROJECT_PATH_OVERRIDE,
+    sourcePath: session.sourcePath || runtimeEnv.CPB_PROJECT_PATH_OVERRIDE,
+    env: session.ctx.env,
     attemptId: session.attemptId,
     getArtifactIndex: session.ctx.getArtifactIndex,
     appendEvent: session.ctx.appendEvent,
@@ -995,7 +1556,7 @@ async function runCompletionRepairLoop(
   if (gateResult.status !== "repairable") return gateResult;
 
   const originalSourceContext = session.phaseSourceContext;
-  const maxRepairs = completionGateRepairLimit();
+  const maxRepairs = completionGateRepairLimit(session.ctx.env ?? process.env);
   let previousFingerprint = completionGateFailureFingerprint(gateResult.failure);
   let previousCandidateId = candidateIdFromLatestExecute(session.phaseResults);
   let forceFreshDiagnosis = false;
@@ -1110,15 +1671,18 @@ export async function executeWorkflowDag(
 ): Promise<JobRunResult> {
   const {
     cpbRoot,
-    hubRoot,
+    hubRoot: rawHubRoot,
     project,
     task,
     workflow = "standard",
     planMode = "full",
-    sourcePath,
-    dataRoot,
+    sourcePath: rawSourcePath,
+    dataRoot: rawDataRoot,
     timeoutMin,
   } = ctx;
+  const hubRoot = rawHubRoot ?? undefined;
+  const sourcePath = rawSourcePath ?? undefined;
+  const dataRoot = rawDataRoot ?? undefined;
   const {
     job,
     jobId,
@@ -1134,7 +1698,10 @@ export async function executeWorkflowDag(
   const pool = ctx.getPool();
   const phaseResults: PhaseResult[] = [];
   const state: LooseRecord = { planId: null, deliverableId: null, riskMap };
-  const phaseTimeout = resolveAgentPhaseTimeoutMs({ timeoutMin });
+  const phaseTimeout = resolveAgentPhaseTimeoutMs({
+    timeoutMin,
+    env: ctx.env ?? process.env,
+  });
   const phaseTimeouts = {
     plan: phaseTimeout,
     execute: phaseTimeout,
@@ -1156,6 +1723,7 @@ export async function executeWorkflowDag(
     riskMap,
     phaseSourceContext,
     dynamicAgentPlan,
+    workflowDag,
     workflow,
     planMode,
     sourcePath,
@@ -1171,22 +1739,212 @@ export async function executeWorkflowDag(
     dagResumeContext: input.dagResumeContext,
   };
 
-  for (let nodeIndex = 0; nodeIndex < executionNodes.length; nodeIndex += 1) {
-    const dagNode = executionNodes[nodeIndex];
+  const indexById = executionIndexById(executionNodes);
+  const completedNodeIds = new Set<string>(input.dagResumeContext.completedNodeIds);
+  const executedNodeIds = new Set<string>();
+  const maxConcurrentNodes = maxConcurrentFromDag(session.workflowDag);
+
+  const cancelUnexecutedNodes = async (reason: string, failedNodeId: string | null) => {
+    for (const node of executionNodes) {
+      if (executedNodeIds.has(node.id) || completedNodeIds.has(node.id)) continue;
+      await emitDagNodeCancellation(session, node, reason, failedNodeId);
+    }
+  };
+
+  const interruptExecution = async (reason: string): Promise<JobRunResult> => {
+    await cancelUnexecutedNodes(reason, null);
+    const interrupted = failure({
+      kind: FailureKind.RUNTIME_INTERRUPTED,
+      phase: "execute",
+      reason,
+      retryable: false,
+      cause: {
+        reason: "abort_signal",
+        completedNodeIds: [...completedNodeIds],
+        executedNodeIds: [...executedNodeIds],
+      },
+    });
+    await ctx.failJob(cpbRoot, project, jobId, {
+      reason,
+      code: FailureKind.RUNTIME_INTERRUPTED,
+      phase: "execute",
+      cause: interrupted,
+    });
+    return {
+      status: "failed",
+      jobId,
+      exitCode: 1,
+      failure: interrupted,
+      phaseResults: session.phaseResults,
+    };
+  };
+
+  while (executedNodeIds.size < executionNodes.length) {
+    if (ctx.signal?.aborted) {
+      return interruptExecution("workflow DAG execution cancelled by abort signal");
+    }
+    const readyNodes = stableReadyNodes(executionNodes, completedNodeIds, executedNodeIds);
+    if (readyNodes.length === 0) {
+      const nextFailure = failure({
+        kind: FailureKind.ARTIFACT_INVALID,
+        phase: "execute",
+        reason: "Workflow DAG has no ready nodes; execution cannot progress due to unresolved dependencies",
+        retryable: false,
+        cause: {
+          completedNodeIds: [...completedNodeIds],
+          executedNodeIds: [...executedNodeIds],
+          remainingNodeIds: executionNodes.filter((node) => !executedNodeIds.has(node.id)).map((node) => node.id),
+        },
+      });
+      await cancelUnexecutedNodes("workflow DAG dependencies cannot be satisfied", null);
+      await ctx.failJob(cpbRoot, project, jobId, {
+        reason: nextFailure.reason,
+        code: nextFailure.kind,
+        phase: nextFailure.phase,
+        cause: nextFailure,
+      });
+      return { status: "failed", jobId, exitCode: 1, failure: nextFailure, phaseResults: session.phaseResults };
+    }
+
+    const batch = pickExecutionBatch(readyNodes, maxConcurrentNodes, session.resumeCompletedNodes);
+    if (batch.length > 1) {
+      const waveAbort = createParallelWaveAbort(ctx.signal);
+      const isolatedRuns = batch.map(() => isolatedParallelNodeRun(session, waveAbort.controller.signal));
+      const settlements: Array<Promise<ParallelWaveSettlement>> = batch.map((dagNode, index) => runDagNode(
+        isolatedRuns[index].session,
+        dagNode,
+        { deferVerificationFailure: false },
+      ).then(
+        (outcome) => ({ kind: "outcome", index, outcome }),
+        (error) => ({ kind: "rejection", index, error }),
+      ));
+      const pending = new Set(batch.map((_node, index) => index));
+      const outcomes: Array<DagNodeRunOutcome | null> = batch.map(() => null);
+      const abortNotification = new Promise<{ kind: "abort" }>((resolve) => {
+        if (waveAbort.controller.signal.aborted) resolve({ kind: "abort" });
+        else waveAbort.controller.signal.addEventListener("abort", () => resolve({ kind: "abort" }), { once: true });
+      });
+
+      while (pending.size > 0) {
+        const notification = await Promise.race([
+          abortNotification,
+          ...[...pending].map((index) => settlements[index]),
+        ]);
+
+        if (notification.kind === "abort" || ctx.signal?.aborted) {
+          waveAbort.controller.abort();
+          for (const isolated of isolatedRuns) isolated.seal();
+          waveAbort.detach();
+          await replayAndDiscardBufferedEffectGroups(
+            isolatedRuns,
+            isolatedRuns.map(() => "start_only"),
+            parallelAbortError(ctx.signal || waveAbort.controller.signal),
+          );
+          return interruptExecution("parallel DAG wave cancelled by abort signal");
+        }
+
+        pending.delete(notification.index);
+        if (notification.kind === "rejection") {
+          if (ctx.signal?.aborted || waveAbort.controller.signal.aborted || isAbortLikeException(notification.error)) {
+            waveAbort.controller.abort();
+            for (const isolated of isolatedRuns) isolated.seal();
+            waveAbort.detach();
+            await replayAndDiscardBufferedEffectGroups(
+              isolatedRuns,
+              isolatedRuns.map(() => "start_only"),
+              notification.error,
+            );
+            return interruptExecution("parallel DAG wave cancelled by abort signal");
+          }
+          waveAbort.controller.abort();
+          for (const isolated of isolatedRuns) isolated.seal();
+          waveAbort.detach();
+          await replayAndDiscardBufferedEffectGroups(
+            isolatedRuns,
+            isolatedRuns.map(() => "start_only"),
+            notification.error,
+          );
+          const failedNode = batch[notification.index];
+          executedNodeIds.add(failedNode.id);
+          const failedOutcome = await failParallelNodeFromException(session, failedNode, notification.error);
+          await cancelUnexecutedNodes("parallel DAG wave aborted by node execution error", failedOutcome.nodeId);
+          return {
+            ...failedOutcome.terminal,
+            phaseResults: session.phaseResults,
+          } as JobRunResult;
+        }
+
+        outcomes[notification.index] = notification.outcome;
+        if (notification.outcome.terminal) {
+          waveAbort.controller.abort();
+          for (const isolated of isolatedRuns) isolated.seal();
+          waveAbort.detach();
+          await replayAndDiscardBufferedEffectGroups(
+            isolatedRuns,
+            isolatedRuns.map((_isolated, index) => index === notification.index ? "all" : "start_only"),
+            notification.outcome.terminal.failure ?? notification.outcome.terminal,
+          );
+          if (notification.outcome.result) session.phaseResults.push(notification.outcome.result);
+          executedNodeIds.add(notification.outcome.nodeId);
+          await cancelUnexecutedNodes(
+            "dependency cancelled after parallel DAG node failure",
+            notification.outcome.nodeId,
+          );
+          return {
+            ...notification.outcome.terminal,
+            phaseResults: session.phaseResults,
+          };
+        }
+      }
+
+      for (const isolated of isolatedRuns) isolated.seal();
+      for (let index = 0; index < outcomes.length; index += 1) {
+        const outcome = outcomes[index];
+        if (!outcome) throw new Error("parallel DAG wave completed without a node outcome");
+      }
+      waveAbort.detach();
+      await replayAndDiscardBufferedEffectGroups(
+        isolatedRuns,
+        isolatedRuns.map(() => "all"),
+      );
+      for (let index = 0; index < outcomes.length; index += 1) {
+        const outcome = outcomes[index];
+        if (!outcome) throw new Error("parallel DAG wave completed without a node outcome");
+        if (outcome.result) session.phaseResults.push(outcome.result);
+        executedNodeIds.add(outcome.nodeId);
+        completedNodeIds.add(outcome.nodeId);
+      }
+      continue;
+    }
+
+    const dagNode = batch[0];
     const outcome = await runDagNode(session, dagNode, {
       deferVerificationFailure: dagNode.phase === "verify" || dagNode.phase === "adversarial_verify",
     });
-    if (outcome.terminal) return outcome.terminal;
+    executedNodeIds.add(outcome.nodeId);
+    if (!outcome.terminal) completedNodeIds.add(outcome.nodeId);
+    if (outcome.terminal) {
+      await cancelUnexecutedNodes("dependency cancelled after DAG node failure", outcome.nodeId);
+      return outcome.terminal;
+    }
     if (outcome.deferredVerificationFailure) {
-      const executeNode = executionNodes
-        .slice(0, nodeIndex)
-        .reverse()
-        .find((candidate) => candidate.phase === "execute") || null;
-      const verificationNodes = executionNodes
-        .slice(executeNode ? executionNodes.indexOf(executeNode) + 1 : 0, nodeIndex + 1)
-        .filter((candidate) => candidate.phase === "verify" || candidate.phase === "adversarial_verify");
+      const nodeIndex = indexById.get(outcome.nodeId);
+      const executeNode = typeof nodeIndex === "number"
+        ? executionNodes
+          .slice(0, nodeIndex)
+          .reverse()
+          .find((candidate) => candidate.phase === "execute") || null
+        : null;
+      const verificationNodes = typeof nodeIndex === "number"
+        ? executionNodes
+          .slice(executeNode ? executionNodes.indexOf(executeNode) + 1 : 0, nodeIndex + 1)
+          .filter((candidate) => candidate.phase === "verify" || candidate.phase === "adversarial_verify")
+        : [];
       const terminal = await runVerificationRepairLoop(session, executeNode, verificationNodes, outcome);
-      if (terminal) return terminal;
+      if (terminal) {
+        await cancelUnexecutedNodes("dependency cancelled after verification repair failure", outcome.nodeId);
+        return terminal;
+      }
     }
   }
 

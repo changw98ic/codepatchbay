@@ -9,6 +9,7 @@ type DagCallbackContext = LooseRecord & {
   node: LooseRecord;
   attempt: number;
   maxAttempts: number;
+  signal?: AbortSignal;
 };
 
 type DagResult = LooseRecord & {
@@ -16,6 +17,15 @@ type DagResult = LooseRecord & {
   retryable?: boolean;
   reactivate?: string;
   reason?: string;
+  failure?: LooseRecord;
+};
+
+type DagExecutionResult = {
+  ok: boolean;
+  results: Map<string, DagResult>;
+  failedNode?: string;
+  reason?: string;
+  failure?: LooseRecord;
 };
 
 type DagCallbacks = {
@@ -24,6 +34,14 @@ type DagCallbacks = {
   onBeforeNode?: (nodeId: string, ctx: DagCallbackContext) => Promise<boolean | void> | boolean | void;
   onNodeResult?: (nodeId: string, result: DagResult, ctx: DagCallbackContext) => Promise<void> | void;
   seedCompleted?: string[];
+  signal?: AbortSignal;
+  providerCapacity?: (providerKey: string) => number;
+  providerKeyForNode?: (node: LooseRecord) => string | null;
+};
+
+type ScheduleReadyNodesOptions = {
+  providerCapacity?: (providerKey: string) => number;
+  providerKeyForNode?: (node: LooseRecord) => string | null;
 };
 
 function recordValue(value: unknown): LooseRecord {
@@ -36,6 +54,25 @@ function stringValue(value: unknown): string {
 
 function stringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter(Boolean).map(String) : [];
+}
+
+function executorExceptionResult(error: unknown): DagResult {
+  const exception = recordValue(error);
+  const reason = error instanceof Error ? error.message : String(error);
+  const code = typeof exception.code === "string" || typeof exception.code === "number"
+    ? String(exception.code)
+    : null;
+  return {
+    ok: false,
+    reason,
+    failure: {
+      kind: "executor_exception",
+      thrown: true,
+      name: error instanceof Error ? error.name : String(exception.constructor?.name || typeof error),
+      code,
+      stack: error instanceof Error && typeof error.stack === "string" ? error.stack.slice(0, 8_000) : null,
+    },
+  };
 }
 
 function nodeId(node: LooseRecord): string {
@@ -297,10 +334,47 @@ export function phasesToDag(phases: string[], roleForPhase: Record<string, strin
  * Get the maximum concurrency for ready nodes.
  * Respects maxConcurrentNodes limit.
  */
-export function scheduleReadyNodes(nodes: LooseRecord[], completedNodeIds: Set<string>, runningNodeIds: Set<string>, maxConcurrent = 2) {
+export function scheduleReadyNodes(
+  nodes: LooseRecord[],
+  completedNodeIds: Set<string>,
+  runningNodeIds: Set<string>,
+  maxConcurrent = 2,
+  options: ScheduleReadyNodesOptions = {},
+) {
   const ready = readyNodes(nodes, completedNodeIds, runningNodeIds);
   const available = maxConcurrent - runningNodeIds.size;
-  return ready.slice(0, Math.max(0, available));
+  if (Math.max(0, available) <= 0) return [];
+  if (!options.providerCapacity) return ready.slice(0, Math.max(0, available));
+
+  const { providerCapacity, providerKeyForNode } = options;
+  const selected: string[] = [];
+  const remaining = new Map<string, number>();
+  const runningByProvider = new Map<string, number>();
+
+  for (const runningNodeId of runningNodeIds) {
+    const runningNode = getNode(nodes, runningNodeId);
+    if (!runningNode) continue;
+    const providerKey = providerKeyForNode ? providerKeyForNode(runningNode) : null;
+    const effectiveProviderKey = providerKey || "__default__";
+    runningByProvider.set(effectiveProviderKey, (runningByProvider.get(effectiveProviderKey) || 0) + 1);
+  }
+
+  for (const nodeId of ready) {
+    if (selected.length >= available) break;
+    const node = getNode(nodes, nodeId);
+    if (!node) continue;
+    const providerKey = providerKeyForNode ? providerKeyForNode(node) : null;
+    const effectiveProviderKey = providerKey || "__default__";
+    const providerLimit = Math.max(0, Math.floor(providerCapacity(effectiveProviderKey)));
+    if (providerLimit <= 0) continue;
+    const remainingBudget = remaining.get(effectiveProviderKey)
+      ?? Math.max(0, providerLimit - (runningByProvider.get(effectiveProviderKey) || 0));
+    if (remainingBudget <= 0) continue;
+    remaining.set(effectiveProviderKey, remainingBudget - 1);
+    selected.push(nodeId);
+  }
+
+  return selected;
 }
 
 /**
@@ -318,62 +392,155 @@ export function scheduleReadyNodes(nodes: LooseRecord[], completedNodeIds: Set<s
  * @param {Function} [callbacks.onBeforeNode] - async (nodeId, ctx) => boolean|void
  * @param {Function} [callbacks.onNodeResult] - async (nodeId, result, ctx) => void
  * @param {string[]} [callbacks.seedCompleted] - Node IDs to pre-mark as completed
- * @returns {Promise<{ok: boolean, results: Map, failedNode?: string, reason?: string}>}
+ * @returns {Promise<{ok: boolean, results: Map, failedNode?: string, reason?: string, failure?: object}>}
  */
-export async function executeDag(dag: LooseRecord, callbacks: DagCallbacks) {
-  const { executor, shouldStop = () => false, onBeforeNode, onNodeResult, seedCompleted } = callbacks;
+export async function executeDag(dag: LooseRecord, callbacks: DagCallbacks): Promise<DagExecutionResult> {
+  const {
+    executor,
+    shouldStop = () => false,
+    onBeforeNode,
+    onNodeResult,
+    seedCompleted,
+    signal,
+    providerCapacity,
+    providerKeyForNode,
+  } = callbacks;
   if (typeof executor !== "function") throw new Error("executeDag requires executor callback");
-  const nodes = Array.isArray(dag.nodes) ? dag.nodes.map(recordValue).filter((node) => node.id) : [];
+  const nodes = Array.isArray(dag.nodes) ? dag.nodes.map(recordValue) : [];
+  const validation = validateDag(nodes);
+  if (!validation.valid) {
+    throw new Error(`invalid DAG: ${validation.errors.join(", ")}`);
+  }
   const completed = new Set<string>(stringArray(seedCompleted));
-  const results = new Map<string, unknown>();
+  const results = new Map<string, DagResult>();
   const attempts = new Map<string, number>();
+  const running = new Set<string>();
+  const configuredConcurrency = Number(dag.maxConcurrentNodes);
+  const maxConcurrentNodes = Number.isFinite(configuredConcurrency) && configuredConcurrency > 0
+    ? Math.max(1, Math.floor(configuredConcurrency))
+    : 1;
 
-  while (!isDagComplete(nodes, completed)) {
-    if (shouldStop()) return { ok: false, results, reason: "stopped" };
-
-    const ready = readyNodes(nodes, completed);
-    if (ready.length === 0) break;
-
-    const nodeId = ready[0];
-    const node = getNode(nodes, nodeId);
-    if (!node) return { ok: false, results, failedNode: nodeId, reason: `missing node: ${nodeId}` };
-    const maxAttempts = typeof node.maxRetries === "number" ? node.maxRetries : 3;
-    const attempt = (attempts.get(nodeId) || 0) + 1;
-    attempts.set(nodeId, attempt);
-    const ctx = { node, attempt, maxAttempts };
-
-    if (onBeforeNode) {
-      const proceed = await onBeforeNode(nodeId, ctx);
-      if (proceed === false) return { ok: false, results, failedNode: nodeId, reason: "cancelled" };
-    }
-
-    const result = recordValue(await executor(node, ctx)) as DagResult;
-    results.set(nodeId, result);
-    if (onNodeResult) await onNodeResult(nodeId, result, ctx);
-
-    if (result.ok) {
-      completed.add(nodeId);
-    } else if (result.reactivate) {
-      const toClear = [String(result.reactivate)];
-      const visited = new Set(toClear);
-      while (toClear.length > 0) {
-        const current = toClear.shift();
-        if (!current) continue;
-        completed.delete(current);
-        results.delete(current);
-        for (const n of nodes) {
-          const id = stringValue(n.id);
-          if (nodeDeps(n).includes(String(current)) && !visited.has(id)) {
-            visited.add(id);
-            toClear.push(id);
-          }
+  const clearNodeAndDownstream = (targetNodeId: string) => {
+    const toClear = [targetNodeId];
+    const visited = new Set(toClear);
+    while (toClear.length > 0) {
+      const current = toClear.shift();
+      if (!current) continue;
+      completed.delete(current);
+      results.delete(current);
+      for (const node of nodes) {
+        const id = nodeId(node);
+        if (nodeDeps(node).includes(current) && !visited.has(id)) {
+          visited.add(id);
+          toClear.push(id);
         }
       }
-    } else if (result.retryable && attempt < maxAttempts) {
-      // Not completed — will be picked up again next iteration
-    } else {
-      return { ok: false, results, failedNode: nodeId, reason: result.reason };
     }
+  };
+
+  while (!isDagComplete(nodes, completed)) {
+    if (signal?.aborted) return { ok: false, results, reason: "aborted" };
+    if (shouldStop()) return { ok: false, results, reason: "stopped" };
+
+    const ready = scheduleReadyNodes(nodes, completed, running, maxConcurrentNodes, {
+      providerCapacity,
+      providerKeyForNode,
+    });
+    if (ready.length === 0) break;
+
+    const contexts: Array<{ nodeId: string; node: LooseRecord; ctx: DagCallbackContext }> = [];
+    for (const readyNodeId of ready) {
+      if (signal?.aborted) break;
+      const node = getNode(nodes, readyNodeId);
+      if (!node) {
+        return { ok: false, results, failedNode: readyNodeId, reason: `missing node: ${readyNodeId}` };
+      }
+      const maxAttempts = typeof node.maxRetries === "number" ? node.maxRetries : 3;
+      const attempt = (attempts.get(readyNodeId) || 0) + 1;
+      const ctx: DagCallbackContext = { node, attempt, maxAttempts, signal };
+      if (onBeforeNode) {
+        const proceed = await onBeforeNode(readyNodeId, ctx);
+        if (proceed === false) {
+          return { ok: false, results, failedNode: readyNodeId, reason: "cancelled" };
+        }
+      }
+      running.add(readyNodeId);
+      contexts.push({ nodeId: readyNodeId, node, ctx });
+    }
+
+    const inFlight: Array<{
+      nodeId: string;
+      ctx: DagCallbackContext;
+      result: Promise<DagResult>;
+    }> = [];
+    for (const entry of contexts) {
+      if (signal?.aborted || shouldStop()) break;
+      attempts.set(entry.nodeId, entry.ctx.attempt);
+      try {
+        inFlight.push({
+          nodeId: entry.nodeId,
+          ctx: entry.ctx,
+          result: Promise.resolve(executor(entry.node, entry.ctx)).then((value) => recordValue(value) as DagResult),
+        });
+      } catch (error) {
+        inFlight.push({
+          nodeId: entry.nodeId,
+          ctx: entry.ctx,
+          result: Promise.resolve(executorExceptionResult(error)),
+        });
+      }
+    }
+
+    if (inFlight.length === 0) {
+      return { ok: false, results, reason: signal?.aborted ? "aborted" : "stopped" };
+    }
+
+    const settled = await Promise.all(inFlight.map(async (entry) => {
+      try {
+        return { ...entry, value: await entry.result };
+      } catch (error) {
+        return {
+          ...entry,
+          value: executorExceptionResult(error),
+        };
+      }
+    }));
+
+    let fatal: { nodeId: string; result: DagResult } | null = null;
+    const reactivated: string[] = [];
+    for (const entry of settled) {
+      const result = entry.value;
+      results.set(entry.nodeId, result);
+      if (onNodeResult) await onNodeResult(entry.nodeId, result, entry.ctx);
+
+      if (fatal) continue;
+      if (result.ok) {
+        completed.add(entry.nodeId);
+      } else if (result.reactivate) {
+        reactivated.push(String(result.reactivate));
+      } else if (result.retryable && entry.ctx.attempt < entry.ctx.maxAttempts) {
+        // Leave the node pending; completed siblings remain reusable.
+      } else {
+        fatal = { nodeId: entry.nodeId, result };
+      }
+    }
+
+    for (const targetNodeId of reactivated) clearNodeAndDownstream(targetNodeId);
+    for (const { nodeId: completedNodeId } of settled) {
+      running.delete(completedNodeId);
+    }
+
+    if (fatal) {
+      return {
+        ok: false,
+        results,
+        failedNode: fatal.nodeId,
+        reason: fatal.result.reason,
+        ...(fatal.result.failure ? { failure: fatal.result.failure } : {}),
+      };
+    }
+    if (signal?.aborted) return { ok: false, results, reason: "aborted" };
+    if (shouldStop()) return { ok: false, results, reason: "stopped" };
   }
 
   return { ok: isDagComplete(nodes, completed), results };

@@ -20,7 +20,7 @@ Example response:
 \`\`\`json
 {
   "status": "ok",
-  "planMarkdown": "## Analysis\\n- The task requires adding a new REST endpoint\\n\\n## Files to modify\\n- src/routes/api.js (add GET /users endpoint)\\n- src/models/user.js (add findAll method)\\n\\n## Implementation Steps\\n1. Add findAll() to User model\\n2. Add GET /users route handler\\n3. Add input validation\\n\\n## Testing\\n- Unit test for findAll()\\n- Integration test for GET /users\\n\\n## Risks\\n- Large result sets may need pagination"
+  "planMarkdown": "## Analysis\\n- The task requires adding a new REST endpoint\\n\\n## Bounded Handoff\\n- Real actors: User model and users route\\n- Entrypoints: GET /users\\n- Bypass candidates: alternate user-list handlers\\n- Edit files: src/routes/api.js, src/models/user.js\\n- Verification targets: model unit test and route integration test\\n- Blockers: none\\n\\n## Files to modify\\n- src/routes/api.js (add GET /users endpoint)\\n- src/models/user.js (add findAll method)\\n\\n## Implementation Steps\\n1. Add findAll() to User model\\n2. Add GET /users route handler\\n3. Add input validation\\n\\n## Testing\\n- Unit test for findAll()\\n- Integration test for GET /users\\n\\n## Risks\\n- Large result sets may need pagination"
 }
 \`\`\`
 
@@ -28,6 +28,7 @@ Rules:
 - The response MUST be valid JSON inside a \`\`\`json code block
 - Do NOT include any text outside the code block
 - The planMarkdown field must contain the full plan in markdown
+- When a Bounded Handoff is required, include every exact label shown in the example inside that section; use \`none\` rather than omitting a label
 - Do NOT write any files yourself. The system will persist the plan`;
 
 type ResolvedAgent = {
@@ -36,6 +37,18 @@ type ResolvedAgent = {
 };
 
 const PLAN_CARRY_FORWARD_EVENT_LIMIT = 12;
+
+function phaseAbortError(signal?: AbortSignal) {
+  const reason = signal?.reason;
+  if (reason instanceof Error && reason.name === "AbortError") return reason;
+  const err = new Error("plan phase aborted");
+  err.name = "AbortError";
+  return err;
+}
+
+function throwIfPhaseAborted(signal?: AbortSignal) {
+  if (signal?.aborted) throw phaseAbortError(signal);
+}
 
 function recordValue(value: unknown): LooseRecord {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as LooseRecord : {};
@@ -156,7 +169,7 @@ function validatePlanBoundedHandoff(content: string) {
   const required = [
     { label: "real actors", pattern: /\breal\s+actors?\b/i },
     { label: "entrypoints", pattern: /\bentrypoints?\b/i },
-    { label: "bypass candidates", pattern: /\bbypass(?:\s+candidates?)?\b/i },
+    { label: "bypass candidates", pattern: /\bbypass(?:es|\s+candidates?)?\b/i },
     { label: "edit files", pattern: /\b(?:edit|modified?|target)\s+files?\b|\bfiles?\s+(?:to\s+)?(?:edit|modify|change)\b/i },
     { label: "verification targets", pattern: /\bverification\s+targets?\b/i },
     { label: "blockers", pattern: /\bblockers?\b/i },
@@ -176,6 +189,7 @@ function validatePlanBoundedHandoff(content: string) {
 }
 
 export async function runPlan(ctx: LooseRecord) {
+  throwIfPhaseAborted(ctx.signal as AbortSignal | undefined);
   const { task, project, cpbRoot, pool, sourcePath, jobId } = ctx;
   const { dataRoot } = ctx;
   const role = stringValue(ctx.role, "planner");
@@ -222,6 +236,7 @@ export async function runPlan(ctx: LooseRecord) {
   // Build prompt — reuse existing prompt-builder if available, else minimal
   const prompt = await buildPlanPrompt(ctx) + JSON_INSTRUCTION;
   const resolvedAgent = resolveAgent(ctx, "codex");
+  throwIfPhaseAborted(ctx.signal as AbortSignal | undefined);
   const promptArtifact = await writePromptArtifact(cpbRoot, {
     project,
     jobId,
@@ -230,6 +245,7 @@ export async function runPlan(ctx: LooseRecord) {
     agent: resolvedAgent.agent,
     prompt,
     dataRoot,
+    signal: ctx.signal as AbortSignal | undefined,
   });
 
   const agentResult: LooseRecord = await runAgent({
@@ -246,8 +262,10 @@ export async function runPlan(ctx: LooseRecord) {
     env: buildPhaseAcpEnv(ctx, "plan"),
     dataRoot,
     onProgress: ctx.onProgress,
+    signal: ctx.signal as AbortSignal | undefined,
   });
 
+  throwIfPhaseAborted(ctx.signal as AbortSignal | undefined);
   if (!agentResult.ok) {
     const sourceContext = recordValue(ctx.sourceContext);
     const originalFailureKind = typeof agentResult.kind === "string" ? agentResult.kind : FailureKind.UNKNOWN;
@@ -281,6 +299,7 @@ export async function runPlan(ctx: LooseRecord) {
     });
   }
 
+  throwIfPhaseAborted(ctx.signal as AbortSignal | undefined);
   const parsed = recordValue(parsePlannerJson(agentResult.output));
   if (!parsed.ok) {
     return phaseFailed({
@@ -333,7 +352,9 @@ export async function runPlan(ctx: LooseRecord) {
     }
   }
 
+  throwIfPhaseAborted(ctx.signal as AbortSignal | undefined);
   const artifact = await writeArtifact(cpbRoot, {
+    signal: ctx.signal as AbortSignal | undefined,
     project,
     jobId,
     kind: "plan",
@@ -407,7 +428,14 @@ The plan should include:
 - Problem-space expansion: named real actors (classes/functions/routes/configs/users), suspected execution paths, and the real failing path the fix must reach
 - Minimal repro vs real path: state what would only prove a small reproduction and what would prove the original task path
 - Bypass candidates: subclasses, wrappers, adapters, alternate entrypoints, feature flags, caches, or caller paths that could avoid the intended fix
-- Bounded Handoff: concise real actors, entrypoints, bypass candidates, edit files, verification targets, and blockers for execute/verify to consume
+- Bounded Handoff: include this exact section and every label, using \`none\` rather than omitting any field:
+  ## Bounded Handoff
+  - Real actors: ...
+  - Entrypoints: ...
+  - Bypass candidates: ...
+  - Edit files: ...
+  - Verification targets: ...
+  - Blockers: ...
 - Files that need to be modified or created
 - Implementation steps in order
 - Testing strategy, including at least one proof that covers the real task path and not only an agent-authored minimal regression

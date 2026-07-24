@@ -8,12 +8,12 @@ const FAIL = "\x1b[0;31mFAIL\x1b[0m";
 
 const requiredCommands = ["redis-server", "redis-cli"];
 const enterpriseTests = [
-  "dist/tests/hub-state-redis.test.js",
-  "dist/tests/hub-backup.test.js",
-  "dist/tests/hub-maintenance.test.js",
-  "dist/tests/hub-access-audit.test.js",
-  "dist/tests/hub-access-audit-archive.test.js",
-  "dist/tests/integration/hub-registry-redis.test.js",
+  "dist-tests/tests/hub-state-redis.test.js",
+  "dist-tests/tests/hub-backup.test.js",
+  "dist-tests/tests/hub-maintenance.test.js",
+  "dist-tests/tests/hub-access-audit.test.js",
+  "dist-tests/tests/hub-access-audit-archive.test.js",
+  "dist-tests/tests/integration/hub-registry-redis.test.js",
 ];
 
 for (const command of requiredCommands) {

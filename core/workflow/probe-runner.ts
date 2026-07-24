@@ -27,11 +27,15 @@
 
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { LooseRecord } from "../../shared/types.js";
+import { captureCandidateArtifact } from "../engine/candidate-artifact.js";
+import { applyFrozenGitTreeDelta } from "../runtime/frozen-git-tree.js";
+import {
+  createTemporaryGitWorktree,
+  temporaryWorkspaceErrorDetails,
+} from "../runtime/temporary-workspace.js";
 import {
   parseTrustedProbePolicy,
   TRUSTED_PROBE_POLICY_PATH,
@@ -63,11 +67,11 @@ function isRecordLike(value: unknown): value is LooseRecord {
  * Collect changed files in the working tree relative to base.
  * Returns repo-relative posix paths. Stable regardless of commit order.
  */
-async function changedFiles(cwd: string, base: string | null): Promise<string[]> {
+async function changedFiles(cwd: string, base: string | null, env: NodeJS.ProcessEnv): Promise<string[]> {
   const rev = base || "HEAD";
   try {
-    const diff = await execFileAsync("git", ["diff", "--name-only", rev], { cwd, maxBuffer: 8 * 1024 * 1024 });
-    const untracked = await execFileAsync("git", ["ls-files", "--others", "--exclude-standard"], { cwd, maxBuffer: 8 * 1024 * 1024 });
+    const diff = await execFileAsync("git", ["diff", "--name-only", rev], { cwd, env, maxBuffer: 8 * 1024 * 1024 });
+    const untracked = await execFileAsync("git", ["ls-files", "--others", "--exclude-standard"], { cwd, env, maxBuffer: 8 * 1024 * 1024 });
     return uniqueStrings([
       ...diff.stdout.split("\n").map((s) => s.trim()).filter(Boolean),
       ...untracked.stdout.split("\n").map((s) => s.trim()).filter(Boolean),
@@ -134,25 +138,19 @@ const ORACLE_PATH_FIELDS = [
   "commandFiles",
 ];
 
-type FileBackup = {
-  file: string;
-  existed: boolean;
-  content?: Buffer;
-  mode?: number;
-};
-
 function stringList(value: unknown): string[] {
   if (Array.isArray(value)) return value.map(text).filter(Boolean);
   const single = text(value);
   return single ? [single] : [];
 }
 
-async function loadTrustedProbePolicy(cwd: string): Promise<Map<string, TrustedProbeSpec>> {
+async function loadTrustedProbePolicy(cwd: string, env: NodeJS.ProcessEnv): Promise<Map<string, TrustedProbeSpec>> {
   try {
     // HEAD is the trust boundary: an agent may edit the worktree, but cannot
     // make a newly generated command executable merely by editing this file.
     const result = await execFileAsync("git", ["show", `HEAD:${TRUSTED_PROBE_POLICY_PATH}`], {
       cwd,
+      env,
       maxBuffer: 1024 * 1024,
     });
     const parsed: unknown = JSON.parse(result.stdout);
@@ -241,91 +239,19 @@ function changedOracleFiles(item: LooseRecord, declaredCommand: string, changed:
     .sort();
 }
 
-async function gitPathExistsAtHead(cwd: string, file: string) {
+async function gitPathExistsAtHead(cwd: string, file: string, env: NodeJS.ProcessEnv) {
   try {
-    await execFileAsync("git", ["cat-file", "-e", `HEAD:${file}`], { cwd });
+    await execFileAsync("git", ["cat-file", "-e", `HEAD:${file}`], { cwd, env });
     return true;
   } catch {
     return false;
   }
 }
 
-async function backupFiles(cwd: string, files: string[]): Promise<FileBackup[]> {
-  const backups: FileBackup[] = [];
-  for (const file of files) {
-    const absolute = path.join(cwd, file);
-    try {
-      const content = await readFile(absolute);
-      const stats = await stat(absolute);
-      backups.push({ file, existed: true, content, mode: stats.mode });
-    } catch (err) {
-      if (isRecordLike(err) && err.code === "ENOENT") {
-        backups.push({ file, existed: false });
-        continue;
-      }
-      throw err;
-    }
-  }
-  return backups;
-}
-
-async function restoreBackups(cwd: string, backups: FileBackup[]) {
-  for (const backup of backups) {
-    const absolute = path.join(cwd, backup.file);
-    if (!backup.existed) {
-      await rm(absolute, { force: true });
-      continue;
-    }
-    await mkdir(path.dirname(absolute), { recursive: true });
-    await writeFile(absolute, backup.content || Buffer.alloc(0));
-    if (typeof backup.mode === "number") await chmod(absolute, backup.mode);
-  }
-}
-
-async function checkoutHeadFiles(cwd: string, files: string[]) {
+async function validateHeadOracleFiles(cwd: string, files: string[], env: NodeJS.ProcessEnv) {
   for (const file of files) {
     if (!isRepoRelativePosixPath(file)) return { ok: false, reason: `unsafe oracle path: ${file}` };
-    if (!await gitPathExistsAtHead(cwd, file)) return { ok: false, reason: `oracle path is not present at HEAD: ${file}` };
-  }
-  await execFileAsync("git", ["checkout", "HEAD", "--", ...files], { cwd, maxBuffer: 8 * 1024 * 1024 });
-  return { ok: true, reason: "" };
-}
-
-async function runActiveRestoreCleanOracleReplay(command: TrustedProbeSpec, cwd: string, files: string[]) {
-  const backups = await backupFiles(cwd, files);
-  try {
-    const checkout = await checkoutHeadFiles(cwd, files);
-    if (!checkout.ok) {
-      return {
-        cleanOracleReplayPassed: false,
-        cleanOracleReplayFiles: files,
-        cleanOracleReplayMode: "active_restore",
-        cleanOracleReplayReason: checkout.reason,
-      };
-    }
-    const replay = await runDeclaredCommand(command, cwd);
-    return {
-      cleanOracleReplayPassed: replay.exitCode === 0,
-      cleanOracleReplayFiles: files,
-      cleanOracleReplayMode: "active_restore",
-      cleanOracleReplayExitCode: replay.exitCode,
-      cleanOracleReplayStdoutSha256: replay.stdoutSha256,
-      cleanOracleReplayStderrSha256: replay.stderrSha256,
-      cleanOracleReplayStdoutTail: replay.stdoutTail,
-      cleanOracleReplayStderrTail: replay.stderrTail,
-      cleanOracleReplayRetryCount: replay.retryCount,
-      cleanOracleReplayProbeAttempts: replay.probeAttempts,
-      ...(replay.note ? { cleanOracleReplayReason: replay.note } : {}),
-    };
-  } finally {
-    await restoreBackups(cwd, backups);
-  }
-}
-
-async function validateHeadOracleFiles(cwd: string, files: string[]) {
-  for (const file of files) {
-    if (!isRepoRelativePosixPath(file)) return { ok: false, reason: `unsafe oracle path: ${file}` };
-    if (!await gitPathExistsAtHead(cwd, file)) return { ok: false, reason: `oracle path is not present at HEAD: ${file}` };
+    if (!await gitPathExistsAtHead(cwd, file, env)) return { ok: false, reason: `oracle path is not present at HEAD: ${file}` };
   }
   return { ok: true, reason: "" };
 }
@@ -334,48 +260,33 @@ function pathMatchesAnyScope(file: string, scopes: string[]) {
   return scopes.some((scope) => scopePathMatches(file, scope));
 }
 
-async function copyWorktreeOverlayFile(sourceCwd: string, replayCwd: string, file: string) {
-  if (!isRepoRelativePosixPath(file)) return { ok: false, file, action: "skip", reason: `unsafe overlay path: ${file}` };
-  const source = path.join(sourceCwd, file);
-  const dest = path.join(replayCwd, file);
-  try {
-    const stats = await stat(source);
-    if (!stats.isFile()) return { ok: true, file, action: "skip", reason: "overlay path is not a file" };
-    await mkdir(path.dirname(dest), { recursive: true });
-    await copyFile(source, dest);
-    await chmod(dest, stats.mode);
-    return { ok: true, file, action: "copy" };
-  } catch (err) {
-    if (isRecordLike(err) && err.code === "ENOENT") {
-      await rm(dest, { force: true });
-      return { ok: true, file, action: "delete" };
-    }
-    throw err;
-  }
+async function frozenOverlayFileRecords(
+  sourceCwd: string,
+  candidateTree: string,
+  files: string[],
+  env: NodeJS.ProcessEnv,
+) {
+  if (files.length === 0) return [];
+  const { stdout } = await execFileAsync("git", [
+    "--literal-pathspecs",
+    "ls-tree",
+    "-r",
+    "--name-only",
+    "-z",
+    candidateTree,
+    "--",
+    ...files,
+  ], { cwd: sourceCwd, env, maxBuffer: 8 * 1024 * 1024 });
+  const present = new Set(stdout.split("\0").filter(Boolean));
+  return files.map((file) => ({
+    ok: true,
+    file,
+    action: present.has(file) ? "copy" : "delete",
+  }));
 }
 
-async function overlayCurrentNonOracleChanges(sourceCwd: string, replayCwd: string, changed: string[], oracleFiles: string[]) {
-  const overlayFiles = changed
-    .filter((file) => !pathMatchesAnyScope(file, oracleFiles))
-    .sort();
-  const results: LooseRecord[] = [];
-  for (const file of overlayFiles) {
-    results.push(await copyWorktreeOverlayFile(sourceCwd, replayCwd, file));
-  }
-  return results;
-}
-
-async function cleanupReplayWorktree(cwd: string, replayPath: string, root: string) {
-  try {
-    await execFileAsync("git", ["worktree", "remove", "--force", replayPath], { cwd, maxBuffer: 8 * 1024 * 1024 });
-  } catch {
-    await rm(replayPath, { recursive: true, force: true });
-  }
-  await rm(root, { recursive: true, force: true });
-}
-
-async function runIsolatedCleanOracleReplay(command: TrustedProbeSpec, cwd: string, files: string[], changed: string[]) {
-  const validation = await validateHeadOracleFiles(cwd, files);
+async function runIsolatedCleanOracleReplay(command: TrustedProbeSpec, cwd: string, files: string[], env: NodeJS.ProcessEnv) {
+  const validation = await validateHeadOracleFiles(cwd, files, env);
   if (!validation.ok) {
     return {
       cleanOracleReplayPassed: false,
@@ -385,13 +296,44 @@ async function runIsolatedCleanOracleReplay(command: TrustedProbeSpec, cwd: stri
     };
   }
 
-  const root = await mkdtemp(path.join(tmpdir(), "cpb-clean-oracle-replay-"));
-  const replayPath = path.join(root, "worktree");
+  let workspace;
   try {
-    await execFileAsync("git", ["worktree", "add", "--detach", replayPath, "HEAD"], { cwd, maxBuffer: 8 * 1024 * 1024 });
-    const overlay = await overlayCurrentNonOracleChanges(cwd, replayPath, changed, files);
-    const replay = await runDeclaredCommand(command, replayPath);
+    workspace = await createTemporaryGitWorktree({
+      sourcePath: cwd,
+      revision: "HEAD",
+      prefix: "cpb-clean-oracle-replay-",
+      env,
+    });
+  } catch (err) {
+    const cleanup = temporaryWorkspaceErrorDetails(err);
+    const message = isRecordLike(err) && typeof err.message === "string" ? err.message : String(err || "unknown error");
     return {
+      cleanOracleReplayPassed: false,
+      cleanOracleReplayFiles: files,
+      cleanOracleReplayMode: "isolated_worktree",
+      cleanOracleReplayIsolated: true,
+      cleanOracleReplayReason: `isolated clean oracle replay setup failed: ${message}`,
+      ...(cleanup ? { cleanOracleReplayCleanup: cleanup } : {}),
+    };
+  }
+  const replayPath = workspace.worktreePath;
+  let result: LooseRecord;
+  try {
+    const candidate = await captureCandidateArtifact({ cwd, base: "HEAD", env: workspace.gitEnv });
+    const overlayFiles = candidate.changedFiles
+      .filter((file) => !pathMatchesAnyScope(file, files))
+      .sort();
+    await applyFrozenGitTreeDelta({
+      sourceRoot: cwd,
+      replayRoot: replayPath,
+      fromTree: candidate.headSha,
+      candidateTree: candidate.treeHash,
+      files: overlayFiles,
+      env: workspace.gitEnv,
+    });
+    const overlay = await frozenOverlayFileRecords(cwd, candidate.treeHash, overlayFiles, workspace.gitEnv);
+    const replay = await runDeclaredCommand(command, replayPath, env);
+    result = {
       cleanOracleReplayPassed: replay.exitCode === 0,
       cleanOracleReplayFiles: files,
       cleanOracleReplayMode: "isolated_worktree",
@@ -408,27 +350,33 @@ async function runIsolatedCleanOracleReplay(command: TrustedProbeSpec, cwd: stri
     };
   } catch (err) {
     const message = isRecordLike(err) && typeof err.message === "string" ? err.message : String(err || "unknown error");
-    return {
+    result = {
       cleanOracleReplayPassed: false,
       cleanOracleReplayFiles: files,
       cleanOracleReplayMode: "isolated_worktree",
       cleanOracleReplayIsolated: true,
       cleanOracleReplayReason: `isolated clean oracle replay failed: ${message}`,
     };
-  } finally {
-    await cleanupReplayWorktree(cwd, replayPath, root);
+  }
+  try {
+    return { ...result, cleanOracleReplayCleanup: await workspace.cleanup() };
+  } catch (error) {
+    const cleanup = temporaryWorkspaceErrorDetails(error);
+    if (!cleanup) throw error;
+    return {
+      ...result,
+      cleanOracleReplayPassed: false,
+      cleanOracleReplayReason: [
+        text(result.cleanOracleReplayReason),
+        `isolated replay cleanup failed: ${cleanup.message}`,
+      ].filter(Boolean).join("; "),
+      cleanOracleReplayCleanup: cleanup,
+    };
   }
 }
 
-async function runCleanOracleReplay(command: TrustedProbeSpec, cwd: string, files: string[], changed: string[]) {
-  const isolated = await runIsolatedCleanOracleReplay(command, cwd, files, changed);
-  if (isolated.cleanOracleReplayPassed || process.env.CPB_CLEAN_ORACLE_REPLAY_ACTIVE_FALLBACK !== "1") return isolated;
-  const active = await runActiveRestoreCleanOracleReplay(command, cwd, files);
-  return {
-    ...active,
-    cleanOracleReplayFallbackFrom: isolated.cleanOracleReplayMode,
-    cleanOracleReplayFallbackReason: isolated.cleanOracleReplayReason,
-  };
+async function runCleanOracleReplay(command: TrustedProbeSpec, cwd: string, files: string[], env: NodeJS.ProcessEnv) {
+  return await runIsolatedCleanOracleReplay(command, cwd, files, env);
 }
 
 function sha256Hex(input: string): string {
@@ -439,13 +387,13 @@ function outputTail(input: string): string {
   return input.length > COMMAND_PROBE_TAIL_CHARS ? input.slice(-COMMAND_PROBE_TAIL_CHARS) : input;
 }
 
-function commandProbeEnv(cwd: string): NodeJS.ProcessEnv {
+function commandProbeEnv(cwd: string, parentEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   // Never expose Hub/Redis/provider credentials to a verification child.
   // Keep only process-discovery and locale values needed by common toolchains.
   const allowed = ["PATH", "HOME", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL", "USER", "LOGNAME", "SYSTEMROOT", "COMSPEC", "PATHEXT"];
   const env: NodeJS.ProcessEnv = { CI: "1", PYTHONPATH: cwd };
   for (const key of allowed) {
-    if (process.env[key]) env[key] = process.env[key];
+    if (parentEnv[key]) env[key] = parentEnv[key];
   }
   return env;
 }
@@ -496,6 +444,7 @@ function resolveDeclaredCommand(item: LooseRecord, policy: Map<string, TrustedPr
 async function runDeclaredCommand(
   command: TrustedProbeSpec,
   cwd: string,
+  env: NodeJS.ProcessEnv,
 ): Promise<{
   exitCode: number;
   stdoutSha256: string;
@@ -518,7 +467,7 @@ async function runDeclaredCommand(
   } | null = null;
 
   for (let attempt = 1; attempt <= COMMAND_PROBE_MAX_RETRIES + 1; attempt += 1) {
-    last = await runDeclaredCommandOnce(command, cwd);
+    last = await runDeclaredCommandOnce(command, cwd, env);
     attempts.push({
       attempt,
       exitCode: last.exitCode,
@@ -564,6 +513,7 @@ async function runDeclaredCommand(
 async function runDeclaredCommandOnce(
   command: TrustedProbeSpec,
   cwd: string,
+  env: NodeJS.ProcessEnv,
 ): Promise<{
   exitCode: number;
   stdoutSha256: string;
@@ -576,7 +526,7 @@ async function runDeclaredCommandOnce(
   try {
     const result = await execFileAsync(command.executable, command.args, {
       cwd,
-      env: commandProbeEnv(cwd),
+      env: commandProbeEnv(cwd, env),
       shell: false,
       timeout: COMMAND_PROBE_TIMEOUT_MS,
       maxBuffer: 8 * 1024 * 1024,
@@ -632,7 +582,12 @@ async function runDeclaredCommandOnce(
 export async function runChecklistProbes(
   acceptanceChecklist: LooseRecord | null,
   cwd: string,
-  { base = null, finalWorktree = null, attemptId = null }: { base?: string | null; finalWorktree?: LooseRecord | null; attemptId?: string | null } = {},
+  { base = null, finalWorktree = null, attemptId = null, env = process.env }: {
+    base?: string | null;
+    finalWorktree?: LooseRecord | null;
+    attemptId?: string | null;
+    env?: NodeJS.ProcessEnv;
+  } = {},
 ): Promise<LooseRecord[]> {
   if (!acceptanceChecklist || !Array.isArray(acceptanceChecklist.items)) return [];
 
@@ -645,8 +600,8 @@ export async function runChecklistProbes(
   const diffHash = text(finalWorktree?.diffHash) || null;
   const attempt = text(attemptId) || null;
 
-  const changed = await changedFiles(cwd, base);
-  const trustedProbePolicy = await loadTrustedProbePolicy(cwd);
+  const changed = await changedFiles(cwd, base, env);
+  const trustedProbePolicy = await loadTrustedProbePolicy(cwd, env);
 
   const checks: LooseRecord[] = [];
   for (const item of candidateItems) {
@@ -709,10 +664,10 @@ export async function runChecklistProbes(
       }
 
       const renderedCommand = renderProbeCommand(declaredCommand);
-      const run = await runDeclaredCommand(declaredCommand, cwd);
+      const run = await runDeclaredCommand(declaredCommand, cwd, env);
       const oracleFiles = run.exitCode === 0 ? changedOracleFiles(item, renderedCommand, changed) : [];
       const cleanReplay = oracleFiles.length > 0
-        ? await runCleanOracleReplay(declaredCommand, cwd, oracleFiles, changed)
+        ? await runCleanOracleReplay(declaredCommand, cwd, oracleFiles, env)
         : null;
       checks.push({
         checklistId,

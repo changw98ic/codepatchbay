@@ -48,6 +48,7 @@ type ResolvePhaseAgentRoutingInput = {
   outcomeMetrics?: unknown;
   taskCategory?: string | null;
   excludedProviderFamily?: string | null;
+  env?: NodeJS.ProcessEnv;
   phase: string;
   role: string;
 };
@@ -125,6 +126,7 @@ export function resolvePhaseAgentRouting({
   outcomeMetrics = {},
   taskCategory = null,
   excludedProviderFamily = null,
+  env,
   phase,
   role,
 }: ResolvePhaseAgentRoutingInput): ResolvePhaseAgentRoutingResult {
@@ -137,6 +139,7 @@ export function resolvePhaseAgentRouting({
   });
   const assurancePolicy = resolveHighAssurancePolicy({
     agents,
+    env,
     sourceContext: phaseSourceContext || sourceContext || {},
   });
   const assuranceAgent = highAssuranceAgentForRole(assurancePolicy, role);

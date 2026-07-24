@@ -4,10 +4,15 @@
 
 import { access, mkdir, readFile, realpath, stat, writeFile, rm } from "node:fs/promises";
 import { readFileSync } from "node:fs";
-import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { LooseRecord } from "../core/contracts/types.js";
+import {
+  parseManagedWorktreeContext,
+  type ManagedWorktreeContext,
+} from "../core/contracts/worktree-ownership.js";
+import { runCommandTree } from "../core/runtime/process-tree.js";
+import type { ProcessTreeSystem } from "../core/runtime/process-tree.js";
 import { appendEvent } from "../server/services/event/event-store.js";
 import { getProject, resolveHubRoot } from "../server/services/hub/hub-registry.js";
 import { resolveProjectDataRoot } from "../server/services/runtime.js";
@@ -35,8 +40,8 @@ import {
   recordDispatch,
 } from "../server/services/dispatch/dispatch.js";
 import { buildMeta, executionBoundaryEvent } from "../core/job/meta.js";
-import { executorEnv, executorMetadata, resolveExecutorRoot } from "../server/services/setup.js";
-import { BoundedOutput, subprocessOutputMaxBytes } from "../shared/bounded-output.js";
+import { executorEnv, executorMetadata, resolveExecutorRoot } from "../server/services/executor-root.js";
+import { subprocessOutputMaxBytes } from "../shared/bounded-output.js";
 
 type ParsedArgs = {
   project: string;
@@ -74,11 +79,15 @@ type FailureSummary = {
 type CommandOptions = {
   signal?: AbortSignal;
   env?: NodeJS.ProcessEnv;
+  graceMs?: number;
+  forceVerifyMs?: number;
+  system?: ProcessTreeSystem;
 };
 
 type CommandResult = {
   exitCode: number;
   stdout: string;
+  stderr?: string;
   outputTruncated?: boolean;
   childPid: number | null;
   signal?: NodeJS.Signals | null;
@@ -241,88 +250,47 @@ function ts() {
 
 // ─── Run a bridge script as child process ───
 
-function killChildProcess(proc: import("node:child_process").ChildProcess & { detached?: boolean }) {
-  try {
-    if (proc.detached && process.platform !== "win32") {
-      process.kill(-proc.pid, "SIGTERM");
-    } else {
-      proc.kill("SIGTERM");
-    }
-  } catch {
-    try { proc.kill("SIGTERM"); } catch {}
-  }
-  setTimeout(() => {
-    try {
-      if (proc.detached && process.platform !== "win32") {
-        process.kill(-proc.pid, "SIGKILL");
-      } else {
-        proc.kill("SIGKILL");
-      }
-    } catch {
-      try { proc.kill("SIGKILL"); } catch {}
-    }
-  }, 2_000).unref?.();
-}
-
-function runCommand(command: string, commandArgs: string[], cwd: string, options: CommandOptions = {}): Promise<CommandResult> {
-  return new Promise((resolve) => {
-    let settled = false;
-    const stdout = new BoundedOutput(subprocessOutputMaxBytes(process.env.CPB_SUBPROCESS_OUTPUT_MAX_BYTES));
-    const detached = Boolean(options.signal) && process.platform !== "win32";
-
-    function finish(result: CommandResult) {
-      if (settled) return;
-      settled = true;
-      if (options.signal && proc) {
-        options.signal.removeEventListener("abort", onAbort);
-      }
-      resolve(result);
-    }
-
-    let proc: ReturnType<typeof spawn> & { detached?: boolean };
-    const onAbort = () => {
-      if (!settled && proc) {
-        killChildProcess(proc);
-      }
-    };
-    try {
-      proc = spawn(command, commandArgs, {
-        cwd,
-        env: options.env || process.env,
-        detached,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-    } catch (err) {
-      finish({ exitCode: 1, stdout: "", childPid: null, error: err });
+function boundedStreamWriter(maxBytes: number, write: (chunk: Buffer) => void) {
+  let written = 0;
+  return (chunk: string) => {
+    if (maxBytes <= 0) {
+      write(Buffer.from(chunk, "utf8"));
       return;
     }
-    proc.detached = detached;
-    const childPid = proc.pid || null;
-    if (options.signal) {
-      if (options.signal.aborted) onAbort();
-      else options.signal.addEventListener("abort", onAbort, { once: true });
-    }
+    const remaining = maxBytes - written;
+    if (remaining <= 0) return;
+    const data = Buffer.from(chunk, "utf8");
+    const slice = data.byteLength > remaining ? data.subarray(0, remaining) : data;
+    written += slice.byteLength;
+    if (slice.byteLength > 0) write(slice);
+  };
+}
 
-    proc.stdout.on("data", (chunk: Buffer) => {
-      stdout.append(chunk);
-      process.stdout.write(chunk);
-    });
-    proc.stderr.on("data", (chunk: Buffer) => {
-      process.stderr.write(chunk);
-    });
-    proc.on("error", (err: Error) => {
-      finish({ exitCode: 1, stdout: stdout.toString(), outputTruncated: stdout.truncated, childPid, error: err });
-    });
-    proc.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
-      finish({
-        exitCode: code ?? 1,
-        stdout: stdout.toString(),
-        outputTruncated: stdout.truncated,
-        childPid,
-        signal,
-      });
-    });
+export async function runCommand(command: string, commandArgs: string[], cwd: string, options: CommandOptions = {}): Promise<CommandResult> {
+  const child = { pid: null as number | null };
+  const maxOutputBytes = subprocessOutputMaxBytes(process.env.CPB_SUBPROCESS_OUTPUT_MAX_BYTES);
+  const writeStdout = boundedStreamWriter(maxOutputBytes, (chunk) => process.stdout.write(chunk));
+  const writeStderr = boundedStreamWriter(maxOutputBytes, (chunk) => process.stderr.write(chunk));
+  const result = await runCommandTree(command, commandArgs, {
+    cwd,
+    env: options.env || process.env,
+    signal: options.signal,
+    graceMs: options.graceMs ?? 2_000,
+    forceVerifyMs: options.forceVerifyMs,
+    system: options.system,
+    maxBufferBytes: maxOutputBytes,
+    onSpawn: (pid) => { child.pid = pid; },
+    onStdout: writeStdout,
+    onStderr: writeStderr,
   });
+  return {
+    exitCode: result.error ? (result.exitCode === 0 ? 1 : result.exitCode) : result.exitCode,
+    stdout: result.stdout,
+    stderr: result.stderr,
+    childPid: child.pid,
+    signal: result.signal,
+    error: result.error,
+  };
 }
 
 async function writeIfMissing(filePath: string, content: string) {
@@ -333,12 +301,84 @@ async function writeIfMissing(filePath: string, content: string) {
   }
 }
 
-async function readJsonObject(filePath: string): Promise<LooseRecord> {
+function pipelineContractError(code: string, message: string) {
+  return Object.assign(new Error(message), { code });
+}
+
+export function parsePipelineProjectJsonContract(
+  raw: string,
+  filePath: string,
+  project: string,
+): LooseRecord & { name?: string; sourcePath?: string } {
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(await readFile(filePath, "utf8"));
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as LooseRecord : {};
-  } catch {
-    return {};
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw pipelineContractError(
+      "PIPELINE_PROJECT_JSON_CONTRACT_INVALID",
+      `project '${project}' project.json is invalid at ${filePath}: ${reason}`,
+    );
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw pipelineContractError(
+      "PIPELINE_PROJECT_JSON_CONTRACT_INVALID",
+      `project '${project}' project.json at ${filePath} must contain an object`,
+    );
+  }
+  const record = parsed as LooseRecord;
+  if (record.name !== undefined && typeof record.name !== "string") {
+    throw pipelineContractError(
+      "PIPELINE_PROJECT_JSON_CONTRACT_INVALID",
+      `project '${project}' project.json at ${filePath} has invalid name; expected string`,
+    );
+  }
+  if (record.sourcePath !== undefined && record.sourcePath !== null && typeof record.sourcePath !== "string") {
+    throw pipelineContractError(
+      "PIPELINE_PROJECT_JSON_CONTRACT_INVALID",
+      `project '${project}' project.json at ${filePath} has invalid sourcePath; expected string`,
+    );
+  }
+  return { ...record } as LooseRecord & { name?: string; sourcePath?: string };
+}
+
+export function parseWorktreeManagerOutputContract(
+  stdout: string,
+  commandContext: string,
+): ManagedWorktreeContext {
+  const line = stdout.trim().split(/\r?\n/).at(-1);
+  let parsed: unknown;
+  try {
+    parsed = line ? JSON.parse(line) : null;
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw pipelineContractError(
+      "PIPELINE_WORKTREE_OUTPUT_CONTRACT_INVALID",
+      `${commandContext} stdout did not end with valid JSON: ${reason}`,
+    );
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw pipelineContractError(
+      "PIPELINE_WORKTREE_OUTPUT_CONTRACT_INVALID",
+      `${commandContext} stdout must end with a worktree object containing path, branch, baseBranch, baseCommit, and ownership`,
+    );
+  }
+  try {
+    return parseManagedWorktreeContext(parsed);
+  } catch (error) {
+    throw pipelineContractError(
+      "PIPELINE_WORKTREE_OUTPUT_CONTRACT_INVALID",
+      `${commandContext} stdout worktree object requires valid path, branch, baseBranch, baseCommit, and ready ownership: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+async function readJsonObject(filePath: string, project: string): Promise<LooseRecord> {
+  try {
+    return parsePipelineProjectJsonContract(await readFile(filePath, "utf8"), filePath, project);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return {};
+    throw error;
   }
 }
 
@@ -377,7 +417,7 @@ export async function ensureWikiProjectBoundary(cpbRoot: string, project: string
   await mkdir(path.join(wikiDir, "inbox"), { recursive: true });
   await mkdir(path.join(wikiDir, "outputs"), { recursive: true });
   const projectJsonPath = path.join(wikiDir, "project.json");
-  const existing = await readJsonObject(projectJsonPath);
+  const existing = await readJsonObject(projectJsonPath, project);
   const existingSourcePathValue = typeof existing.sourcePath === "string" ? existing.sourcePath : null;
   if (existingSourcePathValue) {
     let existingSourcePath = null;
@@ -466,9 +506,10 @@ async function maybeCreateWorktree(cpbRoot: string, executorRoot: string, projec
   if (!sourcePath) {
     try {
       const raw = await readFile(projectJsonPath, "utf8");
-      sourcePath = JSON.parse(raw).sourcePath;
-    } catch {
-      return null;
+      sourcePath = parsePipelineProjectJsonContract(raw, projectJsonPath, project).sourcePath || null;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return null;
+      throw error;
     }
   }
   if (!sourcePath) return null;
@@ -495,7 +536,7 @@ async function maybeCreateWorktree(cpbRoot: string, executorRoot: string, projec
     throw result.error || new Error("worktree creation failed");
   }
 
-  const created = JSON.parse(result.stdout.trim().split(/\r?\n/).at(-1));
+  const created = parseWorktreeManagerOutputContract(result.stdout, "worktree-manager create");
   process.env.CPB_PROJECT_PATH_OVERRIDE = created.path;
   process.env.CPB_ACP_CWD = created.path;
   await appendEvent(cpbRoot, project, jobId, {
@@ -504,6 +545,9 @@ async function maybeCreateWorktree(cpbRoot: string, executorRoot: string, projec
     project,
     worktree: created.path,
     branch: created.branch,
+    baseBranch: created.baseBranch,
+    baseCommit: created.baseCommit,
+    worktreeOwnership: created.ownership,
     ts: ts(),
   }, scopedRuntimeOpts(dataRoot));
   return created;

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { lstat, mkdir, readFile, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test, describe } from "node:test";
 import { tempRoot, writeJson } from "./helpers.js";
@@ -8,6 +9,7 @@ import {
   cleanupWorktrees,
   formatWorktreeRetentionHuman,
   resolveRetentionPolicy,
+  withCleanupTestHooksForTests,
 } from "../server/services/cleanup/cleanup.js";
 import { pinSessionToJob } from "../core/engine/session-pin.js";
 
@@ -48,6 +50,7 @@ async function setupJobsIndex(root, jobs) {
       worktree: job.worktree || null,
       worktreeBranch: job.worktreeBranch || null,
       worktreeBaseBranch: job.worktreeBaseBranch || null,
+      worktreeOwnership: job.worktreeOwnership || null,
       createdAt: ts,
       updatedAt: ts,
     };
@@ -69,6 +72,7 @@ async function setupJobsIndex(root, jobs) {
         worktree: job.worktree,
         branch: job.worktreeBranch || null,
         baseBranch: job.worktreeBaseBranch || null,
+        ...(job.worktreeOwnership ? { worktreeOwnership: job.worktreeOwnership } : {}),
         ts,
       });
     }
@@ -332,7 +336,32 @@ describe("worktree-retention: actual cleanup executes", () => {
     assert.equal(await readFile(path.join(outside, "marker.txt"), "utf8"), "preserve");
   });
 
-  test("delete action removes worktree directory", async () => {
+  test("cleanup rejects a symlinked declared hub root", async () => {
+    if (process.platform === "win32") return;
+    const root = await tempRoot("cpb-wt-ret");
+    const wtPath = path.join(root, "worktrees", "wt-linked-hub");
+    await mkdir(wtPath, { recursive: true });
+    await writeFile(path.join(wtPath, "file.txt"), "preserve", "utf8");
+    const { hubRoot } = await setupJobsIndex(root, [
+      { project: "test", jobId: "job-linked-hub-001", status: "completed", worktree: wtPath },
+    ]);
+    const linkedHubRoot = path.join(root, "linked-hub");
+    await symlink(hubRoot, linkedHubRoot, "dir");
+
+    const result = await cleanupWorktrees(root, {
+      policy: { completed: "delete" },
+      dryRun: false,
+      hubRoot: linkedHubRoot,
+    });
+
+    const entry = result.entries.find((item) => item.jobId === "job-linked-hub-001");
+    assert.equal(entry.action, "preserve");
+    assert.equal(entry.result, "preserved");
+    assert.match(entry.reason, /hub root.*real director|declared root.*real director/);
+    assert.equal(await readFile(path.join(wtPath, "file.txt"), "utf8"), "preserve");
+  });
+
+  test("delete action quarantines worktree directory without claiming data deletion", async () => {
     const root = await tempRoot("cpb-wt-ret");
     const wtPath = path.join(root, "worktrees", "wt-del");
     await mkdir(wtPath, { recursive: true });
@@ -347,15 +376,31 @@ describe("worktree-retention: actual cleanup executes", () => {
       hubRoot,
     });
     assert.equal(result.dryRun, false);
-    const deletedEntry = result.entries.find((e) => e.jobId === "job-del-001");
-    assert.equal(deletedEntry.result, "deleted");
-    await assert.rejects(() => readFile(path.join(wtPath, "file.txt")), "worktree directory must be removed");
+    const quarantinedEntry = result.entries.find((e) => e.jobId === "job-del-001");
+    assert.equal(quarantinedEntry.result, "quarantined", quarantinedEntry.reason);
+    assert.ok(quarantinedEntry.quarantinePath, "quarantine path must be reported");
+    await assert.rejects(() => readFile(path.join(wtPath, "file.txt")), "canonical worktree path must be removed");
+    const content = await readFile(path.join(quarantinedEntry.quarantinePath, "file.txt"), "utf8");
+    assert.equal(content, "data", "quarantined content must be retained for recovery");
+
+    const second = await cleanupWorktrees(root, {
+      policy: { completed: "delete" },
+      dryRun: false,
+      hubRoot,
+    });
+    const quarantineContainer = path.dirname(quarantinedEntry.quarantinePath);
+    assert.equal(
+      second.entries.some((entry) => path.resolve(entry.worktree) === quarantineContainer),
+      false,
+      "cleanup quarantine containers must be permanently excluded from orphan scans",
+    );
+    assert.equal(await readFile(path.join(quarantinedEntry.quarantinePath, "file.txt"), "utf8"), "data");
   });
 
   test("archive action moves worktree to archive root", async () => {
     const root = await tempRoot("cpb-wt-ret");
     const wtPath = path.join(root, "worktrees", "wt-arch");
-    const archiveRoot = path.join(root, "archive");
+    const archiveRoot = path.join(await realpath(root), "archive");
     await mkdir(wtPath, { recursive: true });
     await writeFile(path.join(wtPath, "file.txt"), "archived data", "utf8");
     const { hubRoot } = await setupJobsIndex(root, [
@@ -369,11 +414,239 @@ describe("worktree-retention: actual cleanup executes", () => {
     });
     const archivedEntry = result.entries.find((e) => e.jobId === "job-arch-001");
     assert.equal(archivedEntry.result, "archived");
-    assert.ok(archivedEntry.archivePath.startsWith(archiveRoot));
+    assert.ok(archivedEntry.archivePath.startsWith(await realpath(archiveRoot)));
 
     await assert.rejects(() => readFile(path.join(wtPath, "file.txt")), "original worktree must be moved");
     const content = await readFile(path.join(archivedEntry.archivePath, "file.txt"), "utf8");
     assert.equal(content, "archived data");
+  });
+
+  test("archive action is no-clobber and preserves original on destination collision", async () => {
+    const root = await tempRoot("cpb-wt-ret");
+    const wtPath = path.join(root, "worktrees", "wt-arch-collision");
+    const archiveRoot = path.join(await realpath(root), "archive");
+    const archivePath = path.join(archiveRoot, path.basename(wtPath));
+    await mkdir(wtPath, { recursive: true });
+    await mkdir(archivePath, { recursive: true });
+    await writeFile(path.join(wtPath, "file.txt"), "source data", "utf8");
+    await writeFile(path.join(archivePath, "file.txt"), "existing archive", "utf8");
+    const { hubRoot } = await setupJobsIndex(root, [
+      { project: "test", jobId: "job-arch-collision-001", status: "completed", worktree: wtPath },
+    ]);
+
+    const result = await cleanupWorktrees(root, {
+      policy: { completed: "archive", archiveRoot },
+      dryRun: false,
+      hubRoot,
+    });
+    const entry = result.entries.find((e) => e.jobId === "job-arch-collision-001");
+    assert.equal(entry.result, "preserved");
+    assert.equal(entry.action, "preserve");
+    assert.match(entry.reason, /destination already exists/);
+    assert.equal(await readFile(path.join(wtPath, "file.txt"), "utf8"), "source data");
+    assert.equal(await readFile(path.join(archivePath, "file.txt"), "utf8"), "existing archive");
+  });
+
+  test("archive rejects a lexical symlink ancestor before creating directories", async () => {
+    if (process.platform === "win32") return;
+    const root = await tempRoot("cpb-wt-ret");
+    const canonicalRoot = await realpath(root);
+    const wtPath = path.join(root, "worktrees", "wt-arch-linked-ancestor");
+    const outside = path.join(canonicalRoot, "outside-archive");
+    const linkedAncestor = path.join(canonicalRoot, "linked-archive");
+    const archiveRoot = path.join(linkedAncestor, "nested");
+    await mkdir(wtPath, { recursive: true });
+    await mkdir(outside, { recursive: true });
+    await writeFile(path.join(wtPath, "file.txt"), "source data", "utf8");
+    await symlink(outside, linkedAncestor, "dir");
+    const { hubRoot } = await setupJobsIndex(root, [
+      { project: "test", jobId: "job-arch-linked-001", status: "completed", worktree: wtPath },
+    ]);
+
+    const result = await cleanupWorktrees(root, {
+      policy: { completed: "archive", archiveRoot },
+      dryRun: false,
+      hubRoot,
+    });
+
+    const entry = result.entries.find((item) => item.jobId === "job-arch-linked-001");
+    assert.equal(entry.action, "preserve");
+    assert.equal(entry.result, "preserved");
+    assert.match(entry.reason, /destination ancestor is not a real directory/);
+    assert.equal(await readFile(path.join(wtPath, "file.txt"), "utf8"), "source data");
+    await assert.rejects(() => readFile(path.join(outside, "nested", path.basename(wtPath), "file.txt")));
+  });
+
+  test("archive reservation cannot clobber a destination created after the absence check", async () => {
+    const root = await tempRoot("cpb-wt-ret");
+    const canonicalRoot = await realpath(root);
+    const wtPath = path.join(root, "worktrees", "wt-arch-late-collision");
+    const archiveRoot = path.join(canonicalRoot, "archive");
+    await mkdir(wtPath, { recursive: true });
+    await writeFile(path.join(wtPath, "file.txt"), "source data", "utf8");
+    const { hubRoot } = await setupJobsIndex(root, [
+      { project: "test", jobId: "job-arch-late-001", status: "completed", worktree: wtPath },
+    ]);
+
+    const result = await withCleanupTestHooksForTests({
+      afterArchiveDestinationCheck: async ({ destination }) => {
+        await mkdir(destination, { recursive: false });
+        await writeFile(path.join(destination, "file.txt"), "late archive", "utf8");
+      },
+    }, () => cleanupWorktrees(root, {
+      policy: { completed: "archive", archiveRoot },
+      dryRun: false,
+      hubRoot,
+    }));
+
+    const entry = result.entries.find((item) => item.jobId === "job-arch-late-001");
+    assert.equal(entry.action, "preserve");
+    assert.equal(entry.result, "preserved");
+    assert.match(entry.reason, /destination already exists/);
+    assert.equal(await readFile(path.join(wtPath, "file.txt"), "utf8"), "source data");
+    assert.equal(await readFile(path.join(archiveRoot, path.basename(wtPath), "file.txt"), "utf8"), "late archive");
+  });
+
+  test("delete action preserves successor when target generation changes at final window", async () => {
+    const root = await tempRoot("cpb-wt-ret");
+    const wtPath = path.join(root, "worktrees", "wt-aba");
+    const displaced = path.join(root, "worktrees", "wt-aba-original");
+    await mkdir(wtPath, { recursive: true });
+    await writeFile(path.join(wtPath, "file.txt"), "original", "utf8");
+    const { hubRoot } = await setupJobsIndex(root, [
+      { project: "test", jobId: "job-aba-001", status: "completed", worktree: wtPath },
+    ]);
+
+    const result = await withCleanupTestHooksForTests({
+      beforeWorktreeRename: async ({ worktree }) => {
+        await rename(worktree, displaced);
+        await mkdir(worktree, { recursive: true });
+        await writeFile(path.join(worktree, "file.txt"), "successor", "utf8");
+      },
+    }, () => cleanupWorktrees(root, {
+      policy: { completed: "delete" },
+      dryRun: false,
+      hubRoot,
+    }));
+
+    const entry = result.entries.find((e) => e.jobId === "job-aba-001");
+    assert.equal(entry.result, "preserved");
+    assert.equal(entry.action, "preserve");
+    assert.match(entry.reason, /changed before cleanup rename/);
+    assert.equal(await readFile(path.join(wtPath, "file.txt"), "utf8"), "successor");
+    assert.equal(await readFile(path.join(displaced, "file.txt"), "utf8"), "original");
+  });
+
+  test("delete action preserves a same-path successor published after planning", async () => {
+    const root = await tempRoot("cpb-wt-ret");
+    const wtPath = path.join(root, "worktrees", "wt-plan-successor");
+    const displaced = path.join(root, "worktrees", "wt-plan-successor-original");
+    await mkdir(wtPath, { recursive: true });
+    await writeFile(path.join(wtPath, "file.txt"), "original", "utf8");
+    const { hubRoot } = await setupJobsIndex(root, [
+      { project: "test", jobId: "job-plan-successor-001", status: "completed", worktree: wtPath },
+    ]);
+
+    let replaced = false;
+    const result = await withCleanupTestHooksForTests({
+      beforeWorktreeAction: async () => {
+        if (replaced) return;
+        replaced = true;
+        await rename(wtPath, displaced);
+        await mkdir(wtPath);
+        await writeFile(path.join(wtPath, "file.txt"), "successor", "utf8");
+      },
+    }, () => cleanupWorktrees(root, {
+      policy: { completed: "delete" },
+      dryRun: false,
+      hubRoot,
+    }));
+
+    const entry = result.entries.find((item) => item.jobId === "job-plan-successor-001");
+    assert.equal(entry.action, "preserve");
+    assert.equal(entry.result, "preserved");
+    assert.match(entry.reason, /directory identity changed after planning/);
+    assert.equal(await readFile(path.join(wtPath, "file.txt"), "utf8"), "successor");
+    assert.equal(await readFile(path.join(displaced, "file.txt"), "utf8"), "original");
+  });
+
+  test("delete action rejects a successor that predates planning when durable ownership identifies the predecessor", async () => {
+    const root = await tempRoot("cpb-wt-ret");
+    const wtPath = path.join(root, "worktrees", "wt-owned-successor");
+    const displaced = path.join(root, "worktrees", "wt-owned-successor-original");
+    await mkdir(wtPath, { recursive: true });
+    await writeFile(path.join(wtPath, "file.txt"), "original", "utf8");
+    const owned = await lstat(wtPath, { bigint: true });
+    const worktreeOwnership = {
+      version: 2,
+      state: "ready",
+      ownerToken: randomUUID(),
+      baseBranch: "main",
+      baseCommit: "a".repeat(40),
+      directory: {
+        dev: String(owned.dev),
+        ino: String(owned.ino),
+        birthtimeNs: String(owned.birthtimeNs),
+        mode: String(owned.mode),
+        uid: String(owned.uid),
+        gid: String(owned.gid),
+      },
+    };
+    const { hubRoot } = await setupJobsIndex(root, [
+      {
+        project: "test",
+        jobId: "job-owned-successor-001",
+        status: "completed",
+        worktree: wtPath,
+        worktreeOwnership,
+      },
+    ]);
+    await rename(wtPath, displaced);
+    await mkdir(wtPath);
+    await writeFile(path.join(wtPath, "file.txt"), "successor", "utf8");
+
+    const result = await cleanupWorktrees(root, {
+      policy: { completed: "delete" },
+      dryRun: false,
+      hubRoot,
+    });
+
+    const entry = result.entries.find((item) => item.jobId === "job-owned-successor-001");
+    assert.equal(entry.action, "preserve");
+    assert.equal(entry.result, "preserved");
+    assert.match(entry.reason, /durable ownership identity/);
+    assert.equal(await readFile(path.join(wtPath, "file.txt"), "utf8"), "successor");
+    assert.equal(await readFile(path.join(displaced, "file.txt"), "utf8"), "original");
+  });
+
+  test("delete action rejects a source ancestor replaced by a symlink to the original tree", async () => {
+    if (process.platform === "win32") return;
+    const root = await tempRoot("cpb-wt-ret");
+    const hubRoot = path.join(root, "hub");
+    const wtPath = path.join(hubRoot, "worktrees", "wt-ancestor-aba");
+    const displacedHub = path.join(root, "hub-original");
+    await mkdir(wtPath, { recursive: true });
+    await writeFile(path.join(wtPath, "file.txt"), "original", "utf8");
+    await setupJobsIndex(root, [
+      { project: "test", jobId: "job-ancestor-aba-001", status: "completed", worktree: wtPath },
+    ]);
+
+    const result = await withCleanupTestHooksForTests({
+      beforeWorktreeRename: async () => {
+        await rename(hubRoot, displacedHub);
+        await symlink(displacedHub, hubRoot, "dir");
+      },
+    }, () => cleanupWorktrees(root, {
+      policy: { completed: "delete" },
+      dryRun: false,
+      hubRoot,
+    }));
+
+    const entry = result.entries.find((item) => item.jobId === "job-ancestor-aba-001");
+    assert.equal(entry.action, "preserve");
+    assert.equal(entry.result, "preserved");
+    assert.match(entry.reason, /source ancestor changed before cleanup rename/);
+    assert.equal(await readFile(path.join(displacedHub, "worktrees", "wt-ancestor-aba", "file.txt"), "utf8"), "original");
   });
 
   test("preserve action leaves worktree untouched", async () => {
@@ -651,7 +924,7 @@ describe("workflow-retention: workflow-aware plan entries use workflow policy", 
 
 // ── Orphan Worktree Detection ──
 
-describe("worktree-retention: orphan worktrees detected and cleaned", () => {
+describe("worktree-retention: unassociated worktrees are detected and preserved", () => {
   test("orphan worktree directory with no associated job is detected", async () => {
     const root = await tempRoot("cpb-wt-orphan");
     const wtJob = path.join(root, "worktrees", "wt-has-job");
@@ -667,12 +940,12 @@ describe("worktree-retention: orphan worktrees detected and cleaned", () => {
     assert.ok(plan.orphans, "plan must have orphans array");
     assert.equal(plan.orphans.length, 1);
     assert.equal(plan.orphans[0].worktree, wtOrphan);
-    assert.equal(plan.orphans[0].action, "delete");
-    assert.ok(plan.orphans[0].reason.includes("orphan"));
+    assert.equal(plan.orphans[0].action, "preserve");
+    assert.match(plan.orphans[0].reason, /absence of a published job is not cleanup authorization/);
     assert.equal(plan.summary.orphanCount, 1);
   });
 
-  test("orphan worktree is deleted on actual cleanup", async () => {
+  test("fresh worktree without a published job is preserved on actual cleanup", async () => {
     const root = await tempRoot("cpb-wt-orphan");
     const wtJob = path.join(root, "worktrees", "wt-has-job2");
     const wtOrphan = path.join(root, "worktrees", "wt-orphan2");
@@ -690,11 +963,11 @@ describe("worktree-retention: orphan worktrees detected and cleaned", () => {
       hubRoot,
     });
 
-    // The orphan should be deleted
-    await assert.rejects(
-      () => readFile(path.join(wtOrphan, "stale.txt")),
-      "orphan worktree must be deleted",
-    );
+    assert.equal(await readFile(path.join(wtOrphan, "stale.txt"), "utf8"), "orphan data");
+    const orphanEntry = result.entries.find((e) => path.basename(e.worktree) === path.basename(wtOrphan));
+    assert.equal(orphanEntry.result, "preserved");
+    assert.equal(orphanEntry.action, "preserve");
+    assert.match(orphanEntry.reason, /absence of a published job is not cleanup authorization/);
     // The job-associated worktree should still exist
     const marker = await readFile(path.join(wtJob, "file.txt"), "utf8").catch(() => null);
     // worktree for completed pipeline is preserved by explicit policy

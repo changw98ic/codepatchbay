@@ -15,7 +15,7 @@ import {
 } from "./candidate-artifact.js";
 import {
   replayCandidateBundleInCleanWorktree,
-  replayCandidateInCleanWorktree,
+  validateCandidateReplayBundle,
   type CandidateReplayBundle,
 } from "./candidate-replay.js";
 import {
@@ -25,6 +25,7 @@ import {
 } from "../workflow/scope-amendment.js";
 
 import { isRecord, type LooseRecord } from "../contracts/types.js";
+import type { GetArtifactIndexPort, RunJobPorts, RunJobState } from "./run-job-ports.js";
 
 type CompletionGateRunnerResult = {
   status: string;
@@ -33,25 +34,22 @@ type CompletionGateRunnerResult = {
   failure: LooseRecord | null;
   phaseResults: LooseRecord[];
   completionReport?: LooseRecord | null;
+  completionGate?: {
+    outcome: "complete";
+    completionReport: LooseRecord;
+  };
 };
 
-type CompletionGateRunnerInput = {
-  cpbRoot: string;
-  project: string;
+type CompletionGateRunnerInput = Pick<RunJobState, "cpbRoot" | "project" | "dataRoot" | "sourcePath" | "env"> &
+  Pick<RunJobPorts, "appendEvent" | "failJob" | "completeJob" | "onProgress"> & {
   jobId: string;
   job: LooseRecord;
   workflowDag: LooseRecord;
   riskMap?: LooseRecord | null;
   dynamicAgentPlan?: LooseRecord | null;
   phaseResults: LooseRecord[];
-  dataRoot?: string;
-  sourcePath?: string;
   attemptId?: string | null;
-  getArtifactIndex?: unknown;
-  appendEvent: (cpbRoot: string, project: string, jobId: string, event: LooseRecord) => Promise<unknown> | unknown;
-  failJob: (cpbRoot: string, project: string, jobId: string, failure: LooseRecord) => Promise<unknown> | unknown;
-  completeJob: (cpbRoot: string, project: string, jobId: string) => Promise<unknown> | unknown;
-  onProgress?: ((event: LooseRecord) => Promise<unknown> | unknown) | null;
+  getArtifactIndex?: GetArtifactIndexPort | null;
   now?: () => string;
   deferRepairableFailure?: boolean;
   repairContext?: LooseRecord | null;
@@ -89,10 +87,21 @@ function candidateFromLatestExecute(phaseResults: LooseRecord[]): CandidateArtif
   return candidate as CandidateArtifact;
 }
 
-function replayBundleFromLatestExecute(phaseResults: LooseRecord[]): CandidateReplayBundle | null {
+type CandidateReplayBundleReadResult = {
+  bundle: CandidateReplayBundle | null;
+  invalidReason: string | null;
+};
+
+function replayBundleFromLatestExecute(phaseResults: LooseRecord[]): CandidateReplayBundleReadResult {
   const executeResult = phaseResultNamed(phaseResults, "execute");
   const diagnostics = objectValue(executeResult?.diagnostics);
-  const bundle = objectValue(diagnostics?.candidateReplayBundle);
+  if (!diagnostics || !Object.prototype.hasOwnProperty.call(diagnostics, "candidateReplayBundle")) {
+    return {
+      bundle: null,
+      invalidReason: "missing persisted candidate replay bundle",
+    };
+  }
+  const bundle = objectValue(diagnostics.candidateReplayBundle);
   if (
     !bundle
     || bundle.schemaVersion !== 1
@@ -103,8 +112,24 @@ function replayBundleFromLatestExecute(phaseResults: LooseRecord[]): CandidateRe
     || typeof bundle.patchBytes !== "number"
     || typeof bundle.bundleHash !== "string"
     || typeof bundle.patch !== "string"
-  ) return null;
-  return bundle as CandidateReplayBundle;
+  ) {
+    return {
+      bundle: null,
+      invalidReason: "malformed persisted candidate replay bundle",
+    };
+  }
+  const typedBundle = bundle as CandidateReplayBundle;
+  const validationError = validateCandidateReplayBundle(typedBundle);
+  if (validationError) {
+    return {
+      bundle: null,
+      invalidReason: `malformed persisted candidate replay bundle: ${validationError}`,
+    };
+  }
+  return {
+    bundle: typedBundle,
+    invalidReason: null,
+  };
 }
 
 function validatedCandidateHashFromLatestVerify(phaseResults: LooseRecord[]) {
@@ -126,6 +151,7 @@ export async function runCompletionGate({
   phaseResults,
   dataRoot,
   sourcePath,
+  env,
   attemptId = null,
   getArtifactIndex = null,
   appendEvent,
@@ -136,6 +162,7 @@ export async function runCompletionGate({
   deferRepairableFailure = false,
   repairContext = null,
 }: CompletionGateRunnerInput): Promise<CompletionGateRunnerResult> {
+  const runtimeEnv = env ?? process.env;
   const parsedVerdict = parseVerdict(verdictTextForPhase(phaseResults, "verify"));
   const parsedAdversarialVerdict = parseVerdict(verdictTextForPhase(phaseResults, "adversarial_verify"));
   const jobForGate = { ...job, completedPhases: completedPhaseNames(phaseResults) };
@@ -144,7 +171,7 @@ export async function runCompletionGate({
     cpbRoot,
     project,
     jobId,
-    dataRoot,
+    dataRoot: dataRoot ?? undefined,
     attemptId,
     getArtifactIndex,
   });
@@ -177,8 +204,22 @@ export async function runCompletionGate({
   let candidateValidation: LooseRecord | null = null;
   const expectedCandidate = candidateFromLatestExecute(phaseResults);
   if (expectedCandidate) {
-    const replayBundle = replayBundleFromLatestExecute(phaseResults);
-    if (replayBundle && replayBundle.candidateIdentityHash !== expectedCandidate.identityHash) {
+    const replayBundleResult = replayBundleFromLatestExecute(phaseResults);
+    if (replayBundleResult.invalidReason) {
+      return handleArtifactInvalidCompletionFailure({
+        cpbRoot,
+        project,
+        jobId,
+        artifactInvalidReason: replayBundleResult.invalidReason,
+        phaseResults,
+        appendEvent,
+        failJob,
+        onProgress,
+        now,
+      });
+    }
+    const replayBundle = replayBundleResult.bundle as CandidateReplayBundle;
+    if (replayBundle.candidateIdentityHash !== expectedCandidate.identityHash) {
       return handleArtifactInvalidCompletionFailure({
         cpbRoot,
         project,
@@ -205,17 +246,12 @@ export async function runCompletionGate({
         now,
       });
     }
-    const candidateReplay = replayBundle
-      ? await replayCandidateBundleInCleanWorktree({
-          cwd: sourcePath || process.env.CPB_PROJECT_PATH_OVERRIDE || cpbRoot,
-          bundle: replayBundle,
-          replayedAt: now(),
-        })
-      : await replayCandidateInCleanWorktree({
-          cwd: sourcePath || process.env.CPB_PROJECT_PATH_OVERRIDE || cpbRoot,
-          candidate: expectedCandidate,
-          replayedAt: now(),
-        });
+    const candidateReplay = await replayCandidateBundleInCleanWorktree({
+      cwd: sourcePath || runtimeEnv.CPB_PROJECT_PATH_OVERRIDE || cpbRoot,
+      bundle: replayBundle,
+      replayedAt: now(),
+      env: runtimeEnv,
+    });
     await appendEvent(cpbRoot, project, jobId, {
       type: "candidate_clean_replay",
       jobId,
@@ -242,8 +278,9 @@ export async function runCompletionGate({
     }
     try {
       const actualCandidate = await captureCandidateArtifact({
-        cwd: sourcePath || process.env.CPB_PROJECT_PATH_OVERRIDE || cpbRoot,
+        cwd: sourcePath || runtimeEnv.CPB_PROJECT_PATH_OVERRIDE || cpbRoot,
         base: expectedCandidate.baseSha,
+        env: runtimeEnv,
       });
       const candidateVerification = verifyCandidateArtifactIdentity(expectedCandidate, actualCandidate, {
         verifiedAt: now(),

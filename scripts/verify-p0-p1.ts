@@ -3,7 +3,10 @@ import { spawn } from "node:child_process";
 import { access } from "node:fs/promises";
 import path from "node:path";
 
-const ROOT = path.resolve(import.meta.dirname, "..");
+const RUNTIME_ROOT = path.resolve(import.meta.dirname, "..");
+const REPO_ROOT = path.resolve(RUNTIME_ROOT, "..");
+const COMPILED_TEST_ROOT = path.join(REPO_ROOT, "dist-tests");
+const COMPILED_TEST_RUNNER = path.join(COMPILED_TEST_ROOT, "scripts", "run-node-tests.js");
 const args = new Set(process.argv.slice(2));
 
 const PASS = "\x1b[0;32mPASS\x1b[0m";
@@ -85,7 +88,7 @@ function run(label: string, command: string, commandArgs: string[], options: { e
   console.log(`$ ${commandText(command, commandArgs)}`);
   return new Promise((resolve) => {
     const child = spawn(command, commandArgs, {
-      cwd: ROOT,
+      cwd: REPO_ROOT,
       stdio: "inherit",
       env: {
         ...process.env,
@@ -109,7 +112,7 @@ async function assertFocusedTestsExist(paths: string[]) {
   const missing = [];
   for (const testPath of paths) {
     try {
-      await access(path.join(ROOT, testPath));
+      await access(path.join(COMPILED_TEST_ROOT, testPath));
     } catch {
       missing.push(testPath);
     }
@@ -149,12 +152,12 @@ if (!(await assertFocusedTestsExist([...focusedTests, ...isolatedFocusedTests]))
   process.exitCode = 1;
 } else {
   checks.push(await run("static: git diff --check", "git", ["diff", "--check"]));
-  checks.push(await run("focused P0/P1 node tests", process.execPath, ["scripts/run-node-tests.js", ...focusedTests]));
+  checks.push(await run("focused P0/P1 node tests", process.execPath, [COMPILED_TEST_RUNNER, ...focusedTests]));
   checks.push(await run("focused P0/P1 isolated node tests", process.execPath, [
-    "scripts/run-node-tests.js",
+    COMPILED_TEST_RUNNER,
     ...isolatedFocusedTests,
   ]));
-  checks.push(await run("CLI smoke", process.execPath, ["scripts/ci-smoke.js"]));
+  checks.push(await run("CLI smoke", process.execPath, [path.join(RUNTIME_ROOT, "scripts", "ci-smoke.js")]));
   checks.push(await runLiveChecks());
 
   if (args.has("--full")) {

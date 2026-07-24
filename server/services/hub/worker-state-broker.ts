@@ -46,6 +46,49 @@ function pick(source: LooseRecord, keys: string[]) {
   return result;
 }
 
+export function validateWorkerBrokerEvent(value: unknown): EventRecord {
+  if (!isRecord(value)) {
+    throw brokerError("HUB_WORKER_BROKER_REQUEST_INVALID", "worker broker event must be an object", 400);
+  }
+  if (typeof value.type !== "string" || !/^[a-z][a-z0-9_]*$/.test(value.type)) {
+    throw brokerError("HUB_WORKER_BROKER_REQUEST_INVALID", "worker broker event.type is invalid", 400);
+  }
+  for (const field of ["phase", "kind", "artifactKind", "artifact", "promptArtifact", "agent", "producerAgent", "attemptId"] as const) {
+    const candidate = value[field];
+    if (candidate !== undefined && candidate !== null && typeof candidate !== "string") {
+      throw brokerError(
+        "HUB_WORKER_BROKER_REQUEST_INVALID",
+        `worker broker event.${field} must be a string or null`,
+        400,
+      );
+    }
+  }
+  if (value.type === "artifact_created") {
+    if (typeof value.artifact !== "string" || !value.artifact.trim()) {
+      throw brokerError(
+        "HUB_WORKER_BROKER_REQUEST_INVALID",
+        "worker broker artifact_created event requires a non-empty artifact",
+        400,
+      );
+    }
+    const artifactKind = typeof value.kind === "string" && value.kind.trim()
+      ? value.kind
+      : value.artifactKind;
+    if (typeof artifactKind !== "string" || !artifactKind.trim()) {
+      throw brokerError(
+        "HUB_WORKER_BROKER_REQUEST_INVALID",
+        "worker broker artifact_created event requires a non-empty kind or artifactKind",
+        400,
+      );
+    }
+  }
+  if (value.ts !== undefined
+    && (typeof value.ts !== "string" || !Number.isFinite(Date.parse(value.ts)))) {
+    throw brokerError("HUB_WORKER_BROKER_REQUEST_INVALID", "worker broker event.ts must be a valid timestamp", 400);
+  }
+  return value as EventRecord;
+}
+
 export async function readWorkerBrokerBody(request: AsyncIterable<unknown>) {
   const chunks: Buffer[] = [];
   let size = 0;
@@ -99,9 +142,10 @@ export async function handleWorkerStateBroker({
   }
   const args: LooseRecord = isRecord(body.args) ? body.args as LooseRecord : {};
   const assignmentId = String(args.assignmentId || "");
+  let assignmentActive: LooseRecord | null = null;
   if (op.startsWith("assignment.")) {
-    const active = assignmentId ? await assignments.getActiveAttempt(assignmentId) : null;
-    if (!active || active.workerId !== workerId) {
+    assignmentActive = assignmentId ? await assignments.getActiveAttempt(assignmentId) : null;
+    if (!assignmentActive || assignmentActive.workerId !== workerId) {
       throw brokerError("HUB_WORKER_BROKER_OPERATION_DENIED", "assignment is not owned by this worker incarnation", 403);
     }
   }
@@ -168,6 +212,22 @@ export async function handleWorkerStateBroker({
     case "inbox.claim": return await workers.claimInboxEntries(workerId, incarnationToken);
     case "inbox.ack": return await workers.completeInboxClaim(workerId, String(args.assignmentId || ""), String(args.claimToken || ""));
     case "inbox.renew": return await workers.renewInboxClaim(workerId, String(args.assignmentId || ""), String(args.claimToken || ""), incarnationToken);
+    case "assignment.attempt": {
+      const requestedAssignmentId = String(args.assignmentId || "");
+      const requestedAttempt = Number(args.attempt);
+      const activeAttempt = Number(assignmentActive?.attempt);
+      if (requestedAssignmentId !== assignmentId
+        || !Number.isSafeInteger(requestedAttempt)
+        || requestedAttempt < 1
+        || requestedAttempt >= activeAttempt) {
+        throw brokerError(
+          "HUB_WORKER_BROKER_OPERATION_DENIED",
+          "only a prior attempt of the active assignment may be observed",
+          403,
+        );
+      }
+      return await assignments.getAttempt(assignmentId, requestedAttempt);
+    }
     case "assignment.assert":
       return await assignments.assertActiveAttemptIdentity(assignmentId, Number(args.attempt), isRecord(args.identity) ? args.identity as AttemptIdentity : {} as AttemptIdentity);
     case "assignment.running":
@@ -182,7 +242,11 @@ export async function handleWorkerStateBroker({
       );
     case "project.get": {
       const scope = scopedJob();
-      return pick(scope.project, ["projectId", "sourcePath", "projectRuntimeRoot"]);
+      return {
+        projectId: scope.projectId,
+        sourcePath: typeof scope.project.sourcePath === "string" ? scope.project.sourcePath : null,
+        projectRuntimeRoot: scope.dataRoot,
+      };
     }
     case "job.create": {
       const scope = scopedJob();
@@ -241,7 +305,7 @@ export async function handleWorkerStateBroker({
     }
     case "event.append": {
       const scope = scopedJob();
-      const event = isRecord(args.event) ? args.event as EventRecord : {} as EventRecord;
+      const event = validateWorkerBrokerEvent(args.event);
       return await appendEvent(cpbRoot, scope.projectId, scope.jobId, {
         ...event,
         jobId: scope.jobId,

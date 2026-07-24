@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile as execFileCb } from "node:child_process";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
@@ -12,6 +12,32 @@ import { buildScopeReviewRequest } from "../core/workflow/scope-amendment.js";
 import { tempRoot } from "./helpers.js";
 
 const execFile = promisify(execFileCb);
+
+async function makeJobGitEnv() {
+  const root = await tempRoot("cpb-completion-git-env");
+  const bin = path.join(root, "bin");
+  const log = path.join(root, "git.log");
+  const gitPath = path.join(bin, "git");
+  await mkdir(bin, { recursive: true });
+  await writeFile(gitPath, `#!/bin/sh
+if [ "\${CPB_AMBIENT_GIT_POISON+x}" = "x" ]; then
+  echo "ambient git poison leaked" >&2
+  exit 86
+fi
+printf '%s\\n' "$*" >> ${JSON.stringify(log)}
+exec /usr/bin/git "$@"
+`, "utf8");
+  await chmod(gitPath, 0o755);
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    PATH: `${bin}:/usr/bin:/bin`,
+  };
+  delete env.CPB_AMBIENT_GIT_POISON;
+  return {
+    log,
+    env,
+  };
+}
 
 test("runCompletionGate appends a complete gate event and completes the job", async () => {
   const events: Record<string, unknown>[] = [];
@@ -100,6 +126,7 @@ test("runCompletionGate fails closed when the candidate changes after verificati
   await execFile("git", ["commit", "-m", "base"], { cwd: sourcePath });
   await writeFile(path.join(sourcePath, "target.txt"), "candidate one\n", "utf8");
   const candidateArtifact = await captureCandidateArtifact({ cwd: sourcePath });
+  const candidateReplayBundle = await createCandidateReplayBundle({ cwd: sourcePath, candidate: candidateArtifact });
   await writeFile(path.join(sourcePath, "target.txt"), "candidate two\n", "utf8");
 
   const events: Record<string, unknown>[] = [];
@@ -114,7 +141,7 @@ test("runCompletionGate fails closed when the candidate changes after verificati
     workflowDag: { nodes: [{ id: "execute", phase: "execute" }, { id: "verify", phase: "verify" }] },
     riskMap: {},
     phaseResults: [
-      { phase: "execute", status: "passed", diagnostics: { candidateArtifact } },
+      { phase: "execute", status: "passed", diagnostics: { candidateArtifact, candidateReplayBundle } },
       {
         phase: "verify",
         status: "passed",
@@ -132,6 +159,97 @@ test("runCompletionGate fails closed when the candidate changes after verificati
   assert.equal(failures.length, 1);
   assert.match(String(failures[0].reason), /candidate changed before completion/i);
   assert.ok(events.some((event) => event.type === "candidate_identity_checked" && event.matches === false));
+});
+
+test("runCompletionGate fails closed when a candidate has no persisted replay bundle", async () => {
+  const candidateArtifact = {
+    schemaVersion: 1,
+    baseSha: "0".repeat(40),
+    headSha: "1".repeat(40),
+    treeHash: "2".repeat(40),
+    patchHash: "sha256:patch",
+    identityHash: "sha256:candidate",
+    changedFiles: ["target.txt"],
+  };
+  const events: Record<string, unknown>[] = [];
+  const failures: Record<string, unknown>[] = [];
+
+  const result = await runCompletionGate({
+    cpbRoot: "/tmp/cpb",
+    project: "proj",
+    jobId: "job-missing-candidate-bundle",
+    job: { workflow: "standard", planMode: "full" },
+    workflowDag: { nodes: [{ id: "execute", phase: "execute" }, { id: "verify", phase: "verify" }] },
+    riskMap: {},
+    phaseResults: [
+      { phase: "execute", status: "passed", diagnostics: { candidateArtifact } },
+      {
+        phase: "verify",
+        status: "passed",
+        verdict: "VERDICT: PASS",
+        diagnostics: { validatedCandidateIdentityHash: candidateArtifact.identityHash },
+      },
+    ],
+    appendEvent: async (_cpbRoot, _project, _jobId, event) => { events.push(event); },
+    failJob: async (_cpbRoot, _project, _jobId, failure) => { failures.push(failure); },
+    completeJob: async () => { throw new Error("completeJob should not be called"); },
+  });
+
+  assert.equal(result.status, "failed");
+  assert.match(String(result.failure?.reason), /missing persisted candidate replay bundle/i);
+  assert.match(String(failures[0].reason), /missing persisted candidate replay bundle/i);
+  assert.equal(events.some((event) => event.type === "candidate_clean_replay"), false);
+});
+
+test("runCompletionGate fails closed when a candidate replay bundle is malformed", async () => {
+  const candidateArtifact = {
+    schemaVersion: 1,
+    baseSha: "0".repeat(40),
+    headSha: "1".repeat(40),
+    treeHash: "2".repeat(40),
+    patchHash: "sha256:patch",
+    identityHash: "sha256:candidate",
+    changedFiles: ["target.txt"],
+  };
+  const candidateReplayBundle = {
+    schemaVersion: 1,
+    baseSha: "not-a-sha",
+    expectedTreeHash: "2".repeat(40),
+    candidateIdentityHash: candidateArtifact.identityHash,
+    patchSha256: "sha256:" + "3".repeat(64),
+    patchBytes: 0,
+    bundleHash: "sha256:" + "4".repeat(64),
+    patch: "",
+  };
+  const events: Record<string, unknown>[] = [];
+  const failures: Record<string, unknown>[] = [];
+
+  const result = await runCompletionGate({
+    cpbRoot: "/tmp/cpb",
+    project: "proj",
+    jobId: "job-malformed-candidate-bundle",
+    job: { workflow: "standard", planMode: "full" },
+    workflowDag: { nodes: [{ id: "execute", phase: "execute" }, { id: "verify", phase: "verify" }] },
+    riskMap: {},
+    phaseResults: [
+      { phase: "execute", status: "passed", diagnostics: { candidateArtifact, candidateReplayBundle } },
+      {
+        phase: "verify",
+        status: "passed",
+        verdict: "VERDICT: PASS",
+        diagnostics: { validatedCandidateIdentityHash: candidateArtifact.identityHash },
+      },
+    ],
+    appendEvent: async (_cpbRoot, _project, _jobId, event) => { events.push(event); },
+    failJob: async (_cpbRoot, _project, _jobId, failure) => { failures.push(failure); },
+    completeJob: async () => { throw new Error("completeJob should not be called"); },
+  });
+
+  assert.equal(result.status, "failed");
+  assert.match(String(result.failure?.reason), /malformed persisted candidate replay bundle/i);
+  assert.match(String(result.failure?.reason), /base commit is invalid/i);
+  assert.match(String(failures[0].reason), /malformed persisted candidate replay bundle/i);
+  assert.equal(events.some((event) => event.type === "candidate_clean_replay"), false);
 });
 
 test("runCompletionGate returns candidate identity and clean replay evidence on success", async () => {
@@ -172,6 +290,7 @@ test("runCompletionGate returns candidate identity and clean replay evidence on 
 
     assert.equal(result.status, "completed");
     const report = result.completionReport as Record<string, unknown>;
+    assert.deepEqual(result.completionGate, { outcome: "complete", completionReport: report });
     const validation = report.candidateValidation as Record<string, unknown>;
     assert.equal(validation.identityHash, candidateArtifact.identityHash);
     assert.equal(validation.patchHash, candidateArtifact.patchHash);
@@ -194,6 +313,62 @@ test("runCompletionGate returns candidate identity and clean replay evidence on 
     )));
     assert.ok(events.some((event) => event.type === "candidate_identity_checked" && event.matches === true));
   } finally {
+    await rm(sourcePath, { recursive: true, force: true });
+  }
+});
+
+test("runCompletionGate replays and recaptures candidates with the explicit job env", { concurrency: false }, async () => {
+  const sourcePath = await tempRoot("cpb-completion-candidate-env");
+  const gitEnv = await makeJobGitEnv();
+  const previousPoison = process.env.CPB_AMBIENT_GIT_POISON;
+  try {
+    await execFile("git", ["init"], { cwd: sourcePath });
+    await execFile("git", ["config", "user.email", "cpb@example.invalid"], { cwd: sourcePath });
+    await execFile("git", ["config", "user.name", "CPB Test"], { cwd: sourcePath });
+    await writeFile(path.join(sourcePath, "target.txt"), "base\n", "utf8");
+    await execFile("git", ["add", "target.txt"], { cwd: sourcePath });
+    await execFile("git", ["commit", "-m", "base"], { cwd: sourcePath });
+    await writeFile(path.join(sourcePath, "target.txt"), "validated candidate\n", "utf8");
+    const candidateArtifact = await captureCandidateArtifact({ cwd: sourcePath, env: gitEnv.env });
+    const candidateReplayBundle = await createCandidateReplayBundle({ cwd: sourcePath, candidate: candidateArtifact, env: gitEnv.env });
+    const beforeCompletionLog = await readFile(gitEnv.log, "utf8");
+    process.env.CPB_AMBIENT_GIT_POISON = "ambient-only";
+
+    const result = await runCompletionGate({
+      cpbRoot: sourcePath,
+      sourcePath,
+      env: gitEnv.env,
+      project: "proj",
+      jobId: "job-candidate-env",
+      job: { workflow: "standard", planMode: "full" },
+      workflowDag: { nodes: [{ id: "execute", phase: "execute" }, { id: "verify", phase: "verify" }] },
+      riskMap: {},
+      phaseResults: [
+        { phase: "execute", status: "passed", diagnostics: { candidateArtifact, candidateReplayBundle } },
+        {
+          phase: "verify",
+          status: "passed",
+          verdict: "VERDICT: PASS",
+          diagnostics: { validatedCandidateIdentityHash: candidateArtifact.identityHash },
+        },
+      ],
+      appendEvent: async () => {},
+      failJob: async () => { throw new Error("failJob should not be called"); },
+      completeJob: async () => {},
+    });
+
+    assert.equal(result.status, "completed");
+    const afterCompletionLog = await readFile(gitEnv.log, "utf8");
+    const appendedLog = afterCompletionLog.slice(beforeCompletionLog.length);
+    assert.match(appendedLog, /worktree add/);
+    assert.match(appendedLog, /write-tree/);
+    assert.match(appendedLog, /rev-parse --show-toplevel/);
+  } finally {
+    if (previousPoison === undefined) {
+      delete process.env.CPB_AMBIENT_GIT_POISON;
+    } else {
+      process.env.CPB_AMBIENT_GIT_POISON = previousPoison;
+    }
     await rm(sourcePath, { recursive: true, force: true });
   }
 });

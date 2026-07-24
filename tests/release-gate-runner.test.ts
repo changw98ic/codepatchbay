@@ -12,6 +12,7 @@ const runtimeScript = path.join(repoRoot, "dist", "scripts", "verify-release-gat
 const ciWorkflow = path.join(repoRoot, ".github", "workflows", "test.yml");
 const flagshipGateDoc = path.join(repoRoot, "docs", "product", "cpb-flagship-validation-gate.md");
 const packageJson = path.join(repoRoot, "package.json");
+const distTestsRoot = path.join(repoRoot, "dist-tests");
 
 test("CI installs a Linux sandbox provider before ACP tests", async () => {
   const source = await readFile(ciWorkflow, "utf8");
@@ -33,10 +34,15 @@ test("release gate runner refuses decomposition-disabled environments and bypass
   assert.match(source, /dist-tests\/tests\/completion-gate-runner\.test\.js/);
   assert.match(source, /dist-tests\/tests\/auto-finalizer\.test\.js/);
   assert.match(source, /dist-tests\/tests\/github-draft-pr\.test\.js/);
+  assert.match(source, /dist-tests\/tests\/disposable-draft-pr-rehearsal\.test\.js/);
+  assert.match(source, /dist-tests\/tests\/live-release-evidence\.test\.js/);
+  assert.match(source, /dist-tests\/tests\/product-gate\.test\.js/);
+  assert.match(source, /dist-tests\/tests\/release-readiness-report\.test\.js/);
   assert.match(source, /dist-tests\/tests\/phase-budget-policy\.test\.js/);
   assert.match(source, /dist-tests\/tests\/swebench-batch-queue\.test\.js/);
-  assert.match(source, /dist\/tests\/integration\/managed-worker\.test\.js/);
+  assert.match(source, /dist-tests\/tests\/integration\/managed-worker\.test\.js/);
   assert.match(source, /flagship issue to draft PR dry-run uses default checklist decomposition and evidence/);
+  assert.match(source, /release gate: release readiness report/);
   assert.doesNotMatch(source, /default checklist decomposition runs inside the worker path\|writes dry-run PR preview/);
   assert.match(source, /--test-name-pattern/);
 
@@ -74,10 +80,28 @@ test("test build copies runtime registry assets required by dist-tests", async (
   const pkg = JSON.parse(await readFile(packageJson, "utf8"));
   const buildTests = String(pkg.scripts["build:tests"] || "");
 
-  assert.match(buildTests, /find cli core server runtime bridges shared scripts/);
-  assert.match(buildTests, /-name '\*\.json'/);
-  assert.match(buildTests, /dist-tests\/\$\(dirname/);
-  assert.match(buildTests, /find tests -type f/);
+  assert.match(buildTests, /node scripts\/build-output\.mjs tests/);
+  assert.doesNotMatch(buildTests, /\brm\s+-rf\b|\bfind\s+cli\b/);
+
+  for (const relative of [
+    "package.json",
+    "core/agents/descriptors/codex.json",
+    "core/agents/squads.json",
+    "bridges/common.sh",
+    "tests/fixtures/acp-client-stub.sh",
+  ]) {
+    assert.equal(
+      await readFile(path.join(distTestsRoot, relative), "utf8"),
+      await readFile(path.join(repoRoot, relative), "utf8"),
+      `${relative} was not copied exactly into dist-tests`,
+    );
+  }
+
+  await readFile(path.join(distTestsRoot, "scripts", "e2e-npm-pack.js"), "utf8");
+  await assert.rejects(
+    readFile(path.join(distTestsRoot, "scripts", "e2e-npm-pack.ts"), "utf8"),
+    (error: NodeJS.ErrnoException) => error.code === "ENOENT",
+  );
 });
 
 test("flagship validation doc requires patch-integrity evidence for extracted files", async () => {

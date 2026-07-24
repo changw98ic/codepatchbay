@@ -16,7 +16,8 @@ test("P0/P1 focused node tests run through run-node-tests for deterministic fake
     readFile(path.join(process.cwd(), "scripts", "verify-p0-p1.ts"), "utf8")
   ));
 
-  assert.match(source, /scripts\/run-node-tests\.js/);
+  assert.match(source, /COMPILED_TEST_ROOT/);
+  assert.match(source, /COMPILED_TEST_RUNNER/);
   assert.match(source, /tests\/checklist-decompose-integration\.test\.js/);
   assert.match(source, /tests\/phase-budget-policy\.test\.js/);
   assert.match(source, /tests\/phase-retry\.test\.js/);
@@ -54,7 +55,7 @@ test("P0/P1 focused test list references existing source tests", async () => {
 
 test("P0/P1 verifier stops before spawning checks when focused test files are missing", async () => {
   const root = await tempRoot("cpb-verify-p0p1-missing");
-  const scriptsDir = path.join(root, "scripts");
+  const scriptsDir = path.join(root, "dist", "scripts");
   await mkdir(scriptsDir, { recursive: true });
   const source = await readFile(runtimeScript, "utf8");
   const testScript = path.join(scriptsDir, "verify-p0-p1.js");
@@ -76,6 +77,39 @@ test("P0/P1 verifier stops before spawning checks when focused test files are mi
       assert.match(output, /tests\/missing-focused\.test\.js/);
       assert.doesNotMatch(output, /static: git diff --check/);
       assert.doesNotMatch(output, /focused P0\/P1 node tests/);
+      return true;
+    },
+  );
+});
+
+test("P0/P1 verifier checks compiled tests under dist-tests at runtime", async () => {
+  const root = await tempRoot("cpb-verify-p0p1-runtime-path");
+  const scriptsDir = path.join(root, "dist", "scripts");
+  const distTestsDir = path.join(root, "dist-tests", "tests");
+  await mkdir(scriptsDir, { recursive: true });
+  await mkdir(distTestsDir, { recursive: true });
+  const source = await readFile(runtimeScript, "utf8");
+  const testScript = path.join(scriptsDir, "verify-p0-p1.js");
+  const requiredTest = path.join(distTestsDir, "setup-manifest-registry.test.js");
+  await writeFile(requiredTest, "// compiled test placeholder\n", "utf8");
+  await writeFile(
+    testScript,
+    source
+      .replace(/const focusedTests = \[[\s\S]*?\];/, 'const focusedTests = ["tests/setup-manifest-registry.test.js"];')
+      .replace(/const isolatedFocusedTests = \[[\s\S]*?\];/, "const isolatedFocusedTests = [];"),
+    "utf8",
+  );
+
+  await assert.rejects(
+    execFileAsync(process.execPath, [testScript], {
+      cwd: root,
+      timeout: 10_000,
+    }),
+    (error: any) => {
+      const output = `${error.stdout || ""}\n${error.stderr || ""}`;
+      assert.doesNotMatch(output, /missing focused P0\/P1 test files/);
+      assert.match(output, /static: git diff --check/);
+      assert.match(output, /focused P0\/P1 node tests/);
       return true;
     },
   );

@@ -86,6 +86,15 @@ test("plan prompt uses the local checkout regardless of benchmark metadata", asy
   assert.match(capturedPrompt, /Bypass candidates/i);
   assert.match(capturedPrompt, /covers the real task path/i);
   assert.match(capturedPrompt, /Bounded Handoff/i);
+  assert.ok(capturedPrompt.includes([
+    "  ## Bounded Handoff",
+    "  - Real actors: ...",
+    "  - Entrypoints: ...",
+    "  - Bypass candidates: ...",
+    "  - Edit files: ...",
+    "  - Verification targets: ...",
+    "  - Blockers: ...",
+  ].join("\n")), "plan prompt must provide the validator's exact bounded-handoff skeleton");
   assert.doesNotMatch(capturedPrompt, /SWE-bench plan phase hard constraints/i);
   assert.doesNotMatch(capturedPrompt, /Browse the repository/i);
   assert.doesNotMatch(capturedPrompt, /https:\/\/github\.com\/django\/django/i);
@@ -294,6 +303,82 @@ test("standard full coding plan runtime accepts complete bounded handoff", async
   });
 
   assert.equal(result.status, "passed", result.failure?.reason);
+});
+
+test("standard full coding plan runtime accepts plural Bypasses label", async () => {
+  const cpbRoot = await tempRoot("cpb-standard-plan-plural-bypasses");
+  const sourcePath = await tempRoot("cpb-standard-plan-plural-source");
+
+  const pool = {
+    async execute() {
+      return {
+        output: jsonEnvelope({
+          status: "ok",
+          planMarkdown: completeSweBenchPlanMarkdown.replace(
+            "- Bypass candidates:",
+            "- Bypasses:",
+          ),
+        }),
+        providerKey: "fake",
+        variant: null,
+      };
+    },
+  };
+
+  const result = await runPlan({
+    cpbRoot,
+    dataRoot: cpbRoot,
+    project: "flow",
+    jobId: "job-standard-plan-plural-bypasses",
+    task: "Fix a coding task in a local repository.",
+    workflow: "standard",
+    planMode: "full",
+    sourcePath,
+    sourceContext: {},
+    agents: { planner: "fake" },
+    pool,
+  });
+
+  assert.equal(result.status, "passed", result.failure?.reason);
+});
+
+test("standard full coding plan runtime rejects near-miss bypass labels", async () => {
+  const cpbRoot = await tempRoot("cpb-standard-plan-near-miss-bypass");
+  const sourcePath = await tempRoot("cpb-standard-plan-near-miss-source");
+
+  const pool = {
+    async execute() {
+      return {
+        output: jsonEnvelope({
+          status: "ok",
+          planMarkdown: completeSweBenchPlanMarkdown.replace(
+            "- Bypass candidates:",
+            "- Bypassers:",
+          ),
+        }),
+        providerKey: "fake",
+        variant: null,
+      };
+    },
+  };
+
+  const result = await runPlan({
+    cpbRoot,
+    dataRoot: cpbRoot,
+    project: "flow",
+    jobId: "job-standard-plan-near-miss-bypass",
+    task: "Fix a coding task in a local repository.",
+    workflow: "standard",
+    planMode: "full",
+    sourcePath,
+    sourceContext: {},
+    agents: { planner: "fake" },
+    pool,
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failure?.kind, FailureKind.ARTIFACT_INVALID);
+  assert.match(String(result.failure?.reason), /bypass candidates/);
 });
 
 test("direct light plan runtime does not require bounded handoff", async () => {

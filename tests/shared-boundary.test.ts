@@ -9,8 +9,8 @@ import {
   detectDynamicPathViolations,
 } from "./helpers/boundary-scanner.js";
 
-const FORBIDDEN_SHARED_TARGETS = new Set(["server", "runtime", "cli", "bridges"]);
-const FORBIDDEN_SHARED_PATH_REFS = ["server", "runtime", "cli", "bridges"];
+const FORBIDDEN_SHARED_TARGETS = new Set(["core", "server", "runtime", "cli", "bridges"]);
+const FORBIDDEN_SHARED_PATH_REFS = ["core", "server", "runtime", "cli", "bridges"];
 
 test("shared modules do not import implementation layers", async () => {
   const violations = await scanBoundary({
@@ -35,6 +35,14 @@ test("scanner catches shared static import from server layer (negative)", () => 
   const violations = detectImportViolations(source, fakeFile, FORBIDDEN_SHARED_TARGETS);
   assert.equal(violations.length, 1);
   assert.equal(violations[0].target, "server");
+});
+
+test("scanner catches shared type import from core layer (negative)", () => {
+  const source = `import type { RunJobArtifactIndex } from "../core/engine/run-job-ports.js"`;
+  const fakeFile = path.join(REPO_ROOT, "shared/test.js");
+  const violations = detectImportViolations(source, fakeFile, FORBIDDEN_SHARED_TARGETS);
+  assert.equal(violations.length, 1);
+  assert.equal(violations[0].target, "core");
 });
 
 test("scanner catches shared dynamic import from bridge layer (negative)", () => {

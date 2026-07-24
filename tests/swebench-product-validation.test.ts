@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import { buildDecomposePrompt } from "../core/workflow/checklist-decomposer.js";
@@ -7,11 +10,16 @@ import { buildExecutePrompt } from "../core/phases/execute.js";
 import { buildVerifyPrompt } from "../core/phases/verify.js";
 import {
   buildTask,
+  cleanupScopedCodegraphDaemons,
   DEFAULT_PRODUCT_VALIDATION_AGENTS,
   deriveSweBenchDiagnosticCommands,
   deriveSweBenchVerificationCommands,
   resolveProductValidationAgents,
+  runManagedWorker,
+  runProductValidationTemporaryWorkspace,
 } from "../scripts/run-swebench-product-validation.js";
+import type { ProcessIdentity } from "../core/runtime/process-tree.js";
+import type { TemporaryWorkspace } from "../core/runtime/temporary-workspace.js";
 
 const validationRunnerSource = readFileSync(new URL("../scripts/run-swebench-product-validation.js", import.meta.url), "utf8");
 
@@ -54,6 +62,26 @@ const flaskRow = {
     "tests/test_blueprints.py::test_blueprint_prefix_slash[/--/]",
   ]),
 };
+
+const codegraphWorktreePath = "/tmp/cpb-product-codegraph-worktree";
+const codegraphCommand = `123 codegraph serve --mcp ${codegraphWorktreePath}`;
+
+function processIdentity(pid = 123, birthId = "birth-123"): ProcessIdentity {
+  return {
+    pid,
+    birthId,
+    birthIdPrecision: "exact",
+    incarnation: `${pid}:${birthId}`,
+    capturedAt: "2026-07-21T00:00:00.000Z",
+    processGroupId: pid,
+  };
+}
+
+function unresolvedCleanup(error: unknown) {
+  return (error as Error & {
+    unresolvedCleanup?: Array<{ pid: number; reason: string; message: string }>;
+  }).unresolvedCleanup;
+}
 
 test("benchmark task surface is exactly the original problem statement", () => {
   const task = buildTask(djangoRow, djangoRecord);
@@ -198,4 +226,321 @@ test("product validation keeps full planning default and supports controlled age
     verifier: "codex",
     adversarial_verifier: "codex",
   });
+});
+
+test("Codegraph daemon cleanup fails closed when initial exact identity capture is unavailable", async () => {
+  await assert.rejects(
+    cleanupScopedCodegraphDaemons(codegraphWorktreePath, {
+      listProcesses: async () => codegraphCommand,
+      readProcessCommand: async () => codegraphCommand,
+      captureIdentity: () => null,
+      isIdentityAlive: () => false,
+      teardownProcessTree: async () => {
+        throw new Error("teardown must not be called without identity");
+      },
+    }),
+    (error: unknown) => {
+      assert.deepEqual(unresolvedCleanup(error)?.map(({ pid, reason }) => ({ pid, reason })), [
+        { pid: 123, reason: "identity_unavailable" },
+      ]);
+      assert.match((error as Error).message, /failed to bind Codegraph daemon pid 123/);
+      return true;
+    },
+  );
+});
+
+test("Codegraph daemon cleanup rejects a non-exact identity as unavailable", async () => {
+  const nonExactIdentity = {
+    ...processIdentity(),
+    birthIdPrecision: undefined,
+  } as unknown as ProcessIdentity;
+  let teardownCalled = false;
+
+  await assert.rejects(
+    cleanupScopedCodegraphDaemons(codegraphWorktreePath, {
+      listProcesses: async () => codegraphCommand,
+      readProcessCommand: async () => codegraphCommand,
+      captureIdentity: () => nonExactIdentity,
+      isIdentityAlive: () => false,
+      teardownProcessTree: async () => {
+        teardownCalled = true;
+      },
+    }),
+    (error: unknown) => {
+      assert.deepEqual(unresolvedCleanup(error)?.map(({ pid, reason }) => ({ pid, reason })), [
+        { pid: 123, reason: "identity_unavailable" },
+      ]);
+      return true;
+    },
+  );
+  assert.equal(teardownCalled, false);
+});
+
+test("Codegraph daemon cleanup preserves a permission failure during exact identity capture", async () => {
+  const permissionFailure = Object.assign(new Error("synthetic identity permission failure"), { code: "EPERM" });
+
+  await assert.rejects(
+    cleanupScopedCodegraphDaemons(codegraphWorktreePath, {
+      listProcesses: async () => codegraphCommand,
+      readProcessCommand: async () => codegraphCommand,
+      captureIdentity: () => {
+        throw permissionFailure;
+      },
+      isIdentityAlive: () => false,
+      teardownProcessTree: async () => {
+        throw new Error("teardown must not be called after identity probe failure");
+      },
+    }),
+    (error: unknown) => {
+      assert.deepEqual(unresolvedCleanup(error)?.map(({ pid, reason }) => ({ pid, reason })), [
+        { pid: 123, reason: "identity_unavailable" },
+      ]);
+      assert.match(unresolvedCleanup(error)?.[0]?.message || "", /synthetic identity permission failure/);
+      assert.equal((error as Error).cause, permissionFailure);
+      return true;
+    },
+  );
+});
+
+test("Codegraph daemon cleanup fails closed on second exact identity capture loss or mismatch", async () => {
+  for (const [name, secondIdentity, expectedReason] of [
+    ["lost", null, "identity_unavailable"],
+    ["mismatch", processIdentity(123, "birth-successor"), "identity_mismatch"],
+  ] as const) {
+    const identities = [processIdentity(), secondIdentity];
+    await assert.rejects(
+      cleanupScopedCodegraphDaemons(codegraphWorktreePath, {
+        listProcesses: async () => codegraphCommand,
+        readProcessCommand: async () => codegraphCommand,
+        captureIdentity: () => identities.shift() ?? null,
+        isIdentityAlive: () => false,
+        teardownProcessTree: async () => {
+          throw new Error(`teardown must not be called after ${name} identity`);
+        },
+      }),
+      (error: unknown) => {
+        assert.deepEqual(unresolvedCleanup(error)?.map(({ pid, reason }) => ({ pid, reason })), [
+          { pid: 123, reason: expectedReason },
+        ]);
+        return true;
+      },
+    );
+  }
+});
+
+test("Codegraph daemon cleanup records unresolved evidence when teardown fails", async () => {
+  await assert.rejects(
+    cleanupScopedCodegraphDaemons(codegraphWorktreePath, {
+      listProcesses: async () => codegraphCommand,
+      readProcessCommand: async () => codegraphCommand,
+      captureIdentity: () => processIdentity(),
+      isIdentityAlive: () => false,
+      teardownProcessTree: async () => {
+        throw new Error("synthetic teardown failure");
+      },
+    }),
+    (error: unknown) => {
+      assert.deepEqual(unresolvedCleanup(error)?.map(({ pid, reason }) => ({ pid, reason })), [
+        { pid: 123, reason: "teardown_failed" },
+      ]);
+      assert.match(unresolvedCleanup(error)?.[0]?.message || "", /synthetic teardown failure/);
+      return true;
+    },
+  );
+});
+
+test("Codegraph daemon cleanup treats EPERM during post-teardown liveness as unverified", async () => {
+  const permissionFailure = Object.assign(new Error("synthetic liveness permission failure"), { code: "EPERM" });
+
+  await assert.rejects(
+    cleanupScopedCodegraphDaemons(codegraphWorktreePath, {
+      listProcesses: async () => codegraphCommand,
+      readProcessCommand: async () => codegraphCommand,
+      captureIdentity: () => processIdentity(),
+      isIdentityAlive: () => {
+        throw permissionFailure;
+      },
+      teardownProcessTree: async () => {},
+    }),
+    (error: unknown) => {
+      assert.deepEqual(unresolvedCleanup(error)?.map(({ pid, reason }) => ({ pid, reason })), [
+        { pid: 123, reason: "cleanup_unverified" },
+      ]);
+      assert.match(unresolvedCleanup(error)?.[0]?.message || "", /synthetic liveness permission failure/);
+      assert.equal((error as Error).cause, permissionFailure);
+      return true;
+    },
+  );
+});
+
+test("Codegraph daemon cleanup reports killedPids only after exact teardown and same-incarnation post-check", async () => {
+  const identity = processIdentity();
+  let teardownIdentity: ProcessIdentity | null = null;
+  const result = await cleanupScopedCodegraphDaemons(codegraphWorktreePath, {
+    listProcesses: async () => codegraphCommand,
+    readProcessCommand: async () => codegraphCommand,
+    captureIdentity: () => identity,
+    isIdentityAlive: (checkedIdentity) => {
+      assert.deepEqual(checkedIdentity, identity);
+      return false;
+    },
+    teardownProcessTree: async (pid, options) => {
+      assert.equal(pid, 123);
+      teardownIdentity = options.expectedRootIdentity;
+    },
+  });
+
+  assert.deepEqual(teardownIdentity, identity);
+  assert.deepEqual(result.matchedPids, [123]);
+  assert.deepEqual(result.killedPids, [123]);
+  assert.deepEqual(result.unresolvedCleanup, []);
+});
+
+test("managed worker teardown preserves a synchronous cleanup failure in AggregateError diagnostics", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "cpb-product-validation-worker-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const distRoot = path.join(root, "dist");
+  const hubRoot = path.join(root, "hub");
+  const cpbRoot = path.join(root, "cpb");
+  await mkdir(path.join(distRoot, "runtime", "worker"), { recursive: true });
+  await mkdir(hubRoot, { recursive: true });
+  await mkdir(cpbRoot, { recursive: true });
+  await writeFile(
+    path.join(distRoot, "runtime", "worker", "managed-worker.js"),
+    "setInterval(() => {}, 1000);\n",
+  );
+  const cleanupFailure = Object.assign(new Error("synthetic synchronous teardown failure"), {
+    code: "SYNTHETIC_TEARDOWN_FAILURE",
+  });
+  const previousKillGraceMs = process.env.CPB_KILL_GRACE_MS;
+  process.env.CPB_KILL_GRACE_MS = "0";
+  t.after(() => {
+    if (previousKillGraceMs === undefined) delete process.env.CPB_KILL_GRACE_MS;
+    else process.env.CPB_KILL_GRACE_MS = previousKillGraceMs;
+  });
+  let failure: unknown;
+
+  await runManagedWorker({
+    workerId: "product-validation-test-worker",
+    hubRoot,
+    cpbRoot,
+    assignmentId: "missing-assignment",
+    phaseAgents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    timeoutMs: 50,
+    distRoot,
+    teardownProcessTree() {
+      throw cleanupFailure;
+    },
+  }).catch((error: unknown) => { failure = error; });
+
+  assert.ok(failure instanceof AggregateError);
+  assert.match(failure.message, /managed worker cleanup failed/);
+  assert.equal(failure.errors.some((error) => error === cleanupFailure), true);
+  assert.equal(failure.cause, cleanupFailure);
+  assert.equal(
+    failure.errors.some((error) => (error as { code?: string }).code === "MANAGED_WORKER_TIMEOUT"),
+    true,
+  );
+});
+
+test("product validation workspace keeps primary and successor-preservation cleanup evidence", async () => {
+  const primary = new Error("synthetic product validation failure");
+  const recovery = {
+    version: 1,
+    kind: "temporary_workspace_recovery",
+    code: "TEMPORARY_WORKSPACE_SUCCESSOR_PRESERVED",
+    recoveryPaths: {
+      canonicalRoot: "/tmp/cpb-swebench-product-owned",
+      quarantineRoot: "/tmp/.cpb-quarantine-product-owned",
+    },
+    successorPreserved: true,
+  } as const;
+  const cleanupFailure = Object.assign(new Error("synthetic product cleanup race"), {
+    temporaryWorkspaceRecovery: recovery,
+  });
+  let cleanupCalls = 0;
+  const workspace = {
+    rootPath: "/tmp/cpb-swebench-product-owned",
+    cleanup: async () => {
+      cleanupCalls += 1;
+      throw cleanupFailure;
+    },
+  } as unknown as TemporaryWorkspace;
+
+  await assert.rejects(
+    runProductValidationTemporaryWorkspace({
+      keepTemp: false,
+      task: async (rootPath) => {
+        assert.equal(rootPath, workspace.rootPath);
+        throw primary;
+      },
+      createWorkspace: async () => workspace,
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof AggregateError);
+      assert.deepEqual(error.errors, [primary, cleanupFailure]);
+      assert.equal(error.cause, primary);
+      assert.equal((error as { temporaryWorkspaceRecovery?: unknown }).temporaryWorkspaceRecovery, recovery);
+      assert.deepEqual((error as { recoveryPaths?: unknown }).recoveryPaths, recovery.recoveryPaths);
+      assert.equal((error as { successorPreserved?: unknown }).successorPreserved, true);
+      return true;
+    },
+  );
+  assert.equal(cleanupCalls, 1);
+});
+
+test("product validation --keep-temp transfers ownership without running cleanup", async () => {
+  let cleanupCalls = 0;
+  let retainedRoot = "";
+  const workspace = {
+    rootPath: "/tmp/cpb-swebench-product-retained",
+    cleanup: async () => {
+      cleanupCalls += 1;
+      throw new Error("retained workspace must not be cleaned");
+    },
+  } as unknown as TemporaryWorkspace;
+
+  const value = await runProductValidationTemporaryWorkspace({
+    keepTemp: true,
+    task: async () => "done",
+    onKeepTemp: (rootPath) => { retainedRoot = rootPath; },
+    createWorkspace: async () => workspace,
+  });
+
+  assert.equal(value, "done");
+  assert.equal(retainedRoot, workspace.rootPath);
+  assert.equal(cleanupCalls, 0);
+});
+
+test("product validation failure reports successful quarantine proof", async () => {
+  const primary = new Error("synthetic validation failure");
+  const cleanupProof = {
+    version: 1,
+    kind: "temporary_workspace_disposition",
+    recoveryPaths: {
+      canonicalRoot: "/tmp/cpb-swebench-proof-owned",
+      quarantineRoot: "/tmp/.cpb-quarantine-swebench-proof-owned",
+    },
+    successorPreserved: false,
+  } as const;
+  const workspace = {
+    rootPath: cleanupProof.recoveryPaths.canonicalRoot,
+    cleanup: async () => cleanupProof,
+  } as unknown as TemporaryWorkspace;
+
+  await assert.rejects(
+    runProductValidationTemporaryWorkspace({
+      keepTemp: false,
+      task: async () => { throw primary; },
+      createWorkspace: async () => workspace,
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof AggregateError);
+      assert.deepEqual(error.errors, [primary]);
+      assert.equal(error.cause, primary);
+      assert.equal((error as { temporaryWorkspaceRecovery?: unknown }).temporaryWorkspaceRecovery, cleanupProof);
+      assert.deepEqual((error as { recoveryPaths?: unknown }).recoveryPaths, cleanupProof.recoveryPaths);
+      return true;
+    },
+  );
 });

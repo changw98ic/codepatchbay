@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { access, mkdir, readFile, realpath, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -23,7 +22,15 @@ import {
   type CodingComparisonLaneResult,
   type CodingComparisonTask,
 } from "../core/evaluation/coding-comparison.js";
-import { runCommandTree } from "../core/runtime/process-tree.js";
+import { captureProcessIdentity, killTree, runCommandTree, type ProcessIdentity } from "../core/runtime/process-tree.js";
+import {
+  createTemporaryGitWorktree,
+  createTemporaryWorkspace,
+  temporaryWorkspaceErrorDetails,
+  type TemporaryGitWorktree,
+  type TemporaryWorkspace,
+  type TemporaryWorkspaceCleanupProof,
+} from "../core/runtime/temporary-workspace.js";
 import { runJobWithServices } from "../server/services/engine-runner.js";
 import { terminateProcessesMatchingPath } from "../server/services/acp/acp-client.js";
 import { stopManagedAcpPool } from "../server/services/acp/acp-pool.js";
@@ -247,8 +254,32 @@ export function nativeCodexArgs(task: CodingComparisonTask, worktree: string) {
 
 type ComparisonQuotaDelegate = {
   child: ChildProcess;
+  identity: ProcessIdentity;
   stderr: () => string;
 };
+
+export async function cleanupUnidentifiedComparisonDelegate(child: ChildProcess) {
+  child.stderr?.destroy();
+  if (child.stdin && !child.stdin.destroyed) {
+    try {
+      child.stdin.end();
+    } catch {}
+  }
+  if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
+  const exited = await Promise.race([
+    new Promise<true>((resolve) => child.once("exit", () => resolve(true))),
+    new Promise<false>((resolve) => {
+      const timer = setTimeout(() => resolve(false), 1_000);
+      timer.unref();
+    }),
+  ]);
+  if (!exited) {
+    throw Object.assign(
+      new Error(`unidentified comparison quota delegate ${child.pid} did not exit before cleanup deadline`),
+      { code: "PROCESS_CLEANUP_UNVERIFIED" },
+    );
+  }
+}
 
 async function waitForQuotaDelegate(child: ChildProcess, hubRoot: string, stderr: () => string) {
   const deadline = Date.now() + 5_000;
@@ -269,31 +300,52 @@ async function startComparisonQuotaDelegate(hubRoot: string, env: NodeJS.Process
     env,
     stdio: ["ignore", "ignore", "pipe"],
   });
+  let identity: ProcessIdentity;
+  try {
+    const captured = child.pid ? captureProcessIdentity(child.pid, { strict: true }) : null;
+    if (!captured) throw Object.assign(new Error("comparison quota delegate identity unavailable"), { code: "PROCESS_IDENTITY_UNAVAILABLE" });
+    identity = captured;
+  } catch (error) {
+    try {
+      await cleanupUnidentifiedComparisonDelegate(child);
+    } catch (cleanupError) {
+      const primary = error instanceof Error ? error : new Error(String(error));
+      const cleanup = cleanupError instanceof Error ? cleanupError : new Error(String(cleanupError));
+      throw Object.assign(
+        new AggregateError([primary, cleanup], primary.message, { cause: primary }),
+        {
+          code: (cleanup as NodeJS.ErrnoException).code || "PROCESS_CLEANUP_UNVERIFIED",
+          primaryError: primary,
+          cleanupError: cleanup,
+        },
+      );
+    }
+    throw error;
+  }
   child.stderr?.on("data", (chunk) => {
     stderrText = tail(`${stderrText}${String(chunk)}`, 8_000);
   });
   const stderr = () => stderrText;
   try {
     await waitForQuotaDelegate(child, hubRoot, stderr);
-    return { child, stderr };
+    return { child, identity, stderr };
   } catch (error) {
-    child.kill("SIGKILL");
+    await killTree(identity.pid, 0, {
+      expectedRootIdentity: identity,
+      requireDescendantScan: true,
+      forceVerifyMs: 1_000,
+    });
     throw error;
   }
 }
 
 async function stopComparisonQuotaDelegate(delegate: ComparisonQuotaDelegate | null) {
   if (!delegate || delegate.child.exitCode !== null) return;
-  const exited = new Promise<void>((resolve) => delegate.child.once("exit", () => resolve()));
-  delegate.child.kill("SIGTERM");
-  const graceful = await Promise.race([
-    exited.then(() => true),
-    new Promise<false>((resolve) => setTimeout(() => resolve(false), 2_000)),
-  ]);
-  if (!graceful && delegate.child.exitCode === null) {
-    delegate.child.kill("SIGKILL");
-    await exited;
-  }
+  await killTree(delegate.identity.pid, 2_000, {
+    expectedRootIdentity: delegate.identity,
+    requireDescendantScan: true,
+    forceVerifyMs: 1_000,
+  });
 }
 
 function validateSolverLaneInput(value: unknown): SolverLaneInput {
@@ -422,18 +474,78 @@ async function resolveBaseSha(repository: string, base: string) {
   return result.stdout.trim();
 }
 
-async function createWorktree(repository: string, worktree: string, baseSha: string) {
-  await mkdir(path.dirname(worktree), { recursive: true });
-  await checkedCommand("git", ["worktree", "add", "--detach", worktree, baseSha], repository, { timeoutMs: 5 * 60_000 });
-  await checkedCommand("codegraph", ["init", worktree], worktree, { timeoutMs: 5 * 60_000 });
-  await checkedCommand("codegraph", ["sync", worktree], worktree, { timeoutMs: 5 * 60_000 });
+async function createComparisonWorktree(repository: string, baseSha: string) {
+  const workspace = await createTemporaryGitWorktree({
+    sourcePath: repository,
+    revision: baseSha,
+    prefix: "cpb-coding-comparison-worktree-",
+  });
+  try {
+    await checkedCommand("codegraph", ["init", workspace.worktreePath], workspace.worktreePath, { timeoutMs: 5 * 60_000 });
+    await checkedCommand("codegraph", ["sync", workspace.worktreePath], workspace.worktreePath, { timeoutMs: 5 * 60_000 });
+    return workspace;
+  } catch (primaryError) {
+    try {
+      await workspace.cleanup();
+    } catch (cleanupError) {
+      throw Object.assign(new AggregateError(
+        [primaryError, cleanupError],
+        "comparison worktree preparation and cleanup both failed",
+        { cause: primaryError },
+      ), {
+        code: "CODING_COMPARISON_WORKTREE_PREPARE_CLEANUP_FAILED",
+        primaryError,
+        cleanupError,
+      });
+    }
+    throw primaryError;
+  }
 }
 
-async function removeWorktree(repository: string, worktree: string) {
-  await runCommandTree("git", ["worktree", "remove", "--force", worktree], {
-    cwd: repository,
-    timeoutMs: 120_000,
-  });
+type ComparisonWorkspaceCleanup = {
+  root: TemporaryWorkspaceCleanupProof | null;
+  rootPreservedForWorktreeRecovery: boolean;
+  worktrees: TemporaryWorkspaceCleanupProof[];
+  errors: unknown[];
+};
+
+export async function cleanupCodingComparisonWorkspaces(
+  root: TemporaryWorkspace,
+  worktrees: TemporaryGitWorktree[],
+): Promise<ComparisonWorkspaceCleanup> {
+  const cleanup: ComparisonWorkspaceCleanup = {
+    root: null,
+    rootPreservedForWorktreeRecovery: false,
+    worktrees: [],
+    errors: [],
+  };
+  for (const workspace of [...worktrees].reverse()) {
+    try {
+      cleanup.worktrees.push(await workspace.cleanup());
+    } catch (error) {
+      cleanup.errors.push(error);
+    }
+  }
+  if (cleanup.errors.length > 0) {
+    cleanup.rootPreservedForWorktreeRecovery = true;
+    return cleanup;
+  }
+  try {
+    cleanup.root = await root.cleanup();
+  } catch (error) {
+    cleanup.errors.push(error);
+  }
+  return cleanup;
+}
+
+function cleanupErrorEvidence(error: unknown) {
+  return {
+    code: error && typeof error === "object" && "code" in error
+      ? String((error as NodeJS.ErrnoException).code || "CODING_COMPARISON_CLEANUP_FAILED")
+      : "CODING_COMPARISON_CLEANUP_FAILED",
+    message: errorMessage(error),
+    recovery: temporaryWorkspaceErrorDetails(error),
+  };
 }
 
 async function captureCandidate(worktree: string, baseSha: string): Promise<CandidateSnapshot> {
@@ -539,9 +651,9 @@ async function runCpbSolver(input: SolverLaneInput, runtimeRoot: string) {
 }
 
 async function cleanupLaneResidualProcesses(worktree: string) {
-  const termSignaled = terminateProcessesMatchingPath(worktree, "SIGTERM");
+  const termSignaled = await terminateProcessesMatchingPath(worktree, "SIGTERM");
   if (termSignaled > 0) await new Promise((resolve) => setTimeout(resolve, 250));
-  const killSignaled = terminateProcessesMatchingPath(worktree, "SIGKILL");
+  const killSignaled = await terminateProcessesMatchingPath(worktree, "SIGKILL");
   return { termSignaled, killSignaled };
 }
 
@@ -735,10 +847,13 @@ export async function runCodingComparison(options: CliOptions) {
   const rawManifest = await readJson(options.manifestPath);
   const manifest = validateCodingComparisonManifest(rawManifest);
   const runId = `coding-comparison-${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}`;
-  const root = await mkdtemp(path.join(os.tmpdir(), `${runId}-`));
+  const rootWorkspace = await createTemporaryWorkspace({ prefix: "cpb-coding-comparison-" });
+  const root = rootWorkspace.rootPath;
   const results: CodingComparisonLaneResult[] = [];
-  const worktrees: Array<{ repository: string; worktree: string }> = [];
+  const worktrees: TemporaryGitWorktree[] = [];
   let versions: LooseRecord = { node: process.version };
+  let completedReport: LooseRecord | null = null;
+  let primaryError: unknown = null;
   try {
     versions = {
       codex: await versionEvidence("codex", ["--version"]),
@@ -755,11 +870,10 @@ export async function runCodingComparison(options: CliOptions) {
       const lanes = new Map<CodingComparisonLane, { worktree: string; laneRoot: string }>();
       for (const lane of CODING_COMPARISON_LANES) {
         const laneRoot = path.join(root, "tasks", task.id, lane);
-        const worktree = path.join(laneRoot, "worktree");
         await mkdir(laneRoot, { recursive: true });
-        await createWorktree(repository, worktree, baseSha);
-        worktrees.push({ repository, worktree });
-        lanes.set(lane, { worktree, laneRoot });
+        const worktree = await createComparisonWorktree(repository, baseSha);
+        worktrees.push(worktree);
+        lanes.set(lane, { worktree: worktree.worktreePath, laneRoot });
       }
       const order = laneOrderForTask(taskIndex);
       for (const lane of order) {
@@ -781,46 +895,110 @@ export async function runCodingComparison(options: CliOptions) {
           runId,
           status: "running",
           root: options.keepWorktrees ? root : null,
+          retainedWorktreeRoots: options.keepWorktrees ? worktrees.map((entry) => entry.rootPath) : null,
           versions,
           results,
           summary: buildCodingComparisonSummary(results),
         });
       }
     }
-    const report = {
+    completedReport = {
       schemaVersion: 1,
       runId,
       status: "completed",
       root: options.keepWorktrees ? root : null,
+      retainedWorktreeRoots: options.keepWorktrees ? worktrees.map((entry) => entry.rootPath) : null,
       generatedAt: new Date().toISOString(),
       versions,
       results,
       summary: buildCodingComparisonSummary(results),
     };
-    await writeJson(options.outputPath, report);
-    return report;
   } catch (error) {
-    await writeJson(options.outputPath, {
+    primaryError = error;
+  }
+
+  const cleanup = options.keepWorktrees
+    ? null
+    : await cleanupCodingComparisonWorkspaces(rootWorkspace, worktrees);
+  const cleanupErrors = cleanup?.errors || [];
+  if (primaryError || cleanupErrors.length > 0) {
+    const operationError = primaryError && cleanupErrors.length > 0
+      ? Object.assign(new AggregateError(
+          [primaryError, ...cleanupErrors],
+          "coding comparison and temporary workspace cleanup failed",
+          { cause: primaryError },
+        ), {
+          code: "CODING_COMPARISON_OPERATION_CLEANUP_FAILED",
+          primaryError,
+          cleanupErrors,
+        })
+      : primaryError || Object.assign(new AggregateError(
+          cleanupErrors,
+          "coding comparison temporary workspace cleanup failed",
+          { cause: cleanupErrors[0] },
+        ), {
+          code: "CODING_COMPARISON_CLEANUP_FAILED",
+          cleanupErrors,
+        });
+    const failedReport = {
       schemaVersion: 1,
       runId,
       status: "failed",
-      root: options.keepWorktrees ? root : null,
+      root: options.keepWorktrees || cleanup?.rootPreservedForWorktreeRecovery ? root : null,
+      retainedWorktreeRoots: options.keepWorktrees ? worktrees.map((entry) => entry.rootPath) : null,
       failedAt: new Date().toISOString(),
       failure: {
-        kind: "comparison_runner_failure",
-        message: errorMessage(error),
+        kind: cleanupErrors.length > 0
+          ? "comparison_runner_or_cleanup_failure"
+          : "comparison_runner_failure",
+        message: errorMessage(operationError),
+        primary: primaryError ? errorMessage(primaryError) : null,
+        cleanupErrors: cleanupErrors.map(cleanupErrorEvidence),
+      },
+      temporaryCleanup: cleanup ? {
+        root: cleanup.root,
+        rootPreservedForWorktreeRecovery: cleanup.rootPreservedForWorktreeRecovery,
+        worktrees: cleanup.worktrees,
+      } : {
+        policy: "retained",
+        root,
+        worktreeRoots: worktrees.map((entry) => entry.rootPath),
       },
       versions,
       results,
       summary: buildCodingComparisonSummary(results),
-    });
-    throw error;
-  } finally {
-    if (!options.keepWorktrees) {
-      for (const entry of worktrees.reverse()) await removeWorktree(entry.repository, entry.worktree).catch(() => undefined);
-      await rm(root, { recursive: true, force: true });
+    };
+    try {
+      await writeJson(options.outputPath, failedReport);
+    } catch (reportError) {
+      throw Object.assign(new AggregateError(
+        [operationError, reportError],
+        "coding comparison failure report publication also failed",
+        { cause: operationError },
+      ), {
+        code: "CODING_COMPARISON_FAILURE_REPORT_FAILED",
+        operationError,
+        reportError,
+      });
     }
+    throw operationError;
   }
+
+  if (!completedReport) throw new Error("coding comparison completed without a report");
+  const report = {
+    ...completedReport,
+    temporaryCleanup: cleanup ? {
+      root: cleanup.root,
+      rootPreservedForWorktreeRecovery: cleanup.rootPreservedForWorktreeRecovery,
+      worktrees: cleanup.worktrees,
+    } : {
+      policy: "retained",
+      root,
+      worktreeRoots: worktrees.map((entry) => entry.rootPath),
+    },
+  };
+  await writeJson(options.outputPath, report);
+  return report;
 }
 
 async function main() {
@@ -830,11 +1008,12 @@ async function main() {
     return;
   }
   const report = await runCodingComparison(options);
+  const reportRecord = recordValue(report);
   process.stdout.write(`${JSON.stringify({
-    runId: report.runId,
-    status: report.status,
+    runId: reportRecord.runId,
+    status: reportRecord.status,
     output: options.outputPath,
-    summary: report.summary,
+    summary: reportRecord.summary,
   }, null, 2)}\n`);
 }
 

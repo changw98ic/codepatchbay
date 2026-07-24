@@ -321,6 +321,8 @@ async function main() {
       CPB_ACP_PROJECT: project,
       CPB_ACP_CPB_ROOT: cpbRoot,
       CPB_PROJECT_RUNTIME_ROOT: dataRoot,
+    }, {
+      allowKeys: ["CPB_CAPSULE_CODEX_PATH", "CPB_CAPSULE_CLAUDE_CODE_EXECUTABLE"],
     });
     const activity = createActivityTracker(cpbRoot, project, jobId, runtimeOpts);
     childResult = await runChild(script, [phase, ...scriptArgs], cpbRoot, (output: string | Buffer) => {

@@ -51,10 +51,33 @@ test("derivePhaseBudgetPolicy scales budgets and evidence by risk", () => {
   assert.ok(high.phases["execute"].toolCallBudget > low.phases["execute"].toolCallBudget);
   assert.equal(high.phases["review"].toolCallBudget, 35);
   assert.equal(high.phases["remediate"].toolEventBudget, 360);
+  assert.equal(low.phases["adversarial_verify"].toolCallBudget, 20);
+  assert.equal(high.phases["adversarial_verify"].toolCallBudget, 35);
   assert.ok(critical.phases["plan"].toolEventBudget > high.phases["plan"].toolEventBudget);
 });
 
-test("high-assurance planning denies terminal creation without shrinking the risk-derived budget", () => {
+test("explicit medium-risk adversarial verification receives a finite runtime budget", () => {
+  const ctx = {
+    workflow: "standard",
+    sourceContext: {
+      riskMap: {
+        riskLevel: "medium",
+        adversarialRequired: true,
+      },
+    },
+  };
+  const policy = derivePhaseBudgetPolicy(ctx);
+  const env = buildPhaseAcpEnv(ctx, "adversarial_verify");
+
+  assert.equal(policy.adversarialRequired, true);
+  assert.equal(policy.phases.adversarial_verify.toolCallBudget, 30);
+  assert.equal(policy.phases.adversarial_verify.toolEventBudget, 120);
+  assert.equal(env.CPB_ACP_TOOL_CALL_BUDGET_ADVERSARIAL_VERIFY, "30");
+  assert.equal(env.CPB_ACP_TOOL_EVENT_BUDGET_ADVERSARIAL_VERIFY, "120");
+  assert.equal(env.CPB_ACP_IDLE_TIMEOUT_MS, "120000");
+});
+
+test("high-assurance planning denies terminal creation without imposing a runtime tool budget", () => {
   const high = buildPhaseAcpEnv({
     sourceContext: {
       assurance: { mode: "high" },
@@ -76,11 +99,11 @@ test("high-assurance planning denies terminal creation without shrinking the ris
   }, "plan");
 
   assert.equal(high.CPB_ACP_TERMINAL, "deny");
-  assert.equal(high.CPB_ACP_TOOL_CALL_BUDGET_PLAN, "60");
-  assert.equal(high.CPB_ACP_TOOL_EVENT_BUDGET_PLAN, "240");
+  assert.equal(high.CPB_ACP_TOOL_CALL_BUDGET_PLAN, "0");
+  assert.equal(high.CPB_ACP_TOOL_EVENT_BUDGET_PLAN, "0");
   assert.equal(standard.CPB_ACP_TERMINAL, undefined);
-  assert.equal(standard.CPB_ACP_TOOL_CALL_BUDGET_PLAN, "60");
-  assert.equal(standard.CPB_ACP_TOOL_EVENT_BUDGET_PLAN, "240");
+  assert.equal(standard.CPB_ACP_TOOL_CALL_BUDGET_PLAN, "0");
+  assert.equal(standard.CPB_ACP_TOOL_EVENT_BUDGET_PLAN, "0");
   assert.equal(explicit.CPB_ACP_TERMINAL, "deny");
   assert.equal(explicit.CPB_ACP_TOOL_CALL_BUDGET_PLAN, "72");
   assert.equal(explicit.CPB_ACP_TOOL_EVENT_BUDGET_PLAN, "288");
@@ -105,11 +128,12 @@ test("high assurance gives the preferred executor time to think before cross-mod
 
   assert.equal(policy.riskLevel, "medium");
   assert.equal(execute.idleTimeoutMs, 360_000);
-  assert.equal(execute.noEditIdleTimeoutMs, 300_000);
-  assert.equal(execute.noEditToolLimit, 8);
+  assert.equal(execute.noEditIdleTimeoutMs, 0);
+  assert.equal(execute.noEditToolLimit, 0);
   assert.ok(policy.reasons.includes("assurance=high_quality_time_budget"));
   assert.equal(env.CPB_ACP_IDLE_TIMEOUT_MS, "360000");
-  assert.equal(env.CPB_ACP_EXECUTE_NO_EDIT_IDLE_TIMEOUT_MS, "300000");
+  assert.equal(env.CPB_ACP_EXECUTE_NO_EDIT_TOOL_LIMIT, "0");
+  assert.equal(env.CPB_ACP_EXECUTE_NO_EDIT_IDLE_TIMEOUT_MS, "0");
 });
 
 test("phase environment propagates the allowed-agent universe to the final launch gate", () => {
@@ -205,7 +229,7 @@ test("derivePhaseBudgetPolicy keeps explicit risk level above inferred product s
   assert.ok(policy.reasons.includes("riskSignal=explicit_risk_level"));
 });
 
-test("buildRiskBudgetAcpEnv injects ordinary task budgets without overriding explicit env", () => {
+test("buildRiskBudgetAcpEnv leaves ordinary task work unlimited without overriding explicit env", () => {
   const env = buildRiskBudgetAcpEnv({
     workflow: "standard",
     sourceContext: { riskMap: { riskLevel: "medium", domains: ["general"] } },
@@ -216,10 +240,10 @@ test("buildRiskBudgetAcpEnv injects ordinary task budgets without overriding exp
 
   assert.equal(env.CPB_TASK_RISK_LEVEL, "medium");
   assert.equal(env.CPB_ACP_TOOL_CALL_BUDGET_EXECUTE, "999");
-  assert.equal(env.CPB_ACP_TOOL_EVENT_BUDGET_EXECUTE, "280");
+  assert.equal(env.CPB_ACP_TOOL_EVENT_BUDGET_EXECUTE, "0");
   assert.equal(env.CPB_ACP_IDLE_TIMEOUT_MS, "777");
-  assert.equal(env.CPB_ACP_EXECUTE_NO_EDIT_TOOL_LIMIT, "8");
-  assert.equal(env.CPB_ACP_EXECUTE_NO_EDIT_IDLE_TIMEOUT_MS, "60000");
+  assert.equal(env.CPB_ACP_EXECUTE_NO_EDIT_TOOL_LIMIT, "0");
+  assert.equal(env.CPB_ACP_EXECUTE_NO_EDIT_IDLE_TIMEOUT_MS, "0");
   assert.deepEqual(JSON.parse(String(env.CPB_TASK_EVIDENCE_REQUIREMENTS_JSON)), [
     "agent_regression_test",
     "canonical_command",
@@ -241,7 +265,7 @@ test("buildRiskBudgetAcpEnv respects global budget overrides", () => {
   assert.equal(env.CPB_ACP_TOOL_EVENT_BUDGET_PLAN, undefined);
 });
 
-test("buildRiskBudgetAcpEnv injects review and remediate phase budgets", () => {
+test("buildRiskBudgetAcpEnv keeps review and remediate phases unlimited by default", () => {
   const ctx = {
     workflow: "complex",
     sourceContext: { riskMap: { riskLevel: "high", domains: ["general"] } },
@@ -249,12 +273,12 @@ test("buildRiskBudgetAcpEnv injects review and remediate phase budgets", () => {
   const reviewEnv = buildRiskBudgetAcpEnv(ctx, "review");
   const remediateEnv = buildRiskBudgetAcpEnv(ctx, "remediate");
 
-  assert.equal(reviewEnv.CPB_ACP_TOOL_CALL_BUDGET_REVIEW, "35");
-  assert.equal(reviewEnv.CPB_ACP_TOOL_EVENT_BUDGET_REVIEW, "140");
+  assert.equal(reviewEnv.CPB_ACP_TOOL_CALL_BUDGET_REVIEW, "0");
+  assert.equal(reviewEnv.CPB_ACP_TOOL_EVENT_BUDGET_REVIEW, "0");
   assert.equal(reviewEnv.CPB_ACP_TOOL_CALL_BUDGET_EXECUTE, undefined);
 
-  assert.equal(remediateEnv.CPB_ACP_TOOL_CALL_BUDGET_REMEDIATE, "90");
-  assert.equal(remediateEnv.CPB_ACP_TOOL_EVENT_BUDGET_REMEDIATE, "360");
+  assert.equal(remediateEnv.CPB_ACP_TOOL_CALL_BUDGET_REMEDIATE, "0");
+  assert.equal(remediateEnv.CPB_ACP_TOOL_EVENT_BUDGET_REMEDIATE, "0");
   assert.equal(remediateEnv.CPB_ACP_TOOL_CALL_BUDGET_EXECUTE, undefined);
 });
 
@@ -305,12 +329,12 @@ test("review and remediate adapters pass phase-specific risk budget env to agent
 
   assert.equal(review.status, "passed", review.failure?.reason);
   assert.equal(remediate.status, "passed", remediate.failure?.reason);
-  assert.equal(observed.review.CPB_ACP_TOOL_CALL_BUDGET_REVIEW, "35");
-  assert.equal(observed.review.CPB_ACP_TOOL_EVENT_BUDGET_REVIEW, "140");
+  assert.equal(observed.review.CPB_ACP_TOOL_CALL_BUDGET_REVIEW, "0");
+  assert.equal(observed.review.CPB_ACP_TOOL_EVENT_BUDGET_REVIEW, "0");
   assert.equal(observed.review.CPB_TASK_RISK_LEVEL, "high");
   assert.equal(observed.review.CPB_ACP_TOOL_CALL_BUDGET_EXECUTE, undefined);
-  assert.equal(observed.remediate.CPB_ACP_TOOL_CALL_BUDGET_REMEDIATE, "90");
-  assert.equal(observed.remediate.CPB_ACP_TOOL_EVENT_BUDGET_REMEDIATE, "360");
+  assert.equal(observed.remediate.CPB_ACP_TOOL_CALL_BUDGET_REMEDIATE, "0");
+  assert.equal(observed.remediate.CPB_ACP_TOOL_EVENT_BUDGET_REMEDIATE, "0");
   assert.equal(observed.remediate.CPB_TASK_RISK_LEVEL, "high");
   assert.equal(observed.remediate.CPB_ACP_TOOL_CALL_BUDGET_EXECUTE, undefined);
 });
@@ -396,6 +420,7 @@ test("coding task agent surfaces stay phase-budgeted and direct pool execution s
     "core/agents/agent-runner.ts",
     "runtime/evolve/multi-evolve.ts",
     "scripts/validate-scan-readiness.ts",
+    "scripts/queue-swebench-batch.ts",
     "server/orchestrator/acp-supervisor.ts",
     "server/services/issue-triage.ts",
   ]);
@@ -417,5 +442,41 @@ test("coding task agent surfaces stay phase-budgeted and direct pool execution s
     directExecuteFiles.sort(),
     [...allowedDirectExecuteFiles].sort(),
     "new production .execute() call sites must be reviewed: coding-task phases should use runAgent with phase-budget env; control-plane/script exceptions belong in this allowlist",
+  );
+
+  const liveBatchSource = await readFile(path.join(repoRoot, "scripts/queue-swebench-batch.ts"), "utf8");
+  assert.ok(
+    liveBatchSource.includes("async function runProductionProviderProbe"),
+    "queue-swebench direct execute exception must remain scoped to the live provider preflight probe",
+  );
+  assert.ok(
+    liveBatchSource.includes('CPB_ACP_TERMINAL: "deny"'),
+    "live provider preflight must deny terminal access",
+  );
+  assert.ok(
+    liveBatchSource.includes('CPB_ACP_PERMISSION: "reject"'),
+    "live provider preflight must reject permission prompts",
+  );
+  assert.ok(
+    liveBatchSource.includes('CPB_ACP_DISABLE_WEB_TOOLS: "1"'),
+    "live provider preflight must disable web tools",
+  );
+  assert.ok(
+    liveBatchSource.includes("controlPlane: true"),
+    "live provider preflight direct execute exception must be marked as a control-plane call",
+  );
+  assert.ok(
+    liveBatchSource.includes('poolScope: "provider_live_preflight"'),
+    "live provider preflight direct execute exception must remain isolated to its provider preflight pool scope",
+  );
+  assert.match(
+    liveBatchSource,
+    /const jobId = `provider-preflight-\$\{safeId\(route\.role\)\}-\$\{safeId\(route\.agent\)\}-\$\{correlationNonce\}`;/u,
+    "live provider preflight batch routes must use nonce-scoped preflight job ids",
+  );
+  assert.match(
+    liveBatchSource,
+    /jobId:\s*stringValue\(\s*rawInput\.jobId,\s*`provider-preflight-\$\{safeId\(rawInput\.role\)\}-\$\{safeId\(rawInput\.agent\)\}-\$\{normalizedNonce\}`,\s*\)/u,
+    "live provider preflight handshake defaults must use nonce-scoped preflight job ids",
   );
 });

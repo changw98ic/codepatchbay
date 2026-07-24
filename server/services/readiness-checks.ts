@@ -1,4 +1,7 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import type { BigIntStats } from "node:fs";
 import {
   access,
   constants as fsConstants,
@@ -6,8 +9,8 @@ import {
   readdir,
   readFile,
   mkdir,
+  open,
   realpath,
-  rm,
   stat as statFs,
   writeFile,
 } from "node:fs/promises";
@@ -39,11 +42,22 @@ import {
   inspectCurrentRelease,
   supportedStateFormatVersions,
 } from "./release/release-store.js";
-import { executorMetadata } from "./setup.js";
+import { executorMetadata } from "./executor-root.js";
 import * as agentRegistry from "../../core/agents/registry.js";
 import { listSetupAgents } from "../../core/setup/agent-catalog.js";
 import { detectSetupEnvironment } from "../../core/setup/detect.js";
 import { recordValue, type LooseRecord } from "../../core/contracts/types.js";
+import { captureProcessIdentity, sameProcessIdentity, type ProcessIdentity } from "../../core/runtime/process-tree.js";
+import {
+  createTemporaryWorkspace,
+  temporaryWorkspaceErrorDetails,
+  type TemporaryWorkspace,
+  type TemporaryWorkspaceCleanupProof,
+} from "../../core/runtime/temporary-workspace.js";
+import {
+  readBoundedRegularFileNoFollow,
+  type BoundedRegularFileReadHooks,
+} from "../../core/runtime/durable-directory-lock.js";
 
 const execFileAsync = promisify(execFile);
 const SUBPROCESS_TIMEOUT_MS = 5_000;
@@ -462,20 +476,551 @@ async function checkHubLiveness(hubRoot: string) {
   }
 }
 
-async function checkHubWritability(hubRoot: string) {
-  const probeDir = path.join(path.resolve(hubRoot), "state");
-  const probeFile = path.join(probeDir, `.readiness-probe-${process.pid}`);
+type HubWritabilityProbeStage = "state-directory" | "probe-directory" | "probe-file";
+type HubWritabilityProbeHandle = Awaited<ReturnType<typeof open>>;
+const HUB_WRITABILITY_PROBE_SLOT_BYTES = 128;
+const HUB_WRITABILITY_PROBE_SLOT_COUNT = 256;
+const HUB_WRITABILITY_PROBE_FILE_BYTES = HUB_WRITABILITY_PROBE_SLOT_BYTES * HUB_WRITABILITY_PROBE_SLOT_COUNT;
+const HUB_WRITABILITY_PROBE_FILE_NAME = "writability-slots-v1.bin";
+
+export type HubWritabilityProbeTestHooks = {
+  afterProbeWritten?: (context: {
+    stateDir: string;
+    probeDir: string;
+    probeFile: string;
+    probeId: string;
+    slot: number;
+  }) => void | Promise<void>;
+  closeHandle?: (context: {
+    stage: HubWritabilityProbeStage;
+    path: string;
+    close: () => Promise<void>;
+  }) => void | Promise<void>;
+};
+
+const hubWritabilityProbeTestHookStorage = new AsyncLocalStorage<HubWritabilityProbeTestHooks>();
+
+export function withHubWritabilityProbeTestHooksForTests<T>(
+  hooks: HubWritabilityProbeTestHooks,
+  operation: () => T,
+): T {
+  const parent = hubWritabilityProbeTestHookStorage.getStore();
+  return hubWritabilityProbeTestHookStorage.run(parent ? { ...parent, ...hooks } : hooks, operation);
+}
+
+type HubWritabilityDirectoryAuthority = {
+  stage: Exclude<HubWritabilityProbeStage, "probe-file">;
+  path: string;
+  handle: HubWritabilityProbeHandle;
+  identity: BigIntStats;
+  exactMode: number | null;
+};
+
+type HubWritabilityOpenHandle = {
+  stage: HubWritabilityProbeStage;
+  path: string;
+  handle: HubWritabilityProbeHandle;
+};
+
+function hubWritabilityError(code: string, message: string, cause?: unknown) {
+  return Object.assign(
+    new Error(message, cause === undefined ? undefined : { cause }),
+    { code },
+  );
+}
+
+function hubWritabilityErrorCode(value: unknown) {
+  return value && typeof value === "object" && "code" in value
+    ? String((value as NodeJS.ErrnoException).code || "")
+    : "";
+}
+
+function sameHubWritabilityGeneration(left: BigIntStats, right: BigIntStats) {
+  return left.dev === right.dev
+    && left.ino === right.ino
+    && left.birthtimeNs === right.birthtimeNs;
+}
+
+function assertHubWritabilityOwnership(info: BigIntStats, label: string, exactMode: number | null) {
+  if (process.platform === "win32") return;
+  if (typeof process.getuid === "function" && info.uid !== BigInt(process.getuid())) {
+    throw hubWritabilityError(
+      "HUB_WRITABILITY_PROBE_UNSAFE_OWNER",
+      `${label} is not owned by the current user`,
+    );
+  }
+  const mode = Number(info.mode & 0o777n);
+  if (exactMode === null ? (mode & 0o022) !== 0 : mode !== exactMode) {
+    throw hubWritabilityError(
+      "HUB_WRITABILITY_PROBE_UNSAFE_PERMISSIONS",
+      exactMode === null
+        ? `${label} is group- or world-writable`
+        : `${label} permissions are ${mode.toString(8)} instead of ${exactMode.toString(8)}`,
+    );
+  }
+}
+
+function strictHubWritabilityDirectoryFlags() {
+  if (
+    typeof fsConstants.O_NOFOLLOW !== "number"
+    || fsConstants.O_NOFOLLOW === 0
+    || typeof fsConstants.O_DIRECTORY !== "number"
+    || fsConstants.O_DIRECTORY === 0
+  ) {
+    throw hubWritabilityError(
+      "HUB_WRITABILITY_PROBE_AUTHORITY_UNAVAILABLE",
+      "strict no-follow directory authority is unavailable",
+    );
+  }
+  return fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_DIRECTORY;
+}
+
+function strictHubWritabilityFileFlags() {
+  if (typeof fsConstants.O_NOFOLLOW !== "number" || fsConstants.O_NOFOLLOW === 0) {
+    throw hubWritabilityError(
+      "HUB_WRITABILITY_PROBE_AUTHORITY_UNAVAILABLE",
+      "strict no-follow file authority is unavailable",
+    );
+  }
+  return fsConstants.O_CREAT
+    | fsConstants.O_EXCL
+    | fsConstants.O_RDWR
+    | fsConstants.O_NOFOLLOW;
+}
+
+function strictHubWritabilityExistingFileFlags() {
+  if (typeof fsConstants.O_NOFOLLOW !== "number" || fsConstants.O_NOFOLLOW === 0) {
+    throw hubWritabilityError(
+      "HUB_WRITABILITY_PROBE_AUTHORITY_UNAVAILABLE",
+      "strict no-follow file authority is unavailable",
+    );
+  }
+  return fsConstants.O_RDWR | fsConstants.O_NOFOLLOW;
+}
+
+async function openHubWritabilityDirectory(
+  directoryInput: string,
+  stage: HubWritabilityDirectoryAuthority["stage"],
+  exactMode: number | null,
+): Promise<HubWritabilityDirectoryAuthority> {
+  const directory = path.resolve(directoryInput);
+  const before = await lstat(directory, { bigint: true });
+  if (!before.isDirectory() || before.isSymbolicLink()) {
+    throw hubWritabilityError(
+      "HUB_WRITABILITY_PROBE_UNSAFE_PATH",
+      `${stage} is not a no-follow directory: ${directory}`,
+    );
+  }
+  if (await realpath(directory) !== directory) {
+    throw hubWritabilityError(
+      "HUB_WRITABILITY_PROBE_UNSAFE_PATH",
+      `${stage} is not canonical: ${directory}`,
+    );
+  }
+  assertHubWritabilityOwnership(before, stage, exactMode);
+  const handle = await open(directory, strictHubWritabilityDirectoryFlags());
   try {
-    await mkdir(probeDir, { recursive: true });
-    await writeFile(probeFile, "probe", "utf8");
-    await readFile(probeFile, "utf8");
-    await rm(probeFile, { force: true });
-    return ok("hub-writability", "hub", "Hub state directory writable");
-  } catch (e) {
-    try { await rm(probeFile, { force: true }); } catch {}
-    return error("hub-writability", "hub", "Hub state directory not writable", {
-      details: { path: probeDir, error: e.message },
-      remediation: `Ensure write permissions on ${probeDir}`,
+    const descriptor = await handle.stat({ bigint: true });
+    const after = await lstat(directory, { bigint: true });
+    if (
+      !descriptor.isDirectory()
+      || !after.isDirectory()
+      || after.isSymbolicLink()
+      || !sameHubWritabilityGeneration(before, descriptor)
+      || !sameHubWritabilityGeneration(before, after)
+    ) {
+      throw hubWritabilityError(
+        "HUB_WRITABILITY_PROBE_IDENTITY_CHANGED",
+        `${stage} changed while its authority was opened`,
+      );
+    }
+    assertHubWritabilityOwnership(descriptor, stage, exactMode);
+    assertHubWritabilityOwnership(after, stage, exactMode);
+    return { stage, path: directory, handle, identity: before, exactMode };
+  } catch (primaryError) {
+    try {
+      await handle.close();
+    } catch (closeError) {
+      throw Object.assign(new AggregateError(
+        [primaryError, closeError],
+        `${stage} authority setup and close both failed`,
+        { cause: primaryError },
+      ), {
+        code: "HUB_WRITABILITY_PROBE_AND_CLOSE_FAILED",
+        primaryError,
+        closeErrors: [closeError],
+      });
+    }
+    throw primaryError;
+  }
+}
+
+async function assertHubWritabilityDirectory(authority: HubWritabilityDirectoryAuthority) {
+  const descriptor = await authority.handle.stat({ bigint: true });
+  const observed = await lstat(authority.path, { bigint: true });
+  if (
+    !descriptor.isDirectory()
+    || !observed.isDirectory()
+    || observed.isSymbolicLink()
+    || !sameHubWritabilityGeneration(authority.identity, descriptor)
+    || !sameHubWritabilityGeneration(authority.identity, observed)
+  ) {
+    throw hubWritabilityError(
+      "HUB_WRITABILITY_PROBE_IDENTITY_CHANGED",
+      `${authority.stage} changed during the writability probe`,
+    );
+  }
+  assertHubWritabilityOwnership(descriptor, authority.stage, authority.exactMode);
+  assertHubWritabilityOwnership(observed, authority.stage, authority.exactMode);
+}
+
+async function assertHubWritabilityFile(
+  filePath: string,
+  handle: HubWritabilityProbeHandle,
+  identity: BigIntStats,
+  expectedBytes: number | readonly number[],
+) {
+  const descriptor = await handle.stat({ bigint: true });
+  const observed = await lstat(filePath, { bigint: true });
+  if (!descriptor.isFile() || !observed.isFile() || observed.isSymbolicLink()) {
+    throw hubWritabilityError(
+      "HUB_WRITABILITY_PROBE_UNSAFE_PATH",
+      `probe file is not a no-follow regular file: ${filePath}`,
+    );
+  }
+  if (
+    !sameHubWritabilityGeneration(identity, descriptor)
+    || !sameHubWritabilityGeneration(identity, observed)
+  ) {
+    throw hubWritabilityError(
+      "HUB_WRITABILITY_PROBE_IDENTITY_CHANGED",
+      `probe file changed during the writability check: ${filePath}`,
+    );
+  }
+  if (descriptor.nlink !== 1n || observed.nlink !== 1n) {
+    throw hubWritabilityError(
+      "HUB_WRITABILITY_PROBE_HARDLINKED",
+      `probe file has an unsafe hard-link count: ${filePath}`,
+    );
+  }
+  assertHubWritabilityOwnership(descriptor, "probe file", 0o600);
+  assertHubWritabilityOwnership(observed, "probe file", 0o600);
+  const expectedSizes = typeof expectedBytes === "number" ? [expectedBytes] : expectedBytes;
+  if (
+    !expectedSizes.some((bytes) => descriptor.size === BigInt(bytes))
+    || !expectedSizes.some((bytes) => observed.size === BigInt(bytes))
+  ) {
+    throw hubWritabilityError(
+      "HUB_WRITABILITY_PROBE_SIZE_CHANGED",
+      `probe file size changed during the writability check: ${filePath}`,
+    );
+  }
+}
+
+async function closeHubWritabilityHandle(authority: HubWritabilityOpenHandle) {
+  const hooks = hubWritabilityProbeTestHookStorage.getStore() || {};
+  let closeCalled = false;
+  const close = async () => {
+    if (closeCalled) return;
+    closeCalled = true;
+    await authority.handle.close();
+  };
+  let hookError: unknown;
+  try {
+    if (hooks.closeHandle) await hooks.closeHandle({
+      stage: authority.stage,
+      path: authority.path,
+      close,
+    });
+    else await close();
+  } catch (error) {
+    hookError = error;
+  }
+  let fallbackCloseError: unknown;
+  if (!closeCalled) {
+    try {
+      await close();
+    } catch (error) {
+      fallbackCloseError = error;
+    }
+  }
+  if (hookError && fallbackCloseError) {
+    throw new AggregateError(
+      [hookError, fallbackCloseError],
+      `${authority.stage} hook and fallback close both failed`,
+      { cause: hookError },
+    );
+  }
+  if (hookError) throw hookError;
+  if (fallbackCloseError) throw fallbackCloseError;
+}
+
+function wrappedHubWritabilityCloseError(authority: HubWritabilityOpenHandle, cause: unknown) {
+  return Object.assign(
+    new Error(`${authority.stage} close failed: ${cause instanceof Error ? cause.message : String(cause)}`, { cause }),
+    {
+      code: "HUB_WRITABILITY_PROBE_CLOSE_FAILED",
+      stage: authority.stage,
+      path: authority.path,
+    },
+  );
+}
+
+async function runHubWritabilityProbe(
+  stateDir: string,
+  probeDir: string,
+  probeFile: string,
+  probeId: string,
+  expectedStateIdentity: BigIntStats,
+) {
+  const handles: HubWritabilityOpenHandle[] = [];
+  let primaryError: unknown;
+  let completed = false;
+  let verifiedSlot: number | null = null;
+  try {
+    await mkdir(stateDir, { recursive: true });
+    const stateAuthority = await openHubWritabilityDirectory(stateDir, "state-directory", null);
+    handles.push(stateAuthority);
+    if (!sameHubWritabilityGeneration(expectedStateIdentity, stateAuthority.identity)) {
+      throw hubWritabilityError(
+        "HUB_WRITABILITY_PROBE_IDENTITY_CHANGED",
+        `Hub state directory changed before the writability probe acquired authority: ${stateDir}`,
+      );
+    }
+    try {
+      await mkdir(probeDir, { mode: 0o700 });
+    } catch (error) {
+      if (hubWritabilityErrorCode(error) !== "EEXIST") throw error;
+    }
+    const probeDirectoryAuthority = await openHubWritabilityDirectory(probeDir, "probe-directory", 0o700);
+    handles.push(probeDirectoryAuthority);
+    await assertHubWritabilityDirectory(stateAuthority);
+
+    let created = false;
+    let probeHandle: HubWritabilityProbeHandle;
+    try {
+      probeHandle = await open(probeFile, strictHubWritabilityFileFlags(), 0o600);
+      created = true;
+    } catch (error) {
+      if (hubWritabilityErrorCode(error) !== "EEXIST") throw error;
+      try {
+        probeHandle = await open(probeFile, strictHubWritabilityExistingFileFlags());
+      } catch (openError) {
+        if (["ELOOP", "EMLINK"].includes(hubWritabilityErrorCode(openError))) {
+          throw hubWritabilityError(
+            "HUB_WRITABILITY_PROBE_UNSAFE_PATH",
+            `persistent probe file is not safe to open without following links: ${probeFile}`,
+            openError,
+          );
+        }
+        throw openError;
+      }
+    }
+    handles.push({ stage: "probe-file", path: probeFile, handle: probeHandle });
+    const fileIdentity = await probeHandle.stat({ bigint: true });
+    if (!fileIdentity.isFile() || fileIdentity.isSymbolicLink()) {
+      throw hubWritabilityError(
+        "HUB_WRITABILITY_PROBE_UNSAFE_PATH",
+        `created probe is not a regular file: ${probeFile}`,
+      );
+    }
+    assertHubWritabilityOwnership(fileIdentity, "probe file", 0o600);
+    if (fileIdentity.nlink !== 1n) {
+      throw hubWritabilityError(
+        "HUB_WRITABILITY_PROBE_HARDLINKED",
+        `created probe has an unsafe hard-link count: ${probeFile}`,
+      );
+    }
+    const boundedSize = BigInt(HUB_WRITABILITY_PROBE_FILE_BYTES);
+    if (fileIdentity.size !== 0n && fileIdentity.size !== boundedSize) {
+      throw hubWritabilityError(
+        "HUB_WRITABILITY_PROBE_SIZE_CHANGED",
+        `persistent probe file has an invalid bounded size: ${probeFile}`,
+      );
+    }
+    await assertHubWritabilityDirectory(stateAuthority);
+    await assertHubWritabilityDirectory(probeDirectoryAuthority);
+    await assertHubWritabilityFile(
+      probeFile,
+      probeHandle,
+      fileIdentity,
+      [0, HUB_WRITABILITY_PROBE_FILE_BYTES],
+    );
+    if (created || fileIdentity.size === 0n) {
+      await probeHandle.truncate(HUB_WRITABILITY_PROBE_FILE_BYTES);
+      await probeHandle.sync();
+      await probeDirectoryAuthority.handle.sync();
+      await stateAuthority.handle.sync();
+    }
+    await assertHubWritabilityFile(
+      probeFile,
+      probeHandle,
+      fileIdentity,
+      HUB_WRITABILITY_PROBE_FILE_BYTES,
+    );
+
+    const payload = Buffer.alloc(HUB_WRITABILITY_PROBE_SLOT_BYTES, 0);
+    const marker = Buffer.from(`cpb-hub-writability-probe/v1 ${probeId}\n`, "utf8");
+    if (marker.byteLength > payload.byteLength) {
+      throw hubWritabilityError("HUB_WRITABILITY_PROBE_PAYLOAD_INVALID", "probe marker exceeds its bounded slot");
+    }
+    marker.copy(payload);
+    const initialSlot = Number.parseInt(probeId.replaceAll("-", "").slice(0, 8), 16)
+      % HUB_WRITABILITY_PROBE_SLOT_COUNT;
+    for (let attempt = 0; attempt < HUB_WRITABILITY_PROBE_SLOT_COUNT; attempt += 1) {
+      const slot = (initialSlot + attempt) % HUB_WRITABILITY_PROBE_SLOT_COUNT;
+      const position = slot * HUB_WRITABILITY_PROBE_SLOT_BYTES;
+      const result = await probeHandle.write(payload, 0, payload.byteLength, position);
+      if (result.bytesWritten !== payload.byteLength) {
+        throw hubWritabilityError(
+          "HUB_WRITABILITY_PROBE_SHORT_WRITE",
+          `probe slot write was short at slot ${slot}`,
+        );
+      }
+      await probeHandle.sync();
+      if (attempt === 0) {
+        await hubWritabilityProbeTestHookStorage.getStore()?.afterProbeWritten?.({
+          stateDir,
+          probeDir,
+          probeFile,
+          probeId,
+          slot,
+        });
+      }
+
+      await assertHubWritabilityDirectory(stateAuthority);
+      await assertHubWritabilityDirectory(probeDirectoryAuthority);
+      await assertHubWritabilityFile(
+        probeFile,
+        probeHandle,
+        fileIdentity,
+        HUB_WRITABILITY_PROBE_FILE_BYTES,
+      );
+
+      const readback = Buffer.alloc(payload.byteLength);
+      const readResult = await probeHandle.read(readback, 0, readback.byteLength, position);
+      if (readResult.bytesRead === payload.byteLength && readback.equals(payload)) {
+        verifiedSlot = slot;
+        break;
+      }
+    }
+    if (verifiedSlot === null) {
+      throw hubWritabilityError(
+        "HUB_WRITABILITY_PROBE_CONCURRENT_CONFLICT",
+        `no bounded probe slot preserved an exact readback: ${probeFile}`,
+      );
+    }
+    await assertHubWritabilityFile(
+      probeFile,
+      probeHandle,
+      fileIdentity,
+      HUB_WRITABILITY_PROBE_FILE_BYTES,
+    );
+    await assertHubWritabilityDirectory(probeDirectoryAuthority);
+    await assertHubWritabilityDirectory(stateAuthority);
+    completed = true;
+  } catch (error) {
+    primaryError = error;
+  }
+
+  const closeErrors: unknown[] = [];
+  for (const authority of handles.reverse()) {
+    try {
+      await closeHubWritabilityHandle(authority);
+    } catch (error) {
+      closeErrors.push(wrappedHubWritabilityCloseError(authority, error));
+    }
+  }
+  if (primaryError && closeErrors.length > 0) {
+    throw Object.assign(new AggregateError(
+      [primaryError, ...closeErrors],
+      "Hub writability probe and handle close both failed",
+      { cause: primaryError },
+    ), {
+      code: "HUB_WRITABILITY_PROBE_AND_CLOSE_FAILED",
+      primaryError,
+      closeErrors,
+    });
+  }
+  if (primaryError) throw primaryError;
+  if (closeErrors.length === 1) throw closeErrors[0];
+  if (closeErrors.length > 1) {
+    throw Object.assign(new AggregateError(
+      closeErrors,
+      "multiple Hub writability probe handles failed to close",
+      { cause: closeErrors[0] },
+    ), {
+      code: "HUB_WRITABILITY_PROBE_CLOSE_FAILED",
+      closeErrors,
+    });
+  }
+  if (!completed) {
+    throw hubWritabilityError("HUB_WRITABILITY_PROBE_INCOMPLETE", "Hub writability probe did not complete");
+  }
+  return verifiedSlot as number;
+}
+
+function hubWritabilityErrorDetails(value: unknown) {
+  const errors = value instanceof AggregateError ? value.errors : [value];
+  return errors.map((entry) => ({
+    code: hubWritabilityErrorCode(entry) || null,
+    message: entry instanceof Error ? entry.message : String(entry),
+  }));
+}
+
+export async function checkHubWritability(hubRoot: string) {
+  const requestedStateDir = path.join(path.resolve(hubRoot), "state");
+  let stateDir = requestedStateDir;
+  let probeDir = path.join(stateDir, ".readiness-probes");
+  const probeId = randomUUID();
+  let probeFile = path.join(probeDir, HUB_WRITABILITY_PROBE_FILE_NAME);
+  try {
+    await mkdir(requestedStateDir, { recursive: true });
+    const requestedState = await lstat(requestedStateDir, { bigint: true });
+    if (!requestedState.isDirectory() || requestedState.isSymbolicLink()) {
+      throw hubWritabilityError(
+        "HUB_WRITABILITY_PROBE_UNSAFE_PATH",
+        `Hub state path is not a no-follow directory: ${requestedStateDir}`,
+      );
+    }
+    stateDir = await realpath(requestedStateDir);
+    const canonicalState = await lstat(stateDir, { bigint: true });
+    if (
+      !canonicalState.isDirectory()
+      || canonicalState.isSymbolicLink()
+      || !sameHubWritabilityGeneration(requestedState, canonicalState)
+    ) {
+      throw hubWritabilityError(
+        "HUB_WRITABILITY_PROBE_IDENTITY_CHANGED",
+        `Hub state directory changed while its canonical path was resolved: ${requestedStateDir}`,
+      );
+    }
+    probeDir = path.join(stateDir, ".readiness-probes");
+    probeFile = path.join(probeDir, HUB_WRITABILITY_PROBE_FILE_NAME);
+    const slot = await runHubWritabilityProbe(stateDir, probeDir, probeFile, probeId, canonicalState);
+    return ok("hub-writability", "hub", "Hub state directory writable", {
+      details: {
+        path: stateDir,
+        probeDir,
+        probeFile,
+        persistent: true,
+        slot,
+        slotCount: HUB_WRITABILITY_PROBE_SLOT_COUNT,
+        fileBytes: HUB_WRITABILITY_PROBE_FILE_BYTES,
+      },
+    });
+  } catch (cause) {
+    return error("hub-writability", "hub", "Hub state directory not safely writable", {
+      details: {
+        path: stateDir,
+        probeDir,
+        probeFile,
+        persistent: true,
+        code: hubWritabilityErrorCode(cause) || null,
+        error: cause instanceof Error ? cause.message : String(cause),
+        errors: hubWritabilityErrorDetails(cause),
+      },
+      remediation: `Ensure ${stateDir} is owner-controlled and writable without symlinks, hard links, or unsafe permissions`,
     });
   }
 }
@@ -1541,23 +2086,153 @@ export class CodeGraphUnavailableError extends Error {
   }
 }
 
-function isAlive(pid: number) {
-  const parsed = Number(pid);
-  if (!Number.isInteger(parsed) || parsed <= 0) return false;
-  try {
-    process.kill(parsed, 0);
-    return true;
-  } catch {
-    return false;
-  }
+export type CodeGraphReadinessTestHooks = {
+  boundedRead?: BoundedRegularFileReadHooks;
+};
+
+const codeGraphReadinessTestHookStorage = new AsyncLocalStorage<CodeGraphReadinessTestHooks>();
+
+export function withCodeGraphReadinessTestHooksForTests<T>(
+  hooks: CodeGraphReadinessTestHooks,
+  operation: () => T,
+): T {
+  const parent = codeGraphReadinessTestHookStorage.getStore();
+  return codeGraphReadinessTestHookStorage.run(parent ? { ...parent, ...hooks } : hooks, operation);
 }
 
-async function readJson(file: string) {
-  try {
-    return JSON.parse(await readFile(file, "utf8"));
-  } catch {
-    return null;
+function codeGraphReadinessTestHooks() {
+  return codeGraphReadinessTestHookStorage.getStore() || {};
+}
+
+const CODEGRAPH_STATE_MAX_BYTES = 64 * 1024;
+
+function processIdentityFromRecord(value: unknown, expectedPid?: number): ProcessIdentity | null {
+  const candidate = recordValue(value);
+  const pid = Number(candidate.pid);
+  const capturedAt = typeof candidate.capturedAt === "string" ? candidate.capturedAt : "";
+  const processGroupId = Number(candidate.processGroupId);
+  if (
+    !Number.isSafeInteger(pid)
+    || pid <= 0
+    || (expectedPid !== undefined && pid !== expectedPid)
+    || typeof candidate.birthId !== "string"
+    || candidate.birthId.length === 0
+    || candidate.incarnation !== `${pid}:${candidate.birthId}`
+    || !capturedAt
+    || !Number.isFinite(Date.parse(capturedAt))
+    || new Date(Date.parse(capturedAt)).toISOString() !== capturedAt
+    || candidate.birthIdPrecision !== "exact"
+    || (candidate.processGroupId !== undefined
+      && (!Number.isSafeInteger(processGroupId) || processGroupId <= 0))
+  ) return null;
+  return {
+    pid,
+    birthId: candidate.birthId,
+    incarnation: candidate.incarnation,
+    capturedAt,
+    birthIdPrecision: "exact",
+    ...(candidate.processGroupId === undefined ? {} : { processGroupId }),
+  };
+}
+
+function verifyAliveIdentity(pid: number, identityValue: unknown) {
+  const parsed = Number(pid);
+  const identity = processIdentityFromRecord(identityValue, parsed);
+  if (!Number.isInteger(parsed) || parsed <= 0 || !identity) {
+    return { alive: false, reason: "missing_process_identity" };
   }
+  try {
+    process.kill(parsed, 0);
+  } catch (error) {
+    const code = (error as { code?: unknown })?.code;
+    if (code === "ESRCH") return { alive: false, reason: "dead_process" };
+    return {
+      alive: false,
+      reason: "process_liveness_unverified",
+      detail: error instanceof Error ? error.message : String(error),
+    };
+  }
+  let current: ProcessIdentity | null;
+  try {
+    current = captureProcessIdentity(parsed, { strict: true });
+  } catch (error) {
+    return {
+      alive: false,
+      reason: "process_identity_unverified",
+      detail: error instanceof Error ? error.message : String(error),
+    };
+  }
+  if (!current || !sameProcessIdentity(identity, current)) {
+    return { alive: false, reason: "process_identity_mismatch" };
+  }
+  return { alive: true, reason: "alive" };
+}
+
+function stateReadErrorCode(error: unknown) {
+  return error && typeof error === "object" && "code" in error
+    ? String((error as NodeJS.ErrnoException).code || "")
+    : "";
+}
+
+async function readCodeGraphStateOwner(file: string, stateKind: "runtime_state" | "daemon_owner") {
+  const statePath = path.resolve(file);
+  let raw: string;
+  try {
+    raw = await readBoundedRegularFileNoFollow(statePath, {
+      maxBytes: CODEGRAPH_STATE_MAX_BYTES,
+      hooks: codeGraphReadinessTestHooks().boundedRead,
+    });
+  } catch (error) {
+    const errorCode = stateReadErrorCode(error);
+    if (errorCode === "ENOENT") return null;
+    throw new CodeGraphUnavailableError("CodeGraph readiness state cannot be read safely", {
+      reason: "unsafe_codegraph_state",
+      stateKind,
+      statePath,
+      errorCode: errorCode || "CODEGRAPH_STATE_READ_FAILED",
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new CodeGraphUnavailableError("CodeGraph readiness state contains malformed JSON", {
+      reason: "malformed_codegraph_state",
+      stateKind,
+      statePath,
+      errorCode: "CODEGRAPH_STATE_MALFORMED",
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new CodeGraphUnavailableError("CodeGraph readiness state must be a JSON object", {
+      reason: "malformed_codegraph_state",
+      stateKind,
+      statePath,
+      errorCode: "CODEGRAPH_STATE_MALFORMED",
+      error: "state root is not a JSON object",
+    });
+  }
+
+  const state = recordValue(parsed);
+  if (
+    state.statePath !== undefined
+    && (
+      typeof state.statePath !== "string"
+      || !path.isAbsolute(state.statePath)
+      || path.resolve(state.statePath) !== statePath
+    )
+  ) {
+    throw new CodeGraphUnavailableError("CodeGraph readiness state is bound to a different owner path", {
+      reason: "codegraph_state_path_mismatch",
+      stateKind,
+      statePath,
+      declaredStatePath: typeof state.statePath === "string" ? state.statePath : null,
+    });
+  }
+  return { ...state, statePath };
 }
 
 async function canonicalDir(value: string) {
@@ -1589,13 +2264,33 @@ const MIN_CODEGRAPH_DB_BYTES = 1024;
 
 async function readDaemonState(sourceRoot: string) {
   const daemonPidFile = path.join(sourceRoot, ".codegraph", "daemon.pid");
-  const state = await readJson(daemonPidFile);
-  if (!state?.pid) return null;
+  const state = await readCodeGraphStateOwner(daemonPidFile, "daemon_owner");
+  if (!state) return null;
+  const owner = state as Record<string, unknown>;
+  if (typeof owner.pid !== "number" || !Number.isSafeInteger(owner.pid) || owner.pid <= 0) {
+    throw new CodeGraphUnavailableError("CodeGraph daemon owner has an invalid pid", {
+      reason: "invalid_codegraph_state",
+      stateKind: "daemon_owner",
+      statePath: daemonPidFile,
+      error: "pid must be a positive safe integer",
+    });
+  }
+  const codebaseRoot = owner.codebaseRoot === undefined ? sourceRoot : owner.codebaseRoot;
+  if (typeof codebaseRoot !== "string" || codebaseRoot.trim().length === 0) {
+    throw new CodeGraphUnavailableError("CodeGraph daemon owner has an invalid codebase root", {
+      reason: "invalid_codegraph_state",
+      stateKind: "daemon_owner",
+      statePath: daemonPidFile,
+      error: "codebaseRoot must be a non-empty string when present",
+    });
+  }
   return {
-    pid: state.pid,
-    codebaseRoot: state.codebaseRoot || sourceRoot,
-    socketPath: state.socketPath || null,
-    source: state.source || "codegraph_daemon",
+    pid: owner.pid,
+    codebaseRoot,
+    socketPath: owner.socketPath || null,
+    processIdentity: owner.processIdentity ?? owner.ownerIdentity ?? null,
+    source: owner.source || "codegraph_daemon",
+    statePath: daemonPidFile,
   };
 }
 
@@ -1609,9 +2304,8 @@ export async function checkCodeGraphReady({ cpbRoot, sourcePath }: ReadinessReco
   }
 
   const statePath = path.join(path.resolve(cpbRoot || sourceRoot), "cpb-task", "codegraph-state.json");
-  const stateFile = await readJson(statePath);
+  const stateFile = await readCodeGraphStateOwner(statePath, "runtime_state");
   const daemonState = await readDaemonState(sourceRoot);
-  let state = stateFile?.pid ? stateFile : daemonState;
   const indexOnlyOk = process.env.CPB_CODEGRAPH_INDEX_ONLY_OK === "1";
 
   const indexFile = await firstUsableIndexFile(sourceRoot);
@@ -1622,7 +2316,7 @@ export async function checkCodeGraphReady({ cpbRoot, sourcePath }: ReadinessReco
     });
   }
 
-  if (indexOnlyOk && !daemonState?.pid) {
+  if (indexOnlyOk && !daemonState) {
     return {
       available: true,
       sourcePath: sourceRoot,
@@ -1636,37 +2330,48 @@ export async function checkCodeGraphReady({ cpbRoot, sourcePath }: ReadinessReco
     };
   }
 
-  if (!state?.pid) {
+  if (!daemonState) {
+    if (stateFile) {
+      throw new CodeGraphUnavailableError("CodeGraph runtime state has no canonical daemon owner", {
+        reason: "unbound_codegraph_state",
+        sourcePath: sourceRoot,
+        indexFile,
+        statePath,
+        daemonStatePath: path.join(sourceRoot, ".codegraph", "daemon.pid"),
+      });
+    }
     throw new CodeGraphUnavailableError("CodeGraph readiness state is unavailable", {
       reason: "missing_codegraph_state",
       sourcePath: sourceRoot,
       indexFile,
     });
   }
-  if (!isAlive(state.pid) && daemonState?.pid && isAlive(daemonState.pid)) {
-    state = daemonState;
-  }
-  if (!isAlive(state.pid)) {
-    throw new CodeGraphUnavailableError("CodeGraph process is not running", {
-      reason: "dead_codegraph_process",
-      pid: state.pid,
+  const state = daemonState;
+  if (!Number.isSafeInteger(state.pid) || state.pid <= 0) {
+    throw new CodeGraphUnavailableError("CodeGraph readiness state has an invalid pid", {
+      reason: "invalid_codegraph_state",
       sourcePath: sourceRoot,
+      indexFile,
+      statePath: state.statePath,
     });
   }
-
-  let stateRoot = await canonicalDir(state.codebaseRoot);
-  if (stateRoot && stateRoot !== sourceRoot && daemonState?.pid && isAlive(daemonState.pid)) {
-    const daemonRoot = await canonicalDir(daemonState.codebaseRoot);
-    if (daemonRoot === sourceRoot) {
-      state = daemonState;
-      stateRoot = daemonRoot;
-    }
-  }
+  const stateRoot = await canonicalDir(state.codebaseRoot);
   if (!stateRoot || stateRoot !== sourceRoot) {
     throw new CodeGraphUnavailableError("CodeGraph state does not match sourcePath", {
       reason: "codegraph_root_mismatch",
       stateRoot,
       sourcePath: sourceRoot,
+      statePath: state.statePath,
+    });
+  }
+  const stateLiveness = verifyAliveIdentity(state.pid, state.processIdentity);
+  if (!stateLiveness.alive) {
+    throw new CodeGraphUnavailableError("CodeGraph process is not running", {
+      reason: stateLiveness.reason || "dead_codegraph_process",
+      pid: state.pid,
+      sourcePath: sourceRoot,
+      statePath: state.statePath,
+      detail: "detail" in stateLiveness ? stateLiveness.detail : undefined,
     });
   }
 
@@ -1862,13 +2567,112 @@ async function writeProjectForDemo(cpbRoot: string, project: string, sourcePath:
   return wikiDir;
 }
 
-export async function runDemo({
-  project = `demo-${nowSafe()}`,
-  task = "Run the CodePatchBay local demo.",
-} = {}) {
-  const { mkdtemp } = await import("node:fs/promises");
-  const os = await import("node:os");
-  const tempRoot = await mkdtemp(path.join(os.default.tmpdir(), "cpb-demo-"));
+function demoWorkspaceCleanupFailure(primary: unknown, cleanup: unknown, rootPath: string) {
+  const recovery = temporaryWorkspaceErrorDetails(cleanup);
+  return Object.assign(new AggregateError(
+    [primary, cleanup],
+    `local demo and temporary workspace cleanup both failed for ${rootPath}`,
+    { cause: primary },
+  ), {
+    primaryError: primary,
+    cleanupError: cleanup,
+    ...(recovery ? {
+      temporaryWorkspaceRecovery: recovery,
+      recoveryPaths: recovery.recoveryPaths,
+      successorPreserved: recovery.successorPreserved,
+    } : {}),
+  });
+}
+
+function demoFailureWithCleanupProof(
+  primary: unknown,
+  cleanup: TemporaryWorkspaceCleanupProof,
+  rootPath: string,
+) {
+  return Object.assign(new AggregateError(
+    [primary],
+    `local demo failed; temporary workspace was retained at ${cleanup.recoveryPaths.quarantineRoot || rootPath}`,
+    { cause: primary },
+  ), {
+    primaryError: primary,
+    temporaryWorkspaceRecovery: cleanup,
+    recoveryPaths: cleanup.recoveryPaths,
+    successorPreserved: cleanup.successorPreserved,
+  });
+}
+
+export async function runWithDemoTemporaryWorkspace<T>(
+  task: (rootPath: string) => Promise<T>,
+  createWorkspace: (options: { prefix: string }) => Promise<TemporaryWorkspace> = createTemporaryWorkspace,
+): Promise<{
+  value: T;
+  canonicalRoot: string;
+  cleanup: TemporaryWorkspaceCleanupProof;
+}> {
+  const workspace = await createWorkspace({ prefix: "cpb-demo-" });
+  let value!: T;
+  let primaryError: unknown;
+  let hasPrimaryError = false;
+  try {
+    value = await task(workspace.rootPath);
+  } catch (error) {
+    primaryError = error;
+    hasPrimaryError = true;
+  }
+
+  let cleanup: TemporaryWorkspaceCleanupProof | null = null;
+  let cleanupError: unknown;
+  let hasCleanupError = false;
+  try {
+    cleanup = await workspace.cleanup();
+  } catch (error) {
+    cleanupError = error;
+    hasCleanupError = true;
+  }
+
+  if (hasPrimaryError && hasCleanupError) {
+    throw demoWorkspaceCleanupFailure(primaryError, cleanupError, workspace.rootPath);
+  }
+  if (hasPrimaryError && cleanup) {
+    throw demoFailureWithCleanupProof(primaryError, cleanup, workspace.rootPath);
+  }
+  if (hasPrimaryError) throw primaryError;
+  if (hasCleanupError) throw cleanupError;
+  if (!cleanup) throw new Error(`local demo temporary workspace cleanup produced no proof for ${workspace.rootPath}`);
+  return { value, canonicalRoot: workspace.rootPath, cleanup };
+}
+
+function remapDemoWorkspacePaths<T>(value: T, canonicalRoot: string, retainedRoot: string): T {
+  const seen = new WeakMap<object, unknown>();
+  const visit = (entry: unknown): unknown => {
+    if (typeof entry === "string") {
+      const relative = path.relative(canonicalRoot, entry);
+      if (relative === "") return retainedRoot;
+      if (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`)) {
+        return path.join(retainedRoot, relative);
+      }
+      return entry;
+    }
+    if (!entry || typeof entry !== "object") return entry;
+    const prior = seen.get(entry);
+    if (prior) return prior;
+    if (Array.isArray(entry)) {
+      const output: unknown[] = [];
+      seen.set(entry, output);
+      for (const item of entry) output.push(visit(item));
+      return output;
+    }
+    const prototype = Object.getPrototypeOf(entry);
+    if (prototype !== Object.prototype && prototype !== null) return entry;
+    const output: Record<string, unknown> = {};
+    seen.set(entry, output);
+    for (const [key, item] of Object.entries(entry)) output[key] = visit(item);
+    return output;
+  };
+  return visit(value) as T;
+}
+
+async function runDemoInRoot(tempRoot: string, project: string, task: string) {
   const cpbRoot = path.join(tempRoot, "cpb-root");
   const sourcePath = path.join(tempRoot, "toy-repo");
   await mkdir(cpbRoot, { recursive: true });
@@ -2025,6 +2829,27 @@ The local demo fixed the toy repo sum implementation and exercised the CodePatch
     },
     story: storyEntries({ planPath, diffPath, testsPath, verdictPath, riskPath, testResult, risk }),
     artifactIndex,
+  };
+}
+
+export async function runDemo({
+  project = `demo-${nowSafe()}`,
+  task = "Run the CodePatchBay local demo.",
+} = {}) {
+  const outcome = await runWithDemoTemporaryWorkspace(
+    (tempRoot) => runDemoInRoot(tempRoot, project, task),
+  );
+  const retainedRoot = outcome.cleanup.recoveryPaths.quarantineRoot;
+  if (!retainedRoot) {
+    throw Object.assign(new Error("local demo cleanup proof did not identify its retained quarantine root"), {
+      code: "TEMPORARY_WORKSPACE_RECOVERY_PATH_MISSING",
+      temporaryWorkspaceRecovery: outcome.cleanup,
+      recoveryPaths: outcome.cleanup.recoveryPaths,
+    });
+  }
+  return {
+    ...remapDemoWorkspacePaths(outcome.value, outcome.canonicalRoot, retainedRoot),
+    workspaceCleanup: outcome.cleanup,
   };
 }
 

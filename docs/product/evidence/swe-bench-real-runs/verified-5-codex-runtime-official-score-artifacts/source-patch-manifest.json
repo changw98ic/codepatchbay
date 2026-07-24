@@ -1,0 +1,34 @@
+{
+  "runDir": ".omx/swebench-ladder/20260706-verified-5-codex-runtime-232055",
+  "generatedAt": "2026-07-06T16:05:14.247Z",
+  "records": [
+    {
+      "instance_id": "django__django-13343",
+      "worktree": ".omx/swebench-ladder/20260706-verified-5-codex-runtime-232055/hub/worktrees/job-django-django-13343-pipeline",
+      "patchPath": "docs/product/evidence/swe-bench-real-runs/verified-5-codex-runtime-official-score-artifacts/patches/django__django-13343.patch",
+      "bytes": 1350,
+      "sourceOnly": true
+    },
+    {
+      "instance_id": "django__django-13346",
+      "worktree": ".omx/swebench-ladder/20260706-verified-5-codex-runtime-232055/hub/worktrees/job-django-django-13346-pipeline",
+      "patchPath": "docs/product/evidence/swe-bench-real-runs/verified-5-codex-runtime-official-score-artifacts/patches/django__django-13346.patch",
+      "bytes": 1709,
+      "sourceOnly": true
+    },
+    {
+      "instance_id": "django__django-13363",
+      "worktree": ".omx/swebench-ladder/20260706-verified-5-codex-runtime-232055/hub/worktrees/job-django-django-13363-pipeline",
+      "patchPath": "docs/product/evidence/swe-bench-real-runs/verified-5-codex-runtime-official-score-artifacts/patches/django__django-13363.patch",
+      "bytes": 1055,
+      "sourceOnly": true
+    },
+    {
+      "instance_id": "django__django-13401",
+      "worktree": ".omx/swebench-ladder/20260706-verified-5-codex-runtime-232055/hub/worktrees/job-django-django-13401-pipeline",
+      "patchPath": "docs/product/evidence/swe-bench-real-runs/verified-5-codex-runtime-official-score-artifacts/patches/django__django-13401.patch",
+      "bytes": 1721,
+      "sourceOnly": true
+    }
+  ]
+}

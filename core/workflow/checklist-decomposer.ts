@@ -16,11 +16,11 @@
  * core/ layering: imports only core/. No server/ or bridges/.
  */
 import { runAgent } from "../agents/agent-runner.js";
-import { execFile as execFileCb } from "node:child_process";
-import { promisify } from "node:util";
 import { parseAgentJson } from "../agents/response-parser.js";
 import { FailureKind } from "../contracts/failure.js";
+import { runCommandTree } from "../runtime/process-tree.js";
 import type { LooseRecord } from "../contracts/types.js";
+import type { RunJobPorts, RunJobState } from "../engine/run-job-ports.js";
 import { buildRiskBudgetAcpEnv } from "../policy/phase-budget.js";
 import { validateDecomposedItems } from "./acceptance-checklist.js";
 import { extractTaskRequirementSlices } from "./checklist-build.js";
@@ -28,8 +28,10 @@ import { isRecord, recordValue, text } from "./checklist-shared.js";
 
 const DEFAULT_DECOMPOSE_RETRY_MAX = 2;
 const DEFAULT_DECOMPOSE_RETRY_BASE_DELAY_MS = 0;
+const DEFAULT_CODEGRAPH_QUERY_TIMEOUT_MS = 30_000;
+const DEFAULT_CODEGRAPH_QUERY_MAX_BUFFER_BYTES = 4 * 1024 * 1024;
+const CHECKLIST_DECOMPOSE_ROLE = "checklist_decomposer";
 const CHECKLIST_DECOMPOSE_PHASE = "prepare_task";
-const execFile = promisify(execFileCb);
 
 export interface DecomposedItem {
   requirement: string;
@@ -57,7 +59,32 @@ export interface DecompositionResult {
   cause?: unknown;
 }
 
-function resolvePlanner(ctx: LooseRecord): { agent: string; variant: string | null } {
+type DecomposeAgentPool = {
+  execute: (...args: unknown[]) => Promise<unknown> | unknown;
+};
+
+export type ChecklistDecompositionContext =
+  Pick<RunJobState,
+    | "cpbRoot"
+    | "project"
+    | "planMode"
+    | "sourcePath"
+    | "sourceContext"
+    | "dataRoot"
+    | "timeouts"
+    | "env"
+    | "scope"
+    | "signal"
+    | "agent"
+    | "agents"
+  >
+  & Partial<Pick<RunJobPorts, "getPool">>
+  & {
+    jobId: string;
+    pool?: DecomposeAgentPool | null;
+  };
+
+function resolvePlanner(ctx: Pick<ChecklistDecompositionContext, "agent" | "agents">): { agent: string; variant: string | null } {
   const agents = recordValue(ctx.agents);
   const raw = agents.planner || ctx.agent || "codex";
   if (isRecord(raw)) {
@@ -110,35 +137,51 @@ function isProductionCodePath(value: string) {
     && !/(?:^|\/)[^/]+\.(?:test|spec)\.[^/]+$/i.test(value);
 }
 
-async function queryCodegraphSymbol(symbol: string, cwd: string) {
-  try {
-    const { stdout } = await execFile(
-      process.env.CPB_CODEGRAPH_COMMAND || "codegraph",
-      ["query", symbol, "--path", cwd, "--limit", "10", "--json"],
-      { cwd, maxBuffer: 4 * 1024 * 1024 },
-    );
-    const parsed = JSON.parse(stdout);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
+async function queryCodegraphSymbol(
+  symbol: string,
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
+  signal?: AbortSignal,
+) {
+  throwIfAbortSignal(signal, "CodeGraph task-scope query aborted before spawn");
+  const timeoutMs = Math.max(1, Math.floor(numericEnv(env, "CPB_CHECKLIST_CODEGRAPH_QUERY_TIMEOUT_MS", DEFAULT_CODEGRAPH_QUERY_TIMEOUT_MS)));
+  const maxBufferBytes = Math.max(1024, Math.floor(numericEnv(env, "CPB_CHECKLIST_CODEGRAPH_QUERY_MAX_BUFFER_BYTES", DEFAULT_CODEGRAPH_QUERY_MAX_BUFFER_BYTES)));
+  const result = await runCommandTree(
+    env.CPB_CODEGRAPH_COMMAND || "codegraph",
+    ["query", symbol, "--path", cwd, "--limit", "10", "--json"],
+    { cwd, env, signal, timeoutMs, maxBufferBytes },
+  );
+  if (result.aborted || signal?.aborted) throw createAbortError(signal, "CodeGraph task-scope query aborted");
+  if (result.error) throw result.error;
+  if (result.timedOut) throw Object.assign(new Error(`CodeGraph query timed out after ${timeoutMs}ms`), { code: "CODEGRAPH_QUERY_TIMEOUT" });
+  if (result.exitCode !== 0) return [];
+  const parsed = JSON.parse(result.stdout);
+  return Array.isArray(parsed) ? parsed : [];
 }
 
 export async function resolveCodegraphTaskScope({
   task,
   cwd,
-  query = queryCodegraphSymbol,
+  query,
+  env = process.env,
+  signal,
 }: {
   task: string;
   cwd: string;
-  query?: (symbol: string, cwd: string) => Promise<unknown>;
+  query?: (symbol: string, cwd: string, signal?: AbortSignal) => Promise<unknown>;
+  env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
 }): Promise<DecomposedItem[] | null> {
+  throwIfAbortSignal(signal, "CodeGraph task-scope resolution aborted before start");
+  const querySymbol = query ?? ((symbol: string, queryCwd: string, querySignal?: AbortSignal) => queryCodegraphSymbol(symbol, queryCwd, env, querySignal));
   const symbols = taskSymbolCandidates(task);
   if (symbols.length === 0) return null;
   const matchedFiles = new Set<string>();
   const matchedSymbols: string[] = [];
   for (const symbol of symbols) {
-    const rawResults = await query(symbol, cwd);
+    throwIfAbortSignal(signal, "CodeGraph task-scope resolution aborted before query");
+    const rawResults = await querySymbol(symbol, cwd, signal);
+    throwIfAbortSignal(signal, "CodeGraph task-scope resolution aborted after query");
     const results = Array.isArray(rawResults) ? rawResults : [];
     const exactFiles = new Set(
       results
@@ -188,24 +231,48 @@ function normalizeDecomposedItems(value: unknown): DecomposedItem[] {
   }));
 }
 
-function numericEnv(name: string, fallback: number) {
-  const raw = process.env[name];
+function numericEnv(env: NodeJS.ProcessEnv, name: string, fallback: number) {
+  const raw = env[name];
   if (raw === undefined || raw === "") return fallback;
   const value = Number(raw);
   return Number.isFinite(value) ? value : fallback;
 }
 
-function decomposeRetryMax() {
-  return Math.max(0, Math.floor(numericEnv("CPB_CHECKLIST_DECOMPOSE_RETRY_MAX", DEFAULT_DECOMPOSE_RETRY_MAX)));
+function decomposeRetryMax(env: NodeJS.ProcessEnv) {
+  return Math.max(0, Math.floor(numericEnv(env, "CPB_CHECKLIST_DECOMPOSE_RETRY_MAX", DEFAULT_DECOMPOSE_RETRY_MAX)));
 }
 
-function decomposeRetryBaseDelayMs() {
-  return Math.max(0, Math.floor(numericEnv("CPB_CHECKLIST_DECOMPOSE_RETRY_BASE_DELAY_MS", DEFAULT_DECOMPOSE_RETRY_BASE_DELAY_MS)));
+function decomposeRetryBaseDelayMs(env: NodeJS.ProcessEnv) {
+  return Math.max(0, Math.floor(numericEnv(env, "CPB_CHECKLIST_DECOMPOSE_RETRY_BASE_DELAY_MS", DEFAULT_DECOMPOSE_RETRY_BASE_DELAY_MS)));
 }
 
-function delay(ms: number) {
+function createAbortError(signal: AbortSignal | undefined, message = "Checklist decomposition retry aborted") {
+  const reason = signal?.reason;
+  if (reason instanceof Error && reason.name === "AbortError") return reason;
+  const error = new Error(reason ? String(reason) : message) as Error & { code?: string };
+  error.name = "AbortError";
+  error.code = "ABORT_ERR";
+  return error;
+}
+
+function throwIfAbortSignal(signal: AbortSignal | undefined, message?: string) {
+  if (signal?.aborted) throw createAbortError(signal, message);
+}
+
+function delay(ms: number, signal?: AbortSignal) {
+  if (signal?.aborted) return Promise.reject(createAbortError(signal));
   if (ms <= 0) return Promise.resolve();
-  return new Promise<void>((resolve) => setTimeout(resolve, ms));
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(createAbortError(signal));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 function agentFailureReason(agentResult: LooseRecord) {
@@ -284,14 +351,15 @@ export async function decomposeTaskToChecklistItems({
 }: {
   task: string;
   documents?: LooseRecord[];
-  ctx: LooseRecord;
+  ctx: ChecklistDecompositionContext;
 }): Promise<DecompositionResult> {
+  const runtimeEnv = ctx.env ?? process.env;
   const sourceContext = recordValue(ctx.sourceContext);
   const riskMap = recordValue(sourceContext.riskMap);
   const riskLevel = text(riskMap.riskLevel).toLowerCase();
   const codegraphFastPathAllowed = ctx.planMode === "light"
     && documents.length === 0
-    && process.env.CPB_CHECKLIST_CODEGRAPH_FAST_PATH !== "0"
+    && runtimeEnv.CPB_CHECKLIST_CODEGRAPH_FAST_PATH !== "0"
     && riskLevel !== "high"
     && riskLevel !== "critical"
     && riskMap.adversarialRequired !== true;
@@ -299,6 +367,8 @@ export async function decomposeTaskToChecklistItems({
     const items = await resolveCodegraphTaskScope({
       task,
       cwd: text(ctx.sourcePath) || text(ctx.cpbRoot),
+      env: runtimeEnv,
+      signal: ctx.signal,
     });
     if (items) {
       return {
@@ -314,27 +384,28 @@ export async function decomposeTaskToChecklistItems({
   const { agent, variant } = resolvePlanner(ctx);
   const prompt = buildDecomposePrompt(task, documents);
 
-  const maxRetries = decomposeRetryMax();
+  const maxRetries = decomposeRetryMax(runtimeEnv);
   let agentResult: LooseRecord = {};
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     agentResult = recordValue(await runAgent({
-      role: "planner",
+      role: CHECKLIST_DECOMPOSE_ROLE,
       agent,
       variant,
       project: text(ctx.project),
-      jobId: text(ctx.jobId),
+      jobId: ctx.jobId,
       prompt,
       cwd: text(ctx.sourcePath) || text(ctx.cpbRoot),
-      pool: ctx.pool || (typeof ctx.getPool === "function" ? ctx.getPool() : undefined),
+      pool: ctx.pool || ctx.getPool?.(),
       phase: CHECKLIST_DECOMPOSE_PHASE,
       timeoutMs: Number(recordValue(ctx.timeouts).decompose ?? recordValue(ctx.timeouts).plan ?? 0),
       scope: ctx.scope,
       env: buildRiskBudgetAcpEnv(ctx, CHECKLIST_DECOMPOSE_PHASE, { ...recordValue(ctx.env) } as NodeJS.ProcessEnv),
       dataRoot: ctx.dataRoot,
+      signal: ctx.signal,
     }));
     if (agentResult.ok) break;
     if (!agentResult.retryable || attempt >= maxRetries) break;
-    await delay(decomposeRetryBaseDelayMs());
+    await delay(decomposeRetryBaseDelayMs(runtimeEnv), ctx.signal);
   }
 
   if (!agentResult.ok) {

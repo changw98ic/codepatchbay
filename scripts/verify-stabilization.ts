@@ -15,6 +15,7 @@ export const stabilizationChecks: StabilizationCheck[] = [
   { label: "engine type-debt gate", command: "npm", args: ["run", "typecheck:type-debt:engine"] },
   { label: "dependency vulnerability gate", command: "npm", args: ["run", "verify:dependency-audit"] },
   { label: "patch integrity gate", command: "npm", args: ["run", "verify:patch-integrity"] },
+  { label: "commit-size gate", command: "npm", args: ["run", "verify:commit-size"] },
   { label: "flagship release gate", command: "npm", args: ["run", "verify:release-gate"] },
   { label: "enterprise Redis/HA gate", command: "npm", args: ["run", "verify:enterprise-gate"] },
   { label: "product validation gate", command: "npm", args: ["run", "verify:product-gate"] },

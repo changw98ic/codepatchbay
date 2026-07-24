@@ -44,7 +44,7 @@ async function usage() {
   console.log(`${BOLD}Commands:${NC}`);
   console.log(`  ${CYAN}init${NC} <path> [name]                  Initialize project`);
   console.log(`  ${CYAN}hub${NC} [status|start|stop|projects|...]  Hub management`);
-  console.log(`  ${CYAN}pipeline${NC} <project> "<task>" [retries]  Full pipeline`);
+  console.log(`  ${CYAN}pipeline${NC} <project> "<task>" [--retries <n>]  Full pipeline`);
   console.log(`  ${CYAN}run${NC} "<task>" [--project <id>]         Run task (pipeline alias)`);
   console.log(`  ${CYAN}retry${NC} <project> <job-id> [--agent <name>]  Retry job phase`);
   console.log(`  ${CYAN}status${NC} <project>                       Project status`);
@@ -54,7 +54,7 @@ async function usage() {
   console.log(`  ${CYAN}review${NC} <project> [id] [--agent]          Review deliverable`);
   console.log(`  ${CYAN}inbox${NC} <project> [read|ack|done|outputs]  Plans & outputs`);
   console.log(`  ${CYAN}setup${NC}                                 Run the setup wizard`);
-  console.log(`  ${CYAN}agents${NC} [list|detect|install|test]       Agent gateway setup and checks`);
+  console.log(`  ${CYAN}agents${NC} [list|detect|install|upgrade|test] Agent gateway setup and checks`);
   console.log(`  ${CYAN}github${NC} [bind|connect|doctor]             GitHub integration`);
   console.log(`  ${CYAN}doctor${NC} [--json]                         Health check`);
   console.log(`  ${CYAN}stream${NC} [--port PORT] [--host HOST]       Start streaming server`);
@@ -108,6 +108,15 @@ const COMMANDS = {
 
 // --- Main ---
 
+export function projectArgForCommand(cmd: string, cmdArgs: string[]) {
+  let projectArg = cmd === "run" ? null : cmdArgs.find((a) => !a.startsWith("-"));
+  const projectFlagIdx = cmdArgs.indexOf("--project");
+  if (projectFlagIdx >= 0 && cmdArgs[projectFlagIdx + 1]) {
+    projectArg = cmdArgs[projectFlagIdx + 1];
+  }
+  return projectArg;
+}
+
 async function main() {
   const rawArgs = process.argv.slice(2);
 
@@ -153,12 +162,10 @@ async function main() {
     // Resolve per-project runtime root from hub registry for project-scoped commands
     const PROJECT_COMMANDS = new Set(["pipeline", "run", "status", "retry", "diff", "review", "inbox", "outputs", "cancel", "redirect"]);
     if (PROJECT_COMMANDS.has(cmd)) {
-      let projectArg = cmdArgs.find((a) => !a.startsWith("-"));
-      // Commands like `run` pass project via --project flag, not positionally
-      const projectFlagIdx = cmdArgs.indexOf("--project");
-      if (projectFlagIdx >= 0 && cmdArgs[projectFlagIdx + 1]) {
-        projectArg = cmdArgs[projectFlagIdx + 1];
-      }
+      // `run` resolves an omitted project from cwd/package.json inside the
+      // pipeline command. Treating the task text as a positional project here
+      // prevents that auto-detection from running.
+      const projectArg = projectArgForCommand(cmd, cmdArgs);
       if (projectArg) {
         const { resolveHubRoot, getProject } = await import(path.join(CPB_EXECUTOR_ROOT, "server", "services", "hub", "hub-registry.js"));
         const hubRoot = resolveHubRoot(CPB_ROOT);

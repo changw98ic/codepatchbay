@@ -3,15 +3,17 @@ import { isPhasePassed, phaseFailed } from "../contracts/phase-result.js";
 import { PhaseResult } from "../../shared/types.js";
 import { PhaseContext } from "./run-phase.js";
 import {
-  normalizeProviderServices,
   preflightProvider as defaultPreflightProvider,
   resolveProviderKey,
   ProviderAgent,
   ProviderAgents,
   ProviderServices,
+  type ProviderPool,
 } from "./provider-handoff.js";
 
 import { recordValue, type LooseRecord } from "../contracts/types.js";
+import type { RunJobProcessHooks } from "./run-job-ports.js";
+import type { AppendEvent, ProgressReporter } from "./run-job-shared.js";
 
 type HandoffState = {
   count: number;
@@ -28,17 +30,18 @@ type ProviderAttempt = {
   at: string;
 };
 
-type ProviderPool = {
-  providerKey?: (agent: string | null | undefined, variant: string | null) => string | null | undefined;
-  fallbackCandidates?: (agent: string, currentVariant: string | null | undefined, excludeKey: string | null | undefined) => unknown;
-  [key: string]: unknown;
-};
-
 type RunQuotaFallbackContext = {
   agent?: string | null;
-  providerServices?: unknown;
-  appendEvent?: (cpbRoot: string, project: string, jobId: string, event: LooseRecord) => Promise<unknown> | unknown;
-  onProgress?: (event: LooseRecord) => Promise<unknown> | unknown;
+  providerServices?: ProviderServices | null;
+  appendEvent?: AppendEvent;
+  onProgress?: ProgressReporter;
+};
+
+type RetryPhaseCarryover = {
+  scope?: unknown;
+  signal?: AbortSignal;
+  processHooks?: RunJobProcessHooks;
+  conversationKey?: string | null;
 };
 
 type RunQuotaFallbackState = {
@@ -68,7 +71,8 @@ type RunQuotaFallbackState = {
   result: PhaseResult;
   excludeProviderFamily?: string | null;
   allowedAgents?: string[] | null;
-};
+  env?: NodeJS.ProcessEnv;
+} & RetryPhaseCarryover;
 
 type RunQuotaFallbackDeps = {
   maxHandoffs?: number;
@@ -79,7 +83,7 @@ type RunQuotaFallbackDeps = {
   preflightProvider?: typeof defaultPreflightProvider;
 };
 
-const DEFAULT_HANDOFF_MAX_PER_PHASE = Number(process.env.CPB_PROVIDER_HANDOFF_MAX_PER_PHASE || 1);
+const DEFAULT_HANDOFF_MAX_PER_PHASE = 1;
 
 type HandoffBundleInput = {
   project: string;
@@ -101,6 +105,11 @@ function ts(now: () => string) {
 
 function stringValue(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function nonNegativeIntegerEnv(value: unknown, fallback: number) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
 function agentName(value: ProviderAgent): string | null {
@@ -144,11 +153,14 @@ export async function runQuotaFallbackRetry(
     state, phaseResults, attemptId, phaseTimeout,
     handoffState, providerAttempts, phaseAgents, excludeProviderFamily = null, allowedAgents = null,
   } = n;
-  const providerServices = normalizeProviderServices(ctx.providerServices);
+  const providerServices = ctx.providerServices || {};
   const preflightProvider = deps.preflightProvider || defaultPreflightProvider;
   const now = deps.now || (() => new Date().toISOString());
   const nowMs = deps.nowMs || Date.now;
-  const maxHandoffs = deps.maxHandoffs ?? DEFAULT_HANDOFF_MAX_PER_PHASE;
+  const env = n.env ?? process.env;
+  const maxHandoffs = deps.maxHandoffs
+    ?? nonNegativeIntegerEnv(env.CPB_PROVIDER_HANDOFF_MAX_PER_PHASE, DEFAULT_HANDOFF_MAX_PER_PHASE);
+  const fallbackSourcePath = sourcePath || env.CPB_PROJECT_PATH_OVERRIDE;
   let { result } = n;
 
   while (shouldAttemptQuotaFallback(result, handoffState, hubRoot, maxHandoffs)) {
@@ -309,7 +321,7 @@ export async function runQuotaFallbackRetry(
           partialStderr: String(quotaCause.stderr || ""),
           previousResults: phaseResults,
           cpbRoot,
-          sourcePath: sourcePath || process.env.CPB_PROJECT_PATH_OVERRIDE,
+          sourcePath: fallbackSourcePath,
         });
       } catch {
         // Handoff bundle generation is best-effort.
@@ -332,16 +344,21 @@ export async function runQuotaFallbackRetry(
       planMode,
       cpbRoot,
       dataRoot,
-      sourcePath: sourcePath || process.env.CPB_PROJECT_PATH_OVERRIDE,
+      sourcePath: fallbackSourcePath,
       sourceContext: continuationContext
         ? { ...phaseSourceContext, handoff: continuationContext }
         : phaseSourceContext,
       pool,
+      scope: n.scope,
+      signal: n.signal,
+      processHooks: n.processHooks,
       state,
       previousResults: phaseResults,
       agent: ctx.agent,
       agents: phaseAgents,
       attemptId,
+      conversationKey: n.conversationKey,
+      env,
       timeouts: {
         plan: phaseTimeout,
         execute: phaseTimeout,
@@ -350,6 +367,7 @@ export async function runQuotaFallbackRetry(
         review: phaseTimeout,
         remediate: phaseTimeout,
       },
+      onProgress: ctx.onProgress || null,
     });
   }
 

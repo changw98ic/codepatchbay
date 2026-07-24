@@ -12,15 +12,55 @@ import { promisify } from "node:util";
 import { LooseRecord, recordValue } from "../shared/types.js";
 
 import { FailureKind } from "../core/contracts/failure.js";
-import { runJob } from "../core/engine/run-job.js";
+import { runJob as runJobImpl } from "../core/engine/run-job.js";
+import { handleRunJobPanic } from "../core/engine/run-job-lifecycle.js";
+import { verificationInfrastructureRetrySuffix } from "../core/engine/run-job-execute-dag.js";
 import { tempRoot } from "./helpers.js";
 
 const execFile = promisify(execFileCallback);
 
-// ─── Env overrides for deterministic retry timing ─────────────────
-process.env.CPB_PHASE_RETRY_MAX = "1";
-process.env.CPB_PHASE_RETRY_BASE_DELAY_MS = "0";
-process.env.CPB_PHASE_FEEDBACK_RETRY_MAX = "1";
+// ─── Job-local overrides for deterministic retry timing ───────────
+const TEST_JOB_ENV: NodeJS.ProcessEnv = {
+  ...process.env,
+  CPB_PHASE_RETRY_MAX: "1",
+  CPB_PHASE_RETRY_BASE_DELAY_MS: "0",
+  CPB_PHASE_FEEDBACK_RETRY_MAX: "1",
+};
+
+const runJob = (ctx: LooseRecord) => runJobImpl({
+  ...ctx,
+  env: ctx.env ?? TEST_JOB_ENV,
+});
+
+test("runJob panic barrier classifies raw AbortError-like values as runtime_interrupted without signal state", async () => {
+  for (const panic of [
+    Object.assign(new DOMException("dom abort", "AbortError"), { marker: "dom" }),
+    Object.assign(new Error("coded abort"), { code: "ABORT_ERR" }),
+  ]) {
+    const failed: LooseRecord[] = [];
+    const events: LooseRecord[] = [];
+    const result = await handleRunJobPanic({
+      cpbRoot: "/tmp/cpb",
+      project: "flow",
+      _jobId: "job-raw-abort",
+      _attemptId: "attempt-raw-abort",
+      _currentPhase: "prepare_task",
+      signal: undefined,
+      failJob: async (_cpbRoot, _project, _jobId, payload) => { failed.push(payload); },
+      appendEvent: async (_cpbRoot, _project, _jobId, event) => { events.push(event); },
+    }, panic, () => "2026-07-21T00:00:00.000Z");
+
+    assert.equal(result.status, "failed");
+    assert.equal(result.failure?.kind, FailureKind.RUNTIME_INTERRUPTED);
+    assert.equal(result.failure?.retryable, false);
+    assert.equal(failed.length, 1);
+    assert.equal(failed[0].kind, FailureKind.RUNTIME_INTERRUPTED);
+    assert.equal(failed[0].code, FailureKind.RUNTIME_INTERRUPTED);
+    assert.equal(events.length, 1);
+    assert.equal(events[0].type, "job_failed");
+    assert.equal(events[0].kind, FailureKind.RUNTIME_INTERRUPTED);
+  }
+});
 
 // ─── Helpers ──────────────────────────────────────────────────────
 
@@ -210,8 +250,9 @@ function makePool(opts: EnginePoolOptions = {}) {
         if (opts.failWhen?.({ call, calls })) {
           throw new Error("fixture forced provider failure");
         }
+        const customOutput = opts.customOutput?.({ call, calls });
         return {
-          output: decomposeOutput(),
+          output: customOutput ?? decomposeOutput(),
           providerKey: agent,
           variant: null,
         };
@@ -239,8 +280,10 @@ interface RunEngineOpts {
   services?: LooseRecord;
   poolOpts?: LooseRecord;
   sourceContext?: LooseRecord;
+  env?: NodeJS.ProcessEnv;
   workflow?: string;
   jobId?: string;
+  signal?: AbortSignal;
   onProgress?: (event: LooseRecord) => Promise<unknown> | unknown;
   sourcePath?: string;
   prepareTask?: EngineServiceOptions["prepareTask"];
@@ -265,6 +308,8 @@ async function runEngine(opts: RunEngineOpts = {}) {
     planMode: "full",
     sourcePath,
     sourceContext: opts.sourceContext ?? {},
+    env: opts.env,
+    signal: opts.signal,
     agents: {
       planner: "fake-primary",
       executor: "fake-primary",
@@ -275,7 +320,7 @@ async function runEngine(opts: RunEngineOpts = {}) {
     getPool: () => makePool(poolOpts),
   });
 
-  return { result, calls, events };
+  return { result, calls, events, cpbRoot, dataRoot, sourcePath };
 }
 
 test("runJob writes the applied scheduler decision into the durable job event stream", async () => {
@@ -294,6 +339,10 @@ test("runJob writes the applied scheduler decision into the durable job event st
   });
 
   assert.equal(result.status, "completed");
+  assert.equal(
+    events.find((event) => event.type === "job_started")?.attemptId,
+    "job-runjob-test",
+  );
   assert.ok(events.some((event) => (
     event.type === "scheduler_decision_applied"
     && event.queueEntryId === "queue-smart-1"
@@ -344,6 +393,165 @@ test("DAG phase execution passes progress sink through to agent pool calls", asy
   );
 });
 
+test("runJob classifies post-agent AbortError as runtime interruption without panic or retry", async () => {
+  const abort = new AbortController();
+  const events: LooseRecord[] = [];
+  const failed: LooseRecord[] = [];
+  let executorAttempts = 0;
+  const abortReason = new Error("execution cancelled after agent returned") as Error & { code?: string };
+  abortReason.name = "AbortError";
+  abortReason.code = "ABORT_ERR";
+
+  const services = makeServices({ events, failed });
+
+  const { result, calls } = await runEngine({
+    services,
+    signal: abort.signal,
+    poolOpts: {
+      customResult: ({ call }: { call: LooseRecord }) => {
+        const meta = recordValue(call.meta);
+        if (meta.role === "executor") {
+          executorAttempts += 1;
+          abort.abort(abortReason);
+        }
+        return undefined;
+      },
+    },
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failure.kind, FailureKind.RUNTIME_INTERRUPTED);
+  assert.equal(result.failure.phase, "execute");
+  assert.equal(result.failure.retryable, false);
+  assert.match(result.failure.reason, /execution cancelled after agent returned/);
+  assert.equal(executorAttempts, 1);
+  assert.equal(calls.filter((call) => recordValue(call.meta).role === "executor").length, 1);
+  assert.equal(failed.length, 1);
+  assert.equal(failed[0].code, FailureKind.RUNTIME_INTERRUPTED);
+  assert.equal(recordValue(failed[0].cause).kind, FailureKind.RUNTIME_INTERRUPTED);
+  assert.ok(!events.some((event) => event.type === "job_panic"));
+  assert.notEqual(result.failure.kind, FailureKind.RUNJOB_PANIC);
+});
+
+test("checklist decompose uses created jobId rather than caller input", async () => {
+  const createdJobId = "job-created-by-runjob";
+  const capturedDecomposeJobIds: string[] = [];
+
+  const services = makeServices({
+    createJob: async (_cpbRoot: string, input: LooseRecord) => ({
+      ...input,
+      jobId: createdJobId,
+      status: "running",
+    }),
+    prepareTask: async () => ({ riskMap: mediumRiskMap() }),
+  });
+
+  const { result } = await runEngine({
+    jobId: "job-requested-by-caller",
+    services,
+    env: { CPB_CHECKLIST_DECOMPOSE: "1" },
+    poolOpts: {
+      customOutput: ({ call }: { call: LooseRecord }) => {
+        const meta = recordValue(call.meta);
+        if (/\bdecomposedItems\b/.test(String(call.prompt || ""))) {
+          if (typeof meta.jobId === "string") capturedDecomposeJobIds.push(meta.jobId);
+        }
+        return undefined;
+      },
+    },
+  });
+
+  assert.equal(result.status, "completed");
+  assert.equal(
+    capturedDecomposeJobIds.length > 0,
+    true,
+    "checklist decomposition should run when direct decomposition is enabled",
+  );
+  const unique = Array.from(new Set(capturedDecomposeJobIds));
+  assert.deepEqual(unique, [createdJobId], "decompose should use created jobId from createJob");
+});
+
+test("concurrent runJob executions keep job env isolated without mutating ambient roots", async () => {
+  const ambientRoots = {
+    CPB_ROOT: process.env.CPB_ROOT,
+    CPB_HUB_ROOT: process.env.CPB_HUB_ROOT,
+    CPB_PROJECT_RUNTIME_ROOT: process.env.CPB_PROJECT_RUNTIME_ROOT,
+    CPB_PROJECT_PATH_OVERRIDE: process.env.CPB_PROJECT_PATH_OVERRIDE,
+  };
+  const ambientObservations: Array<typeof ambientRoots> = [];
+  let arrivals = 0;
+  let releaseBarrier: (() => void) | null = null;
+  const barrier = new Promise<void>((resolve) => {
+    releaseBarrier = resolve;
+  });
+
+  const runIsolated = (marker: string, timeoutMs: number) => {
+    let observedPlanner = false;
+    return runEngine({
+      env: {
+        ...process.env,
+        CPB_TEST_MARKER: marker,
+        CPB_CHECKLIST_DECOMPOSE: "1",
+        CPB_CHECKLIST_DECOMPOSE_RETRY_MAX: "0",
+        CPB_CHECKLIST_CODEGRAPH_FAST_PATH: "0",
+        CPB_ASSURANCE_MODE: "standard",
+        CPB_ACP_PHASE_TIMEOUT_MS: String(timeoutMs),
+        CPB_PHASE_RETRY_MAX: "0",
+        CPB_PHASE_FEEDBACK_RETRY_MAX: "0",
+        CPB_PHASE_QUALITY_REPAIR_MAX: "0",
+        CPB_PHASE_RETRY_TOTAL_MAX: "0",
+      },
+      poolOpts: {
+        customResult: async ({ call }: { call: LooseRecord }) => {
+          const meta = recordValue(call.meta);
+          if (meta.role !== "planner" || observedPlanner) return undefined;
+          observedPlanner = true;
+          arrivals += 1;
+          if (arrivals === 2) releaseBarrier?.();
+          await barrier;
+          ambientObservations.push({
+            CPB_ROOT: process.env.CPB_ROOT,
+            CPB_HUB_ROOT: process.env.CPB_HUB_ROOT,
+            CPB_PROJECT_RUNTIME_ROOT: process.env.CPB_PROJECT_RUNTIME_ROOT,
+            CPB_PROJECT_PATH_OVERRIDE: process.env.CPB_PROJECT_PATH_OVERRIDE,
+          });
+          return undefined;
+        },
+      },
+    });
+  };
+
+  const [left, right] = await Promise.all([
+    runIsolated("left-job", 1111),
+    runIsolated("right-job", 2222),
+  ]);
+
+  assert.equal(left.result.status, "completed");
+  assert.equal(right.result.status, "completed");
+  assert.deepEqual(ambientObservations, [ambientRoots, ambientRoots]);
+  assert.deepEqual({
+    CPB_ROOT: process.env.CPB_ROOT,
+    CPB_HUB_ROOT: process.env.CPB_HUB_ROOT,
+    CPB_PROJECT_RUNTIME_ROOT: process.env.CPB_PROJECT_RUNTIME_ROOT,
+    CPB_PROJECT_PATH_OVERRIDE: process.env.CPB_PROJECT_PATH_OVERRIDE,
+  }, ambientRoots);
+
+  for (const [run, marker, timeoutMs] of [
+    [left, "left-job", 1111],
+    [right, "right-job", 2222],
+  ] as const) {
+    assert.ok(run.calls.length > 0);
+    for (const call of run.calls) {
+      const metaEnv = recordValue(recordValue(call.meta).env);
+      assert.equal(metaEnv.CPB_TEST_MARKER, marker);
+      assert.equal(metaEnv.CPB_ROOT, run.cpbRoot);
+      assert.equal(metaEnv.CPB_PROJECT_RUNTIME_ROOT, run.dataRoot);
+      assert.equal(metaEnv.CPB_PROJECT_PATH_OVERRIDE, run.sourcePath);
+      assert.equal(call.timeoutMs, timeoutMs);
+    }
+  }
+});
+
 test("prepare task emits derived phase budget policy for ordinary coding tasks", async () => {
   const events: LooseRecord[] = [];
   const services = makeServices({
@@ -367,7 +575,7 @@ test("prepare task emits derived phase budget policy for ordinary coding tasks",
   const phaseBudgetPolicy = recordValue(riskEvent?.phaseBudgetPolicy);
   const executePolicy = recordValue(recordValue(phaseBudgetPolicy.phases).execute);
   assert.equal(phaseBudgetPolicy.riskLevel, "high");
-  assert.equal(executePolicy.noEditToolLimit, 8);
+  assert.equal(executePolicy.noEditToolLimit, 0);
   assert.deepEqual(riskEvent?.evidenceRequirements, [
     "agent_regression_test",
     "canonical_command",
@@ -820,117 +1028,294 @@ test("DAG execution: verification infrastructure retry preserves the frozen cand
   const auditRoot = await tempRoot("cpb-verification-infra-retry-audit");
   const auditFile = path.join(auditRoot, "verifier.jsonl");
   const verifierSessionId = "verification-infra-retry-session";
-  const previousAssuranceMode = process.env.CPB_ASSURANCE_MODE;
-  let assuranceModeRestored = false;
-  const restoreAssuranceMode = () => {
-    if (assuranceModeRestored) return;
-    assuranceModeRestored = true;
-    if (previousAssuranceMode === undefined) delete process.env.CPB_ASSURANCE_MODE;
-    else process.env.CPB_ASSURANCE_MODE = previousAssuranceMode;
+  const tournamentItem = {
+    requirement: "README is updated by the runJob fixture.",
+    predicateId: "runjob-readme-update",
+    verificationMethod: "static",
+    allowedFiles: ["README.md"],
+    sourceRefs: [{ kind: "task_text", locator: "task:0" }],
+    observableContract: {
+      observationKind: "invariant",
+      probeInput: "Inspect README.md after execution",
+      expectedObservation: "README.md contains the frozen candidate change",
+      forbiddenObservations: [],
+      oracleSourceRefs: [{ kind: "task_text", locator: "task:0" }],
+      candidateIndependent: true,
+    },
   };
+  const proposal = (proposalId: "A" | "B", suffix = "initial") => ({
+    proposalId,
+    problemModel: `runJob verification infrastructure retry fixture ${suffix}`,
+    claims: [{
+      claimId: `${proposalId}-C1`,
+      statement: "The README candidate is the only mutable fixture output.",
+      evidenceRefs: ["README.md:1"],
+      falsificationProbe: "Inspect README.md in the candidate replay.",
+      status: "supported",
+    }],
+    decomposedItems: [tournamentItem],
+    changeScope: ["README.md"],
+    invariants: ["Verification retry must not invoke executor repair."],
+    implementationSteps: ["Write the frozen candidate README content."],
+    verification: ["Run the independent verifier against a disposable replay."],
+    unresolvedAssumptions: [],
+    planMarkdown: [
+      "## Analysis",
+      "- Fixture plan for high-assurance verification infrastructure retry.",
+      "",
+      "## Bounded Handoff",
+      "- Real actors: README.md and the independent verifier replay.",
+      "- Entrypoints: runJob DAG execution.",
+      "- Bypass candidates: executor repair loop.",
+      "- Edit files: README.md",
+      "- Verification targets: independent verifier runtime observation.",
+      "- Blockers: none",
+      "",
+      "## Implementation Steps",
+      "1. Write the frozen README candidate.",
+      "",
+      "## Testing",
+      "- Retry verifier only after missing executable evidence.",
+    ].join("\n"),
+  });
+  const proposalEnvelope = (proposalId: "A" | "B", suffix?: string) => jsonEnvelope({
+    status: "ok",
+    proposal: proposal(proposalId, suffix),
+  });
+  const critiqueEnvelope = (reviewer: "A" | "B", targetProposalId: "A" | "B") => jsonEnvelope({
+    status: "ok",
+    critique: {
+      reviewer,
+      targetProposalId,
+      objections: [],
+      acceptedClaims: [`${targetProposalId}-C1`],
+      unresolvedDisputes: [],
+    },
+  });
+  const arbitrationEnvelope = jsonEnvelope({
+    status: "ok",
+    arbitration: {
+      decision: "B",
+      reason: "B preserves the frozen-candidate retry boundary.",
+      acceptedConstraints: [],
+      rejectedAlternatives: [],
+      proposal: proposal("B", "winner"),
+    },
+  });
 
-  try {
-    const { result, calls, events } = await runEngine({
-      sourcePath,
-      prepareTask: async () => ({
-        riskMap: mediumRiskMap(),
-        acceptanceChecklist: {
-          schemaVersion: 1,
-          jobId: "job-runjob-test",
-          project: "flow",
-          status: "frozen",
-          source: { task: "runJob engine fixture", issue: null, documents: [] },
-          items: [
-            {
-              id: "AC-001",
-              requirement: "README is updated by the runJob fixture.",
-              source: "user_task",
-              sourceRefs: [{ kind: "task_text", locator: "task:0", sha256: "sha256:task" }],
-              predicateId: "runjob-readme-update",
-              required: true,
-              area: "test_fixture",
-              risk: "medium",
-              verificationMethod: "static",
-              expectedEvidence: "README.md is changed by the fixture execution",
-              dependsOn: [],
-              allowedFiles: ["README.md"],
-            },
-          ],
-          assumptions: [],
+  const { result, calls, events } = await runEngine({
+    sourcePath,
+    env: {
+      PATH: process.env.PATH,
+      CPB_ASSURANCE_MODE: "standard",
+      CPB_VERIFICATION_INFRA_RETRY_MAX: "2",
+      CPB_PHASE_RETRY_MAX: "1",
+      CPB_PHASE_RETRY_BASE_DELAY_MS: "0",
+      CPB_PHASE_FEEDBACK_RETRY_MAX: "1",
+    },
+    sourceContext: {
+      assurance: {
+        mode: "high",
+        planning: {
+          candidates: ["fake-primary", "fake-primary"],
+          arbiter: "fake-primary",
+          critiqueRounds: 1,
         },
-      }),
-      poolOpts: {
-        customResult: async ({ call, calls: allCalls }: { call: LooseRecord; calls: LooseRecord[] }) => {
-          const meta = recordValue(call.meta);
-          if (meta.role === "executor") {
-            await writeFile(
-              path.join(sourcePath, "README.md"),
-              "# runJob fixture\n\nFrozen candidate change.\n",
-              "utf8",
-            );
-            // Enable the high-assurance executable-evidence gate only after
-            // ordinary planning has completed. This fixture targets the DAG
-            // retry boundary, not the separately-tested plan tournament.
-            process.env.CPB_ASSURANCE_MODE = "high";
-            return undefined;
-          }
-          if (meta.role !== "verifier") return undefined;
-          const verifierCalls = allCalls.filter(
-            (entry) => recordValue(entry.meta).role === "verifier",
-          );
-          if (verifierCalls.length === 1) {
-            // First verifier returns PASS prose/checklist but no ACP-observed
-            // dynamic test, which must classify as verification infrastructure.
-            return undefined;
-          }
-          const now = new Date().toISOString();
+        execution: { agent: "fake-primary" },
+        verification: { agent: "fake-primary", required: true, blind: true, independent: true },
+      },
+    },
+    prepareTask: async () => ({
+      riskMap: mediumRiskMap(),
+      acceptanceChecklist: {
+        schemaVersion: 1,
+        jobId: "job-runjob-test",
+        project: "flow",
+        status: "frozen",
+        source: { task: "runJob engine fixture", issue: null, documents: [] },
+        items: [
+          {
+            id: "AC-001",
+            requirement: "README is updated by the runJob fixture.",
+            source: "user_task",
+            sourceRefs: [{ kind: "task_text", locator: "task:0", sha256: "sha256:task" }],
+            predicateId: "runjob-readme-update",
+            required: true,
+            area: "test_fixture",
+            risk: "medium",
+            verificationMethod: "static",
+            expectedEvidence: "README.md is changed by the fixture execution",
+            dependsOn: [],
+            allowedFiles: ["README.md"],
+          },
+        ],
+        assumptions: [],
+      },
+    }),
+    poolOpts: {
+      customOutput: ({ call }: { call: LooseRecord }) => {
+        const meta = recordValue(call.meta);
+        if (meta.role === "planner_a") return proposalEnvelope("A");
+        if (meta.role === "planner_b") return proposalEnvelope("B");
+        if (meta.role === "critic_a_round_1") return critiqueEnvelope("A", "B");
+        if (meta.role === "critic_b_round_1") return critiqueEnvelope("B", "A");
+        if (meta.role === "revision_a_round_1") return proposalEnvelope("A", "revised");
+        if (meta.role === "revision_b_round_1") return proposalEnvelope("B", "revised");
+        if (meta.role === "plan_arbiter") return arbitrationEnvelope;
+        return undefined;
+      },
+      customResult: async ({ call, calls: allCalls }: { call: LooseRecord; calls: LooseRecord[] }) => {
+        const meta = recordValue(call.meta);
+        if (meta.role === "executor") {
           await writeFile(
-            auditFile,
-            `${JSON.stringify({
-              event: "tool_call",
-              phase: "verify",
-              role: "verifier",
-              sessionId: verifierSessionId,
-              toolCallId: "focused-test-1",
-              title: "node --test tests/engine-run-job.test.js",
-              kind: "execute",
-              status: "completed",
-              ts: now,
-            })}\n`,
+            path.join(sourcePath, "README.md"),
+            "# runJob fixture\n\nFrozen candidate change.\n",
             "utf8",
           );
-          // runVerify captured the high-assurance policy before invoking the
-          // agent; restore global state before the completion gate runs.
-          restoreAssuranceMode();
-          return { acpAuditFile: auditFile, sessionId: verifierSessionId };
+          return undefined;
+        }
+        if (meta.role !== "verifier") return undefined;
+        const verifierCalls = allCalls.filter(
+          (entry) => recordValue(entry.meta).role === "verifier",
+        );
+        if (verifierCalls.length === 1) {
+          // First verifier returns PASS prose/checklist but no ACP-observed
+          // dynamic test, which must classify as verification infrastructure.
+          return undefined;
+        }
+        const now = new Date().toISOString();
+        await writeFile(
+          auditFile,
+          `${JSON.stringify({
+            event: "tool_call",
+            phase: "verify",
+            role: "verifier",
+            sessionId: verifierSessionId,
+            toolCallId: "focused-test-1",
+            title: "node --test tests/engine-run-job.test.js",
+            kind: "execute",
+            status: "completed",
+            ts: now,
+          })}\n`,
+          "utf8",
+        );
+        return { acpAuditFile: auditFile, sessionId: verifierSessionId };
+      },
+    },
+  });
+
+  assert.equal(result.status, "completed", JSON.stringify(result.failure));
+  const executorCalls = calls.filter((call) => recordValue(call.meta).role === "executor");
+  const verifierCalls = calls.filter((call) => recordValue(call.meta).role === "verifier");
+  assert.equal(executorCalls.length, 1, "infrastructure retry must not ask the executor to rewrite the patch");
+  assert.equal(verifierCalls.length, 2, "only the independent verifier should retry");
+  assert.notEqual(verifierCalls[0].cwd, sourcePath, "verification must run in a disposable candidate replay");
+  assert.notEqual(verifierCalls[1].cwd, sourcePath, "verification retry must use a fresh disposable replay");
+  assert.match(
+    String(verifierCalls[1].prompt),
+    /candidate byte-for-byte unchanged/i,
+    "retry prompt must freeze candidate source state",
+  );
+
+  const retryStarted = events.find((event) => event.type === "verification_infrastructure_retry_started");
+  const retryCompleted = events.find((event) => event.type === "verification_infrastructure_retry_completed");
+  assert.ok(retryStarted, "verification infrastructure retry should be trace-visible");
+  assert.ok(retryCompleted, "successful verification retry should be trace-visible");
+  assert.equal(retryStarted.candidateMutationAllowed, false);
+  assert.match(String(retryStarted.candidateId), /^sha256:/);
+  assert.equal(retryCompleted.candidateId, retryStarted.candidateId);
+  assert.equal(events.some((event) => event.type === "solver_repair_started"), false);
+});
+
+test("DAG execution: adversarial verification infrastructure retry replays the verification suffix only", () => {
+  const nodes = [
+    { id: "plan", phase: "plan", role: "planner" },
+    { id: "execute", phase: "execute", role: "executor" },
+    { id: "verify", phase: "verify", role: "verifier" },
+    { id: "adversarial_verify", phase: "adversarial_verify", role: "adversarial_verifier" },
+  ];
+  const initialAdversarialFailure = {
+    terminal: null,
+    result: {
+      schemaVersion: 1,
+      phase: "adversarial_verify",
+      status: "failed",
+      artifact: null,
+      failure: {
+        kind: FailureKind.VERIFICATION_FAILED,
+        phase: "adversarial_verify",
+        reason: "prior verify phase left a blocking plan mismatch residual",
+        retryable: true,
+        cause: {
+          verificationInfrastructure: {
+            failureClass: "verification_infrastructure",
+            retryPhase: "verify",
+            candidateMutationAllowed: false,
+          },
         },
       },
-    });
+      diagnostics: {},
+    },
+    deferredVerificationFailure: true,
+    phase: "adversarial_verify",
+    role: "adversarial_verifier",
+    nodeId: "adversarial_verify",
+    dagNode: nodes[3],
+  };
 
-    assert.equal(result.status, "completed", JSON.stringify(result.failure));
-    const executorCalls = calls.filter((call) => recordValue(call.meta).role === "executor");
-    const verifierCalls = calls.filter((call) => recordValue(call.meta).role === "verifier");
-    assert.equal(executorCalls.length, 1, "infrastructure retry must not ask the executor to rewrite the patch");
-    assert.equal(verifierCalls.length, 2, "only the independent verifier should retry");
-    assert.notEqual(verifierCalls[0].cwd, sourcePath, "verification must run in a disposable candidate replay");
-    assert.notEqual(verifierCalls[1].cwd, sourcePath, "verification retry must use a fresh disposable replay");
-    assert.match(
-      String(verifierCalls[1].prompt),
-      /candidate byte-for-byte unchanged/i,
-      "retry prompt must freeze candidate source state",
-    );
+  const suffix = verificationInfrastructureRetrySuffix(nodes.slice(2), initialAdversarialFailure as never);
+  const replayedRoles = [
+    ...nodes.map((node) => node.role),
+    ...suffix.map((node) => node.role),
+  ];
 
-    const retryStarted = events.find((event) => event.type === "verification_infrastructure_retry_started");
-    const retryCompleted = events.find((event) => event.type === "verification_infrastructure_retry_completed");
-    assert.ok(retryStarted, "verification infrastructure retry should be trace-visible");
-    assert.ok(retryCompleted, "successful verification retry should be trace-visible");
-    assert.equal(retryStarted.candidateMutationAllowed, false);
-    assert.match(String(retryStarted.candidateId), /^sha256:/);
-    assert.equal(retryCompleted.candidateId, retryStarted.candidateId);
-    assert.equal(events.some((event) => event.type === "solver_repair_started"), false);
-  } finally {
-    restoreAssuranceMode();
-  }
+  assert.deepEqual(replayedRoles, [
+    "planner",
+    "executor",
+    "verifier",
+    "adversarial_verifier",
+    "verifier",
+    "adversarial_verifier",
+  ]);
+  assert.equal(replayedRoles.filter((role) => role === "executor").length, 1);
+});
+
+test("DAG execution: verification infrastructure retry falls back to the failed node for invalid retryPhase", () => {
+  const verifyNode = { id: "verify", phase: "verify", role: "verifier" };
+  const adversarialNode = { id: "adversarial_verify", phase: "adversarial_verify", role: "adversarial_verifier" };
+  const initialAdversarialFailure = {
+    terminal: null,
+    result: {
+      schemaVersion: 1,
+      phase: "adversarial_verify",
+      status: "failed",
+      artifact: null,
+      failure: {
+        kind: FailureKind.VERIFICATION_FAILED,
+        phase: "adversarial_verify",
+        reason: "verification infrastructure retry phase is not routable",
+        retryable: true,
+        cause: {
+          verificationInfrastructure: {
+            failureClass: "verification_infrastructure",
+            retryPhase: "execute",
+            candidateMutationAllowed: false,
+          },
+        },
+      },
+      diagnostics: {},
+    },
+    deferredVerificationFailure: true,
+    phase: "adversarial_verify",
+    role: "adversarial_verifier",
+    nodeId: "adversarial_verify",
+    dagNode: adversarialNode,
+  };
+
+  assert.deepEqual(
+    verificationInfrastructureRetrySuffix([verifyNode, adversarialNode], initialAdversarialFailure as never),
+    [adversarialNode],
+  );
 });
 
 test("DAG execution: failed phase stops pipeline and returns failure", async () => {
@@ -1247,15 +1632,27 @@ test("DAG node transitions: started and completed events for each node", async (
   const nodeTransitions = events
     .filter((e) => e.type?.startsWith("dag_node_"))
     .map((e) => `${e.type}:${e.nodeId}`);
-
-  assert.deepEqual(nodeTransitions, [
-    "dag_node_started:plan",
-    "dag_node_completed:plan",
-    "dag_node_started:execute",
-    "dag_node_completed:execute",
-    "dag_node_started:verify",
-    "dag_node_completed:verify",
-  ]);
+  assert.equal(nodeTransitions.length, 6, "should have start+completed for each of three nodes");
+  assert.ok(
+    nodeTransitions.findIndex((transition) => transition === "dag_node_started:plan")
+      < nodeTransitions.findIndex((transition) => transition === "dag_node_completed:plan"),
+  );
+  assert.ok(
+    nodeTransitions.findIndex((transition) => transition === "dag_node_started:execute")
+      < nodeTransitions.findIndex((transition) => transition === "dag_node_completed:execute"),
+  );
+  assert.ok(
+    nodeTransitions.findIndex((transition) => transition === "dag_node_started:verify")
+      < nodeTransitions.findIndex((transition) => transition === "dag_node_completed:verify"),
+  );
+  assert.ok(
+    nodeTransitions.findIndex((transition) => transition === "dag_node_completed:plan")
+      < nodeTransitions.findIndex((transition) => transition === "dag_node_started:execute"),
+  );
+  assert.ok(
+    nodeTransitions.findIndex((transition) => transition === "dag_node_completed:execute")
+      < nodeTransitions.findIndex((transition) => transition === "dag_node_started:verify"),
+  );
 });
 
 // ═══════════════════════════════════════════════════════════════════

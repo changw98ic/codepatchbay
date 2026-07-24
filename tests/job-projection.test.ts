@@ -98,7 +98,7 @@ test("jobs report exposes completion and runtime policy visibility panels", asyn
       bypassCandidates: ["raw JSON only"],
       evidenceClasses: ["canonical_command"],
       evidenceOrigins: ["agent_regression_test"],
-      commands: ["node --test dist/tests/job-projection.test.js"],
+      commands: ["node --test dist-tests/tests/job-projection.test.js"],
       evidenceCounts: { passed: 1, failed: 0, total: 1 },
       residualRisk: { riskLevel: "high", adversarialRequired: true, notes: ["frontend panel unavailable"] },
     };
