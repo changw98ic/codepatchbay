@@ -2,7 +2,7 @@ import { execFile as execFileCallback } from "node:child_process";
 import path from "node:path";
 import { promisify } from "node:util";
 
-import { isRecord, type LooseRecord } from "../../core/contracts/types.js";
+import { isRecord, type LooseRecord } from "../types.js";
 
 const execFile = promisify(execFileCallback);
 

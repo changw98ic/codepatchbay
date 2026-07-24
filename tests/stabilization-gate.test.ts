@@ -24,6 +24,7 @@ test("stabilization gate includes all required release evidence commands", () =>
     "npm run typecheck:type-debt:engine",
     "npm run verify:dependency-audit",
     "npm run verify:patch-integrity",
+    "npm run verify:commit-size",
     "npm run verify:release-gate",
     "npm run verify:enterprise-gate",
     "npm run verify:product-gate",
@@ -48,6 +49,7 @@ test("stabilization gate stops at the first failed command", async () => {
     "npm run typecheck:type-debt:engine",
     "npm run verify:dependency-audit",
     "npm run verify:patch-integrity",
+    "npm run verify:commit-size",
     "npm run verify:release-gate",
   ]);
 });

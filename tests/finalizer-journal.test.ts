@@ -77,6 +77,11 @@ function prInitialRecord(): FinalizerJournalRecord {
     },
   };
   record.finalizationId = finalizerJournalFinalizationId(record);
+  record.claim.claimId = finalizerJournalClaimId({
+    finalizationId: record.finalizationId,
+    ownerDigest: String(record.claim.ownerDigest),
+    claimGeneration: Number(record.claim.claimGeneration),
+  });
   return record;
 }
 

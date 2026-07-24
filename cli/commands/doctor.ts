@@ -1,8 +1,8 @@
 import type { LooseRecord } from "../../shared/types.js";
 import { spawn } from "node:child_process";
 import path from "node:path";
-import { readBoundedRegularFileNoFollow } from "../../core/runtime/durable-directory-lock.js";
-import { captureProcessIdentity, sameProcessIdentity, type ProcessIdentity } from "../../core/runtime/process-tree.js";
+import { readBoundedRegularFileNoFollow } from "../../shared/primitives/durable-directory-lock.js";
+import { captureProcessIdentity, sameProcessIdentity, type ProcessIdentity } from "../../shared/primitives/process-tree.js";
 import { readLeaderStatusDiagnostic } from "./hub.js";
 
 const DOCTOR_METADATA_MAX_BYTES = 64 * 1024;

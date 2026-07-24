@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
 const EVENT_MATERIALIZER = readFileSync(
-  path.resolve('server/services/event/event-materializer.js'), 'utf8'
+  path.resolve('server/services/event/event-materializer.ts'), 'utf8'
 );
 
 const EVENT_REGISTRY = {
@@ -62,6 +62,10 @@ const EVENT_REGISTRY = {
   merge_index_status:     { class: 'audit',    consumer: 'merge-index, supervisor',   testFile: 'event-store.test.js', testMatch: ['merge_index_status'] },
   pr_opened:              { class: 'audit',    consumer: 'github-integration',        testFile: 'event-store.test.js', testMatch: ['pr_opened'] },
   completion_gate_evaluated: { class: 'audit', consumer: 'completion-gate, supervisor', testFile: 'event-store.test.js', testMatch: ['completion_gate_evaluated'] },
+  artifact_created:            { class: 'audit', consumer: 'artifact-index, job-projection', testFile: 'checklist-artifact-index.test.js', testMatch: ['artifact_created'] },
+  audit_finalized:             { class: 'audit', consumer: 'job-projection', testFile: 'checklist-runtime-context-audit.test.js', testMatch: ['audit_finalized'] },
+  runtime_context_snapshot:    { class: 'audit', consumer: 'job-projection', testFile: 'checklist-runtime-context-audit.test.js', testMatch: ['runtime_context_snapshot'] },
+  runtime_failure_recorded:    { class: 'audit', consumer: 'trace, job-projection', testFile: 'runtime-failure-recorder.test.js', testMatch: ['runtime_failure_recorded'] },
 } satisfies Record<string, { class: string; consumer: string; testFile: string; testMatch: string[] }>;
 
 const VALID_CLASSES = new Set(['state', 'control', 'activity', 'audit']);
@@ -88,15 +92,16 @@ describe('R4: event extension gate', () => {
 
   it('every event type has a regression test file', () => {
     for (const [eventType, meta] of Object.entries(EVENT_REGISTRY)) {
-      const testPath = path.resolve('tests', meta.testFile);
+      const sourceTestFile = meta.testFile.replace(/\.js$/, '.ts');
+      const testPath = path.resolve('tests', sourceTestFile);
       let content;
       try {
         content = readFileSync(testPath, 'utf8');
       } catch {
-        assert.fail(`${eventType} test file not found: tests/${meta.testFile}`);
+        assert.fail(`${eventType} test file not found: tests/${sourceTestFile}`);
       }
       const hasMatch = meta.testMatch.some((m) => content.includes(m));
-      assert.ok(hasMatch, `${eventType} not referenced in tests/${meta.testFile} (checked: ${meta.testMatch.join(', ')})`);
+      assert.ok(hasMatch, `${eventType} not referenced in tests/${sourceTestFile} (checked: ${meta.testMatch.join(', ')})`);
     }
   });
 
