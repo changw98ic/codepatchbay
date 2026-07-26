@@ -222,6 +222,10 @@ const isolatedUnitFiles = new Set([
   // Verifies that an idle hub socket is unref'd by observing child-process
   // exit timing; parallel process pressure can exceed its two-second bound.
   "tests/local-store-atomicity.test.js",
+  // Uses deterministic process-fence ports for listener-collision and reset
+  // tests. Running it beside other lock/fence suites can make two independent
+  // tests bind the same candidate port before either listener is released.
+  "tests/durable-directory-lock.test.js",
   // Exercises a cancellation boundary while two review DAG nodes must reach
   // the same wave. Parallel slow-suite load can starve one scheduler callback
   // long enough to make the test observe a false non-overlap failure.
