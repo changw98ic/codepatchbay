@@ -96,6 +96,7 @@ test("CI cannot reinstall the removed web toolchain outside the reviewed lockfil
   const workflow = await readFile(path.join(repoRoot, ".github", "workflows", "test.yml"), "utf8");
   assert.match(workflow, /run: npm run test:main/);
   assert.doesNotMatch(workflow, /^\s+run: npm test$/m);
+  assert.doesNotMatch(workflow, /run: npm run verify:stabilization/);
   assert.doesNotMatch(workflow, /\bnpx\s+playwright\b/);
   assert.doesNotMatch(workflow, /npm install @rollup\/rollup-linux-x64-gnu --no-save/);
 });
