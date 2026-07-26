@@ -4,7 +4,7 @@
 
 **本地/私有化的 coding-agent 交付运行时。**
 
-把任务或 GitHub Issue 交给 CodePatchBay。它通过 ACP 调用 Codex、Claude Code 或其他 agent，拆解计划、执行阶段、记录证据、验证结果，并生成可审查的本地产物或草稿 PR。
+把任务或 GitHub Issue 交给 CodePatchBay。它通过 ACP 或 CLI gateway 调用 Codex、Claude Code、OpenCode 或其他受支持 agent，拆解计划、执行阶段、记录证据、验证结果，并生成可审查的本地产物或草稿 PR。
 
 ```text
 Issue / 任务 → CodePatchBay Runtime → coding agents → 有证据的可审交付
@@ -62,16 +62,15 @@ npm 包名：[`codepatchbay`](https://www.npmjs.com/package/codepatchbay)
 ```bash
 npm install -g codepatchbay
 cpb setup --recommended        # 检测工具、安装 agents、运行健康检查
-cpb quickstart --demo          # 本地演示，无需 API 密钥
 cd your-project
-cpb init .                     # 注册项目
-cpb run "fix failing tests"    # 提交任务，CodePatchBay 会完成剩下的
+cpb quickstart --demo --project-path . --project-name your-project  # 初始化本地演示，无需 API 密钥
+cpb run "fix failing tests" --project your-project                # 提交到完整流程队列
 ```
 
 免安装试用：
 
 ```bash
-npx codepatchbay quickstart --demo
+npx codepatchbay quickstart --demo --project-path . --project-name cpb-demo
 ```
 
 ### 从源码安装
@@ -86,10 +85,10 @@ sh scripts/install.sh
 
 ```bash
 # 注册你的项目
-cpb init .
+cpb init . myproj
 
 # 提交一个任务
-cpb run "add dark mode toggle to the settings page"
+cpb run "add dark mode toggle to the settings page" --project myproj
 ```
 
 CodePatchBay 会：
@@ -104,13 +103,13 @@ CodePatchBay 会：
 # 查看进展
 cpb status myproj
 
-# 查看交付产物和验证结论（位于项目 outputs 目录）
+# 查看交付产物和验证结论（位于注册项目运行时的 wiki/outputs 目录）
 cpb outputs myproj
 ```
 
 ## GitHub Issue 到草稿 PR
 
-连接 GitHub 后，给 Issue 打上 `cpb` 标签，CodePatchBay 自动接管：
+配置 GitHub transport 和 webhook 后，给 Issue 打上 `cpb` 标签即可进入规划、执行和验证流程；默认先生成 draft PR dry-run preview：
 
 ```bash
 cpb github bind myproj owner/repo
@@ -119,11 +118,12 @@ cpb github doctor                # 验证通信正常
 cpb hub start                    # 启动 Hub 调度器
 ```
 
+注意：当前 Hub HTTP server 不会仅因 `cpb hub start` 就暴露通用 GitHub webhook 路由；必须使用已经接线的 transport/外部 webhook 入口，才能让 Issue 标签触发上述流程。
+
 Hub 默认只监听回环地址，但回环地址也不是身份边界：启动时必须配置至少 32 字节的
 `CPB_HUB_BEARER_TOKEN`、`CPB_HUB_SERVICE_TOKENS_FILE` 或 `CPB_HUB_OIDC_CONFIG_FILE`。
 仅本地开发可显式设置 `CPB_HUB_ALLOW_ANONYMOUS_DEV=1`；该模式只接受回环绑定，且 readiness 不会判定为商用就绪。
-若设置非回环 `CPB_HOST`，
-并应绑定回环地址、在 TLS 反向代理之后部署。只有明确位于受保护网络时，才可同时设置
+若设置非回环 `CPB_HOST`，应在 TLS 反向代理之后部署。只有明确位于受保护网络时，才可同时设置
 `CPB_HUB_ALLOW_INSECURE_HTTP=1` 允许非回环明文 HTTP。GitHub 评论触发的
 `/cpb run` 只接受仓库 `OWNER`、`MEMBER` 或 `COLLABORATOR`。
 
@@ -151,19 +151,12 @@ hash-chain 访问审计；写入或完整性检查失败时请求返回 `503 HUB
 [`docs/security/cpb-hub-access-audit.md`](docs/security/cpb-hub-access-audit.md)。
 
 项目注册表的所有生产写路径使用带单调 `revision` 的跨进程事务；陈旧快照返回
-`HUB_REGISTRY_CONFLICT`，不会覆盖其他进程已经提交的状态。默认本地文件模式使用所有权 token、续租、
-死进程恢复和提交前所有权复核，保证范围限于同一主机。需要跨主机共享注册表时，可配置私有
-`CPB_HUB_STATE_REDIS_CONFIG_FILE`，通过 Redis 原子 CAS 拒绝恢复后的旧 writer；leader lease、单调 epoch
-、队列、assignment、worker registry 与 worker inbox 也存入同一个 Redis hash；leader 写入会在存储层
-校验 fence，worker inbox 通过一次性 claim token 原子认领。远程连接强制
-`rediss://`，Hub 启动和 `cpb doctor` 都会执行有界预检。凭据可在同一 endpoint/database/key 上轮换，
-切换后端身份必须先停止全部控制面进程。lease、job 和审计状态仍没有完整分布式事务，
-`cpb doctor` 会继续报告 `activeActiveSafe: false`，因此还不能运行多个 active scheduler。部署、迁移、备份和
-拓扑限制见 [`docs/security/cpb-hub-redis-state.md`](docs/security/cpb-hub-redis-state.md)，本地事务细节见
+`HUB_REGISTRY_CONFLICT`，不会覆盖其他进程已经提交的状态。本地文件模式使用所有权 token、续租、
+死进程恢复和提交前所有权复核，保证范围限于同一主机。`cpb doctor` 会继续报告
+`activeActiveSafe: false`，因此还不能运行多个 active scheduler。本地事务细节见
 [`docs/architecture/cpb-hub-registry-consistency.md`](docs/architecture/cpb-hub-registry-consistency.md)。
 
-默认模式下 Hub 与所有注册项目的运行状态都位于 Hub 根目录内。配置 Redis 注册表后，该注册表位于
-外部服务，当前 Hub 备份不会包含它，必须使用 Redis 自身的备份恢复并核对 revision 和项目集合。
+默认模式下 Hub 与所有注册项目的运行状态都位于 Hub 根目录内。
 文件系统备份和恢复必须离线执行；快照包含
 SHA-256 清单，恢复前会完整校验，覆盖已有状态必须显式使用 `--force`，原目录会保留为
 `*.pre-restore-*` 回滚副本：
@@ -195,11 +188,11 @@ fsync；进程或主机中断后，下一次 Hub 启动会自动回滚未提交�
 未配置时会留下可审计的失败证据，不会回退到 shell 执行。格式和边界见
 [`docs/security/cpb-agent-secret-boundary.md`](docs/security/cpb-agent-secret-boundary.md)。
 
-给 Issue 打 `cpb` 标签 → 自动规划 → 分派执行 → 验证 → 生成 draft PR dry-run preview；live 草稿 PR 创建需要显式 opt-in。
+在已配置的 GitHub transport 中，Issue 标签可触发自动规划 → 分派执行 → 验证 → draft PR dry-run preview；live 草稿 PR 创建需要显式 opt-in。
 
 ## 支持的 Coding Agents
 
-CodePatchBay 通过 ACP 协议中立地连接 coding agents，任何 ACP 兼容 agent（Claude Code、Codex、OpenCode 或自定义）都可以接入。它把工程工作流拆成 5 个语义角色，由 agent 路由映射：
+CodePatchBay 通过 ACP 或 CLI gateway 连接 coding agents。Claude Code、Codex 等 ACP agent，以及 OpenCode 等 CLI agent，都可以按各自 gateway 接入。工程工作流暴露 5 个语义角色，其中常规 agent 路由覆盖 planner、executor、verifier、reviewer，remediator 由补救阶段处理：
 
 | 语义角色 | 职责 | 产物 |
 |---------|------|------|
@@ -209,14 +202,13 @@ CodePatchBay 通过 ACP 协议中立地连接 coding agents，任何 ACP 兼容 
 | `reviewer` | 审查交付物 | review 产物 |
 | `remediator` | 补救失败（debug/lint/tdd/test） | remediation 产物 |
 
-任意 agent 通过 `core/agents/routing.ts` 映射到这些角色。你可以在提交任务时指定哪个 agent + 模型负责哪个阶段：
+planner、executor、verifier、reviewer 通过 `core/agents/routing.ts` 映射到对应阶段；remediator 由补救阶段处理。你可以在提交任务时指定哪个 agent + 模型负责哪个阶段：
 
 ```bash
-# 用 mimo 模型做规划，Claude 做执行和验证
+# 为不同阶段指定 agent；所有阶段共用一个模型 profile
 cpb run "add unit tests for auth" \
-  --plan-agent claude --plan-model mimo \
-  --execute-agent claude \
-  --verify-agent claude
+  --plan-agent claude --execute-agent claude \
+  --verify-agent claude --model mimo
 ```
 
 ## 功能
@@ -239,16 +231,15 @@ cpb status <project>               # 项目状态
 
 # 提交任务
 cpb run "<task>" [--project <id>]  # 提交任务（完整流程）
-cpb pipeline <project> "<task>" [retries]  # 完整流程（显式项目）
+cpb pipeline <project> "<task>" [--retries <n>]  # 完整流程（显式项目）
                                   #   可加 --plan-agent/--execute-agent/--verify-agent
-                                  #   及 --plan-model/--execute-model/--verify-model
+                                  #   及 --model
 cpb review <project> [id]          # 审查交付物
-cpb retry <project> <job-id>       # 重试失败任务
+cpb retry <project> <job-id> [--agent <name>]  # 重试失败任务
 
 # 任务管理
 cpb jobs report [--json]           # job 运行报告 (reconcile/cleanup/gc 已移除)
 cpb jobs worktrees                # 列出 task-level git worktrees
-cpb retry <project> <job-id> [--agent <name>]
 cpb cancel <project> <jobId> [reason]
 cpb redirect <project> <jobId> "<msg>" [reason]
 
@@ -267,7 +258,7 @@ cpb hub [status|start|stop|projects|...]
 
 # 设置与诊断
 cpb setup [--recommended|--interactive|--json]
-cpb agents [list|detect|install|test]
+cpb agents [list|detect|install|upgrade|test]
 cpb stream [args]                  # 流式数据服务
 cpb doctor [--json]
 cpb health-check                   # quickstart 别名入口的健康检查
@@ -297,7 +288,7 @@ and `cpb status <project>` to see the latest verdict.
 2. **人类最终审查** — 所有变更经过验证后仍需人类审查才能合并
 3. **本地优先** — 一切运行在你的机器上，不需要托管服务
 4. **证据可审查** — 每一步产生本地文件，你可以在任何环节介入
-5. **Agent 可组合** — 任何 ACP 兼容的 coding agent 都可以接入
+5. **Agent 可组合** — 受支持的 ACP 或 CLI coding agent 都可以接入
 
 ## 安全
 
@@ -305,8 +296,8 @@ CodePatchBay 使用各 agent 的原生认证，不存储 provider token，拦截
 
 - **不复制 provider token** — API key 和 OAuth token 保留在 agent 进程环境中，CPB 从不写入磁盘。
 - **密钥提交被禁止** — 不允许通过 Slack、Discord、GitHub 评论或任何 IM 渠道提交密钥。
-- **Webhook 签名验证** — GitHub webhook 使用 HMAC-SHA256 验证，Slack 使用请求签名，Discord 使用 Ed25519。
-- **草稿 PR 策略** — 所有 PR 以 draft 创建，不自动合并。
+- **Webhook 签名验证** — 当前运行链路明确支持 GitHub webhook 的 HMAC-SHA256；Slack/Discord ingress 不在当前 Hub HTTP 路由中。
+- **草稿 PR 策略** — flagship finalizer 的 live PR 路径以 draft 创建且不自动合并；默认流程先生成 dry-run preview。
 - **工作树隔离** — 任务在独立 git worktree 中执行，不修改主分支。
 
 完整安全模型参见 [Security Documentation](docs/security/codepatchbay-gateway-security.md)，涵盖安装安全、密钥脱敏、webhook 签名验证、工作树隔离、角色权限矩阵和草稿 PR 策略。Agent 进程隔离边界分析参见 [Agent Secret Boundary](docs/security/cpb-agent-secret-boundary.md)。
@@ -314,7 +305,17 @@ CodePatchBay 使用各 agent 的原生认证，不存储 provider token，拦截
 ## 系统要求
 
 - **Node.js 20+**
-- 至少一个 coding agent（Claude Code、Codex、或其他 ACP 兼容 agent）
+- **npm 和 git**（GitHub 集成另需 `gh` 或已配置的 GitHub transport）
+- 至少一个 coding agent（Claude Code、Codex、OpenCode 或其他受支持 agent）
+
+## 开发与验证
+
+```bash
+npm ci
+npm run typecheck:node
+npm test
+npm run verify:release-gate
+```
 
 ## License
 

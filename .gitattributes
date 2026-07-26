@@ -34,3 +34,6 @@
 
 # Large generated files — exclude from diffs and statistics
 package-lock.json linguist-generated=true -diff
+
+# Preserve frozen, hash-bound unified diff evidence without whitespace diagnostics.
+docs/product/evidence/swe-bench-real-runs/verified-5-codex-runtime-official-score-artifacts/patches/*.patch -whitespace

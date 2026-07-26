@@ -31,6 +31,7 @@ test("emitPhaseStartEvents writes fallback phase_started, dag_node_started, and 
     jobId: "job-start",
     project: "proj",
     phase: "execute",
+    attemptId: "attempt-1",
     agent: "executor-agent",
     ts: "2026-06-22T00:00:00.000Z",
   }, {
@@ -90,6 +91,7 @@ test("emitPhaseStartEvents uses startPhase when available and keeps progress bes
       phase: "verify",
       agent: null,
       role: "verifier",
+      attemptId: null,
     },
   }]);
   assert.deepEqual(events, [{

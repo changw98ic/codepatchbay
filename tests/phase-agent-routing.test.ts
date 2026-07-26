@@ -231,3 +231,34 @@ test("high-assurance fixed roles outrank dynamic plans, static routing, and outc
   assert.equal(verifier.phaseRoutingDecision?.selectionSource, "high_assurance_policy");
   assert.equal(verifier.phaseRoutingDecision?.outcomeApplied, false);
 });
+
+test("resolvePhaseAgentRouting treats explicit empty env as authoritative over ambient assurance mode", () => {
+  const previous = process.env.CPB_ASSURANCE_MODE;
+  process.env.CPB_ASSURANCE_MODE = "high";
+  try {
+    const result = resolvePhaseAgentRouting({
+      agents: { executor: "codex" },
+      env: {},
+      phase: "execute",
+      role: "executor",
+    });
+
+    assert.equal(result.phaseAgents.executor, "codex");
+    assert.equal(result.phaseRoutingDecision?.selectionSource, "configured_agent");
+  } finally {
+    if (previous === undefined) delete process.env.CPB_ASSURANCE_MODE;
+    else process.env.CPB_ASSURANCE_MODE = previous;
+  }
+});
+
+test("resolvePhaseAgentRouting forwards explicit env to high-assurance policy", () => {
+  const result = resolvePhaseAgentRouting({
+    agents: { executor: "codex" },
+    env: { CPB_ASSURANCE_MODE: "high" },
+    phase: "execute",
+    role: "executor",
+  });
+
+  assert.equal(result.phaseAgents.executor, "claude-glm");
+  assert.equal(result.phaseRoutingDecision?.selectionSource, "high_assurance_policy");
+});

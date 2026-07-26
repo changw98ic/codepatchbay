@@ -1,13 +1,26 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
+import { promisify } from "node:util";
 
 import { enforceChannelPolicy, readChannelPolicyEvents } from "../server/services/channel/channel-commands.js";
 import { dispatchSession } from "../server/services/review/review-dispatch.js";
 import { createSession, getSession, updateSession } from "../server/services/review/review-session.js";
 import { registerProject } from "../server/services/hub/hub-registry.js";
 import { tempRoot } from "./helpers.js";
+
+const execFileAsync = promisify(execFile);
+
+async function initializeGitRepository(root: string) {
+  await execFileAsync("git", ["init", "-q"], { cwd: root });
+  await execFileAsync("git", [
+    "-c", "user.name=CodePatchBay Tests",
+    "-c", "user.email=tests@codepatchbay.invalid",
+    "commit", "--allow-empty", "-q", "-m", "initial fixture",
+  ], { cwd: root });
+}
 
 async function withRuntimeEnv(env: Record<string, string>, fn: () => Promise<void>) {
   const previous = new Map<string, string | undefined>();
@@ -53,6 +66,7 @@ test("review sessions stay in hub control root when project runtime env is pollu
   const hubRoot = await tempRoot("cpb-review-hub");
   const projectRuntimeRoot = await tempRoot("cpb-review-project-runtime");
   const sourcePath = await tempRoot("cpb-review-project-source");
+  await initializeGitRepository(sourcePath);
 
   await withRuntimeEnv({
     CPB_HUB_ROOT: hubRoot,

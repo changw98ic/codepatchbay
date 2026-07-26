@@ -38,6 +38,8 @@ const distPackage = {
   scripts: {
     test: "node scripts/run-node-tests.js",
     "test:node": "node scripts/run-node-tests.js",
+    "test:main": "node scripts/run-node-tests.js --main",
+    "test:specialized": "node scripts/run-node-tests.js --specialized",
     "test:unit": "node scripts/run-node-tests.js --unit",
     "test:integration": "node scripts/run-node-tests.js --integration",
   },
@@ -73,8 +75,6 @@ for (const relative of [
   "cli/cpb.js",
   "server/services/test-acp-agent.js",
   "bridges/job-runner.js",
-  "bridges/project-worker.js",
-  "bridges/run-pipeline.js",
   "bridges/run-phase.js",
 ]) {
   try {

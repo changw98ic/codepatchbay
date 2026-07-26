@@ -9,34 +9,46 @@ import test from "node:test";
 import { registerProject } from "../server/services/hub/hub-registry.js";
 import { collectRuntimeHealth } from "../server/services/runtime.js";
 
+const repoRoot = path.resolve(import.meta.dirname, "..", "..");
+
 async function tempRoot(prefix) {
   return mkdtemp(path.join(os.tmpdir(), `${prefix}-`));
 }
 
 test("cpb usage reads package.json version instead of hardcoded fallback", async () => {
   const executorRoot = await tempRoot("cpb-usage-version");
+  await mkdir(path.join(executorRoot, "server", "services", "acp"), { recursive: true });
   await writeFile(
     path.join(executorRoot, "package.json"),
     `${JSON.stringify({ name: "fixture-cpb", version: "9.8.7" }, null, 2)}\n`,
     "utf8",
   );
+  await writeFile(path.join(executorRoot, "server", "services", "acp", "acp-client.js"), "export {};\n", "utf8");
 
   const result = spawnSync(
     process.execPath,
-    [path.join(process.cwd(), "cpb"), "--help"],
+    [path.join(repoRoot, "cpb"), "--help"],
     {
-      cwd: process.cwd(),
+      cwd: repoRoot,
       env: {
         ...process.env,
-        CPB_ROOT: process.cwd(),
+        CPB_ROOT: repoRoot,
         CPB_EXECUTOR_ROOT: executorRoot,
       },
       encoding: "utf8",
     },
   );
 
+  assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /cpb.*v9\.8\.7/);
   assert.doesNotMatch(result.stdout, /v0\.2\.0/);
+});
+
+test("compiled version command reads the test artifact package version", async () => {
+  const sourcePackage = JSON.parse(await readFile(path.join(repoRoot, "package.json"), "utf8"));
+  const { CPB_VERSION } = await import("../cli/commands/version.js");
+
+  assert.equal(CPB_VERSION, sourcePackage.version);
 });
 
 test("runtime health blocks mismatched source and active release versions", async () => {

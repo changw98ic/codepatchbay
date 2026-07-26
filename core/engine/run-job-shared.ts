@@ -19,11 +19,6 @@ export type JobRunResult = LooseRecord & {
   failure?: LooseRecord | null;
 };
 
-export type ProviderPool = LooseRecord & {
-  providerKey?: (agent: string | null | undefined, variant: string | null) => string | null | undefined;
-  fallbackCandidates?: (agent: string, currentVariant: string | null | undefined, excludeKey: string | null | undefined) => unknown;
-};
-
 export function ts() {
   return new Date().toISOString();
 }

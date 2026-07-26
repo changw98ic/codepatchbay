@@ -24,6 +24,7 @@ test("stabilization gate includes all required release evidence commands", () =>
     "npm run typecheck:type-debt:engine",
     "npm run verify:dependency-audit",
     "npm run verify:patch-integrity",
+    "npm run verify:commit-size",
     "npm run verify:release-gate",
     "npm run verify:enterprise-gate",
     "npm run verify:product-gate",
@@ -48,6 +49,7 @@ test("stabilization gate stops at the first failed command", async () => {
     "npm run typecheck:type-debt:engine",
     "npm run verify:dependency-audit",
     "npm run verify:patch-integrity",
+    "npm run verify:commit-size",
     "npm run verify:release-gate",
   ]);
 });
@@ -71,14 +73,29 @@ test("package exposes stabilization verifier entrypoint", async () => {
     pkg.scripts["verify:enterprise-gate"],
     "npm run build && npm run build:tests && node dist/scripts/verify-enterprise-gate.js",
   );
+  assert.equal(pkg.scripts["test:node"], "node dist-tests/scripts/run-node-tests.js");
+  assert.equal(pkg.scripts["test:main"], "npm run test:node -- --main && npm run test:shell");
+  assert.equal(pkg.scripts["test:integration"], "node dist-tests/scripts/run-node-tests.js --integration");
+  assert.equal(pkg.scripts["test:specialized"], "npm run test:node -- --specialized");
+  assert.doesNotMatch(pkg.scripts["build:tests"], /dist\/tests/);
   assert.equal(
     pkg.scripts["verify:dependency-audit"],
     "npm audit --omit=dev --audit-level=moderate && npm audit --audit-level=high",
   );
 });
 
+test("main-flow profile excludes specialized and process integration suites", async () => {
+  const runner = await readFile(path.join(repoRoot, "scripts", "run-node-tests.ts"), "utf8");
+  assert.match(runner, /const mainFlowFiles = discoveredFiles\.filter/);
+  assert.match(runner, /!specializedTestFiles\.has\(file\)/);
+  assert.match(runner, /!file\.startsWith\("tests\/integration\/"\)/);
+  assert.match(runner, /const allFiles = mainOnly\s*\n\s*\? mainFlowFiles/);
+});
+
 test("CI cannot reinstall the removed web toolchain outside the reviewed lockfile", async () => {
   const workflow = await readFile(path.join(repoRoot, ".github", "workflows", "test.yml"), "utf8");
+  assert.match(workflow, /run: npm run test:main/);
+  assert.doesNotMatch(workflow, /^\s+run: npm test$/m);
   assert.doesNotMatch(workflow, /\bnpx\s+playwright\b/);
   assert.doesNotMatch(workflow, /npm install @rollup\/rollup-linux-x64-gnu --no-save/);
 });
@@ -98,7 +115,7 @@ test("retired orchestrator cutover fails closed without moving live state", asyn
   ], { encoding: "utf8" });
   assert.equal(result.status, 2);
   assert.match(result.stderr, /is retired and did not modify Hub state/);
-  assert.match(result.stderr, /cpb hub migrate-to-redis/);
+  assert.match(result.stderr, /cpb hub backup/);
   assert.equal(await readFile(sentinel, "utf8"), "preserved\n");
 });
 
@@ -118,6 +135,15 @@ test("manual E2E cleanup requires an explicit disposable-root capability", async
   assert.equal(result.status, 1);
   assert.match(result.stdout, /CPB_E2E_ALLOW_DESTRUCTIVE=1/);
   assert.equal(await readFile(sentinel, "utf8"), "preserved\n");
+});
+
+test("manual shell E2E delegates to the canonical disposable-target safety gate", async () => {
+  const source = await readFile(path.join(repoRoot, "scripts", "e2e-test.sh"), "utf8");
+  assert.match(source, /dist\/scripts\/e2e-npm-pack\.js/);
+  assert.doesNotMatch(source, /\brm\s+-rf\b/);
+  assert.doesNotMatch(source, /git\s+(?:worktree\s+prune|branch\s+-D)/);
+  assert.doesNotMatch(source, /\bgh\s+(?:api|issue|pr|repo)\b/);
+  assert.doesNotMatch(source, /\bcpb\s+hub\b/);
 });
 
 test("interactive review rejection cannot run repository-wide destructive git commands", async () => {

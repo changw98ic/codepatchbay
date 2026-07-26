@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { after } from "node:test";
@@ -14,7 +14,11 @@ after(async () => {
 });
 
 export async function tempRoot(prefix) {
-  const root = await mkdtemp(path.join(os.tmpdir(), `${prefix}-`));
+  const created = await mkdtemp(path.join(os.tmpdir(), `${prefix}-`));
+  // Resolve the macOS tmpdir symlink (/var/folders -> /private/var/folders) so
+  // directory-authority validators that reject symlinks accept the temp root.
+  // No-op on Linux /tmp (already a real path).
+  const root = await realpath(created);
   tempRoots.push(root);
   return root;
 }

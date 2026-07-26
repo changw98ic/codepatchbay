@@ -245,13 +245,26 @@ export async function prepareTask(cpbRootOrOptions: LooseRecord | string, option
 
   await checkCodeGraphReady({ cpbRoot: cpbRootValue, sourcePath: typeof effectiveSourcePath === "string" ? effectiveSourcePath : "" });
   const maps = requireCapabilityMap(recordValue(registeredProject), sourceContextRecord);
-  const riskMap = computeRiskMap({
+  let riskMap = computeRiskMap({
     task,
     maps,
     project: registeredProject,
     workflow,
     planMode,
   });
+  const productValidation = recordValue(sourceContextRecord.productValidation);
+  if (productValidation.validationMode === "swe-bench-verified"
+    && productValidation.adversarialRequired === true) {
+    riskMap = {
+      ...riskMap,
+      verificationDepth: riskMap.verificationDepth === "paranoid" ? "paranoid" : "strict",
+      adversarialRequired: true,
+      adversarialFocus: [...new Set([
+        ...valuesToStrings(riskMap.adversarialFocus),
+        "independent release-validation challenge",
+      ])],
+    };
+  }
   const dynamicAgentPlan = generateDynamicAgentPlan({ riskMap, workflow, planMode });
 
   await persistQueueRiskMap(hubRootValue, sourceContextRecord, riskMap, dynamicAgentPlan);

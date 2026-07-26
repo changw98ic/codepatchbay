@@ -27,7 +27,7 @@ jobs:
       - name: Install integration runtime
         run: |
           sudo apt-get update
-          sudo apt-get install -y bubblewrap redis-server redis-tools zsh
+          sudo apt-get install -y bubblewrap zsh
           bwrap --version
           if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || true)" = "1" ]; then
             sudo tee /etc/apparmor.d/cpb-bwrap >/dev/null <<'EOF'
@@ -57,11 +57,14 @@ jobs:
             --bind-try "$smoke_root" "$smoke_root" \
             --chdir "$smoke_root" \
             /bin/zsh -c 'true'
-          redis-server --version
-          redis-cli --version
 
-      - name: Run Node and shell tests
-        run: npm test
+      - name: Run main-flow Node and shell tests
+        # Benchmark, evaluation, release-rehearsal, packaging, and real-process
+        # integration suites are intentionally outside the PR/main acceptance
+        # path. Run `npm run test:integration` or
+        # `npm run test:specialized` when changing those paths; `npm test`
+        # remains the local full-coverage command.
+        run: npm run test:main
 
       - name: Run Node typecheck
         run: npm run typecheck:node

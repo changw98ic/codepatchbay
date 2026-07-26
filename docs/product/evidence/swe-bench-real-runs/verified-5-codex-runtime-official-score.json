@@ -25,8 +25,8 @@
     "command": "python -m swebench.harness.run_evaluation --dataset_name SWE-bench/SWE-bench_Verified --split test --instance_ids django__django-13343 django__django-13346 django__django-13363 django__django-13401 --predictions_path .omx/swebench-ladder/20260706-official-scorer-verified-5-codex-runtime/prediction.jsonl --max_workers 1 --timeout 1800 --force_rebuild False --cache_level instance --clean False --run_id cpb-verified-5-codex-20260706-source-only --report_dir .omx/swebench-ladder/20260706-official-scorer-verified-5-codex-runtime/report"
   },
   "predictionBuild": {
-    "predictionsPath": ".omx/swebench-ladder/20260706-official-scorer-verified-5-codex-runtime/prediction.jsonl",
-    "sourcePatchManifest": ".omx/swebench-ladder/20260706-official-scorer-verified-5-codex-runtime/source-patch-manifest.json",
+    "predictionsPath": "docs/product/evidence/swe-bench-real-runs/verified-5-codex-runtime-official-score-artifacts/prediction.jsonl",
+    "sourcePatchManifest": "docs/product/evidence/swe-bench-real-runs/verified-5-codex-runtime-official-score-artifacts/source-patch-manifest.json",
     "sourceOnly": true,
     "excludedInstances": [
       {
@@ -37,8 +37,8 @@
     ]
   },
   "officialReport": {
-    "aggregateReport": ".omx/swebench-ladder/20260706-official-scorer-verified-5-codex-runtime/aggregate-report.json",
-    "summaryPath": ".omx/swebench-ladder/20260706-official-scorer-verified-5-codex-runtime/official-score-summary.json",
+    "aggregateReport": "docs/product/evidence/swe-bench-real-runs/verified-5-codex-runtime-official-score-artifacts/aggregate-report.json",
+    "summaryPath": "docs/product/evidence/swe-bench-real-runs/verified-5-codex-runtime-official-score-artifacts/official-score-summary.json",
     "totals": {
       "total_instances": 4,
       "submitted_instances": 4,
@@ -78,7 +78,7 @@
       "datasetRowRef": "https://datasets-server.huggingface.co/rows?dataset=SWE-bench%2FSWE-bench_Verified&config=default&split=test&offset=107&length=1",
       "problemStatementSha256": "e105d6198bfcc19f652eb3f7d9a0fc8243ada3b8492de1688b31b3e4b43a1153",
       "sourcePatch": {
-        "path": ".omx/swebench-ladder/20260706-official-scorer-verified-5-codex-runtime/patches/django__django-13343.patch",
+        "path": "docs/product/evidence/swe-bench-real-runs/verified-5-codex-runtime-official-score-artifacts/patches/django__django-13343.patch",
         "bytes": 1350,
         "sha256": "86ee255638696a16428e9a331178ee62bf88adc08a8dbeb50f369549b27a9c23",
         "sourceOnly": true
@@ -120,7 +120,7 @@
       "datasetRowRef": "https://datasets-server.huggingface.co/rows?dataset=SWE-bench%2FSWE-bench_Verified&config=default&split=test&offset=109&length=1",
       "problemStatementSha256": "3cb764082e21011777c787f5ecf6688762b6f899a8b1f4ef1fab404245dc227c",
       "sourcePatch": {
-        "path": ".omx/swebench-ladder/20260706-official-scorer-verified-5-codex-runtime/patches/django__django-13346.patch",
+        "path": "docs/product/evidence/swe-bench-real-runs/verified-5-codex-runtime-official-score-artifacts/patches/django__django-13346.patch",
         "bytes": 1709,
         "sha256": "a488e51e8a4f6c28fecbe9945be383526302b530ac427840dadf9c986a8ecc5d",
         "sourceOnly": true
@@ -162,7 +162,7 @@
       "datasetRowRef": "https://datasets-server.huggingface.co/rows?dataset=SWE-bench%2FSWE-bench_Verified&config=default&split=test&offset=110&length=1",
       "problemStatementSha256": "097d83cb362b6f57378d29dc14641c115abeeb3aabfa8bf57ed92f2da0b790ea",
       "sourcePatch": {
-        "path": ".omx/swebench-ladder/20260706-official-scorer-verified-5-codex-runtime/patches/django__django-13363.patch",
+        "path": "docs/product/evidence/swe-bench-real-runs/verified-5-codex-runtime-official-score-artifacts/patches/django__django-13363.patch",
         "bytes": 1055,
         "sha256": "8a2204a6fff551af9bf5ac350bcfb727e28f6385961fcc0c239585ce695ef65e",
         "sourceOnly": true
@@ -204,7 +204,7 @@
       "datasetRowRef": "https://datasets-server.huggingface.co/rows?dataset=SWE-bench%2FSWE-bench_Verified&config=default&split=test&offset=111&length=1",
       "problemStatementSha256": "07a5d3176edc3678b34a08f4f72789a0f7e0af6a29389b6109c5009e098762a3",
       "sourcePatch": {
-        "path": ".omx/swebench-ladder/20260706-official-scorer-verified-5-codex-runtime/patches/django__django-13401.patch",
+        "path": "docs/product/evidence/swe-bench-real-runs/verified-5-codex-runtime-official-score-artifacts/patches/django__django-13401.patch",
         "bytes": 1721,
         "sha256": "ea6506de18917420b28c5a248549ed4be8f33f0d16e56e0e5bcacd81d35fb24f",
         "sourceOnly": true
@@ -238,6 +238,60 @@
         "testOutput": "logs/run_evaluation/cpb-verified-5-codex-20260706-source-only/codepatchbay-codex-real-run/django__django-13401/test_output.txt",
         "officialPatch": "logs/run_evaluation/cpb-verified-5-codex-20260706-source-only/codepatchbay-codex-real-run/django__django-13401/patch.diff"
       }
+    }
+  ],
+  "auditArtifacts": [
+    {
+      "role": "aggregate-report",
+      "path": "docs/product/evidence/swe-bench-real-runs/verified-5-codex-runtime-official-score-artifacts/aggregate-report.json",
+      "bytes": 802,
+      "sha256": "0b610be6e9e9a81e5f8f8626a51d996117f6ae9a8dc82e904b106e763813690b"
+    },
+    {
+      "role": "official-score-summary",
+      "path": "docs/product/evidence/swe-bench-real-runs/verified-5-codex-runtime-official-score-artifacts/official-score-summary.json",
+      "bytes": 3035,
+      "sha256": "98bd1f45c962fec7e3b7bed47d495586fd24212a8ef3e7b6d0dd95e47d200d27"
+    },
+    {
+      "role": "source-patch-manifest",
+      "path": "docs/product/evidence/swe-bench-real-runs/verified-5-codex-runtime-official-score-artifacts/source-patch-manifest.json",
+      "bytes": 1676,
+      "sha256": "a18a6f70de08ae3d89444a6aad79ffb99b7b022f58f7ead20bda0b284c86fc79"
+    },
+    {
+      "role": "prediction-jsonl",
+      "path": "docs/product/evidence/swe-bench-real-runs/verified-5-codex-runtime-official-score-artifacts/prediction.jsonl",
+      "bytes": 6405,
+      "sha256": "a60ed4e7b9290d443505be580b002cd7625f107b57aa02ac9b669e19646756cf"
+    },
+    {
+      "role": "source-patch",
+      "instanceId": "django__django-13343",
+      "path": "docs/product/evidence/swe-bench-real-runs/verified-5-codex-runtime-official-score-artifacts/patches/django__django-13343.patch",
+      "bytes": 1350,
+      "sha256": "86ee255638696a16428e9a331178ee62bf88adc08a8dbeb50f369549b27a9c23"
+    },
+    {
+      "role": "source-patch",
+      "instanceId": "django__django-13346",
+      "path": "docs/product/evidence/swe-bench-real-runs/verified-5-codex-runtime-official-score-artifacts/patches/django__django-13346.patch",
+      "bytes": 1709,
+      "sha256": "a488e51e8a4f6c28fecbe9945be383526302b530ac427840dadf9c986a8ecc5d"
+    },
+    {
+      "role": "source-patch",
+      "instanceId": "django__django-13363",
+      "path": "docs/product/evidence/swe-bench-real-runs/verified-5-codex-runtime-official-score-artifacts/patches/django__django-13363.patch",
+      "bytes": 1055,
+      "sha256": "8a2204a6fff551af9bf5ac350bcfb727e28f6385961fcc0c239585ce695ef65e"
+    },
+    {
+      "role": "source-patch",
+      "instanceId": "django__django-13401",
+      "path": "docs/product/evidence/swe-bench-real-runs/verified-5-codex-runtime-official-score-artifacts/patches/django__django-13401.patch",
+      "bytes": 1721,
+      "sha256": "ea6506de18917420b28c5a248549ed4be8f33f0d16e56e0e5bcacd81d35fb24f"
     }
   ]
 }

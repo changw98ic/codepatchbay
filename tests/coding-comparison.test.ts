@@ -16,6 +16,8 @@ import {
 } from "../core/evaluation/coding-comparison.js";
 import {
   buildSolverLaneInput,
+  cleanupCodingComparisonWorkspaces,
+  cleanupUnidentifiedComparisonDelegate,
   laneOrderForTask,
   nativeCodexArgs,
 } from "../scripts/run-coding-comparison.js";
@@ -146,6 +148,111 @@ test("CPB Codex headless launches exclude undeclared remote apps and plugins", (
   assert.ok(args.includes("features.apps=false"));
   assert.ok(args.includes("features.plugins=false"));
   assert.ok(args.includes("features.remote_plugin=false"));
+});
+
+test("comparison quota delegate cleanup refuses bare-PID termination without exact identity", async () => {
+  let killCalls = 0;
+  let stdinClosed = false;
+  let stderrDestroyed = false;
+  const child = {
+    pid: 24690,
+    exitCode: null,
+    signalCode: null,
+    kill() {
+      killCalls += 1;
+      return true;
+    },
+    stdin: {
+      destroyed: false,
+      end() {
+        stdinClosed = true;
+      },
+    },
+    stderr: {
+      destroy() {
+        stderrDestroyed = true;
+      },
+    },
+    once(event: string, listener: (...args: unknown[]) => void) {
+      void event;
+      void listener;
+      return child;
+    },
+  };
+
+  await assert.rejects(
+    cleanupUnidentifiedComparisonDelegate(child as never),
+    (error) => {
+      assert.equal((error as NodeJS.ErrnoException).code, "PROCESS_CLEANUP_UNVERIFIED");
+      assert.match((error as Error).message, /did not exit before cleanup deadline/);
+      return true;
+    },
+  );
+  assert.equal(killCalls, 0);
+  assert.equal(stdinClosed, true);
+  assert.equal(stderrDestroyed, true);
+});
+
+test("comparison cleanup preserves the repository root when any worktree cleanup fails", async () => {
+  const order: string[] = [];
+  const cleanupFailure = new Error("worktree registration still active");
+  const root = {
+    rootPath: "/tmp/comparison-root",
+    cleanup: async () => {
+      order.push("root");
+      return {} as never;
+    },
+  };
+  const first = {
+    rootPath: "/tmp/worktree-one",
+    cleanup: async () => {
+      order.push("first");
+      return {} as never;
+    },
+  };
+  const second = {
+    rootPath: "/tmp/worktree-two",
+    cleanup: async () => {
+      order.push("second");
+      throw cleanupFailure;
+    },
+  };
+
+  const cleanup = await cleanupCodingComparisonWorkspaces(
+    root,
+    [first, second] as never,
+  );
+
+  assert.deepEqual(order, ["second", "first"]);
+  assert.equal(cleanup.root, null);
+  assert.equal(cleanup.rootPreservedForWorktreeRecovery, true);
+  assert.deepEqual(cleanup.errors, [cleanupFailure]);
+});
+
+test("comparison cleanup closes every worktree before its mirror repository root", async () => {
+  const order: string[] = [];
+  const rootProof = { kind: "root" };
+  const root = {
+    rootPath: "/tmp/comparison-root",
+    cleanup: async () => {
+      order.push("root");
+      return rootProof as never;
+    },
+  };
+  const worktrees = ["first", "second"].map((name) => ({
+    rootPath: `/tmp/${name}`,
+    cleanup: async () => {
+      order.push(name);
+      return { kind: name } as never;
+    },
+  }));
+
+  const cleanup = await cleanupCodingComparisonWorkspaces(root, worktrees as never);
+
+  assert.deepEqual(order, ["second", "first", "root"]);
+  assert.equal(cleanup.root, rootProof);
+  assert.equal(cleanup.rootPreservedForWorktreeRecovery, false);
+  assert.equal(cleanup.errors.length, 0);
 });
 
 function laneResult(lane, correct): CodingComparisonLaneResult {

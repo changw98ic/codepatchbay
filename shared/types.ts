@@ -12,7 +12,7 @@ export interface LooseRecord {
   code?: string | number | null;
   task?: string | null;
   workflow?: string | null;
-  planMode?: string;
+  planMode?: string | null;
   mode?: string;
   sourcePath?: string | null;
   cwd?: string | null;
@@ -185,7 +185,9 @@ export interface LooseRecord {
   sourceType?: string;
   worktree?: string | LooseRecord | null;
   worktreeBaseBranch?: string;
+  worktreeBaseCommit?: string;
   worktreeBranch?: string;
+  worktreeOwnership?: LooseRecord | null;
   failurePhase?: string;
   failedNodeId?: string;
   resumeTarget?: LooseRecord | string | null;

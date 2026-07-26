@@ -128,6 +128,115 @@ test("autoEnqueueSyncedIssues enqueues matching open issues", async (t) => {
   assert.ok(result.total >= 3);
 });
 
+test("autoEnqueueSyncedIssues exact selection never scans a second matching issue into the queue", async () => {
+  const hubRoot = await tempRoot("cpb-proactive-exact-hub");
+  const cpbRoot = await tempRoot("cpb-proactive-exact-cpb");
+
+  await setupProjectWithAutomation(hubRoot, cpbRoot, "exact-proj", {
+    enabled: true,
+    rules: [
+      { match: { labels: ["cpb-auto"] }, action: { workflow: "standard" } },
+    ],
+  });
+  await writeGithubIssues(hubRoot, {
+    repo: "acme/app",
+    projectId: "exact-proj",
+    issues: FIXTURE_ISSUES,
+  });
+
+  const selected: number[] = [];
+  const remoteCapability = {
+    schema: "cpb.github-remote-capability.v1",
+    repository: "acme/app",
+    repositoryId: "R_acme",
+    defaultBranch: "main",
+    markerPath: ".cpb-disposable-target.json",
+    markerSha: "a".repeat(40),
+    issueNumber: 10,
+    automationLabel: "cpb-auto",
+    allowedBranchPrefix: "cpb-release-rehearsal/",
+    permissions: {
+      repositoryPush: true,
+      pullRequestCreate: true,
+      pullRequestMerge: true,
+      issueClose: true,
+    },
+  };
+  let observedCapability: unknown = null;
+  const result = await autoEnqueueSyncedIssues(hubRoot, cpbRoot, "exact-proj", {
+    exactIssueNumber: 10,
+    remoteCapability,
+    createJobFn: async (_cpbRoot, event) => {
+      selected.push(Number((event as { issueNumber?: number }).issueNumber));
+      observedCapability = (event as { remoteCapability?: unknown }).remoteCapability;
+      return { status: "created" };
+    },
+  });
+
+  assert.deepEqual(selected, [10]);
+  assert.equal(result.enqueued, 1);
+  assert.equal(result.total, 1);
+  assert.equal(result.scannedTotal, 3);
+  assert.equal(result.exactIssueNumber, 10);
+  assert.deepEqual(observedCapability, remoteCapability);
+});
+
+test("autoEnqueueSyncedIssues exact selection fails closed when the issue is absent", async () => {
+  const hubRoot = await tempRoot("cpb-proactive-exact-missing-hub");
+  const cpbRoot = await tempRoot("cpb-proactive-exact-missing-cpb");
+
+  await setupProjectWithAutomation(hubRoot, cpbRoot, "exact-missing", {
+    enabled: true,
+    rules: [
+      { match: { labels: ["cpb-auto"] }, action: { workflow: "standard" } },
+    ],
+  });
+  await writeGithubIssues(hubRoot, {
+    repo: "acme/app",
+    projectId: "exact-missing",
+    issues: FIXTURE_ISSUES,
+  });
+
+  let createCalls = 0;
+  const result = await autoEnqueueSyncedIssues(hubRoot, cpbRoot, "exact-missing", {
+    exactIssueNumber: 999,
+    createJobFn: async () => {
+      createCalls += 1;
+    },
+  });
+  assert.match(String(result.error), /Exact issue #999/);
+  assert.equal(result.enqueued, 0);
+  assert.equal(createCalls, 0);
+});
+
+test("autoEnqueueSyncedIssues exact selection does not disguise queue creation failure as a skip", async () => {
+  const hubRoot = await tempRoot("cpb-proactive-exact-failure-hub");
+  const cpbRoot = await tempRoot("cpb-proactive-exact-failure-cpb");
+
+  await setupProjectWithAutomation(hubRoot, cpbRoot, "exact-failure", {
+    enabled: true,
+    rules: [
+      { match: { labels: ["cpb-auto"] }, action: { workflow: "standard" } },
+    ],
+  });
+  await writeGithubIssues(hubRoot, {
+    repo: "acme/app",
+    projectId: "exact-failure",
+    issues: FIXTURE_ISSUES,
+  });
+
+  const primary = new Error("queue publication failed");
+  await assert.rejects(
+    autoEnqueueSyncedIssues(hubRoot, cpbRoot, "exact-failure", {
+      exactIssueNumber: 10,
+      createJobFn: async () => {
+        throw primary;
+      },
+    }),
+    (error) => error === primary,
+  );
+});
+
 test("autoEnqueueSyncedIssues skips when automation disabled", async (t) => {
   const hubRoot = await tempRoot("cpb-proactive-no-auto");
   const cpbRoot = await tempRoot("cpb-proactive-no-auto-cpb");

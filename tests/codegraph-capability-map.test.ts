@@ -6,11 +6,18 @@ import { test } from "node:test";
 import { promisify } from "node:util";
 
 import { FailureKind } from "../core/contracts/failure.js";
+import { captureProcessIdentity } from "../core/runtime/process-tree.js";
 import { checkCodeGraphReady } from "../server/services/infra.js";
 import { registerProject } from "../server/services/hub/hub-registry.js";
 import { readJson, tempRoot } from "./helpers.js";
 
 const execFileAsync = promisify(execFile);
+
+function currentProcessIdentity() {
+  const identity = captureProcessIdentity(process.pid, { strict: true });
+  assert.ok(identity, "expected current process identity");
+  return identity;
+}
 
 async function createCodeGraphFixture({ withState = true } = {}) {
   const sourcePath = await tempRoot("cpb-dw01-source");
@@ -41,7 +48,7 @@ async function createCodeGraphFixture({ withState = true } = {}) {
   if (withState) {
     await writeFile(
       path.join(sourcePath, ".codegraph", "daemon.pid"),
-      `${JSON.stringify({ pid: process.pid, version: "test", socketPath: path.join(sourcePath, ".codegraph", "daemon.sock") }, null, 2)}\n`,
+      `${JSON.stringify({ pid: process.pid, processIdentity: currentProcessIdentity(), version: "test", socketPath: path.join(sourcePath, ".codegraph", "daemon.sock") }, null, 2)}\n`,
       "utf8",
     );
   }

@@ -12,10 +12,39 @@ const _squads = new Map<string, any>();
 const _rrCounters = new Map<string, number>(); // round-robin counters per squad
 let _loaded = false;
 
+const ACP_AGENT_ENV_NAME = /^[A-Za-z0-9]+(?:[-_.][A-Za-z0-9]+)*$/;
+const ACP_AGENT_ENV_PREFIX = /^CPB_ACP_[A-Z0-9]+(?:_[A-Z0-9]+)*$/;
+
+/**
+ * Map a legal agent id to its one canonical environment namespace.
+ *
+ * Environment variable names use underscores even when the public agent id
+ * uses hyphens or dots. Reject path/control punctuation instead of probing
+ * multiple dynamically constructed keys with ambiguous precedence.
+ */
+export function resolveAgentEnvPrefix(name: string, configuredPrefix?: unknown) {
+  if (typeof name !== "string" || !ACP_AGENT_ENV_NAME.test(name)) {
+    throw new TypeError(`invalid ACP agent name for environment lookup: ${String(name)}`);
+  }
+  const canonical = `CPB_ACP_${name.toUpperCase().replace(/[-.]/g, "_")}`;
+  if (configuredPrefix === undefined || configuredPrefix === null || configuredPrefix === "") {
+    return canonical;
+  }
+  if (typeof configuredPrefix !== "string" || !ACP_AGENT_ENV_PREFIX.test(configuredPrefix)) {
+    throw new TypeError(`invalid ACP agent environment prefix for ${name}: ${String(configuredPrefix)}`);
+  }
+  return configuredPrefix;
+}
+
 function validateDescriptor(d: LooseRecord) {
   if (!d || typeof d !== "object") return false;
   if (typeof d.name !== "string" || !d.name) return false;
   if (typeof d.command !== "string" || !d.command) return false;
+  try {
+    resolveAgentEnvPrefix(d.name, d.envPrefix);
+  } catch {
+    return false;
+  }
   return true;
 }
 
@@ -139,7 +168,7 @@ export function resolveAgentCommand(name: string) {
   const d = getDescriptor(name);
   if (!d) return null;
 
-  const prefix = d.envPrefix;
+  const prefix = resolveAgentEnvPrefix(name, d.envPrefix);
 
   // Env override: full command
   const envCommand = process.env[`${prefix}_COMMAND`];

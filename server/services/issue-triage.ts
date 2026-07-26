@@ -168,7 +168,13 @@ export async function triageIssueWithAcp(input: LooseRecord = {}, {
       : recordValue((await import("./acp/acp-pool.js")).getManagedAcpPool({ cpbRoot: stringValue(cpbRoot, process.cwd()), hubRoot: stringValue(hubRoot) || null }));
     const executor = recordValue(pool);
     if (typeof executor.execute !== "function") throw new Error("ACP pool execute unavailable");
-    const result = recordValue(await executor.execute(stringValue(agent, "claude"), prompt, stringValue(cwd, process.cwd()), numberValue(timeoutMs, 60_000)));
+    const result = recordValue(await executor.execute(
+      stringValue(agent, "claude"),
+      prompt,
+      stringValue(cwd, process.cwd()),
+      numberValue(timeoutMs, 60_000),
+      { phase: "issue_triage", role: "triager", controlPlane: true },
+    ));
     acpResponse = result.output;
   } catch (error) {
     acpError = recordValue(error).message || String(error);

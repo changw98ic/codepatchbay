@@ -34,13 +34,27 @@ function stringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.map(String) : [];
 }
 
+function phaseAbortError(signal?: AbortSignal) {
+  const reason = signal?.reason;
+  if (reason instanceof Error && reason.name === "AbortError") return reason;
+  const err = new Error("remediate phase aborted");
+  err.name = "AbortError";
+  return err;
+}
+
+function throwIfPhaseAborted(signal?: AbortSignal) {
+  if (signal?.aborted) throw phaseAbortError(signal);
+}
+
 export async function runRemediate(ctx: LooseRecord) {
+  throwIfPhaseAborted(ctx.signal as AbortSignal | undefined);
   const { project, cpbRoot, pool, sourcePath, jobId } = ctx;
   const { dataRoot } = ctx;
   const role = stringValue(ctx.role, "remediator");
 
   const prompt = await buildRemediatePrompt(ctx) + JSON_INSTRUCTION;
 
+  throwIfPhaseAborted(ctx.signal as AbortSignal | undefined);
   const agentResult = await runAgent({
     phase: "remediate",
     role,
@@ -55,8 +69,10 @@ export async function runRemediate(ctx: LooseRecord) {
     timeoutMs: typeof recordValue(ctx.timeouts).remediate === "number" ? recordValue(ctx.timeouts).remediate : 0,
     dataRoot,
     onProgress: ctx.onProgress,
+    signal: ctx.signal as AbortSignal | undefined,
   });
 
+  throwIfPhaseAborted(ctx.signal as AbortSignal | undefined);
   if (!agentResult.ok) {
     const failed = recordValue(agentResult);
     const failureKind = typeof failed.kind === "string" ? failed.kind : FailureKind.UNKNOWN;
@@ -73,6 +89,7 @@ export async function runRemediate(ctx: LooseRecord) {
     });
   }
 
+  throwIfPhaseAborted(ctx.signal as AbortSignal | undefined);
   const success = recordValue(agentResult);
   const parsed = recordValue(parseAgentJson(success.output));
   if (!parsed.ok) {
@@ -92,7 +109,9 @@ export async function runRemediate(ctx: LooseRecord) {
   const status = stringValue(parsedData.remediationStatus, "UNFIXABLE");
   const content = renderRemediationMarkdown(parsedData);
 
+  throwIfPhaseAborted(ctx.signal as AbortSignal | undefined);
   const artifact = await writeArtifact(cpbRoot, {
+    signal: ctx.signal as AbortSignal | undefined,
     project,
     jobId,
     kind: "remediation",

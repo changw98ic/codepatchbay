@@ -16,7 +16,6 @@ import {
   type HubScope,
 } from "../shared/hub-auth.js";
 import { openHubOidcProvider } from "../shared/hub-oidc.js";
-import { openHubRedisStateBackend } from "../shared/hub-state-redis.js";
 import { assertHubWritable, recoverStaleHubMaintenance } from "../shared/hub-maintenance.js";
 import { openHubAccessAudit, type HubAuditOutcome } from "./services/audit/hub-access-audit.js";
 import { handleWorkerStateBroker, readWorkerBrokerBody } from "./services/hub/worker-state-broker.js";
@@ -182,12 +181,6 @@ export async function startHubServer(options: HubServerOptions = {}): Promise<Ru
   );
 
   await assertCpbRoot(cpbRoot);
-  const { recoverHubRedisMigration } = await import("./services/hub/hub-redis-migration.js");
-  await recoverHubRedisMigration({
-    hubRoot,
-    configFile: process.env.CPB_HUB_STATE_REDIS_CONFIG_FILE,
-    backupSigningKey: process.env.CPB_HUB_BACKUP_SIGNING_KEY,
-  });
   const { recoverInterruptedHubRestore } = await import("./services/hub/hub-backup.js");
   await recoverInterruptedHubRestore({
     hubRoot,
@@ -195,16 +188,10 @@ export async function startHubServer(options: HubServerOptions = {}): Promise<Ru
   });
   await recoverStaleHubMaintenance(hubRoot);
   await assertHubWritable(hubRoot);
-  const stateBackend = await openHubRedisStateBackend({
-    configFile: process.env.CPB_HUB_STATE_REDIS_CONFIG_FILE,
-    hubRoot,
-  });
-  await stateBackend?.preflight();
   const runtime = getHubRuntime(cpbRoot, hubRoot);
   const accessAudit = await openHubAccessAudit({
     hubRoot,
     maxBytes: options.accessAuditMaxBytes,
-    redisBackend: stateBackend,
   });
 
   const server = createServer(async (request, reply) => {
@@ -258,7 +245,7 @@ export async function startHubServer(options: HubServerOptions = {}): Promise<Ru
           },
         });
         attributeWorkerRequest();
-        response = { statusCode: 200, payload: { ok: true, result } };
+        response = { statusCode: 200, payload: { ok: true, result: result ?? null } };
       } else {
       let authenticationUnavailable: unknown = null;
       try {
@@ -400,16 +387,6 @@ export async function startHubServer(options: HubServerOptions = {}): Promise<Ru
             requestId,
           },
           headers: { "retry-after": "5" },
-        };
-      } else if (code === "HUB_BACKUP_REDIS_SNAPSHOT_REQUIRED" || code === "HUB_RESTORE_REDIS_SNAPSHOT_REQUIRED") {
-        response = {
-          statusCode: 409,
-          payload: {
-            error: "external_snapshot_required",
-            code,
-            message: "Redis authority must be snapshotted or restored through the Redis service",
-            requestId,
-          },
         };
       } else if (code === "HUB_QUEUE_CONFLICT" || code === "HUB_STATE_RECORD_CONFLICT" || code === "HUB_LEADER_FENCED") {
         response = {

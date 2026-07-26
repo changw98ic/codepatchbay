@@ -82,3 +82,31 @@ test("high assurance bounds critique rounds and accepts explicit role variants",
   assert.deepEqual(policy.planning.candidates[0], { agent: "codex", variant: "deep" });
   assert.deepEqual(policy.execution.agent, { agent: "claude-glm", variant: "glm-5" });
 });
+
+test("explicit empty env blocks ambient assurance mode fallback", () => {
+  const previous = process.env.CPB_ASSURANCE_MODE;
+  process.env.CPB_ASSURANCE_MODE = "high";
+  try {
+    const policy = resolveHighAssurancePolicy({ env: {} });
+
+    assert.equal(policy.enabled, false);
+    assert.equal(policy.mode, "standard");
+  } finally {
+    if (previous === undefined) delete process.env.CPB_ASSURANCE_MODE;
+    else process.env.CPB_ASSURANCE_MODE = previous;
+  }
+});
+
+test("ambient assurance mode is used only when ctx env is absent", () => {
+  const previous = process.env.CPB_ASSURANCE_MODE;
+  process.env.CPB_ASSURANCE_MODE = "high";
+  try {
+    const policy = resolveHighAssurancePolicy({});
+
+    assert.equal(policy.enabled, true);
+    assert.equal(policy.mode, "high");
+  } finally {
+    if (previous === undefined) delete process.env.CPB_ASSURANCE_MODE;
+    else process.env.CPB_ASSURANCE_MODE = previous;
+  }
+});

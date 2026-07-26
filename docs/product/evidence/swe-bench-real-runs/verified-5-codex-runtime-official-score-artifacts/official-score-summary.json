@@ -1,0 +1,70 @@
+{
+  "generatedAt": "2026-07-06T16:08:54.877Z",
+  "scoreDir": ".omx/swebench-ladder/20260706-official-scorer-verified-5-codex-runtime",
+  "runId": "cpb-verified-5-codex-20260706-source-only",
+  "aggregateReport": ".omx/swebench-ladder/20260706-official-scorer-verified-5-codex-runtime/aggregate-report.json",
+  "prediction": ".omx/swebench-ladder/20260706-official-scorer-verified-5-codex-runtime/prediction.jsonl",
+  "totals": {
+    "total_instances": 4,
+    "submitted_instances": 4,
+    "completed_instances": 4,
+    "resolved_instances": 4,
+    "unresolved_instances": 0,
+    "empty_patch_instances": 0,
+    "error_instances": 0
+  },
+  "resolved_ids": [
+    "django__django-13343",
+    "django__django-13346",
+    "django__django-13363",
+    "django__django-13401"
+  ],
+  "unresolved_ids": [],
+  "error_ids": [],
+  "instances": [
+    {
+      "instance_id": "django__django-13343",
+      "resolved": true,
+      "patch_successfully_applied": true,
+      "fail_to_pass_success": 1,
+      "fail_to_pass_failure": 0,
+      "pass_to_pass_success": 130,
+      "pass_to_pass_failure": 0,
+      "report": "logs/run_evaluation/cpb-verified-5-codex-20260706-source-only/codepatchbay-codex-real-run/django__django-13343/report.json",
+      "test_output": "logs/run_evaluation/cpb-verified-5-codex-20260706-source-only/codepatchbay-codex-real-run/django__django-13343/test_output.txt"
+    },
+    {
+      "instance_id": "django__django-13346",
+      "resolved": true,
+      "patch_successfully_applied": true,
+      "fail_to_pass_success": 2,
+      "fail_to_pass_failure": 0,
+      "pass_to_pass_success": 65,
+      "pass_to_pass_failure": 0,
+      "report": "logs/run_evaluation/cpb-verified-5-codex-20260706-source-only/codepatchbay-codex-real-run/django__django-13346/report.json",
+      "test_output": "logs/run_evaluation/cpb-verified-5-codex-20260706-source-only/codepatchbay-codex-real-run/django__django-13346/test_output.txt"
+    },
+    {
+      "instance_id": "django__django-13363",
+      "resolved": true,
+      "patch_successfully_applied": true,
+      "fail_to_pass_success": 1,
+      "fail_to_pass_failure": 0,
+      "pass_to_pass_success": 76,
+      "pass_to_pass_failure": 0,
+      "report": "logs/run_evaluation/cpb-verified-5-codex-20260706-source-only/codepatchbay-codex-real-run/django__django-13363/report.json",
+      "test_output": "logs/run_evaluation/cpb-verified-5-codex-20260706-source-only/codepatchbay-codex-real-run/django__django-13363/test_output.txt"
+    },
+    {
+      "instance_id": "django__django-13401",
+      "resolved": true,
+      "patch_successfully_applied": true,
+      "fail_to_pass_success": 1,
+      "fail_to_pass_failure": 0,
+      "pass_to_pass_success": 32,
+      "pass_to_pass_failure": 0,
+      "report": "logs/run_evaluation/cpb-verified-5-codex-20260706-source-only/codepatchbay-codex-real-run/django__django-13401/report.json",
+      "test_output": "logs/run_evaluation/cpb-verified-5-codex-20260706-source-only/codepatchbay-codex-real-run/django__django-13401/test_output.txt"
+    }
+  ]
+}

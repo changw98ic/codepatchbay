@@ -1,5 +1,8 @@
 import { isRecord, recordValue, type LooseRecord } from "../../shared/types.js";
 import { runJob } from "../../core/engine/run-job.js";
+import type { CreateJobPort, RunJobPorts } from "../../core/engine/run-job-ports.js";
+import { normalizeProviderServices } from "../../core/engine/provider-handoff.js";
+import type { JobRecord } from "../../core/engine/run-job-shared.js";
 import { mkdir } from "node:fs/promises";
 import { createJob, startPhase, completePhase, completeJob, failJob, blockJob } from "./job/job-store.js";
 import { appendEvent } from "./event/event-store.js";
@@ -17,6 +20,11 @@ import {
   delegateEnqueueProviderUsage,
 } from "./quota-delegate-client.js";
 import { WorkerBrokerClient } from "../../shared/orchestrator/worker-broker-client.js";
+
+type CreateJobInput = LooseRecord & {
+  dataRoot: string;
+  executor?: string | LooseRecord | null;
+};
 
 function prepareTaskForEnv(env: Record<string, string | undefined>) {
   if (env?.CPB_ACP_FAKE_ACP_COMMAND) {
@@ -36,12 +44,30 @@ function prepareTaskForEnv(env: Record<string, string | undefined>) {
   return prepareTask;
 }
 
-function createJobInput(opts: LooseRecord, dataRoot: string) {
+function createJobInput(opts: LooseRecord, dataRoot: string): CreateJobInput {
   const { executor, ...rest } = opts;
-  const input: LooseRecord & { dataRoot: string; executor?: string | LooseRecord | null } = { ...rest, dataRoot };
+  const input: CreateJobInput = { ...rest, dataRoot };
   if (executor == null) input.executor = null;
   else if (typeof executor === "string" || isRecord(executor)) input.executor = executor;
   return input;
+}
+
+function buildCreateJobPort(broker: WorkerBrokerClient | null, runtimeDataRoot: string | null): CreateJobPort {
+  if (broker) {
+    return (root: string, opts: LooseRecord = {}) =>
+      broker.createJob(root, createJobInput(opts, runtimeDataRoot || ""));
+  }
+
+  // createJob materializes jobId at runtime; the job-store projection type is still broader.
+  if (runtimeDataRoot) {
+    return async (root: string, opts: LooseRecord = {}) => (
+      await createJob(root, createJobInput(opts, runtimeDataRoot)) as JobRecord
+    );
+  }
+
+  return async (root: string, opts: LooseRecord = {}) => (
+    await createJob(root, opts as Parameters<typeof createJob>[1]) as JobRecord
+  );
 }
 
 export function buildServices(cpbRoot: string, {
@@ -56,12 +82,8 @@ export function buildServices(cpbRoot: string, {
   const withJobOptions = (fn: (...args: unknown[]) => unknown) => runtimeDataRoot
     ? (root: string, project: string, jobId: string, opts: LooseRecord = {}) => fn(root, project, jobId, { ...opts, dataRoot: runtimeDataRoot })
     : fn;
-  return {
-    createJob: broker
-      ? (root: string, opts: LooseRecord = {}) => broker.createJob(root, createJobInput(opts, runtimeDataRoot || ""))
-      : runtimeDataRoot
-      ? (root: string, opts: LooseRecord = {}) => createJob(root, createJobInput(opts, runtimeDataRoot))
-      : createJob,
+  const ports = {
+    createJob: buildCreateJobPort(broker, runtimeDataRoot),
     startPhase: broker ? broker.startPhase.bind(broker) : withJobOptions(startPhase),
     completePhase: broker ? broker.completePhase.bind(broker) : withJobOptions(completePhase),
     completeJob: broker
@@ -94,7 +116,9 @@ export function buildServices(cpbRoot: string, {
       delegateEnqueueProviderUsage,
       readAgentRoutingMetrics,
     },
-  };
+  } satisfies RunJobPorts;
+
+  return ports;
 }
 
 function envRecord(value: unknown): Record<string, string | undefined> {
@@ -150,7 +174,9 @@ export async function runJobWithServices(opts: LooseRecord) {
       registerChild: (pid: number) => addChildPid(cpbRoot, jobId, pid, { dataRoot: projectRuntimeRoot }),
     } : undefined,
     ...services,
-    providerServices: callerProvidedProviderServices ? recordValue(jobOptions.providerServices) : services.providerServices,
+    providerServices: callerProvidedProviderServices
+      ? normalizeProviderServices(jobOptions.providerServices)
+      : services.providerServices,
   });
 }
 

@@ -210,6 +210,8 @@ test("AcpPool isolates control-plane provider keys from worker provider capacity
   let releaseWorker;
   let workerStarted;
   const workerStartedPromise = new Promise((resolve) => { workerStarted = resolve; });
+  let controlStarted;
+  const controlStartedPromise = new Promise((resolve) => { controlStarted = resolve; });
   const pool = new AcpPool({
     cpbRoot,
     hubRoot,
@@ -219,6 +221,7 @@ test("AcpPool isolates control-plane provider keys from worker provider capacity
         workerStarted();
         await new Promise((resolve) => { releaseWorker = resolve; });
       }
+      if (prompt === "control") controlStarted();
       return prompt;
     },
   });
@@ -227,15 +230,30 @@ test("AcpPool isolates control-plane provider keys from worker provider capacity
   await workerStartedPromise;
 
   try {
-    const control = await Promise.race([
-      pool.execute("codex", "control", cpbRoot, 0, {
-        providerKey: "codex:control-plane",
-        poolScope: "control-plane",
-        controlPlane: true,
-        waitTimeoutMs: 20,
-      }),
-      new Promise((_, reject) => setTimeout(() => reject(new Error("control-plane request waited on worker provider slot")), 80)),
-    ]) as { output: string };
+    const controlRequest = pool.execute("codex", "control", cpbRoot, 0, {
+      providerKey: "codex:control-plane",
+      poolScope: "control-plane",
+      controlPlane: true,
+      waitTimeoutMs: 20,
+    });
+    let admissionTimer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        controlStartedPromise,
+        // Admission still performs crash-durable lease publication. Give fsync
+        // latency room; a capacity-isolation regression remains a hard timeout
+        // because the worker is deliberately held until this assertion finishes.
+        new Promise((_, reject) => {
+          admissionTimer = setTimeout(
+            () => reject(new Error("control-plane request waited on worker provider slot")),
+            2_000,
+          );
+        }),
+      ]);
+    } finally {
+      if (admissionTimer) clearTimeout(admissionTimer);
+    }
+    const control = await controlRequest as { output: string };
     assert.equal(control.output, "control");
   } finally {
     if (releaseWorker) releaseWorker();

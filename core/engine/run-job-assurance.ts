@@ -1,4 +1,3 @@
-import { execFile } from "node:child_process";
 import { runAgent } from "../agents/agent-runner.js";
 import { buildConversationKey } from "../agents/conversation-key.js";
 import { resolveAllowedAgentNames } from "../agents/outcome-routing.js";
@@ -26,29 +25,33 @@ import {
   failPreparedJob,
   reportProgress,
   ts,
-  type AppendEvent,
-  type BlockJob,
-  type FailJob,
   type JobRunResult,
-  type ProgressReporter,
-  type ProviderPool,
 } from "./run-job-shared.js";
+import type { RunJobPorts, RunJobState } from "./run-job-ports.js";
+import { runCommandTree } from "../runtime/process-tree.js";
 
-type AssuranceContext = LooseRecord & {
-  cpbRoot: string;
-  project: string;
-  task: string;
-  sourcePath?: string;
-  dataRoot?: string;
-  sourceContext?: LooseRecord;
-  agents?: LooseRecord;
-  getPool: () => ProviderPool | null | undefined;
-  appendEvent: AppendEvent;
-  blockJob?: BlockJob;
-  failJob?: FailJob;
-  onProgress?: ProgressReporter | null;
-  _attemptId?: string;
-};
+export type AssuranceContext =
+  Pick<RunJobState,
+    | "cpbRoot"
+    | "project"
+    | "task"
+    | "sourcePath"
+    | "dataRoot"
+    | "sourceContext"
+    | "agents"
+    | "timeouts"
+    | "env"
+    | "scope"
+    | "signal"
+    | "_attemptId"
+  >
+  & Pick<RunJobPorts,
+    | "getPool"
+    | "appendEvent"
+    | "blockJob"
+    | "failJob"
+    | "onProgress"
+  >;
 
 export type AssurancePlanningResult =
   | { kind: "skipped"; phaseSourceContext: LooseRecord }
@@ -57,64 +60,124 @@ export type AssurancePlanningResult =
 
 const EVIDENCE_PACK_MAX_CHARS = 32_000;
 
+function assuranceAbortError(signal?: AbortSignal, message = "high-assurance planning aborted") {
+  const reason = signal?.reason;
+  if (reason instanceof Error && reason.name === "AbortError") return reason;
+  return Object.assign(
+    new Error(reason instanceof Error ? reason.message : (typeof reason === "string" && reason) ? reason : message),
+    { name: "AbortError", code: "ABORT_ERR" },
+  );
+}
+
+function throwIfAssuranceAborted(signal?: AbortSignal) {
+  if (signal?.aborted) throw assuranceAbortError(signal);
+}
+
+function isAssuranceAbortError(error: unknown) {
+  return error instanceof Error && error.name === "AbortError";
+}
+
+function assuranceInterruptedFailure(signal?: AbortSignal) {
+  const abort = assuranceAbortError(signal);
+  return failure({
+    kind: FailureKind.RUNTIME_INTERRUPTED,
+    phase: "assurance_plan",
+    reason: abort.message || "high-assurance planning aborted",
+    retryable: false,
+    cause: {
+      reason: "abort_signal",
+      code: FailureKind.RUNTIME_INTERRUPTED,
+    },
+  });
+}
+
+async function failAssuranceInterrupted(ctx: AssuranceContext, jobId: string): Promise<AssurancePlanningResult> {
+  const interrupted = assuranceInterruptedFailure(ctx.signal);
+  await failPreparedJob({
+    cpbRoot: ctx.cpbRoot,
+    project: ctx.project,
+    jobId,
+    appendEvent: ctx.appendEvent,
+    failJob: ctx.failJob,
+    failure: interrupted,
+  });
+  return {
+    kind: "failed",
+    result: {
+      status: "failed",
+      jobId,
+      exitCode: 1,
+      failure: interrupted,
+    },
+  };
+}
+
 function stripAnsi(value: string) {
   return value.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
 }
 
-async function buildEvidencePack(ctx: AssuranceContext) {
+export async function buildEvidencePack(ctx: AssuranceContext) {
   const cwd = ctx.sourcePath || ctx.cpbRoot;
-  const command = process.env.CPB_CODEGRAPH_COMMAND || "codegraph";
-  return await new Promise<string>((resolve) => {
-    execFile(
-      command,
-      ["context", ctx.task, "--path", cwd, "--max-nodes", "40", "--max-code", "10", "--format", "markdown"],
-      { cwd, timeout: 30_000, maxBuffer: 256 * 1024 },
-      (error, stdout) => {
-        if (error || typeof stdout !== "string" || !stdout.trim()) {
-          resolve("CodeGraph evidence pack unavailable. Use focused file reads and keep unresolved claims explicit.");
-          return;
-        }
-        const cleaned = stripAnsi(stdout).trim();
-        resolve(cleaned.length <= EVIDENCE_PACK_MAX_CHARS
-          ? cleaned
-          : `${cleaned.slice(0, EVIDENCE_PACK_MAX_CHARS)}\n\n[Evidence pack truncated at ${EVIDENCE_PACK_MAX_CHARS} characters.]`);
-      },
-    );
-  });
+  const env = ctx.env ?? process.env;
+  const command = env.CPB_CODEGRAPH_COMMAND || "codegraph";
+  throwIfAssuranceAborted(ctx.signal);
+  const result = await runCommandTree(
+    command,
+    ["context", ctx.task, "--path", cwd, "--max-nodes", "40", "--max-code", "10", "--format", "markdown"],
+    { cwd, env, timeoutMs: 30_000, signal: ctx.signal, maxBufferBytes: 256 * 1024 },
+  );
+  if (result.aborted || ctx.signal?.aborted) throw assuranceAbortError(ctx.signal);
+  if (result.error || result.timedOut || result.exitCode !== 0 || !result.stdout.trim()) {
+    return "CodeGraph evidence pack unavailable. Use focused file reads and keep unresolved claims explicit.";
+  }
+  const cleaned = stripAnsi(result.stdout).trim();
+  return cleaned.length <= EVIDENCE_PACK_MAX_CHARS
+    ? cleaned
+    : `${cleaned.slice(0, EVIDENCE_PACK_MAX_CHARS)}\n\n[Evidence pack truncated at ${EVIDENCE_PACK_MAX_CHARS} characters.]`;
 }
 
-async function gitText(cwd: string, args: string[]) {
-  return await new Promise<string>((resolve, reject) => {
-    execFile("git", args, { cwd, timeout: 30_000, maxBuffer: 16 * 1024 * 1024 }, (error, stdout) => {
-      if (error) {
-        reject(error);
-        return;
-      }
-      resolve(typeof stdout === "string" ? stdout : "");
-    });
+async function gitText(cwd: string, args: string[], env: NodeJS.ProcessEnv, signal?: AbortSignal) {
+  throwIfAssuranceAborted(signal);
+  const result = await runCommandTree("git", args, {
+    cwd,
+    env,
+    timeoutMs: 30_000,
+    signal,
+    maxBufferBytes: 16 * 1024 * 1024,
   });
+  if (result.aborted || signal?.aborted) throw assuranceAbortError(signal);
+  if (result.error || result.timedOut || result.exitCode !== 0) {
+    throw result.error || new Error(`git ${args.join(" ")} failed with exit ${result.exitCode}`);
+  }
+  return result.stdout;
 }
 
-async function loadPlanRepositoryContract(cwd: string): Promise<PlanRepositoryContract> {
+async function loadPlanRepositoryContract(
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  signal?: AbortSignal,
+): Promise<PlanRepositoryContract> {
   let repositoryIndexAvailable = false;
   let trackedPaths = new Set<string>();
   let frozenRevision: string | undefined;
   try {
-    const output = await gitText(cwd, ["ls-tree", "-r", "--name-only", "HEAD"]);
-    const revision = (await gitText(cwd, ["rev-parse", "HEAD"])).trim();
+    const output = await gitText(cwd, ["ls-tree", "-r", "--name-only", "HEAD"], env, signal);
+    const revision = (await gitText(cwd, ["rev-parse", "HEAD"], env, signal)).trim();
     if (!revision) throw new Error("git rev-parse HEAD returned an empty revision");
     trackedPaths = new Set(output.split("\n").map((entry) => entry.trim()).filter(Boolean));
     frozenRevision = revision;
     repositoryIndexAvailable = true;
-  } catch {
+  } catch (error) {
+    if (signal?.aborted || (error instanceof Error && error.name === "AbortError")) throw error;
     // Non-git sources keep the existing fail-closed checklist validation path.
   }
 
   let trustedPredicateIds = new Set<string>();
   try {
-    const output = await gitText(cwd, ["show", "HEAD:.cpb/verification-probes.json"]);
+    const output = await gitText(cwd, ["show", "HEAD:.cpb/verification-probes.json"], env, signal);
     trustedPredicateIds = trustedProbePredicateIds(JSON.parse(output));
-  } catch {
+  } catch (error) {
+    if (signal?.aborted || (error instanceof Error && error.name === "AbortError")) throw error;
     // No maintainer-owned probe policy means model-authored command/test
     // predicates are not trusted and must be repaired to static evidence.
   }
@@ -180,14 +243,17 @@ async function writeTournamentArtifacts(
   ];
   for (const [kind, value] of stages) {
     if (value === undefined || value === null) continue;
+    throwIfAssuranceAborted(ctx.signal);
     const artifact = await writeArtifact(ctx.cpbRoot, {
       project: ctx.project,
       jobId,
       kind,
       content: JSON.stringify(value, null, 2),
-      dataRoot: ctx.dataRoot,
+      dataRoot: ctx.dataRoot ?? undefined,
+      signal: ctx.signal,
       metadata: { assuranceMode: "high", stage: kind },
     });
+    throwIfAssuranceAborted(ctx.signal);
     artifacts.push(artifact);
   }
   return artifacts;
@@ -205,41 +271,43 @@ export async function runHighAssurancePlanning(
 ): Promise<AssurancePlanningResult> {
   const policy = resolveHighAssurancePolicy({ ...ctx, sourceContext: phaseSourceContext });
   if (!policy.enabled) return { kind: "skipped", phaseSourceContext };
-  const allowedAgents = resolveAllowedAgentNames(phaseSourceContext, ctx.sourceContext);
-  const policyViolations = highAssuranceAgentPolicyViolations(policy, allowedAgents);
-  if (policyViolations.length > 0) {
-    const fail = failure({
-      kind: FailureKind.AGENT_UNAVAILABLE,
-      phase: "assurance_plan",
-      reason: `high-assurance agent policy violation: ${policyViolations.join(", ")}`,
-      retryable: false,
-      cause: {
-        hardGate: true,
-        allowedAgents,
-        policyViolations,
-      },
-    });
-    await failPreparedJob({
-      cpbRoot: ctx.cpbRoot,
-      project: ctx.project,
-      jobId,
-      appendEvent: ctx.appendEvent,
-      failJob: ctx.failJob,
-      failure: fail,
-    });
-    return { kind: "failed", result: { status: "failed", jobId, exitCode: 1, failure: fail } };
-  }
-  const pool = ctx.getPool();
-  if (!pool) {
-    const fail = failure({
-      kind: FailureKind.AGENT_UNAVAILABLE,
-      phase: "assurance_plan",
-      reason: "high-assurance planning requires an agent pool",
-      retryable: true,
-    });
-    await failPreparedJob({ cpbRoot: ctx.cpbRoot, project: ctx.project, jobId, appendEvent: ctx.appendEvent, failJob: ctx.failJob, failure: fail });
-    return { kind: "failed", result: { status: "failed", jobId, exitCode: 1, failure: fail } };
-  }
+  try {
+    throwIfAssuranceAborted(ctx.signal);
+    const allowedAgents = resolveAllowedAgentNames(phaseSourceContext, ctx.sourceContext);
+    const policyViolations = highAssuranceAgentPolicyViolations(policy, allowedAgents);
+    if (policyViolations.length > 0) {
+      const fail = failure({
+        kind: FailureKind.AGENT_UNAVAILABLE,
+        phase: "assurance_plan",
+        reason: `high-assurance agent policy violation: ${policyViolations.join(", ")}`,
+        retryable: false,
+        cause: {
+          hardGate: true,
+          allowedAgents,
+          policyViolations,
+        },
+      });
+      await failPreparedJob({
+        cpbRoot: ctx.cpbRoot,
+        project: ctx.project,
+        jobId,
+        appendEvent: ctx.appendEvent,
+        failJob: ctx.failJob,
+        failure: fail,
+      });
+      return { kind: "failed", result: { status: "failed", jobId, exitCode: 1, failure: fail } };
+    }
+    const pool = ctx.getPool();
+    if (!pool) {
+      const fail = failure({
+        kind: FailureKind.AGENT_UNAVAILABLE,
+        phase: "assurance_plan",
+        reason: "high-assurance planning requires an agent pool",
+        retryable: true,
+      });
+      await failPreparedJob({ cpbRoot: ctx.cpbRoot, project: ctx.project, jobId, appendEvent: ctx.appendEvent, failJob: ctx.failJob, failure: fail });
+      return { kind: "failed", result: { status: "failed", jobId, exitCode: 1, failure: fail } };
+    }
 
   await ctx.appendEvent(ctx.cpbRoot, ctx.project, jobId, {
     type: "plan_tournament_started",
@@ -255,20 +323,24 @@ export async function runHighAssurancePlanning(
     ts: ts(),
   });
   await reportProgress(ctx, { type: "plan_tournament_started", jobId, project: ctx.project });
+  throwIfAssuranceAborted(ctx.signal);
 
   const evidencePack = await buildEvidencePack(ctx);
+  throwIfAssuranceAborted(ctx.signal);
   const evidenceArtifact = await writeArtifact(ctx.cpbRoot, {
     project: ctx.project,
     jobId,
     kind: "plan-evidence-pack",
     content: evidencePack,
-    dataRoot: ctx.dataRoot,
+    dataRoot: ctx.dataRoot ?? undefined,
+    signal: ctx.signal,
     metadata: {
       assuranceMode: "high",
       maxChars: EVIDENCE_PACK_MAX_CHARS,
       source: evidencePack.startsWith("CodeGraph evidence pack unavailable") ? "fallback" : "codegraph_context",
     },
   });
+  throwIfAssuranceAborted(ctx.signal);
 
   const baseConversationKey = buildConversationKey({
     project: ctx.project,
@@ -276,14 +348,21 @@ export async function runHighAssurancePlanning(
     attemptId: ctx._attemptId || jobId,
     role: "assurance_plan",
   });
-  const repositoryContract = await loadPlanRepositoryContract(ctx.sourcePath || ctx.cpbRoot);
+  const repositoryContract = await loadPlanRepositoryContract(
+    ctx.sourcePath || ctx.cpbRoot,
+    ctx.env ?? process.env,
+    ctx.signal,
+  );
+  throwIfAssuranceAborted(ctx.signal);
   const tournament = await runPlanTournament({
     task: ctx.task,
     basePrompt: planPrompt(ctx, evidencePack),
     conversationKey: baseConversationKey,
     policy,
     repositoryContract,
+    signal: ctx.signal,
     execute: async (run) => {
+      throwIfAssuranceAborted(ctx.signal);
       const agent = assuranceAgentName(run.agent);
       const variant = assuranceAgentVariant(run.agent);
       const promptArtifact = await writePromptArtifact(ctx.cpbRoot, {
@@ -293,8 +372,10 @@ export async function runHighAssurancePlanning(
         role: run.role,
         agent,
         prompt: run.prompt,
-        dataRoot: ctx.dataRoot,
+        dataRoot: ctx.dataRoot ?? undefined,
+        signal: ctx.signal,
       });
+      throwIfAssuranceAborted(ctx.signal);
       const agentEnv = buildPhaseAcpEnv(ctx, "plan");
       // Repository retrieval is frozen once into the bounded evidence pack.
       // Re-opening repository MCP tools in any tournament round multiplies
@@ -314,11 +395,13 @@ export async function runHighAssurancePlanning(
         timeoutMs: Number(recordValue(ctx.timeouts).plan || 0),
         scope: ctx.scope,
         env: agentEnv,
-        dataRoot: ctx.dataRoot,
+        dataRoot: ctx.dataRoot ?? undefined,
         onProgress: ctx.onProgress,
         attemptId: ctx._attemptId || jobId,
         conversationKey: run.conversationKey,
+        signal: ctx.signal,
       }));
+      throwIfAssuranceAborted(ctx.signal);
       return {
         ok: result.ok === true,
         output: typeof result.output === "string" ? result.output : "",
@@ -333,12 +416,14 @@ export async function runHighAssurancePlanning(
       };
     },
   });
+  throwIfAssuranceAborted(ctx.signal);
 
   const supportingArtifacts = [
     evidenceArtifact,
     ...await writeTournamentArtifacts(ctx, jobId, recordValue(tournament)),
   ];
   if (!tournament.ok || !tournament.proposal) {
+    throwIfAssuranceAborted(ctx.signal);
     const isClarification = tournament.kind === FailureKind.HUMAN_APPROVAL_REQUIRED
       || tournament.kind === "human_approval_required";
     const tournamentFailureKind = isValidFailureKind(tournament.kind)
@@ -395,12 +480,14 @@ export async function runHighAssurancePlanning(
     locatorCount: evidenceLocators.length,
     locators: evidenceLocators,
   };
+  throwIfAssuranceAborted(ctx.signal);
   const evidenceProvenanceArtifact = await writeArtifact(ctx.cpbRoot, {
     project: ctx.project,
     jobId,
     kind: "plan-evidence-provenance",
     content: JSON.stringify(evidenceProvenance, null, 2),
-    dataRoot: ctx.dataRoot,
+    dataRoot: ctx.dataRoot ?? undefined,
+    signal: ctx.signal,
     metadata: {
       assuranceMode: "high",
       stage: "plan-evidence-provenance",
@@ -409,13 +496,16 @@ export async function runHighAssurancePlanning(
       locatorCount: evidenceLocators.length,
     },
   });
+  throwIfAssuranceAborted(ctx.signal);
   supportingArtifacts.push(evidenceProvenanceArtifact);
+  throwIfAssuranceAborted(ctx.signal);
   const planArtifact = await writeArtifact(ctx.cpbRoot, {
     project: ctx.project,
     jobId,
     kind: "plan",
     content: tournament.proposal.planMarkdown,
-    dataRoot: ctx.dataRoot,
+    dataRoot: ctx.dataRoot ?? undefined,
+    signal: ctx.signal,
     metadata: {
       task: ctx.task,
       assuranceMode: "high",
@@ -429,6 +519,7 @@ export async function runHighAssurancePlanning(
       supportingArtifacts: supportingArtifacts.map(artifactSummary),
     },
   });
+  throwIfAssuranceAborted(ctx.signal);
   const assuranceTournament = {
     mode: "high",
     decision: tournament.decision,
@@ -463,6 +554,7 @@ export async function runHighAssurancePlanning(
     },
     assuranceTournament,
   };
+  throwIfAssuranceAborted(ctx.signal);
   await ctx.appendEvent(ctx.cpbRoot, ctx.project, jobId, {
     type: "plan_arbitrated",
     jobId,
@@ -479,6 +571,7 @@ export async function runHighAssurancePlanning(
     evidenceProvenanceArtifact: artifactSummary(evidenceProvenanceArtifact),
     ts: ts(),
   });
+  throwIfAssuranceAborted(ctx.signal);
   await reportProgress(ctx, {
     type: "plan_arbitrated",
     jobId,
@@ -488,4 +581,10 @@ export async function runHighAssurancePlanning(
     evidenceLocatorCount: evidenceLocators.length,
   });
   return { kind: "ok", phaseSourceContext: nextSourceContext, planArtifact };
+  } catch (error) {
+    if (ctx.signal?.aborted || isAssuranceAbortError(error)) {
+      return failAssuranceInterrupted(ctx, jobId);
+    }
+    throw error;
+  }
 }

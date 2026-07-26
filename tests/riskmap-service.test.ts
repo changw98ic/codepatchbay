@@ -4,6 +4,7 @@ import path from "node:path";
 import { test } from "node:test";
 
 import { FailureKind, isValidFailureKind } from "../core/contracts/failure.js";
+import { captureProcessIdentity } from "../core/runtime/process-tree.js";
 import { materializeJob } from "../server/services/event/event-store.js";
 import { enqueue, listQueue } from "../server/services/hub/hub-queue.js";
 import { tempRoot } from "./helpers.js";
@@ -32,11 +33,13 @@ async function loadRiskMapApi() {
 
 async function makeCodegraphReadyProject() {
   const sourcePath = await tempRoot("cpb-riskmap-source");
+  const processIdentity = captureProcessIdentity(process.pid, { strict: true });
+  assert.ok(processIdentity, "expected current process identity");
   await mkdir(path.join(sourcePath, ".codegraph"), { recursive: true });
   await writeFile(path.join(sourcePath, ".codegraph", "codegraph.db"), Buffer.alloc(8192, 1));
   await writeFile(
     path.join(sourcePath, ".codegraph", "daemon.pid"),
-    `${JSON.stringify({ pid: process.pid, version: "test", socketPath: path.join(sourcePath, ".codegraph", "daemon.sock") }, null, 2)}\n`,
+    `${JSON.stringify({ pid: process.pid, processIdentity, version: "test", socketPath: path.join(sourcePath, ".codegraph", "daemon.sock") }, null, 2)}\n`,
     "utf8",
   );
   await writeFile(path.join(sourcePath, "README.md"), "# RiskMap fixture\n", "utf8");
@@ -183,6 +186,24 @@ test("prepareTask returns a low or medium RiskMap for docs-only tasks", async ()
   assert.equal(riskMap.adversarialRequired, false);
   assert.match(riskMap.verificationDepth, /standard|strict/);
   assert.equal(riskMap.confidence, "high");
+});
+
+test("prepareTask requires adversarial verification for SWE-bench release validation", async () => {
+  const api = await loadRiskMapApi();
+  const riskMap = normalizeRiskMap(await callPrepareTask(api, {
+    task: "Update a small compatibility behavior",
+    sourceContext: {
+      ...highConfidenceCapabilityContext(),
+      productValidation: {
+        validationMode: "swe-bench-verified",
+        adversarialRequired: true,
+      },
+    },
+  }));
+
+  assert.equal(riskMap.adversarialRequired, true);
+  assert.match(riskMap.verificationDepth, /strict|paranoid/);
+  assert.ok(riskMap.adversarialFocus.includes("independent release-validation challenge"));
 });
 
 test("materializeJob stores riskmap_generated summary and full RiskMap", () => {

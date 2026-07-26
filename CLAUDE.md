@@ -55,10 +55,9 @@ cpb                         # bin 入口 → cli/cpb.ts (纯 Node.js 命令路�
 │       └── stream/stream-server.ts # ★ 唯一的 HTTP: Node 原生 SSE (node:http), 由 `cpb stream` 启动
 │
 ├── bridges/                # 运行时胶水 (worker 进程执行用, 不是领域核心)
-│   ├── run-pipeline.ts     # pipeline 编排 (worker 侧)
-│   ├── run-phase.ts / job-runner.ts / project-worker.ts
+│   ├── run-phase.ts / job-runner.ts
 │   ├── runtime-services.ts / engine-bridge.ts
-│   └── *.sh                # common.sh / run-pipeline.sh / verifier.sh
+│   └── *.sh                # common.sh / verifier.sh
 │
 ├── runtime/                # 运行时工作目录 (evolve/ git/ mcp/ worker/)
 ├── cpb-task/               # ★ durable 持久化
@@ -73,7 +72,7 @@ cpb                         # bin 入口 → cli/cpb.ts (纯 Node.js 命令路�
 ├── wiki/                   # 共享记忆文件系统 (schema.md 宪法 + projects/)
 ├── profiles/               # ★ 5 个角色: planner / executor / reviewer / verifier / remediator (各含 soul.md + config.json)
 ├── templates/handoff/      # 交接文档模板 (plan-to-execute, execute-to-review)
-└── tests/                  # 89+ .test.ts (Node 内置 runner) + integration/ + fixtures/ + helpers/
+└── tests/                  # 230+ .test.ts (Node 内置 runner) + integration/ + fixtures/ + helpers/
 ```
 
 ## 技术栈
@@ -177,18 +176,36 @@ npm run build:tests # tsc tests → dist-tests/
 npm test            # build:node + build:tests + run-node-tests + shell 冒烟
 npm run test:unit / test:integration
 npm run typecheck   # tsc --noEmit (node + tests configs)
-npm run verify:p0p1 # build + 构建 + P0/P1 验证门
+npm run typecheck:strict:engine      # core/engine 严格门禁（稳定化周期红线）
+npm run typecheck:type-debt:engine   # broad-any 债务守卫
+npm run verify:p0p1      # build + 构建 + P0/P1 验证门
+npm run verify:release-gate  # PR 触及发布门禁时必跑（见 README 稳定化周期）
+npm run verify:commit-size   # HEAD 提交超 1000 行或 30 文件须带说明 body（CPB_COMMIT_SIZE_OVERRIDE 绕过）
 ```
 
 ## 测试结构
 
-- `tests/*.test.ts` — **89+ 个** Node 内置 test runner 单元/集成测试（编译到 `dist/tests/` 执行）
+- `tests/*.test.ts` — **230+ 个** Node 内置 test runner 单元/集成测试（编译到 `dist-tests/` 执行）
 - `tests/integration/` — 端到端集成测试
 - `tests/fixtures/` — fake ACP agent stub
 - `tests/helpers/` — 测试工具（spawn-file 等）
 - `tests/cpb-bridges.test.sh` / `cpb-jobs.test.sh` — shell 冒烟测试
 - 测试包含 **10 轮 adversarial-round-{1..10}** 验证
-- 入口: `npm test` → `dist/scripts/run-node-tests.js`
+- 入口: `npm test`（经 `pretest:node` 自动 `build:node + build:tests`）→ `node dist-tests/scripts/run-node-tests.js`
+
+### 跑单个测试
+
+runner 接受文件路径参数（自动剥 `dist-tests/`/`dist/` 前缀并 `.ts→.js`），改过源码先编译：
+
+```bash
+npm run build:tests                                                       # 若刚改过源码/测试
+node dist-tests/scripts/run-node-tests.js tests/path/to/file.test.ts      # 单文件
+node dist-tests/scripts/run-node-tests.js tests/foo.test.ts tests/bar.test.ts  # 多文件
+node dist-tests/scripts/run-node-tests.js --unit         # 仅 unit
+node dist-tests/scripts/run-node-tests.js --integration  # 仅 integration
+```
+
+runner 启动时清掉所有 `CPB_*` 环境变量并强制 `CPB_CHECKLIST_DECOMPOSE=0` / `CPB_WORKER_DISPATCH_ENABLED=0`（测试用 fake agent pool，生产默认行为不受影响）。
 
 ## HTTP 服务（仅可选）
 
@@ -210,4 +227,5 @@ GET  /jobs            # job 列表 JSON
 - 持久化根由 `CPB_ROOT` / `CPB_EXECUTOR_ROOT` / hub root 解析
 - Pipeline 的 total timeout 通过 watchdog 写 state flag，不杀进程
 - `wiki/schema.md` 是 Wiki 宪法，所有 agent 必须遵守其写入权限和不可变规则
-- 所有 `.ts` 编译到 `dist/` 运行；改完源码需 `npm run build` 才生效
+- 所有 `.ts` 编译到 `dist/` 运行；改完源码需 `npm run build` 才生效（`npm test` 经 `pretest:node` 会自动 build，单独跑 `node dist-tests/...` 需手动 `npm run build:tests`）
+- **稳定化周期（README 红线）**：当前冻结横向能力扩张——**不新增** agent 类型、workflow 类别、scheduler 特性或 provider 集成，优先清偿执行内核恢复边界 / 事件顺序 / provider handoff 拆分 / managed-worker 隔离证据。触及发布门禁的 PR 必须跑 `npm run verify:release-gate`，并在 PR 中说明是否触及门禁

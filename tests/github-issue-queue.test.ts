@@ -74,6 +74,26 @@ function makeNormalizedEvent(payload: Record<string, unknown>, projectId = "test
   }) as NormalizedGithubEvent;
 }
 
+function remoteCapability() {
+  return {
+    schema: "cpb.github-remote-capability.v1",
+    repository: "acme/app",
+    repositoryId: "R_acme",
+    defaultBranch: "main",
+    markerPath: ".cpb-disposable-target.json",
+    markerSha: "a".repeat(40),
+    issueNumber: 42,
+    automationLabel: "cpb",
+    allowedBranchPrefix: "cpb-release-rehearsal/",
+    permissions: {
+      repositoryPush: true,
+      pullRequestCreate: true,
+      pullRequestMerge: true,
+      issueClose: true,
+    },
+  };
+}
+
 async function makeTestRoots() {
   const cpbRoot = await tempRoot("cpb-d25-cpb");
   const hubRoot = await tempRoot("cpb-d25-hub");
@@ -190,6 +210,7 @@ test("createGithubIssueQueueJob creates a job-store job linked to queue entry", 
   const project = await registerTestProject(hubRoot, "flow");
   const payload = makeIssuePayload();
   const normalized = makeNormalizedEvent(payload, "flow");
+  normalized.remoteCapability = remoteCapability();
   const match = matchGithubTrigger(normalized);
   assert.ok(match.matched);
 
@@ -204,6 +225,9 @@ test("createGithubIssueQueueJob creates a job-store job linked to queue entry", 
   assert.ok(job, "job should be created");
   assert.ok(job.jobId, "job should have a jobId");
   assert.equal(job.queueEntryId, queueEntryId, "job.queueEntryId links to queue entry");
+  assert.deepEqual(result.queueEntry.metadata.remoteCapability, remoteCapability());
+  assert.equal(result.queueEntry.metadata.remoteCapabilityRequired, true);
+  assert.deepEqual(job.sourceContext.remoteCapability, remoteCapability());
 
   // Verify lookup by queue entry ID
   const found = await getJobByQueueEntryId(cpbRoot, "flow", queueEntryId, { dataRoot: project.projectRuntimeRoot });

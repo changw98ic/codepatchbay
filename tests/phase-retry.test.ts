@@ -5,6 +5,10 @@ import { FailureKind } from "../core/contracts/failure.js";
 import { runPhaseRetryLoops } from "../core/engine/phase-retry.js";
 import { recordValue } from "../shared/types.js";
 
+function isAbortError(error: unknown) {
+  return error instanceof Error && error.name === "AbortError";
+}
+
 function failedResult(kind: string, overrides: Record<string, unknown> = {}) {
   return {
     schemaVersion: 1,
@@ -55,17 +59,22 @@ test("runPhaseRetryLoops retries retryable transient failures after configured d
   const progress: Record<string, unknown>[] = [];
   const delays: number[] = [];
   const runInputs: Record<string, unknown>[] = [];
+  const scope = { allowedFiles: ["core/engine/phase-retry.ts"] };
+  const signal = new AbortController().signal;
+  const processHooks = { registerChild: async (_pid: number) => {} };
+  const conversationKey = "proj:job-phase-retry:attempt-1:executor";
+  const onProgress = async (event: Record<string, unknown>) => {
+    progress.push(event);
+  };
 
   const result = await runPhaseRetryLoops({
     agent: "fake-acp",
     appendEvent: async (_cpbRoot: string, _project: string, _jobId: string, event: Record<string, unknown>) => {
       events.push(event);
     },
-    onProgress: async (event: Record<string, unknown>) => {
-      progress.push(event);
-    },
+    onProgress,
   }, {
-    ...baseState(),
+    ...baseState({ scope, signal, processHooks, conversationKey }),
     result: failedResult(FailureKind.TIMEOUT),
   }, {
     phaseRetryMax: 2,
@@ -99,11 +108,183 @@ test("runPhaseRetryLoops retries retryable transient failures after configured d
   assert.equal(retry.retryStrategy, "fresh_session_with_carry_forward");
   assert.equal(retry.strategyChanged, true);
   assert.equal(retry.forceFreshSession, true);
+  assert.equal(runInputs[0].scope, scope);
+  assert.equal(runInputs[0].signal, signal);
+  assert.equal(runInputs[0].processHooks, processHooks);
+  assert.equal(runInputs[0].onProgress, onProgress);
+  assert.equal(runInputs[0].env, process.env);
+  assert.match(String(runInputs[0].conversationKey), new RegExp(`^${conversationKey}:retry:`));
   assert.match(String(runInputs[0].conversationKey), /fresh_session_with_carry_forward/);
   assert.equal(events[0].type, "phase_retry");
   assert.equal(events[0].attempt, 1);
   assert.equal(events[0].maxAttempts, 2);
   assert.equal(progress.some((event) => event.type === "phase_retry"), true);
+});
+
+test("runPhaseRetryLoops aborts during transient backoff without running the next phase attempt", async () => {
+  const controller = new AbortController();
+  let runCalls = 0;
+  setTimeout(() => controller.abort(), 0);
+
+  await assert.rejects(
+    runPhaseRetryLoops({}, {
+      ...baseState({ signal: controller.signal }),
+      result: failedResult(FailureKind.TIMEOUT),
+    }, {
+      phaseRetryMax: 1,
+      phaseFeedbackRetryMax: 0,
+      phaseQualityRepairMax: 0,
+      retryBaseDelayMs: () => 10000,
+      runPhase: async () => {
+        runCalls += 1;
+        return {
+          schemaVersion: 1,
+          phase: "execute",
+          status: "passed",
+          artifact: { name: "should-not-run" },
+          failure: null,
+          diagnostics: {},
+        };
+      },
+    }),
+    isAbortError,
+  );
+
+  assert.equal(runCalls, 0);
+});
+
+test("runPhaseRetryLoops never enters fallback or quality repair with a pre-aborted signal", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  let runCalls = 0;
+
+  await assert.rejects(
+    runPhaseRetryLoops({}, {
+      ...baseState({
+        signal: controller.signal,
+        phaseAgents: { executor: "claude-glm" },
+        phaseSourceContext: {
+          agentPolicy: { allowedAgents: ["codex", "claude-glm"] },
+        },
+      }),
+      result: failedResult(FailureKind.EXECUTE_NO_EDIT_PROGRESS),
+    }, {
+      phaseRetryMax: 1,
+      phaseFeedbackRetryMax: 1,
+      phaseQualityRepairMax: 1,
+      runPhase: async () => {
+        runCalls += 1;
+        return failedResult(FailureKind.EXECUTE_NO_EDIT_PROGRESS);
+      },
+    }),
+    isAbortError,
+  );
+
+  assert.equal(runCalls, 0);
+});
+
+test("runPhaseRetryLoops does not retry non-retryable runtime cancellation", async () => {
+  let runCalls = 0;
+  const result = await runPhaseRetryLoops({}, {
+    ...baseState(),
+    result: failedResult(FailureKind.RUNTIME_INTERRUPTED, { retryable: false }),
+  }, {
+    phaseRetryMax: 1,
+    phaseFeedbackRetryMax: 0,
+    phaseQualityRepairMax: 0,
+    retryBaseDelayMs: () => 0,
+    runPhase: async () => {
+      runCalls += 1;
+      return failedResult(FailureKind.RUNTIME_INTERRUPTED);
+    },
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(runCalls, 0);
+});
+
+test("runPhaseRetryLoops resolves single-job retry config from job env before ambient env", async () => {
+  const jobEnv = {
+    ...process.env,
+    CPB_PHASE_RETRY_MAX: "1",
+    CPB_PHASE_RETRY_BASE_DELAY_MS: "11",
+    CPB_PHASE_FEEDBACK_RETRY_MAX: "0",
+    CPB_PHASE_QUALITY_REPAIR_MAX: "1",
+    CPB_PHASE_RETRY_TOTAL_MAX: "2",
+    CPB_EXECUTE_HARD_CONSTRAINT_FALLBACK_AGENT: "job-codex",
+    CPB_PROJECT_PATH_OVERRIDE: "/job/source",
+  };
+  const delays: number[] = [];
+  const transientInputs: Record<string, unknown>[] = [];
+  const transientResult = await runPhaseRetryLoops({}, {
+    ...baseState({
+      env: jobEnv,
+      sourcePath: null,
+    }),
+    result: failedResult(FailureKind.TIMEOUT),
+  }, {
+    delay: async (ms: number) => {
+      delays.push(ms);
+    },
+    runPhase: async (input: Record<string, unknown>) => {
+      transientInputs.push(input);
+      return {
+        schemaVersion: 1,
+        phase: "execute",
+        status: "passed",
+        artifact: { name: "job-env-transient-retry" },
+        failure: null,
+        diagnostics: {},
+      };
+    },
+  });
+
+  assert.equal(transientResult.status, "passed");
+  assert.deepEqual(delays, [11]);
+  assert.equal(transientInputs.length, 1);
+  assert.equal(transientInputs[0].env, jobEnv);
+  assert.equal(transientInputs[0].sourcePath, "/job/source");
+
+  const qualityInputs: Record<string, unknown>[] = [];
+  const phaseAgents = { executor: "claude-glm" };
+  const qualityResult = await runPhaseRetryLoops({}, {
+    ...baseState({
+      env: jobEnv,
+      sourcePath: null,
+      phaseAgents,
+      phaseSourceContext: {
+        agentPolicy: { allowedAgents: ["job-codex", "claude-glm"] },
+      },
+    }),
+    result: failedResult(FailureKind.EXECUTE_NO_EDIT_PROGRESS, {
+      retryable: true,
+      reason: "execute_no_edit_progress: job env fallback should be used",
+    }),
+  }, {
+    runPhase: async (input: Record<string, unknown>) => {
+      qualityInputs.push(input);
+      return failedResult(FailureKind.EXECUTE_NO_EDIT_PROGRESS, {
+        retryable: true,
+        reason: "execute_no_edit_progress: repeated after job fallback",
+      });
+    },
+  });
+
+  assert.equal(qualityResult.status, "failed");
+  assert.equal(qualityInputs.length, 2);
+  assert.equal(recordValue(qualityInputs[0].agents).executor, "job-codex");
+  assert.equal(recordValue(qualityInputs[1].agents).executor, "job-codex");
+  assert.equal(qualityInputs[0].env, jobEnv);
+  assert.equal(qualityInputs[0].sourcePath, "/job/source");
+  assert.equal(recordValue(qualityResult.diagnostics).phaseRetryCount, 2);
+  assert.deepEqual(recordValue(qualityResult.diagnostics?.phaseAgentFallback), {
+    applied: true,
+    count: 1,
+    fromAgent: "claude-glm",
+    toAgent: "job-codex",
+    failureKind: FailureKind.EXECUTE_NO_EDIT_PROGRESS,
+    reason: "execute_no_edit_progress: job env fallback should be used",
+  });
 });
 
 test("runPhaseRetryLoops leaves verification failures for cross-phase repair routing", async () => {

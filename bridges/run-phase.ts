@@ -10,8 +10,10 @@
 //   node bridges/run-phase.js review --executor-root <r> --cpb-root <r> --project <p> --deliverable-id <id>
 //   node bridges/run-phase.js repair --executor-root <r> --cpb-root <r> --project <p> --job-id <id>
 
-import { readFile, appendFile, mkdir } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, open, readFile, mkdir } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { LooseRecord } from "../core/contracts/types.js";
 import {
   buildPlannerPrompt,
@@ -29,9 +31,14 @@ import {
   dashboardPath,
 } from "../server/services/artifact-locator.js";
 import { parseVerdictEnvelope } from "../core/workflow/verdict.js";
-import { applyVariant } from "../server/services/setup.js";
+import { applyVariant } from "../server/services/apply-variant.js";
 import { runRepair, completeRepair } from "../server/services/review/review-dispatch.js";
-import { BoundedOutput, subprocessOutputMaxBytes } from "../shared/bounded-output.js";
+import { runCommandTree } from "../core/runtime/process-tree.js";
+import {
+  withDurableDirectoryLock,
+  type DurableDirectoryLockOptions,
+} from "../core/runtime/durable-directory-lock.js";
+import { subprocessOutputMaxBytes } from "../shared/bounded-output.js";
 
 // --- CLI arg parsing ---
 
@@ -45,7 +52,7 @@ type ParsedArgs = {
   options: Map<string, string>;
 };
 
-type PhaseRuntime = {
+export type PhaseRuntime = {
   dataRoot: string;
   wikiDir: string;
   inboxDir: string;
@@ -57,7 +64,37 @@ type AcpResult = LooseRecord & {
   stdout: string;
   stderr: string;
   error?: Error;
+  signal?: NodeJS.Signals | null;
+  aborted?: boolean;
 };
+
+function phaseContractError(message: string) {
+  return Object.assign(new Error(message), { code: "PHASE_PROJECT_META_CONTRACT_INVALID" });
+}
+
+export function parsePhaseProjectMetaContract(
+  raw: string,
+  filePath: string,
+  project: string,
+): { sourcePath?: string } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw phaseContractError(`project '${project}' project.json is invalid at ${filePath}: ${reason}`);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw phaseContractError(`project '${project}' project.json at ${filePath} must contain an object`);
+  }
+  const record = parsed as LooseRecord;
+  if (record.sourcePath !== undefined && record.sourcePath !== null && typeof record.sourcePath !== "string") {
+    throw phaseContractError(
+      `project '${project}' project.json at ${filePath} has invalid sourcePath; expected string`,
+    );
+  }
+  return typeof record.sourcePath === "string" ? { sourcePath: record.sourcePath } : {};
+}
 
 function parseArgs(argv: string[]): ParsedArgs {
   const phase = argv[0];
@@ -135,35 +172,143 @@ const RED = "\x1b[0;31m";
 const YELLOW = "\x1b[1;33m";
 const NC = "\x1b[0m";
 
-async function logAppend(cpbRoot: string, project: string, msg: string, runtime: PhaseRuntime | null = null) {
+async function syncPhaseLogDirectory(directory: string) {
+  const handle = await open(directory, "r");
+  let primaryError: unknown = null;
+  try {
+    await handle.sync();
+  } catch (error) {
+    primaryError = error;
+  }
+  let closeError: unknown = null;
+  try {
+    await handle.close();
+  } catch (error) {
+    closeError = error;
+  }
+  if (primaryError && closeError) {
+    throw new AggregateError(
+      [primaryError, closeError],
+      `phase log directory sync and close failed: ${directory}`,
+      { cause: primaryError },
+    );
+  }
+  if (primaryError) throw primaryError;
+  if (closeError) throw closeError;
+}
+
+async function appendPhaseLogDurable(logFile: string, entry: string) {
+  if (typeof constants.O_NOFOLLOW !== "number") {
+    throw Object.assign(new Error(`phase log no-follow append is unavailable: ${logFile}`), {
+      code: "PHASE_LOG_UNSAFE",
+      recoveryPaths: [logFile],
+    });
+  }
+  let handle: Awaited<ReturnType<typeof open>>;
+  try {
+    handle = await open(
+      logFile,
+      constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW,
+      0o600,
+    );
+  } catch (error) {
+    const code = error && typeof error === "object" && "code" in error
+      ? String((error as NodeJS.ErrnoException).code || "")
+      : "";
+    if (code === "ELOOP" || code === "EMLINK") {
+      throw Object.assign(new Error(`phase log symbolic-link target rejected: ${logFile}`, { cause: error }), {
+        code: "PHASE_LOG_UNSAFE",
+        recoveryPaths: [logFile],
+      });
+    }
+    throw error;
+  }
+  let primaryError: unknown = null;
+  let appendAttempted = false;
+  try {
+    const opened = await handle.stat();
+    if (!opened.isFile() || opened.nlink !== 1) {
+      throw Object.assign(new Error(`phase log target is not a private regular file: ${logFile}`), {
+        code: "PHASE_LOG_UNSAFE",
+      });
+    }
+    appendAttempted = true;
+    await handle.writeFile(entry, "utf8");
+    await handle.sync();
+    const finalDescriptor = await handle.stat();
+    const finalPath = await lstat(logFile);
+    if (
+      !finalPath.isFile()
+      || finalPath.isSymbolicLink()
+      || finalDescriptor.nlink !== 1
+      || finalPath.nlink !== 1
+      || finalPath.dev !== finalDescriptor.dev
+      || finalPath.ino !== finalDescriptor.ino
+    ) {
+      throw Object.assign(new Error(`phase log path changed during append: ${logFile}`), {
+        code: "PHASE_LOG_PATH_CHANGED",
+      });
+    }
+  } catch (error) {
+    primaryError = error;
+  }
+  let closeError: unknown = null;
+  try {
+    await handle.close();
+  } catch (error) {
+    closeError = error;
+  }
+  if (!primaryError && !closeError) {
+    try {
+      await syncPhaseLogDirectory(path.dirname(logFile));
+      return;
+    } catch (error) {
+      primaryError = error;
+    }
+  }
+  const errors = [primaryError, closeError].filter((error) => error !== null);
+  const cause = errors.length === 1
+    ? errors[0]
+    : new AggregateError(errors, `phase log append and close failed: ${logFile}`, {
+      cause: primaryError ?? errors[0],
+    });
+  if (appendAttempted) {
+    throw Object.assign(
+      new Error(`phase log append may have committed: ${logFile}`, { cause }),
+      {
+        code: "PHASE_LOG_APPEND_COMMITTED_AMBIGUOUS",
+        committed: true,
+        recoveryPaths: [logFile],
+      },
+    );
+  }
+  throw cause;
+}
+
+export async function appendPhaseLog(
+  cpbRoot: string,
+  project: string,
+  msg: string,
+  runtime: PhaseRuntime | null = null,
+  lockOptions: DurableDirectoryLockOptions = {},
+) {
   const logFile = runtime?.wikiDir
     ? path.join(runtime.wikiDir, "log.md")
     : wikiLogPath(cpbRoot, project);
   await mkdir(path.dirname(logFile), { recursive: true });
   const lockDir = path.join(path.dirname(logFile), ".cpb-log.lock");
-  let acquired = false;
-  for (let attempt = 0; attempt < 60; attempt++) {
-    try {
-      await mkdir(lockDir);
-      acquired = true;
-      break;
-    } catch (err) {
-      if (err.code !== "EEXIST") throw err;
-      await new Promise((r) => setTimeout(r, 50));
-    }
-  }
-  try {
+  return withDurableDirectoryLock(lockDir, async () => {
     const ts = new Date().toISOString().replace(/\.\d+Z$/, "Z");
-    await appendFile(logFile, `- **${ts}** | ${msg}\n`, "utf8");
-  } finally {
-    if (acquired) {
-      try {
-        const { rmdir } = await import("node:fs/promises");
-        await rmdir(lockDir);
-      } catch {}
-    }
-  }
+    await appendPhaseLogDurable(logFile, `- **${ts}** | ${msg}\n`);
+  }, {
+    ttlMs: 30_000,
+    waitMs: 3_000,
+    retryMs: 50,
+    ...lockOptions,
+  });
 }
+
+const logAppend = appendPhaseLog;
 
 async function dashboardUpdate(cpbRoot: string, project: string, phase: string, status: string, next: string) {
   const dashFile = dashboardPath(cpbRoot);
@@ -186,88 +331,82 @@ async function dashboardUpdate(cpbRoot: string, project: string, phase: string, 
 
 // --- ACP runner ---
 
+function boundedStreamWriter(maxBytes: number, write: (chunk: Buffer) => void) {
+  let written = 0;
+  return (chunk: string) => {
+    if (maxBytes <= 0) {
+      write(Buffer.from(chunk, "utf8"));
+      return;
+    }
+    const remaining = maxBytes - written;
+    if (remaining <= 0) return;
+    const data = Buffer.from(chunk, "utf8");
+    const slice = data.byteLength > remaining ? data.subarray(0, remaining) : data;
+    written += slice.byteLength;
+    if (slice.byteLength > 0) write(slice);
+  };
+}
 
-async function runAcp(agent: string, prompt: string, cwd: string, executorRoot: string): Promise<AcpResult> {
-  const { spawn } = await import("node:child_process");
-  const clientPath = process.env.CPB_ACP_CLIENT || path.join(executorRoot, "bridges", "acp-client.js");
-  const useDirect = !!process.env.CPB_ACP_CLIENT;
+export async function runAcp(agent: string, prompt: string, cwd: string, executorRoot: string): Promise<AcpResult> {
+  const clientPath = process.env.CPB_ACP_CLIENT
+    || path.join(executorRoot, "server", "services", "acp", "acp-client.js");
 
   if (agent === "claude") {
     applyVariant();
   }
 
-  return new Promise((resolve) => {
-    let settled = false;
+  const abort = new AbortController();
+  let abortSignal: NodeJS.Signals | null = null;
+  const abortForSignal = (signal: NodeJS.Signals) => {
+    if (!abortSignal) abortSignal = signal;
+    if (!abort.signal.aborted) {
+      abort.abort(Object.assign(new Error(`received ${signal}`), { code: "ACP_SIGNAL_ABORT", signal }));
+    }
+  };
+  const onSigint = () => abortForSignal("SIGINT");
+  const onSigterm = () => abortForSignal("SIGTERM");
+  process.on("SIGINT", onSigint);
+  process.on("SIGTERM", onSigterm);
+
+  const command = process.execPath;
+  const args = [clientPath, "--agent", agent, "--cwd", cwd];
+  const env = { ...process.env };
+
+  if (!process.env.CPB_TEST_ENV_LOG && !env.ANTHROPIC_API_KEY && env.ANTHROPIC_AUTH_TOKEN) {
+    env.ANTHROPIC_API_KEY = env.ANTHROPIC_AUTH_TOKEN;
+    delete env.ANTHROPIC_AUTH_TOKEN;
+  }
+
+  try {
     const maxOutputBytes = subprocessOutputMaxBytes(process.env.CPB_SUBPROCESS_OUTPUT_MAX_BYTES);
-    const stdout = new BoundedOutput(maxOutputBytes);
-    const stderr = new BoundedOutput(maxOutputBytes);
-
-    function finish(result: AcpResult) {
-      if (settled) return;
-      settled = true;
-      resolve(result);
-    }
-
-    let child;
-    try {
-      const command = useDirect ? clientPath : process.execPath;
-      const args = useDirect ? ["--agent", agent, "--cwd", cwd] : [clientPath, "--agent", agent, "--cwd", cwd];
-      const env = { ...process.env };
-
-      if (!process.env.CPB_TEST_ENV_LOG && !env.ANTHROPIC_API_KEY && env.ANTHROPIC_AUTH_TOKEN) {
-        env.ANTHROPIC_API_KEY = env.ANTHROPIC_AUTH_TOKEN;
-        delete env.ANTHROPIC_AUTH_TOKEN;
-      }
-
-      child = spawn(command, args, {
-        cwd,
-        env,
-        detached: process.platform !== "win32",
-        stdio: ["pipe", "pipe", "pipe"],
-      });
-    } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err));
-      finish({ exitCode: 1, stdout: "", stderr: error.message, error });
-      return;
-    }
-
-    child.stdin.write(prompt);
-    child.stdin.end();
-
-    child.stdout.on("data", (chunk) => {
-      stdout.append(chunk);
-      process.stdout.write(chunk);
+    const writeStdout = boundedStreamWriter(maxOutputBytes, (chunk) => process.stdout.write(chunk));
+    const writeStderr = boundedStreamWriter(maxOutputBytes, (chunk) => process.stderr.write(chunk));
+    const result = await runCommandTree(command, args, {
+      cwd,
+      env,
+      input: prompt,
+      signal: abort.signal,
+      graceMs: 2_000,
+      maxBufferBytes: maxOutputBytes,
+      onStdout: writeStdout,
+      onStderr: writeStderr,
     });
-    child.stderr.on("data", (chunk) => {
-      stderr.append(chunk);
-      process.stderr.write(chunk);
-    });
-    child.on("error", (err) => finish({ exitCode: 1, stdout: "", stderr: "", error: err }));
-    child.on("close", (code) => {
-      finish({
-        exitCode: code ?? 1,
-        stdout: stdout.toString(),
-        stderr: stderr.toString(),
-        stdoutTruncated: stdout.truncated,
-        stderrTruncated: stderr.truncated,
-      });
-    });
-
-    // Forward signals to child process group when possible
-    const forwardSignal = (sig: NodeJS.Signals) => {
-      try {
-        if (child.pid && !child.killed) {
-          process.kill(-child.pid, sig);
-        }
-      } catch {}
+    const signalExitCode = abortSignal === "SIGINT" ? 130 : abortSignal === "SIGTERM" ? 143 : null;
+    const exitCode = result.error
+      ? signalExitCode ?? (result.exitCode === 0 ? 1 : result.exitCode)
+      : signalExitCode ?? result.exitCode;
+    return {
+      exitCode,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      signal: result.signal,
+      aborted: result.aborted,
+      error: result.error,
     };
-    process.on("SIGINT", forwardSignal);
-    process.on("SIGTERM", forwardSignal);
-    child.on("close", () => {
-      process.removeListener("SIGINT", forwardSignal);
-      process.removeListener("SIGTERM", forwardSignal);
-    });
-  });
+  } finally {
+    process.removeListener("SIGINT", onSigint);
+    process.removeListener("SIGTERM", onSigterm);
+  }
 }
 
 // --- Verdict parsing ---
@@ -603,11 +742,13 @@ async function main() {
 
   // Set ACP cwd
   if (!process.env.CPB_ACP_CWD && !process.env.CPB_PROJECT_PATH_OVERRIDE) {
+    const metaFile = path.join(parsed.cpbRoot, "wiki", "projects", parsed.project, "project.json");
     try {
-      const metaFile = path.join(parsed.cpbRoot, "wiki", "projects", parsed.project, "project.json");
-      const meta = JSON.parse(await readFile(metaFile, "utf8"));
+      const meta = parsePhaseProjectMetaContract(await readFile(metaFile, "utf8"), metaFile, parsed.project);
       if (meta.sourcePath) process.env.CPB_ACP_CWD = meta.sourcePath;
-    } catch {}
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
+    }
   }
 
   switch (parsed.phase) {
@@ -622,4 +763,6 @@ async function main() {
   }
 }
 
-process.exitCode = await main();
+if (process.argv[1] && path.resolve(fileURLToPath(import.meta.url)) === path.resolve(process.argv[1])) {
+  process.exitCode = await main();
+}

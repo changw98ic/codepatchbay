@@ -61,33 +61,42 @@ export function redactSecrets(value: unknown, key: unknown = ""): unknown {
   if (Array.isArray(value)) return value.map((item) => redactSecrets(item));
   if (typeof value !== "object") return value;
 
-  const seen = new WeakSet();
+  // Track only the active recursion path. Repeated references are representable
+  // by JSON as duplicated values and must not be rewritten as circular data.
+  const ancestors = new WeakSet();
   function walk(val: unknown): unknown {
     if (val === null || val === undefined) return val;
     if (typeof val === "string") return redactString(val);
     if (typeof val === "number" || typeof val === "boolean") return val;
     if (Array.isArray(val)) {
-      if (seen.has(val)) return "[Circular]";
-      seen.add(val);
-      return val.map(walk);
-    }
-    if (typeof val !== "object") return val;
-    if (seen.has(val)) return "[Circular]";
-    seen.add(val);
-
-    const out: LooseRecord = {};
-    for (const [k, v] of Object.entries(val)) {
-      if (isTelemetryTokenKey(k)) {
-        out[k] = walk(v);
-      } else if (SECRET_KEY_PATTERN.test(k) && !isSecretReferenceKey(k)) {
-        out[k] = "[REDACTED]";
-      } else if (typeof v === "string") {
-        out[k] = redactString(v, isSecretReferenceKey(k) ? "" : k);
-      } else {
-        out[k] = walk(v);
+      if (ancestors.has(val)) return "[Circular]";
+      ancestors.add(val);
+      try {
+        return val.map(walk);
+      } finally {
+        ancestors.delete(val);
       }
     }
-    return out;
+    if (typeof val !== "object") return val;
+    if (ancestors.has(val)) return "[Circular]";
+    ancestors.add(val);
+    try {
+      const out: LooseRecord = {};
+      for (const [k, v] of Object.entries(val)) {
+        if (isTelemetryTokenKey(k)) {
+          out[k] = walk(v);
+        } else if (SECRET_KEY_PATTERN.test(k) && !isSecretReferenceKey(k)) {
+          out[k] = "[REDACTED]";
+        } else if (typeof v === "string") {
+          out[k] = redactString(v, isSecretReferenceKey(k) ? "" : k);
+        } else {
+          out[k] = walk(v);
+        }
+      }
+      return out;
+    } finally {
+      ancestors.delete(val);
+    }
   }
 
   return walk(value);

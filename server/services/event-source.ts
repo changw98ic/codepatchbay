@@ -1,4 +1,5 @@
-import { readFile, writeFile, mkdir, rename, rm, stat } from "node:fs/promises";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { enqueue as enqueueHubQueue, updateEntry as updateHubQueueEntry } from "./hub/hub-queue.js";
 import { getProject } from "./hub/hub-registry.js";
@@ -10,6 +11,19 @@ import {
   triageGithubIssueWithAcp,
 } from "./project/project-loader.js";
 import type { LooseRecord } from "../../core/contracts/types.js";
+import {
+  captureProcessIdentity,
+  type ProcessIdentity,
+} from "../../core/runtime/process-tree.js";
+import {
+  readBoundedRegularFileNoFollow,
+  withDurableDirectoryLock,
+} from "../../core/runtime/durable-directory-lock.js";
+import { writeJsonDurableAtomic } from "../../shared/hub-maintenance.js";
+import {
+  normalizeGithubRemoteCapability,
+  type GithubRemoteCapability,
+} from "./github/github-remote-capability.js";
 
 type EventSourceStorageOptions = LooseRecord & {
   hubRoot?: string;
@@ -113,6 +127,7 @@ type GithubEvent = CandidateEvent & {
   url?: string;
   actor?: string;
   projectId?: string;
+  remoteCapability?: GithubRemoteCapability | LooseRecord | null;
 };
 
 type GithubMatch = LooseRecord & {
@@ -137,6 +152,7 @@ type GithubPayload = LooseRecord & {
   labels: string[];
   delivery: string | null;
   triggerReason: string | null;
+  remoteCapability: GithubRemoteCapability | null;
 };
 
 type ProjectGithubConfig = LooseRecord & {
@@ -262,8 +278,26 @@ type CiFailure = LooseRecord & {
 const EVENT_SOURCE_DIR = "event-sources";
 const CANDIDATE_QUEUE_FILE = "candidates.json";
 const CANDIDATE_LOCK_TTL_MS = 30_000;
+const CANDIDATE_QUEUE_MAX_BYTES = 16 * 1024 * 1024;
 const ROUTABLE_WORKFLOWS = new Set(["direct", "standard", "complex", "blocked"]);
 
+export type CandidateLockTestHooks = {
+  afterRecoveryObserved?: (context: { lockDir: string; owner: LooseRecord | null }) => void | Promise<void>;
+  afterQuarantineRename?: (context: { lockDir: string; quarantineDir: string; ownerToken: string | null }) => void | Promise<void>;
+  beforeRelease?: (context: { lockDir: string; ownerToken: string }) => void | Promise<void>;
+  captureProcessIdentity?: () => ProcessIdentity | null;
+};
+
+const candidateLockTestHookStorage = new AsyncLocalStorage<CandidateLockTestHooks>();
+
+export function withCandidateLockTestHooksForTests<T>(hooks: CandidateLockTestHooks, operation: () => T): T {
+  const parent = candidateLockTestHookStorage.getStore();
+  return candidateLockTestHookStorage.run(parent ? { ...parent, ...hooks } : hooks, operation);
+}
+
+function candidateLockTestHooks() {
+  return candidateLockTestHookStorage.getStore() || {};
+}
 
 function controlRoot(cpbRoot: string, { hubRoot, controlRoot: explicitControlRoot }: EventSourceStorageOptions = {}): string {
   const root = explicitControlRoot || hubRoot || cpbRoot;
@@ -301,59 +335,43 @@ function hasErrorCode(err: unknown, code: string): boolean {
 async function withCandidateFileLock<T>(cpbRoot: string, options: EventSourceStorageOptions, fn: () => Promise<T>): Promise<T> {
   const file = candidateFile(cpbRoot, options);
   const lockDir = `${file}.lock`;
-  await mkdir(path.dirname(lockDir), { recursive: true });
-
-  let acquired = false;
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    try {
-      await mkdir(lockDir);
-      acquired = true;
-      break;
-    } catch (err) {
-      if (!hasErrorCode(err, "EEXIST")) throw err;
-      try {
-        const info = await stat(lockDir);
-        if (Date.now() - info.mtimeMs >= CANDIDATE_LOCK_TTL_MS) {
-          await rm(lockDir, { recursive: true, force: true });
-          continue;
-        }
-      } catch {
-        // The lock disappeared between mkdir and stat; retry.
-      }
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-  }
-
-  if (!acquired) throw new Error(`candidate queue lock busy: ${path.basename(file)}`);
-
-  try {
-    return await fn();
-  } finally {
-    await rm(lockDir, { recursive: true, force: true });
-  }
+  return withDurableDirectoryLock(lockDir, fn, {
+    ttlMs: CANDIDATE_LOCK_TTL_MS,
+    waitMs: CANDIDATE_LOCK_TTL_MS,
+    retryMs: 10,
+    captureIdentity: () => candidateLockTestHooks().captureProcessIdentity
+      ? candidateLockTestHooks().captureProcessIdentity!()
+      : captureProcessIdentity(process.pid, { strict: true }),
+    hooks: {
+      afterRecoveryObserved: async ({ lockDir: observedLockDir }) => {
+        await candidateLockTestHooks().afterRecoveryObserved?.({
+          lockDir: observedLockDir,
+          owner: null,
+        });
+      },
+      afterQuarantineRename: (context) => candidateLockTestHooks().afterQuarantineRename?.(context),
+      beforeRelease: (context) => candidateLockTestHooks().beforeRelease?.(context),
+    },
+  });
 }
 
 function withCandidateLock<T>(cpbRoot: string, options: EventSourceStorageOptions, fn: () => Promise<T>): Promise<T> {
   const key = controlRoot(cpbRoot, options);
   const prev = candidateChains.get(key) || Promise.resolve();
   const next = prev.then(() => withCandidateFileLock<T>(cpbRoot, options, fn));
-  candidateChains.set(key, next.catch(() => {}));
-  const cleanup = () => {
-    if (candidateChains.get(key) === next) candidateChains.delete(key);
-  };
-  next.then(cleanup, cleanup);
+  const tail = next.catch(() => {});
+  candidateChains.set(key, tail);
+  void tail.then(() => {
+    if (candidateChains.get(key) === tail) candidateChains.delete(key);
+  });
   return next;
-}
-
-async function atomicWriteJson(file: string, data: unknown) {
-  const tmp = `${file}.tmp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-  await writeFile(tmp, JSON.stringify(data, null, 2), "utf8");
-  await rename(tmp, file);
 }
 
 async function readQueue(file: string): Promise<CandidateEntry[]> {
   try {
-    const raw = await readFile(file, "utf8");
+    const raw = await readBoundedRegularFileNoFollow(file, {
+      maxBytes: CANDIDATE_QUEUE_MAX_BYTES,
+    });
     const queue = JSON.parse(raw);
     if (!Array.isArray(queue)) {
       throw new Error(`candidate queue malformed: expected array in ${file}`);
@@ -361,6 +379,25 @@ async function readQueue(file: string): Promise<CandidateEntry[]> {
     return queue;
   } catch (err) {
     if (hasErrorCode(err, "ENOENT")) return [];
+    if (hasErrorCode(err, "BOUNDED_FILE_TOO_LARGE")) {
+      throw Object.assign(
+        new Error(`candidate queue exceeds ${CANDIDATE_QUEUE_MAX_BYTES} bytes: ${file}`, { cause: err }),
+        {
+          code: "CANDIDATE_QUEUE_TOO_LARGE",
+          recoveryPaths: [file],
+        },
+      );
+    }
+    if (
+      hasErrorCode(err, "BOUNDED_FILE_UNSAFE")
+      || hasErrorCode(err, "BOUNDED_FILE_CHANGED")
+      || hasErrorCode(err, "BOUNDED_FILE_READ_FAILED")
+    ) {
+      throw Object.assign(new Error(`candidate queue cannot be inspected safely: ${file}`, { cause: err }), {
+        code: "CANDIDATE_QUEUE_UNSAFE",
+        recoveryPaths: [file],
+      });
+    }
     if (err instanceof SyntaxError) {
       throw new Error(`candidate queue malformed: ${err.message}`);
     }
@@ -411,7 +448,7 @@ export async function ingestEvent(cpbRoot: string, event: CandidateEvent, option
     }
 
     queue.push(entry);
-    await atomicWriteJson(file, queue);
+    await writeJsonDurableAtomic(file, queue);
 
     return entry;
   });
@@ -621,6 +658,9 @@ async function resolveChannelRoute(cpbRoot: string, command: ChannelCommand, con
 
 function githubQueuePayload(event: GithubEvent, match: GithubMatch, route: TriageRoute): GithubPayload {
   const effective = effectiveRoute(route);
+  const remoteCapability = event.remoteCapability
+    ? normalizeGithubRemoteCapability(event.remoteCapability)
+    : null;
   return {
     issueNumber: event.issueNumber ?? null,
     repo: event.repo || null,
@@ -636,6 +676,7 @@ function githubQueuePayload(event: GithubEvent, match: GithubMatch, route: Triag
     labels: event.labels || [],
     delivery: event.delivery || null,
     triggerReason: match.reason || null,
+    remoteCapability,
   };
 }
 
@@ -709,6 +750,11 @@ function githubHubQueueInput({
       requestedRoute: requestedRoute(route),
       routing: routingMetadata(route),
       autoFinalize: true,
+      remoteCapability: payload.remoteCapability,
+      remoteCapabilityRequired: Boolean(payload.remoteCapability),
+      ...(payload.remoteCapability ? {
+        sourceContext: { remoteCapability: payload.remoteCapability },
+      } : {}),
     },
   };
 }
@@ -804,6 +850,7 @@ export async function createGithubIssueQueueJob(
         delivery: event.delivery,
         triggerReason: payload.triggerReason,
         candidateEntryId: entry.id,
+        remoteCapability: payload.remoteCapability,
       },
     });
   }
@@ -1051,7 +1098,7 @@ export async function updateCandidate(
     if (reason) entry.statusReason = reason;
     entry.updatedAt = new Date().toISOString();
 
-    await atomicWriteJson(file, queue);
+    await writeJsonDurableAtomic(file, queue);
     return entry;
   });
 }

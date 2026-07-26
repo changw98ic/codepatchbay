@@ -23,16 +23,13 @@ import {
 } from "./run-job-planning.js";
 
 import { recordValue, type LooseRecord } from "../contracts/types.js";
+import type { RunJobPorts, RunJobState } from "./run-job-ports.js";
 import {
   blockPreparedJob,
   failPreparedJob,
   reportProgress,
   ts,
-  type AppendEvent,
-  type BlockJob,
-  type FailJob,
   type JobRunResult,
-  type ProgressReporter,
 } from "./run-job-shared.js";
 
 type PhaseRoleMap = {
@@ -45,20 +42,31 @@ type PhaseRoleMap = {
   [phase: string]: string;
 };
 
-type RunJobChecklistDagContext = LooseRecord & {
-  cpbRoot: string;
-  project: string;
-  task: string;
-  workflow?: string;
-  planMode?: string;
-  sourceContext?: LooseRecord;
-  dataRoot?: string;
-  blockJob?: BlockJob;
-  failJob?: FailJob;
-  appendEvent: AppendEvent;
-  onProgress?: ProgressReporter | null;
-  _attemptId?: string;
-};
+type RunJobChecklistDagContext =
+  Pick<RunJobState,
+    | "cpbRoot"
+    | "project"
+    | "task"
+    | "workflow"
+    | "planMode"
+    | "sourcePath"
+    | "sourceContext"
+    | "dataRoot"
+    | "timeouts"
+    | "env"
+    | "scope"
+    | "signal"
+    | "agent"
+    | "agents"
+    | "_attemptId"
+  >
+  & Pick<RunJobPorts,
+    | "blockJob"
+    | "failJob"
+    | "appendEvent"
+    | "onProgress"
+    | "getPool"
+  >;
 
 type FreezeChecklistAndMaterializeDagInput = {
   jobId: string;
@@ -82,6 +90,19 @@ type FreezeChecklistAndMaterializeDagResult =
       acceptanceChecklist: AcceptanceChecklist | null;
     };
 
+function checklistAbortError(signal?: AbortSignal, message = "checklist DAG preparation aborted") {
+  const reason = signal?.reason;
+  if (reason instanceof Error && reason.name === "AbortError") return reason;
+  return Object.assign(
+    new Error(reason instanceof Error ? reason.message : (typeof reason === "string" && reason) ? reason : message),
+    { name: "AbortError", code: "ABORT_ERR" },
+  );
+}
+
+function throwIfChecklistAborted(signal?: AbortSignal) {
+  if (signal?.aborted) throw checklistAbortError(signal);
+}
+
 /**
  * Freeze the acceptance checklist (validate + coverage-check + persist),
  * materialize the workflow DAG, and generate + fail-closed validate the dynamic
@@ -99,19 +120,27 @@ export async function freezeChecklistAndMaterializeDag(
     workflow = "standard",
     planMode = "full",
     sourceContext,
-    dataRoot,
     blockJob,
     appendEvent,
   } = ctx;
+  const dataRoot = ctx.dataRoot ?? undefined;
+  const runtimeEnv = ctx.env ?? process.env;
+  const signalAlreadyAborted = ctx.signal?.aborted === true;
+  const throwIfNewlyAborted = () => {
+    if (!signalAlreadyAborted) throwIfChecklistAborted(ctx.signal);
+  };
 
   let acceptanceChecklist: AcceptanceChecklist | null = recordValue(phaseSourceContext.acceptanceChecklist);
   if (!phaseSourceContext.acceptanceChecklist) acceptanceChecklist = null;
   const documents = Array.isArray(phaseSourceContext.documents) ? phaseSourceContext.documents : [];
   const existingRequirementClassification = recordValue(phaseSourceContext.requirementClassification);
-  const requirementClassification = Object.keys(existingRequirementClassification).length > 0
+  const requirementClassification = signalAlreadyAborted
     ? existingRequirementClassification
-    : await classifyAcceptanceRequirements({ task, documents, riskMap });
-  if (!acceptanceChecklist) {
+    : Object.keys(existingRequirementClassification).length > 0
+      ? existingRequirementClassification
+      : await classifyAcceptanceRequirements({ task, documents, riskMap });
+  throwIfNewlyAborted();
+  if (!acceptanceChecklist && !signalAlreadyAborted) {
     const assuranceTournament = recordValue(phaseSourceContext.assuranceTournament);
     const tournamentProposal = recordValue(assuranceTournament.proposal);
     const tournamentItems = Array.isArray(tournamentProposal.decomposedItems)
@@ -120,12 +149,28 @@ export async function freezeChecklistAndMaterializeDag(
         ? assuranceTournament.decomposedItems
         : null;
     let decomposedItems = tournamentItems || undefined;
-    if (!decomposedItems && process.env.CPB_CHECKLIST_DECOMPOSE !== "0") {
+    if (!decomposedItems && runtimeEnv.CPB_CHECKLIST_DECOMPOSE !== "0") {
       const decomposition = await decomposeTaskToChecklistItems({
         task,
         documents,
-        ctx: { ...ctx, sourceContext: phaseSourceContext },
+        ctx: {
+          cpbRoot,
+          project,
+          jobId,
+          planMode,
+          sourcePath: ctx.sourcePath,
+          sourceContext: phaseSourceContext,
+          dataRoot,
+          timeouts: ctx.timeouts,
+          env: ctx.env,
+          scope: ctx.scope,
+          signal: ctx.signal,
+          agent: ctx.agent,
+          agents: ctx.agents,
+          getPool: ctx.getPool,
+        },
       });
+      throwIfNewlyAborted();
       if (!decomposition.ok) {
         const rawDecompKind = typeof decomposition.kind === "string" ? decomposition.kind : "";
         const decompKind = isValidFailureKind(rawDecompKind) ? rawDecompKind : FailureKind.ARTIFACT_INVALID;
@@ -141,9 +186,11 @@ export async function freezeChecklistAndMaterializeDag(
           },
         });
         if (retryable) {
+          throwIfNewlyAborted();
           await failPreparedJob({ cpbRoot, project, jobId, appendEvent, failJob: ctx.failJob, failure: decompFail });
           return { kind: "failed", result: { status: "failed", jobId, exitCode: 1, failure: decompFail } };
         }
+        throwIfNewlyAborted();
         await blockPreparedJob({ cpbRoot, project, jobId, appendEvent, blockJob, failure: decompFail });
         return { kind: "blocked", result: { status: "blocked", jobId, exitCode: 2, failure: decompFail } };
       }
@@ -152,9 +199,10 @@ export async function freezeChecklistAndMaterializeDag(
     acceptanceChecklist = await buildAcceptanceChecklist({
       jobId, project, task, documents, riskMap: recordValue(riskMap), requirementClassification, decomposedItems,
     });
+    throwIfNewlyAborted();
   }
   let acceptanceChecklistArtifact: LooseRecord | null = null;
-  if (acceptanceChecklist) {
+  if (acceptanceChecklist && !signalAlreadyAborted) {
     const validation = validateAcceptanceChecklist(acceptanceChecklist);
     if (!validation.ok) {
       const fail = failure({
@@ -164,6 +212,7 @@ export async function freezeChecklistAndMaterializeDag(
         retryable: false,
         cause: { acceptanceChecklist },
       });
+      throwIfNewlyAborted();
       await blockPreparedJob({ cpbRoot, project, jobId, appendEvent, blockJob, failure: fail });
       return { kind: "blocked", result: { status: "blocked", jobId, exitCode: 2, failure: fail } };
     }
@@ -185,17 +234,21 @@ export async function freezeChecklistAndMaterializeDag(
         retryable: true,
         cause: { routingLabel: "infra_error", coverage, generatedArtifact: true },
       });
+      throwIfNewlyAborted();
       await failPreparedJob({ cpbRoot, project, jobId, appendEvent, failJob: ctx.failJob, failure: fail });
       return { kind: "failed", result: { status: "failed", jobId, exitCode: 1, failure: fail } };
     }
+    throwIfNewlyAborted();
     acceptanceChecklistArtifact = await writeArtifact(cpbRoot, {
       project,
       jobId,
       kind: "acceptance-checklist",
       content: JSON.stringify(acceptanceChecklist, null, 2),
       dataRoot,
+      signal: ctx.signal,
       metadata: acceptanceChecklist,
     });
+    throwIfNewlyAborted();
     await writeRuntimeArtifactEvent({
       cpbRoot,
       project,
@@ -206,6 +259,7 @@ export async function freezeChecklistAndMaterializeDag(
       attemptId: ctx._attemptId,
       now: ts,
     });
+    throwIfNewlyAborted();
     phaseSourceContext = { ...phaseSourceContext, acceptanceChecklist, acceptanceChecklistArtifact };
 
     const dynamicAgentPlanRecord = recordValue(dynamicAgentPlan);
@@ -214,7 +268,7 @@ export async function freezeChecklistAndMaterializeDag(
     }
   }
 
-  const phaseRoleMap = {
+	  const phaseRoleMap = {
     plan: "planner",
     execute: "executor",
     verify: "verifier",
@@ -223,52 +277,96 @@ export async function freezeChecklistAndMaterializeDag(
     remediate: "remediator",
   };
 
-  const { phases: resolvedPhases } = resolveSemanticPhases({ workflow, planMode });
-  const phases = insertAdversarialVerify(resolvedPhases, recordValue(riskMap));
-  const workflowDag = attachChecklistIdsToWorkflowDag(buildWorkflowDag({ workflow, phases, phaseRoleMap }), acceptanceChecklist);
-  const dagCoverage = validateChecklistDagCoverage(workflowDag, acceptanceChecklist);
-  if (!dagCoverage.ok) {
+	  const { phases: resolvedPhases } = resolveSemanticPhases({ workflow, planMode });
+	  const phases = insertAdversarialVerify(resolvedPhases, recordValue(riskMap));
+  throwIfNewlyAborted();
+	  let workflowDag;
+	  try {
+    workflowDag = attachChecklistIdsToWorkflowDag(buildWorkflowDag({ workflow, phases, phaseRoleMap }), acceptanceChecklist);
+  } catch (err) {
+    const dagMaterializationError = err instanceof Error ? err.message : String(err);
+    const fail = failure({
+      kind: FailureKind.ARTIFACT_INVALID,
+      phase: "prepare_task",
+      reason: `Failed to materialize workflow DAG: ${dagMaterializationError}`,
+      retryable: false,
+      cause: { routingLabel: "dag_materialization_failed", workflow, phases, error: dagMaterializationError },
+	    });
+    throwIfNewlyAborted();
+	    await failPreparedJob({
+      cpbRoot,
+      project,
+      jobId,
+      appendEvent,
+      failJob: ctx.failJob,
+      failure: fail,
+	    });
+	    return { kind: "failed", result: { status: "failed", jobId, exitCode: 1, failure: fail } };
+	  }
+  throwIfNewlyAborted();
+	  const dagCoverage = validateChecklistDagCoverage(workflowDag, acceptanceChecklist);
+	  if (!dagCoverage.ok) {
     const fail = failure({
       kind: FailureKind.ARTIFACT_INVALID,
       phase: "prepare_task",
       reason: `acceptance checklist DAG coverage invalid: ${dagCoverage.reason}`,
       retryable: false,
       cause: { routingLabel: "needs_clarification", dagCoverage },
-    });
-    await blockPreparedJob({ cpbRoot, project, jobId, appendEvent, blockJob, failure: fail });
-    return { kind: "blocked", result: { status: "blocked", jobId, exitCode: 2, failure: fail } };
-  }
+	    });
+    throwIfNewlyAborted();
+	    await blockPreparedJob({ cpbRoot, project, jobId, appendEvent, blockJob, failure: fail });
+	    return { kind: "blocked", result: { status: "blocked", jobId, exitCode: 2, failure: fail } };
+	  }
   const executionNodes = dagSequentialExecutionPlan(workflowDag);
   const dagResumeContext = normalizeDagResumeContext(sourceContext || {});
   const resumeCompletedNodes = new Set(dagResumeContext.completedNodeIds);
-  await appendEvent(cpbRoot, project, jobId, {
-    type: "workflow_dag_materialized",
-    jobId,
-    project,
-    workflow,
-    planMode,
-    workflowDag,
-    nodes: workflowDag.nodes,
-    edges: workflowDag.edges,
-    executionMode: "node_first_sequential",
-    dagMetadataReady: true,
-    dagNodeFirstSequentialReady: true,
-    dagParallelExecutionReady: false,
-    ts: ts(),
+  const requestedConcurrency = typeof workflowDag.maxConcurrentNodes === "number"
+    ? workflowDag.maxConcurrentNodes
+    : Number(workflowDag.maxConcurrentNodes);
+	  const dagParallelExecutionEnabled = Number.isFinite(requestedConcurrency)
+	    ? Math.floor(requestedConcurrency) > 1
+	    : false;
+  throwIfNewlyAborted();
+  if (!signalAlreadyAborted) {
+	    await appendEvent(cpbRoot, project, jobId, {
+	      type: "workflow_dag_materialized",
+	      jobId,
+	      project,
+	      workflow,
+	      planMode,
+	      attemptId: ctx._attemptId || null,
+	      workflowDag,
+	      nodes: workflowDag.nodes,
+	      edges: workflowDag.edges,
+	      executionMode: "bounded_dependency_parallel",
+	      dagMetadataReady: true,
+	      dagNodeFirstSequentialReady: true,
+	      dagParallelExecutionReady: true,
+	      dagParallelExecutionEnabled,
+	      dagParallelSafePhases: ["review"],
+	      dagUnsafeNodePolicy: "exclusive",
+	      dagConflictPolicy: "stable_prefix_serialization",
+	      dagDurableCommitOrder: "stable_topological_node_order",
+	      ts: ts(),
+	    });
+    throwIfNewlyAborted();
+	    await reportProgress(ctx, {
+	      type: "workflow_dag_materialized",
+	      jobId,
+	      project,
+	      workflow,
+	      planMode,
+	      nodeCount: workflowDag.nodes.length,
+	    });
+  }
+  const assurancePolicy = resolveHighAssurancePolicy({
+    sourceContext: phaseSourceContext,
+    env: ctx.env,
   });
-  await reportProgress(ctx, {
-    type: "workflow_dag_materialized",
-    jobId,
-    project,
-    workflow,
-    planMode,
-    nodeCount: workflowDag.nodes.length,
-  });
-  const assurancePolicy = resolveHighAssurancePolicy({ sourceContext: phaseSourceContext });
   const assuranceRequiresIndependentVerifier = assurancePolicy.enabled
     && assurancePolicy.verification.required
     && assurancePolicy.verification.independent;
-  if (!dynamicAgentPlan) {
+	  if (!dynamicAgentPlan) {
     dynamicAgentPlan = generateDynamicAgentPlan({
       riskMap: recordValue(riskMap),
       workflowDag,
@@ -282,30 +380,35 @@ export async function freezeChecklistAndMaterializeDag(
       independentVerifierRequired: true,
       independentVerifierSource: "high_assurance_policy",
     };
+	  }
+	  phaseSourceContext = { ...phaseSourceContext, dynamicAgentPlan };
+  throwIfNewlyAborted();
+  if (!signalAlreadyAborted) {
+	    await appendEvent(cpbRoot, project, jobId, {
+	      type: "dynamic_agent_plan_generated",
+	      jobId,
+	      project,
+	      workflow,
+	      planMode,
+	      attemptId: ctx._attemptId || null,
+	      dynamicAgentPlan,
+	      riskLevel: recordValue(dynamicAgentPlan).riskLevel ?? recordValue(riskMap).riskLevel ?? null,
+	      adversarialRequired: recordValue(dynamicAgentPlan).adversarialRequired ?? Boolean(recordValue(riskMap).adversarialRequired),
+	      independentVerifierRequired: Boolean(recordValue(dynamicAgentPlan).independentVerifierRequired),
+	      ts: ts(),
+	    });
+    throwIfNewlyAborted();
+	    await reportProgress(ctx, {
+	      type: "dynamic_agent_plan_generated",
+	      jobId,
+	      project,
+	      riskLevel: recordValue(dynamicAgentPlan).riskLevel ?? null,
+	      independentVerifierRequired: Boolean(recordValue(dynamicAgentPlan).independentVerifierRequired),
+	    });
   }
-  phaseSourceContext = { ...phaseSourceContext, dynamicAgentPlan };
-  await appendEvent(cpbRoot, project, jobId, {
-    type: "dynamic_agent_plan_generated",
-    jobId,
-    project,
-    workflow,
-    planMode,
-    dynamicAgentPlan,
-    riskLevel: recordValue(dynamicAgentPlan).riskLevel ?? recordValue(riskMap).riskLevel ?? null,
-    adversarialRequired: recordValue(dynamicAgentPlan).adversarialRequired ?? Boolean(recordValue(riskMap).adversarialRequired),
-    independentVerifierRequired: Boolean(recordValue(dynamicAgentPlan).independentVerifierRequired),
-    ts: ts(),
-  });
-  await reportProgress(ctx, {
-    type: "dynamic_agent_plan_generated",
-    jobId,
-    project,
-    riskLevel: recordValue(dynamicAgentPlan).riskLevel ?? null,
-    independentVerifierRequired: Boolean(recordValue(dynamicAgentPlan).independentVerifierRequired),
-  });
 
-  const planValidation = validateDynamicAgentPlan(recordValue(dynamicAgentPlan), workflowDag);
-  if (!planValidation.valid) {
+	  const planValidation = validateDynamicAgentPlan(recordValue(dynamicAgentPlan), workflowDag);
+	  if (!planValidation.valid) {
     const blockFail = failure({
       kind: FailureKind.AGENT_CONTRACT_INVALID,
       phase: "dynamic_agent_plan",
@@ -316,17 +419,20 @@ export async function freezeChecklistAndMaterializeDag(
         missingRoles: planValidation.missingRoles,
         planSource: recordValue(dynamicAgentPlan).source || null,
       },
-    });
-    await blockPreparedJob({ cpbRoot, project, jobId, appendEvent, blockJob, failure: blockFail });
-    await appendEvent(cpbRoot, project, jobId, {
+	    });
+    throwIfNewlyAborted();
+	    await blockPreparedJob({ cpbRoot, project, jobId, appendEvent, blockJob, failure: blockFail });
+    throwIfNewlyAborted();
+	    await appendEvent(cpbRoot, project, jobId, {
       type: "dynamic_agent_plan_invalid",
       jobId,
       project,
       reason: planValidation.reason,
       missingRoles: planValidation.missingRoles,
-      ts: ts(),
-    });
-    await reportProgress(ctx, {
+	      ts: ts(),
+	    });
+    throwIfNewlyAborted();
+	    await reportProgress(ctx, {
       type: "job_blocked",
       jobId,
       project,

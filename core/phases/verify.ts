@@ -1,10 +1,10 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { execFile as execFileCb } from "node:child_process";
+import { constants as fsConstants, type BigIntStats } from "node:fs";
 import { runCommandTree } from "../runtime/process-tree.js";
 import { promisify } from "node:util";
 import path from "node:path";
-import { chmod, copyFile, lstat, mkdir, mkdtemp, readFile, readlink, rm, symlink } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { lstat, mkdir, open, readFile } from "node:fs/promises";
 import { phasePassed, phaseFailed } from "../contracts/phase-result.js";
 import { FailureKind, failure } from "../contracts/failure.js";
 import { runAgent } from "../agents/agent-runner.js";
@@ -26,7 +26,14 @@ import {
   type CandidateArtifact,
   type CandidateArtifactVerificationRecord,
 } from "../engine/candidate-artifact.js";
+import type { RunJobProcessHooks } from "../engine/run-job-ports.js";
 import { buildRuntimeEnv } from "../policy/child-env.js";
+import { parseAgentFilesystemBoundary } from "../policy/filesystem-boundary.js";
+import {
+  createTemporaryGitWorktree,
+  type TemporaryGitWorktree,
+} from "../runtime/temporary-workspace.js";
+import { applyFrozenGitTreeDelta } from "../runtime/frozen-git-tree.js";
 import {
   buildScopeReviewRequest,
   executionMapFromPhaseResults,
@@ -90,8 +97,8 @@ type EvidenceProbePlan = LooseRecord & {
 };
 
 type ChecklistVerdict = LooseRecord & {
-  status?: string;
-  reason?: string;
+  status?: string | null;
+  reason?: string | null;
   items?: LooseRecord[];
   blocking?: unknown[];
   fixScope?: unknown[];
@@ -129,7 +136,7 @@ type VerifyContext = LooseRecord & {
   };
   previousResults: PhaseResultRecord[];
   signal?: AbortSignal;
-  processHooks?: { registerChild?: (pid: number) => void | Promise<void> };
+  processHooks?: RunJobProcessHooks;
   timeouts?: LooseRecord & { verify?: number };
   scope?: unknown;
   env?: NodeJS.ProcessEnv;
@@ -159,6 +166,18 @@ function acceptanceChecklistValue(value: unknown): AcceptanceChecklist | null {
     ...checklist,
     items: checklist.items.map((item) => recordValue(item) as ChecklistItem),
   };
+}
+
+function phaseAbortError(signal?: AbortSignal) {
+  const reason = signal?.reason;
+  if (reason instanceof Error && reason.name === "AbortError") return reason;
+  const err = new Error("verify phase aborted");
+  err.name = "AbortError";
+  return err;
+}
+
+function throwIfPhaseAborted(signal?: AbortSignal) {
+  if (signal?.aborted) throw phaseAbortError(signal);
 }
 
 function stringValue(value: unknown, fallback = ""): string {
@@ -198,7 +217,12 @@ function verifierJsonOutputFilePath({ cpbRoot, dataRoot, project, jobId }: {
   jobId: string;
 }) {
   const root = dataRoot || path.join(cpbRoot, "runtime", "projects", safePathPart(project));
-  return path.join(root, "phase-io", "verify", `${safePathPart(jobId)}-verdict.json`);
+  return path.join(
+    root,
+    "phase-io",
+    "verify",
+    `${safePathPart(jobId)}-verdict-${randomUUID()}.json`,
+  );
 }
 
 function verifierJsonOutputFileInstruction(filePath: string) {
@@ -213,13 +237,104 @@ The JSON object in the file MUST use the same envelope required below, including
 Your final chat response should also contain the JSON envelope, but CPB will read this file first to avoid ACP transport truncation or formatting noise.`;
 }
 
-async function readVerifierJsonOutputFile(filePath: string) {
+export async function readVerifierJsonOutputFile(filePath: string) {
+  let before: BigIntStats;
   try {
-    const content = await readFile(filePath, "utf8");
-    return content.trim() ? content : null;
-  } catch {
-    return null;
+    before = await lstat(filePath, { bigint: true });
+  } catch (error) {
+    if (recordValue(error).code === "ENOENT") return null;
+    throw error;
   }
+  if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1n) {
+    throw Object.assign(new Error("verifier output is not a single-link regular nofollow file"), {
+      code: "VERIFIER_OUTPUT_UNSAFE",
+    });
+  }
+
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  return await runWithTemporaryReplayCleanup({
+    cleanup: async () => {
+      await handle?.close();
+    },
+    description: "verifier output descriptor",
+    operation: async () => {
+      try {
+        handle = await open(filePath, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW || 0));
+        const [descriptor, current] = await Promise.all([
+          handle.stat({ bigint: true }),
+          lstat(filePath, { bigint: true }),
+        ]);
+        if (
+          !descriptor.isFile()
+          || !current.isFile()
+          || current.isSymbolicLink()
+          || descriptor.nlink !== 1n
+          || current.nlink !== 1n
+          || descriptor.dev !== current.dev
+          || descriptor.ino !== current.ino
+          || before.dev !== current.dev
+          || before.ino !== current.ino
+          || before.mode !== current.mode
+          || before.size !== current.size
+          || before.ctimeNs !== current.ctimeNs
+          || before.mtimeNs !== current.mtimeNs
+        ) {
+          throw Object.assign(new Error("verifier output changed identity while opening"), {
+            code: "VERIFIER_OUTPUT_IDENTITY_CHANGED",
+          });
+        }
+        const size = Number(descriptor.size);
+        if (!Number.isSafeInteger(size) || size < 0 || size > 1024 * 1024) {
+          throw Object.assign(new Error("verifier output exceeds the 1 MiB transport limit"), {
+            code: "VERIFIER_OUTPUT_TOO_LARGE",
+          });
+        }
+        const buffer = Buffer.alloc(size);
+        let bytesRead = 0;
+        while (bytesRead < size) {
+          const chunk = await handle.read(buffer, bytesRead, size - bytesRead, bytesRead);
+          if (chunk.bytesRead === 0) break;
+          bytesRead += chunk.bytesRead;
+        }
+        const [after, finalPath] = await Promise.all([
+          handle.stat({ bigint: true }),
+          lstat(filePath, { bigint: true }),
+        ]);
+        if (
+          bytesRead !== size
+          || after.nlink !== 1n
+          || finalPath.nlink !== 1n
+          || after.dev !== descriptor.dev
+          || after.ino !== descriptor.ino
+          || finalPath.dev !== descriptor.dev
+          || finalPath.ino !== descriptor.ino
+          || after.mode !== descriptor.mode
+          || after.size !== descriptor.size
+          || after.ctimeNs !== descriptor.ctimeNs
+          || after.mtimeNs !== descriptor.mtimeNs
+          || finalPath.mode !== descriptor.mode
+          || finalPath.size !== descriptor.size
+          || finalPath.ctimeNs !== descriptor.ctimeNs
+          || finalPath.mtimeNs !== descriptor.mtimeNs
+        ) {
+          throw Object.assign(new Error("verifier output changed while reading"), {
+            code: "VERIFIER_OUTPUT_CHANGED_DURING_READ",
+          });
+        }
+        const content = buffer.toString("utf8");
+        return content.trim() ? content : null;
+      } catch (error) {
+        if (recordValue(error).code === "ENOENT") {
+          throw Object.assign(new Error("verifier output disappeared after its initial identity was observed", {
+            cause: error,
+          }), {
+            code: "VERIFIER_OUTPUT_IDENTITY_CHANGED",
+          });
+        }
+        throw error;
+      }
+    },
+  });
 }
 
 interface VerifierVerdict {
@@ -450,50 +565,84 @@ function safeRepositoryPath(file: string) {
     && !file.split("/").includes("..");
 }
 
-async function copyCandidatePath(sourceRoot: string, replayRoot: string, file: string) {
-  if (!safeRepositoryPath(file)) throw new Error(`unsafe candidate replay path: ${file}`);
-  const source = path.join(sourceRoot, file);
-  const destination = path.join(replayRoot, file);
+async function failAfterTemporaryReplaySetup(workspace: TemporaryGitWorktree, primaryError: unknown): Promise<never> {
   try {
-    const stats = await lstat(source);
-    await mkdir(path.dirname(destination), { recursive: true });
-    if (stats.isSymbolicLink()) {
-      await rm(destination, { recursive: true, force: true });
-      await symlink(await readlink(source), destination);
-      return;
-    }
-    if (!stats.isFile()) throw new Error(`unsupported candidate replay entry: ${file}`);
-    await copyFile(source, destination);
-    await chmod(destination, stats.mode);
+    await workspace.cleanup();
+  } catch (cleanupError) {
+    throw new AggregateError(
+      [primaryError, cleanupError],
+      "temporary verification replay setup and cleanup failed",
+      { cause: cleanupError },
+    );
+  }
+  throw primaryError;
+}
+
+export async function runWithTemporaryReplayCleanup<T>({
+  cleanup,
+  operation,
+  description = "temporary verification replay",
+}: {
+  cleanup: (() => Promise<unknown>) | null | undefined;
+  operation: () => Promise<T>;
+  description?: string;
+}): Promise<T> {
+  let operationFailed = false;
+  let primaryError: unknown;
+  try {
+    return await operation();
   } catch (err) {
-    if (recordValue(err).code === "ENOENT") {
-      await rm(destination, { recursive: true, force: true });
-      return;
-    }
+    operationFailed = true;
+    primaryError = err;
     throw err;
+  } finally {
+    if (cleanup) {
+      try {
+        await cleanup();
+      } catch (cleanupError) {
+        if (operationFailed) {
+          throw new AggregateError(
+            [primaryError, cleanupError],
+            `${description} operation and cleanup failed`,
+            { cause: cleanupError },
+          );
+        }
+        throw cleanupError;
+      }
+    }
   }
 }
 
 export async function materializeCandidateVerificationReplay({
   cwd,
   candidate,
+  env = process.env,
 }: {
   cwd: string;
   candidate: CandidateArtifact;
+  env?: NodeJS.ProcessEnv;
 }) {
-  const root = await mkdtemp(path.join(tmpdir(), "cpb-candidate-verification-"));
-  const replayPath = path.join(root, "worktree");
-  let attached = false;
+  const workspace = await createTemporaryGitWorktree({
+    sourcePath: cwd,
+    revision: candidate.headSha,
+    prefix: "cpb-candidate-verification-",
+    env,
+  });
+  const replayPath = workspace.worktreePath;
   try {
-    await execFile("git", ["worktree", "add", "--detach", replayPath, candidate.headSha], {
-      cwd,
-      maxBuffer: 8 * 1024 * 1024,
+    await applyFrozenGitTreeDelta({
+      sourceRoot: cwd,
+      replayRoot: replayPath,
+      fromTree: candidate.headSha,
+      candidateTree: candidate.treeHash,
+      files: candidate.changedFiles,
+      env: workspace.gitEnv,
     });
-    attached = true;
-    for (const file of candidate.changedFiles) {
-      await copyCandidatePath(cwd, replayPath, file);
-    }
-    const replayCandidate = await captureCandidateArtifact({ cwd: replayPath, base: candidate.baseSha });
+    const replayCandidate = await captureCandidateArtifact({
+      cwd: replayPath,
+      base: candidate.baseSha,
+      env: workspace.gitEnv,
+    });
     const candidateVerification = verifyCandidateArtifactIdentity(candidate, replayCandidate);
     if (!candidateVerification.matches) {
       throw new Error(`candidate verification replay identity mismatch: ${candidateVerification.mismatches.map((entry) => entry.field).join(", ")}`);
@@ -501,38 +650,27 @@ export async function materializeCandidateVerificationReplay({
     return {
       replayPath,
       candidateVerification,
-      async cleanup() {
-        if (attached) {
-          await execFile("git", ["worktree", "remove", "--force", replayPath], {
-            cwd,
-            maxBuffer: 8 * 1024 * 1024,
-          }).catch(() => null);
-        }
-        await rm(root, { recursive: true, force: true });
-      },
+      cleanup: workspace.cleanup,
     };
   } catch (err) {
-    if (attached) {
-      await execFile("git", ["worktree", "remove", "--force", replayPath], {
-        cwd,
-        maxBuffer: 8 * 1024 * 1024,
-      }).catch(() => null);
-    }
-    await rm(root, { recursive: true, force: true });
-    throw err;
+    return await failAfterTemporaryReplaySetup(workspace, err);
   }
 }
 
-async function materializeBaselineTestContractReplay({
+export async function materializeBaselineTestContractReplay({
   cwd,
   baseSha,
   changedFiles,
   contractTestFiles = [],
+  candidateTree,
+  env = process.env,
 }: {
   cwd: string;
   baseSha: string;
   changedFiles: string[];
   contractTestFiles?: string[];
+  candidateTree?: string;
+  env?: NodeJS.ProcessEnv;
 }) {
   const candidateTestFiles = changedFiles.filter(isRepositoryTestPath).sort();
   const requestedTestFiles = [...new Set([
@@ -544,50 +682,45 @@ async function materializeBaselineTestContractReplay({
   const testFiles: string[] = [];
   for (const file of requestedTestFiles) {
     try {
-      await execFile("git", ["cat-file", "-e", `${baseSha}:${file}`], { cwd, maxBuffer: 1024 * 1024 });
+      await execFile("git", ["cat-file", "-e", `${baseSha}:${file}`], { cwd, env, maxBuffer: 1024 * 1024 });
       testFiles.push(file);
     } catch {
       // Candidate-authored new tests are intentionally absent from the replay.
     }
   }
 
-  const root = await mkdtemp(path.join(tmpdir(), "cpb-baseline-test-contract-"));
-  const replayPath = path.join(root, "worktree");
-  let attached = false;
+  const workspace = await createTemporaryGitWorktree({
+    sourcePath: cwd,
+    revision: baseSha,
+    prefix: "cpb-baseline-test-contract-",
+    env,
+  });
+  const replayPath = workspace.worktreePath;
   try {
-    await execFile("git", ["worktree", "add", "--detach", replayPath, baseSha], {
+    const productionFiles = changedFiles.filter((entry) => !isRepositoryTestPath(entry)).sort();
+    const frozenCandidateTree = candidateTree || (await captureCandidateArtifact({
       cwd,
-      maxBuffer: 8 * 1024 * 1024,
+      base: baseSha,
+      env: workspace.gitEnv,
+    })).treeHash;
+    await applyFrozenGitTreeDelta({
+      sourceRoot: cwd,
+      replayRoot: replayPath,
+      fromTree: baseSha,
+      candidateTree: frozenCandidateTree,
+      files: productionFiles,
+      env: workspace.gitEnv,
     });
-    attached = true;
-    for (const file of changedFiles.filter((entry) => !isRepositoryTestPath(entry)).sort()) {
-      await copyCandidatePath(cwd, replayPath, file);
-    }
     return {
       replayPath,
       testFiles,
       candidateTestFiles,
       omittedCandidateTestFiles: candidateTestFiles.filter((file) => !testFiles.includes(file)),
-      productionFiles: changedFiles.filter((entry) => !isRepositoryTestPath(entry)).sort(),
-      async cleanup() {
-        if (attached) {
-          await execFile("git", ["worktree", "remove", "--force", replayPath], {
-            cwd,
-            maxBuffer: 8 * 1024 * 1024,
-          }).catch(() => null);
-        }
-        await rm(root, { recursive: true, force: true });
-      },
+      productionFiles,
+      cleanup: workspace.cleanup,
     };
   } catch (err) {
-    if (attached) {
-      await execFile("git", ["worktree", "remove", "--force", replayPath], {
-        cwd,
-        maxBuffer: 8 * 1024 * 1024,
-      }).catch(() => null);
-    }
-    await rm(root, { recursive: true, force: true });
-    throw err;
+    return await failAfterTemporaryReplaySetup(workspace, err);
   }
 }
 
@@ -618,16 +751,27 @@ async function runBaselineTestContractVerification({
   resolvedAgent: { agent: string; variant: unknown };
   verificationRound: number;
 }) {
-  const replay = await materializeBaselineTestContractReplay({ cwd, baseSha, changedFiles, contractTestFiles });
+  const phaseEnv = ctx.env ?? process.env;
+  const replay = await materializeBaselineTestContractReplay({
+    cwd,
+    baseSha,
+    changedFiles,
+    contractTestFiles,
+    candidateTree: expectedCandidate?.treeHash,
+    env: phaseEnv,
+  });
   if (!replay) {
     return { required: false, ok: true, reason: "candidate did not modify repository test paths" };
   }
 
-  try {
+  return await runWithTemporaryReplayCleanup({
+    cleanup: replay.cleanup,
+    description: "baseline test-contract replay",
+    operation: async () => {
     const [productionDiff, candidateTestDiff] = await Promise.all([
-      git(replay.replayPath, ["diff", baseSha]),
+      git(replay.replayPath, ["diff", baseSha], phaseEnv),
       replay.candidateTestFiles.length > 0
-        ? git(cwd, ["diff", baseSha, "--", ...replay.candidateTestFiles])
+        ? git(cwd, ["--literal-pathspecs", "diff", baseSha, "--", ...replay.candidateTestFiles], phaseEnv)
         : Promise.resolve({ stdout: "", stderr: "" }),
     ]);
     const prompt = `You are the independent backward-compatibility verifier for a software change.
@@ -668,6 +812,7 @@ Your job is adversarial:
 6. Return FAIL or PARTIAL on an unproven compatibility change; explain the exact old contract at risk.
 
 Return the standard verifier JSON envelope.` + JSON_INSTRUCTION;
+    throwIfPhaseAborted(ctx.signal);
     const promptArtifact = await writePromptArtifact(ctx.cpbRoot, {
       project: ctx.project,
       jobId: ctx.jobId,
@@ -676,6 +821,7 @@ Return the standard verifier JSON envelope.` + JSON_INSTRUCTION;
       agent: resolvedAgent.agent,
       prompt,
       dataRoot: ctx.dataRoot,
+      signal: ctx.signal as AbortSignal | undefined,
     });
     const agentResult = await runAgent({
       phase: "verify",
@@ -696,7 +842,9 @@ Return the standard verifier JSON envelope.` + JSON_INSTRUCTION;
       onProgress: ctx.onProgress,
       attemptId: ctx.attemptId,
       conversationKey: `${ctx.conversationKey || `cpb:${ctx.project}:${ctx.jobId}:verifier`}:baseline-test-contract:candidate:${expectedCandidate?.identityHash || "unknown"}:round:${verificationRound}`,
+      signal: ctx.signal as AbortSignal | undefined,
     }) as AgentRunResult;
+    throwIfPhaseAborted(ctx.signal);
     if (!agentResult.ok) {
       return {
         required: true,
@@ -715,6 +863,7 @@ Return the standard verifier JSON envelope.` + JSON_INSTRUCTION;
     }
     const verdict = parseVerifierJson(agentResult.output) as VerifierVerdict;
     const independentExecutions = await readIndependentVerifierExecutions(recordValue(agentResult.diagnostics));
+    throwIfPhaseAborted(ctx.signal);
     return {
       required: true,
       ok: verdict.ok === true && verdict.status === "pass",
@@ -731,9 +880,8 @@ Return the standard verifier JSON envelope.` + JSON_INSTRUCTION;
       promptArtifact,
       diagnostics: agentResult.diagnostics,
     };
-  } finally {
-    await replay.cleanup();
-  }
+    },
+  });
 }
 
 const execFile = promisify(execFileCb) as ExecFileAsync;
@@ -777,18 +925,18 @@ Rules:
 - For checklist-aware jobs, checklistVerdict MUST be a top-level sibling of details; never nest it inside details
 - Do NOT write any artifact files yourself. The system will persist the verdict.`;
 
-async function getChangedJsFiles(cwd: string) {
+async function getChangedJsFiles(cwd: string, env: NodeJS.ProcessEnv = process.env) {
   const files = new Set<string>();
   try {
     // Tracked: staged or modified vs HEAD
-    const { stdout: diffOut } = await execFile("git", ["diff", "--name-only", "--diff-filter=AM", "HEAD"], { cwd });
+    const { stdout: diffOut } = await execFile("git", ["diff", "--name-only", "--diff-filter=AM", "HEAD"], { cwd, env });
     for (const f of diffOut.trim().split("\n")) {
       if (f && /\.(js|mjs)$/.test(f)) files.add(f);
     }
   } catch { /* not a git repo */ }
   try {
     // Untracked: new files not yet staged
-    const { stdout: statOut } = await execFile("git", ["ls-files", "--others", "--exclude-standard"], { cwd });
+    const { stdout: statOut } = await execFile("git", ["ls-files", "--others", "--exclude-standard"], { cwd, env });
     for (const f of statOut.trim().split("\n")) {
       if (f && /\.(js|mjs)$/.test(f)) files.add(f);
     }
@@ -806,7 +954,7 @@ async function hasTestScript(cwd: string) {
   }
 }
 
-async function focusedNodeTestFiles(cwd: string, jsFiles: string[]) {
+async function focusedNodeTestFiles(cwd: string, jsFiles: string[], env: NodeJS.ProcessEnv = process.env) {
   const tests = new Set<string>();
   for (const file of jsFiles) {
     if (file.endsWith(".test.js")) tests.add(file);
@@ -817,7 +965,7 @@ async function focusedNodeTestFiles(cwd: string, jsFiles: string[]) {
       `tests/${base.split("/").pop()}.test.js`,
     ]) {
       try {
-        await execFile("test", ["-f", candidate], { cwd });
+        await execFile("test", ["-f", candidate], { cwd, env });
         tests.add(candidate);
       } catch {}
     }
@@ -825,17 +973,24 @@ async function focusedNodeTestFiles(cwd: string, jsFiles: string[]) {
   return [...tests];
 }
 
-async function runHardGates(cwd: string, opts: { signal?: AbortSignal; registerChild?: (pid: number) => void | Promise<void> } = {}) {
+async function runHardGates(cwd: string, opts: {
+  env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
+  registerChild?: (pid: number) => void | Promise<void>;
+} = {}) {
+  throwIfPhaseAborted(opts.signal);
   const errors = [];
   const checks = [];
+  const phaseEnv = opts.env ?? process.env;
 
   const gateTimeout = (key: string, def: number) => {
-    const n = Number.parseInt(process.env[key] || "", 10);
+    const n = Number.parseInt(phaseEnv[key] || "", 10);
     return Number.isFinite(n) && n > 0 ? n : def;
   };
   const checkMs = gateTimeout("CPB_GATE_TIMEOUT_CHECK", 30_000);
   const testMs = gateTimeout("CPB_GATE_TIMEOUT_TEST", 120_000);
   const fullMs = gateTimeout("CPB_GATE_TIMEOUT_FULL", 600_000);
+  const childEnv = buildRuntimeEnv(phaseEnv, { CI: "1" }) as Record<string, string>;
 
   // Adapt a runCommandTree result into the err-shape formatCommandFailure expects
   // (execFile used to throw an Error with code/signal/stdout/stderr).
@@ -853,13 +1008,19 @@ async function runHardGates(cwd: string, opts: { signal?: AbortSignal; registerC
       env,
       signal: opts.signal,
       timeoutMs,
-      onSpawn: opts.registerChild ? (pid) => opts.registerChild(pid) : undefined,
+      onSpawn: (() => {
+        const registerChild = opts.registerChild;
+        return registerChild ? (pid: number) => { void registerChild(pid); } : undefined;
+      })(),
     });
 
   // Gate 1: node --check on relevant compiled .js files
-  const jsFiles = await getChangedJsFiles(cwd);
+  const jsFiles = await getChangedJsFiles(cwd, phaseEnv);
+  throwIfPhaseAborted(opts.signal);
   for (const file of jsFiles) {
-    const r = await run("node", ["--check", file], checkMs);
+    throwIfPhaseAborted(opts.signal);
+    const r = await run("node", ["--check", file], checkMs, childEnv);
+    if (r.aborted || opts.signal?.aborted) throw phaseAbortError(opts.signal);
     if (r.exitCode === 0) {
       checks.push({ gate: "node --check", file, ok: true });
     } else {
@@ -869,9 +1030,11 @@ async function runHardGates(cwd: string, opts: { signal?: AbortSignal; registerC
     }
   }
 
-  const focusedTests = await focusedNodeTestFiles(cwd, jsFiles);
+  const focusedTests = await focusedNodeTestFiles(cwd, jsFiles, phaseEnv);
+  throwIfPhaseAborted(opts.signal);
   if (focusedTests.length > 0) {
-    const r = await run("node", ["--test", ...focusedTests], testMs, buildRuntimeEnv(process.env, { CI: "1" }) as Record<string, string>);
+    const r = await run("node", ["--test", ...focusedTests], testMs, childEnv);
+    if (r.aborted || opts.signal?.aborted) throw phaseAbortError(opts.signal);
     if (r.exitCode === 0) {
       checks.push({ gate: "focused node --test", files: focusedTests, ok: true });
     } else {
@@ -885,8 +1048,10 @@ async function runHardGates(cwd: string, opts: { signal?: AbortSignal; registerC
 
   // Gate 2: full npm test only when explicitly requested. The verifier agent still
   // checks acceptance criteria after these hard gates.
-  if (process.env.CPB_VERIFY_FULL === "1" && await hasTestScript(cwd)) {
-    const r = await run("npm", ["test"], fullMs, buildRuntimeEnv(process.env, { CI: "1" }) as Record<string, string>);
+  throwIfPhaseAborted(opts.signal);
+  if (phaseEnv.CPB_VERIFY_FULL === "1" && await hasTestScript(cwd)) {
+    const r = await run("npm", ["test"], fullMs, childEnv);
+    if (r.aborted || opts.signal?.aborted) throw phaseAbortError(opts.signal);
     if (r.exitCode === 0) {
       checks.push({ gate: "npm test", ok: true });
     } else {
@@ -966,7 +1131,7 @@ export function buildEvidenceLedger({
   for (const probe of evidenceProbePlan.probes || []) {
     const checklistItem = checklist.items.find((item) => item.id === probe.checklistId);
     if (!checklistItem) continue;
-    const validation = validateEvidenceObservation(probe.observation, checklistItem, { attemptId, finalWorktree });
+    const validation = validateEvidenceObservation(recordValue(probe.observation), checklistItem, { attemptId, finalWorktree });
     // `valid` = the record-gate: whether to emit a ledger entry at all.
     // `satisfied` = the result: pass vs fail. A valid-but-not-satisfied entry
     // (e.g. static matchCount:0) must be emitted with result:"fail" so the
@@ -1124,7 +1289,7 @@ function remapEvidenceRefs(checklistVerdict: LooseRecord & { items?: LooseRecord
   };
 }
 
-function normalizeChecklistVerdictReasons(checklistVerdict: LooseRecord & { items?: LooseRecord[] }) {
+function normalizeChecklistVerdictReasons(checklistVerdict: LooseRecord & { items?: LooseRecord[] }): ChecklistVerdict {
   if (!Array.isArray(checklistVerdict?.items)) return checklistVerdict;
   const verdictReason = stringValue(checklistVerdict.reason, "Verifier checklist verdict did not provide an item reason.");
   return {
@@ -1143,10 +1308,12 @@ function normalizeChecklistVerdictReasons(checklistVerdict: LooseRecord & { item
 }
 
 export async function runVerify(ctx: VerifyContext) {
+  throwIfPhaseAborted(ctx.signal);
   const { project, cpbRoot, pool, sourcePath, jobId } = ctx;
   const { dataRoot } = ctx;
   const role = ctx.role || "verifier";
-  const cwd = sourcePath || cpbRoot;
+  const cwd = stringValue(sourcePath) || cpbRoot;
+  const runtimeEnv = ctx.env ?? process.env;
   const attemptId = String(ctx.attemptId || jobId);
 
   // Resolve active acceptance checklist.
@@ -1165,7 +1332,7 @@ export async function runVerify(ctx: VerifyContext) {
   // The artifact store lookup is available for completion-gate and audit
   // which run after the phase returns.
 
-  const planArtifact = getRequiredArtifact(ctx.previousResults, "plan");
+  const planArtifact: PlanArtifact | null = getRequiredArtifact(ctx.previousResults, "plan") ?? null;
   const expectedCandidate = candidateFromPreviousResults(ctx.previousResults);
   const scopeReviewRequest = buildScopeReviewRequest({
     executionMap: executionMapFromPhaseResults(ctx.previousResults as LooseRecord[]),
@@ -1178,7 +1345,7 @@ export async function runVerify(ctx: VerifyContext) {
   const planEvidence = await collectPlanEvidence(planArtifact, {
     required: planRequired,
     workflow: ctx.workflow,
-    planMode: ctx.planMode,
+    planMode: stringValue(ctx.planMode) || null,
   });
   if (planRequired && !isUsablePlanEvidence(planEvidence)) {
     const reason = planEvidence.reason || "verify requires a readable plan artifact before judging current diff";
@@ -1201,7 +1368,7 @@ export async function runVerify(ctx: VerifyContext) {
   let candidateVerification: CandidateArtifactVerificationRecord | null = null;
   if (expectedCandidate) {
     try {
-      const actualCandidate = await captureCandidateArtifact({ cwd, base: expectedCandidate.baseSha });
+      const actualCandidate = await captureCandidateArtifact({ cwd, base: expectedCandidate.baseSha, env: runtimeEnv });
       candidateVerification = verifyCandidateArtifactIdentity(expectedCandidate, actualCandidate);
       if (!candidateVerification.matches) {
         return candidateIdentityFailure(candidateVerification, "before verification");
@@ -1220,7 +1387,8 @@ export async function runVerify(ctx: VerifyContext) {
   }
 
   // Hard gates run BEFORE agent — non-bypassable syntax + test checks
-  const gate = await runHardGates(cwd, { signal: ctx?.signal, registerChild: ctx?.processHooks?.registerChild });
+  const gate = await runHardGates(cwd, { env: runtimeEnv, signal: ctx?.signal, registerChild: ctx?.processHooks?.registerChild });
+  throwIfPhaseAborted(ctx.signal);
   if (!gate.ok) {
     return phaseFailed({
       phase: "verify",
@@ -1238,16 +1406,17 @@ export async function runVerify(ctx: VerifyContext) {
     });
   }
 
-  const promptPlanEvidence = blindVerification
+  const promptPlanEvidence: LooseRecord = blindVerification
     ? {
         available: false,
         withheld: true,
         reason: "winning plan withheld from fresh blind verifier",
-        name: planEvidence.name || null,
-        sha256: planEvidence.sha256 || null,
+        name: recordValue(planEvidence).name || null,
+        sha256: recordValue(planEvidence).sha256 || null,
       }
-    : planEvidence;
-  const verificationEvidence = await collectVerificationEvidence(cwd, planArtifact, gate, promptPlanEvidence);
+    : recordValue(planEvidence);
+  const verificationEvidence = await collectVerificationEvidence(cwd, planArtifact, gate, promptPlanEvidence, runtimeEnv);
+  throwIfPhaseAborted(ctx.signal);
 
   // Build evidence ledger BEFORE verifier prompt.
   // The ledger is deterministic: the verifier sees the exact claim ids it may cite.
@@ -1255,8 +1424,9 @@ export async function runVerify(ctx: VerifyContext) {
   // Deterministic probes provide objective scope evidence (the change landed
   // in the item's declared files), independent of the verifier agent's claim.
   const probeChecks = acceptanceChecklist
-    ? await runChecklistProbes(acceptanceChecklist, cwd, { finalWorktree: verificationEvidence.git, attemptId })
+    ? await runChecklistProbes(acceptanceChecklist, cwd, { finalWorktree: verificationEvidence.git, attemptId, env: runtimeEnv })
     : [];
+  throwIfPhaseAborted(ctx.signal);
   const hardGateChecks = [
     ...(Array.isArray(verificationEvidence.hardGate?.checks) ? verificationEvidence.hardGate.checks : []),
     ...probeChecks,
@@ -1292,7 +1462,9 @@ export async function runVerify(ctx: VerifyContext) {
   // Deterministic evidence remains part of that judgment, but must not replace
   // the verifier model turn.
   if (deterministicChecklistVerdict && !assurancePolicy.enabled) {
+    throwIfPhaseAborted(ctx.signal);
     const evidenceLedgerArtifact = await writeArtifact(cpbRoot, {
+      signal: ctx.signal as AbortSignal | undefined,
       project,
       jobId,
       kind: "evidence-ledger",
@@ -1300,7 +1472,9 @@ export async function runVerify(ctx: VerifyContext) {
       dataRoot,
       metadata: evidenceLedger,
     });
+    throwIfPhaseAborted(ctx.signal);
     const checklistVerdictArtifact = await writeArtifact(cpbRoot, {
+      signal: ctx.signal as AbortSignal | undefined,
       project,
       jobId,
       kind: "checklist-verdict",
@@ -1316,7 +1490,9 @@ export async function runVerify(ctx: VerifyContext) {
       confidence: 1,
       checklistVerdict: deterministicChecklistVerdict,
     };
+    throwIfPhaseAborted(ctx.signal);
     const artifact = await writeArtifact(cpbRoot, {
+      signal: ctx.signal as AbortSignal | undefined,
       project,
       jobId,
       kind: "verdict",
@@ -1326,8 +1502,10 @@ export async function runVerify(ctx: VerifyContext) {
     });
     let finalCandidateVerification;
     try {
-      finalCandidateVerification = await verifyCandidateAfterValidation(cwd, expectedCandidate, candidateVerification);
+      finalCandidateVerification = await verifyCandidateAfterValidation(cwd, expectedCandidate, candidateVerification, runtimeEnv);
+      throwIfPhaseAborted(ctx.signal);
     } catch (err) {
+      if ((err as Error | undefined)?.name === "AbortError") throw err;
       return candidateCaptureFailure(err, "after deterministic light verification");
     }
     if (finalCandidateVerification && !finalCandidateVerification.matches) {
@@ -1348,9 +1526,18 @@ export async function runVerify(ctx: VerifyContext) {
     });
   }
 
-  const verifierOutputFilePath = verifierJsonOutputFilePath({ cpbRoot, dataRoot, project, jobId });
-  await mkdir(path.dirname(verifierOutputFilePath), { recursive: true });
   const resolvedAgent = resolveAgent(ctx, "codex");
+  const usesDisposableVerificationReplay = assurancePolicy.enabled && Boolean(expectedCandidate);
+  const verifierEnv = { ...buildPhaseAcpEnv(ctx, "verify") };
+  const claudeCompatibleAgent = /^(?:claude|claude-.+)$/.test(resolvedAgent.agent);
+  const verifierFileTransportAvailable = resolvedAgent.agent !== "codex"
+    && !usesDisposableVerificationReplay
+    && (!claudeCompatibleAgent || Boolean(parseAgentFilesystemBoundary(verifierEnv.CPB_AGENT_FS_BOUNDARY_JSON)));
+  const verifierOutputFilePath = verifierJsonOutputFilePath({ cpbRoot, dataRoot, project, jobId });
+  throwIfPhaseAborted(ctx.signal);
+  if (verifierFileTransportAvailable) {
+    await mkdir(path.dirname(verifierOutputFilePath), { recursive: true });
+  }
   const prompt = await buildVerifyPrompt(ctx, blindVerification ? null : planArtifact, verificationEvidence, {
     acceptanceChecklist,
     evidenceLedger,
@@ -1360,8 +1547,9 @@ export async function runVerify(ctx: VerifyContext) {
     // Codex verification is a hard read-only lane. Its final ACP response is
     // the verdict transport; requiring a file would force workspace-write and
     // let the verifier alter the candidate it is supposed to judge.
-    + (resolvedAgent.agent === "codex" ? "" : verifierJsonOutputFileInstruction(verifierOutputFilePath))
+    + (verifierFileTransportAvailable ? verifierJsonOutputFileInstruction(verifierOutputFilePath) : "")
     + JSON_INSTRUCTION;
+  throwIfPhaseAborted(ctx.signal);
   const promptArtifact = await writePromptArtifact(cpbRoot, {
     project,
     jobId,
@@ -1370,7 +1558,9 @@ export async function runVerify(ctx: VerifyContext) {
     agent: resolvedAgent.agent,
     prompt,
     dataRoot,
+    signal: ctx.signal as AbortSignal | undefined,
   });
+  throwIfPhaseAborted(ctx.signal);
 
   const verificationRound = ctx.previousResults.filter((result) => result.phase === "verify").length + 1;
   const verificationConversationKey = blindVerification
@@ -1378,13 +1568,14 @@ export async function runVerify(ctx: VerifyContext) {
     : ctx.conversationKey;
   let verificationReplay: Awaited<ReturnType<typeof materializeCandidateVerificationReplay>> | null = null;
   let verifierCwd = cwd;
-  const verifierEnv = { ...buildPhaseAcpEnv(ctx, "verify") };
-  if (assurancePolicy.enabled && expectedCandidate) {
+  if (usesDisposableVerificationReplay && expectedCandidate) {
     try {
-      verificationReplay = await materializeCandidateVerificationReplay({ cwd, candidate: expectedCandidate });
+      verificationReplay = await materializeCandidateVerificationReplay({ cwd, candidate: expectedCandidate, env: runtimeEnv });
+      throwIfPhaseAborted(ctx.signal);
       verifierCwd = verificationReplay.replayPath;
       Object.assign(verifierEnv, buildDisposableVerificationReplayEnv(ctx));
     } catch (err) {
+      if ((err as Error | undefined)?.name === "AbortError") throw err;
       const reason = `unable to materialize disposable verification replay: ${err instanceof Error ? err.message : String(err)}`;
       return phaseFailed({
         phase: "verify",
@@ -1410,8 +1601,11 @@ export async function runVerify(ctx: VerifyContext) {
   let agentResult: AgentRunResult | null = null;
   let replayCandidateVerification: CandidateArtifactVerificationRecord | null = null;
   let replayCaptureError: unknown = null;
-  try {
-    agentResult = await runAgent({
+  await runWithTemporaryReplayCleanup({
+    cleanup: verificationReplay?.cleanup,
+    description: "candidate verification replay",
+    operation: async () => {
+      agentResult = await runAgent({
       phase: "verify",
       role,
       ...resolvedAgent,
@@ -1427,23 +1621,25 @@ export async function runVerify(ctx: VerifyContext) {
       onProgress: ctx.onProgress,
       attemptId: ctx.attemptId,
       conversationKey: verificationConversationKey,
-    }) as AgentRunResult;
-    if (verificationReplay && agentResult.ok) {
-      try {
-        const replayCandidate = await captureCandidateArtifact({
-          cwd: verificationReplay.replayPath,
-          base: expectedCandidate?.baseSha || "HEAD",
-        });
-        replayCandidateVerification = verifyCandidateArtifactIdentity(expectedCandidate as CandidateArtifact, replayCandidate);
-      } catch (err) {
-        replayCaptureError = err;
+      signal: ctx.signal as AbortSignal | undefined,
+      }) as AgentRunResult;
+      if (verificationReplay && agentResult.ok) {
+        try {
+          const replayCandidate = await captureCandidateArtifact({
+            cwd: verificationReplay.replayPath,
+            base: expectedCandidate?.baseSha || "HEAD",
+            env: runtimeEnv,
+          });
+          replayCandidateVerification = verifyCandidateArtifactIdentity(expectedCandidate as CandidateArtifact, replayCandidate);
+        } catch (err) {
+          replayCaptureError = err;
+        }
       }
-    }
-  } finally {
-    await verificationReplay?.cleanup();
-  }
+    },
+  });
 
   if (!agentResult) throw new Error("verifier agent returned no result");
+  throwIfPhaseAborted(ctx.signal);
   if (replayCaptureError) {
     const reason = `unable to recapture disposable verification replay: ${replayCaptureError instanceof Error ? replayCaptureError.message : String(replayCaptureError)}`;
     return phaseFailed({
@@ -1492,7 +1688,7 @@ export async function runVerify(ctx: VerifyContext) {
     return phaseFailed({
       phase: "verify",
       failure: failure({
-        kind: agentResult.kind,
+        kind: stringValue(agentResult.kind, FailureKind.UNKNOWN),
         phase: "verify",
         reason: agentResult.reason,
         retryable: agentResult.retryable,
@@ -1500,14 +1696,17 @@ export async function runVerify(ctx: VerifyContext) {
         signal: agentResult.signal,
         cause: agentResult.cause || {},
       }),
-      diagnostics: withPromptArtifactDiagnostics(agentResult.diagnostics, promptArtifact),
+      diagnostics: withPromptArtifactDiagnostics(recordValue(agentResult.diagnostics), promptArtifact),
     });
   }
 
+  throwIfPhaseAborted(ctx.signal);
   // retain: dynamic JSON boundary — parseVerifierJson returns an inferred shape
   // with `any` fields from JSON.parse; the assertion narrows agent JSON to the
   // typed VerifierVerdict contract at the external-input boundary.
-  const verifierFileOutput = await readVerifierJsonOutputFile(verifierOutputFilePath);
+  const verifierFileOutput = verifierFileTransportAvailable
+    ? await readVerifierJsonOutputFile(verifierOutputFilePath)
+    : null;
   const verifierOutputSource = verifierFileOutput ? "file" : "agent-output";
   const verifierOutput = verifierFileOutput || agentResult.output;
   const verifierOutputDiagnostics = {
@@ -1530,7 +1729,9 @@ export async function runVerify(ctx: VerifyContext) {
   const verdict = parseVerifierJson(verifierOutput) as VerifierVerdict;
   if (!verdict.ok) {
     const rawOutput = stringValue(verifierOutput);
+    throwIfPhaseAborted(ctx.signal);
     const rawAgentOutputArtifact = await writeArtifact(cpbRoot, {
+      signal: ctx.signal as AbortSignal | undefined,
       project,
       jobId,
       kind: "agent-output",
@@ -1598,7 +1799,9 @@ export async function runVerify(ctx: VerifyContext) {
   // Legacy jobs don't need the evidence-ledger artifact.
   let evidenceLedgerArtifact: LooseRecord | null = null;
   if (acceptanceChecklist) {
+    throwIfPhaseAborted(ctx.signal);
     evidenceLedgerArtifact = await writeArtifact(cpbRoot, {
+      signal: ctx.signal as AbortSignal | undefined,
       project,
       jobId,
       kind: "evidence-ledger",
@@ -1641,9 +1844,11 @@ export async function runVerify(ctx: VerifyContext) {
             ? `checklist verdict validation failed${verdictValidation?.reason ? `: ${verdictValidation.reason}` : ""}`
             : "checklist-aware job requires checklistVerdict",
         })
-      : checklistVerdict;
+      : checklistVerdict as ChecklistVerdict;
 
+    throwIfPhaseAborted(ctx.signal);
     const checklistVerdictArtifact = await writeArtifact(cpbRoot, {
+      signal: ctx.signal as AbortSignal | undefined,
       project,
       jobId,
       kind: "checklist-verdict",
@@ -1672,7 +1877,9 @@ export async function runVerify(ctx: VerifyContext) {
 
     // Checklist verdict is valid; still write legacy verdict for compatibility
     const verdictMarkdown = renderVerdictMarkdown(verdict);
+    throwIfPhaseAborted(ctx.signal);
     const artifact = await writeArtifact(cpbRoot, {
+      signal: ctx.signal as AbortSignal | undefined,
       project,
       jobId,
       kind: "verdict",
@@ -1715,8 +1922,10 @@ export async function runVerify(ctx: VerifyContext) {
 
     let finalCandidateVerification;
     try {
-      finalCandidateVerification = await verifyCandidateAfterValidation(cwd, expectedCandidate, candidateVerification);
+      finalCandidateVerification = await verifyCandidateAfterValidation(cwd, expectedCandidate, candidateVerification, runtimeEnv);
+      throwIfPhaseAborted(ctx.signal);
     } catch (err) {
+      if ((err as Error | undefined)?.name === "AbortError") throw err;
       return candidateCaptureFailure(err, "after checklist verification");
     }
     if (finalCandidateVerification && !finalCandidateVerification.matches) {
@@ -1745,7 +1954,9 @@ export async function runVerify(ctx: VerifyContext) {
           resolvedAgent,
           verificationRound,
         });
+        throwIfPhaseAborted(ctx.signal);
       } catch (err) {
+        if ((err as Error | undefined)?.name === "AbortError") throw err;
         baselineTestContract = {
           required: true,
           ok: false,
@@ -1754,16 +1965,19 @@ export async function runVerify(ctx: VerifyContext) {
         };
       }
     }
-    const baselineTestContractArtifact = assurancePolicy.enabled && baselineTestContract.required === true
-      ? await writeArtifact(cpbRoot, {
-          project,
-          jobId,
-          kind: "baseline-test-contract-verdict",
-          content: JSON.stringify(baselineTestContract, null, 2),
-          dataRoot,
-          metadata: baselineTestContract,
-        })
-      : null;
+    let baselineTestContractArtifact: LooseRecord | null = null;
+    if (assurancePolicy.enabled && baselineTestContract.required === true) {
+      throwIfPhaseAborted(ctx.signal);
+      baselineTestContractArtifact = await writeArtifact(cpbRoot, {
+        signal: ctx.signal as AbortSignal | undefined,
+        project,
+        jobId,
+        kind: "baseline-test-contract-verdict",
+        content: JSON.stringify(baselineTestContract, null, 2),
+        dataRoot,
+        metadata: baselineTestContract,
+      });
+    }
     if (baselineTestContract.ok !== true) {
       return phaseFailed({
         phase: "verify",
@@ -1797,29 +2011,33 @@ export async function runVerify(ctx: VerifyContext) {
     }
 
     const independentVerifierExecutions = await readIndependentVerifierExecutions(verifierOutputDiagnostics);
+    throwIfPhaseAborted(ctx.signal);
     const observableExecutionCoverage = observableContractExecutionCoverage(
       acceptanceChecklist,
       independentVerifierExecutions,
     );
-    const independentVerifierExecutionArtifact = assurancePolicy.enabled
-      ? await writeArtifact(cpbRoot, {
-          project,
-          jobId,
-          kind: "verification-execution-evidence",
-          content: JSON.stringify({
-            ...independentVerifierExecutions,
-            observableContractCoverage: observableExecutionCoverage,
-            candidateIdentityHash: expectedCandidate?.identityHash || null,
-            candidateVerification: finalCandidateVerification,
-          }, null, 2),
-          dataRoot,
-          metadata: {
-            ...independentVerifierExecutions,
-            observableContractCoverage: observableExecutionCoverage,
-            candidateIdentityHash: expectedCandidate?.identityHash || null,
-          },
-        })
-      : null;
+    let independentVerifierExecutionArtifact: LooseRecord | null = null;
+    if (assurancePolicy.enabled) {
+      throwIfPhaseAborted(ctx.signal);
+      independentVerifierExecutionArtifact = await writeArtifact(cpbRoot, {
+        signal: ctx.signal as AbortSignal | undefined,
+        project,
+        jobId,
+        kind: "verification-execution-evidence",
+        content: JSON.stringify({
+          ...independentVerifierExecutions,
+          observableContractCoverage: observableExecutionCoverage,
+          candidateIdentityHash: expectedCandidate?.identityHash || null,
+          candidateVerification: finalCandidateVerification,
+        }, null, 2),
+        dataRoot,
+        metadata: {
+          ...independentVerifierExecutions,
+          observableContractCoverage: observableExecutionCoverage,
+          candidateIdentityHash: expectedCandidate?.identityHash || null,
+        },
+      });
+    }
     const executableEvidence = executableVerificationEvidenceSummary(
       evidenceLedger,
       gate,
@@ -1908,7 +2126,9 @@ export async function runVerify(ctx: VerifyContext) {
 
   // ── Legacy (non-checklist-aware) path ───────────────────────────────
   const verdictMarkdown = renderVerdictMarkdown(verdict);
+  throwIfPhaseAborted(ctx.signal);
   const artifact = await writeArtifact(cpbRoot, {
+    signal: ctx.signal as AbortSignal | undefined,
     project,
     jobId,
     kind: "verdict",
@@ -1933,8 +2153,10 @@ export async function runVerify(ctx: VerifyContext) {
 
   let finalCandidateVerification;
   try {
-    finalCandidateVerification = await verifyCandidateAfterValidation(cwd, expectedCandidate, candidateVerification);
+    finalCandidateVerification = await verifyCandidateAfterValidation(cwd, expectedCandidate, candidateVerification, runtimeEnv);
+    throwIfPhaseAborted(ctx.signal);
   } catch (err) {
+    if ((err as Error | undefined)?.name === "AbortError") throw err;
     return candidateCaptureFailure(err, "after verification");
   }
   if (finalCandidateVerification && !finalCandidateVerification.matches) {
@@ -2025,9 +2247,10 @@ async function verifyCandidateAfterValidation(
   cwd: string,
   expectedCandidate: CandidateArtifact | null,
   initialVerification: CandidateArtifactVerificationRecord | null,
+  env: NodeJS.ProcessEnv = process.env,
 ) {
   if (!expectedCandidate) return initialVerification;
-  const actualCandidate = await captureCandidateArtifact({ cwd, base: expectedCandidate.baseSha });
+  const actualCandidate = await captureCandidateArtifact({ cwd, base: expectedCandidate.baseSha, env });
   return verifyCandidateArtifactIdentity(expectedCandidate, actualCandidate);
 }
 
@@ -2060,10 +2283,16 @@ function candidateCaptureFailure(err: unknown, stage: string) {
   });
 }
 
-async function collectVerificationEvidence(cwd: string, planArtifact: PlanArtifact | null, hardGate: LooseRecord, planEvidence: LooseRecord | null = null) {
+async function collectVerificationEvidence(
+  cwd: string,
+  planArtifact: PlanArtifact | null,
+  hardGate: LooseRecord,
+  planEvidence: LooseRecord | null = null,
+  env: NodeJS.ProcessEnv = process.env,
+) {
   const [plan, gitEvidence] = await Promise.all([
     planEvidence ? Promise.resolve(planEvidence) : collectPlanEvidence(planArtifact),
-    collectGitEvidence(cwd),
+    collectGitEvidence(cwd, env),
   ]);
   const sourceOfTruth = ["task", "current_diff", "changed_files", "hard_gates"];
   if (plan.available) sourceOfTruth.splice(1, 0, "plan");
@@ -2132,7 +2361,7 @@ async function collectPlanEvidence(planArtifact: PlanArtifact | null, {
     }
   } catch (err) {
     plan.available = false;
-    plan.reason = `plan artifact unreadable: ${err?.message || err}`;
+    plan.reason = `plan artifact unreadable: ${err instanceof Error ? err.message : String(err)}`;
   }
   return plan;
 }
@@ -2141,7 +2370,7 @@ function isUsablePlanEvidence(plan: LooseRecord) {
   return Boolean(plan?.available && plan.path && String(plan.excerpt || "").trim());
 }
 
-async function collectGitEvidence(cwd: string) {
+async function collectGitEvidence(cwd: string, env: NodeJS.ProcessEnv = process.env) {
   const evidence: LooseRecord = {
     available: false,
     cwd,
@@ -2157,11 +2386,11 @@ async function collectGitEvidence(cwd: string) {
 
   try {
     const [status, trackedFiles, untrackedFiles, diffStat, diff] = await Promise.all([
-      git(cwd, ["status", "--short"]),
-      git(cwd, ["diff", "--name-only", "--diff-filter=ACMRTUXB", "HEAD"]),
-      git(cwd, ["ls-files", "--others", "--exclude-standard"]),
-      git(cwd, ["diff", "--stat", "HEAD"]),
-      git(cwd, ["diff", "HEAD"]),
+      git(cwd, ["status", "--short"], env),
+      git(cwd, ["diff", "--name-only", "--diff-filter=ACMRTUXB", "HEAD"], env),
+      git(cwd, ["ls-files", "--others", "--exclude-standard"], env),
+      git(cwd, ["diff", "--stat", "HEAD"], env),
+      git(cwd, ["diff", "HEAD"], env),
     ]);
 
     const changedFiles = uniqueLines(`${trackedFiles.stdout}\n${untrackedFiles.stdout}`);
@@ -2174,18 +2403,18 @@ async function collectGitEvidence(cwd: string) {
     evidence.diffTruncated = diff.stdout.length > PROMPT_DIFF_CHARS;
 
     // Collect HEAD commit and diff hash for evidence freshness
-    const head = await git(cwd, ["rev-parse", "HEAD"]).catch(() => ({ stdout: "" }));
+    const head = await git(cwd, ["rev-parse", "HEAD"], env).catch(() => ({ stdout: "" }));
     evidence.head = head.stdout.trim() || null;
     evidence.diffHash = diff.stdout ? `sha256:${createHash("sha256").update(diff.stdout).digest("hex")}` : "sha256:empty";
   } catch (err) {
-    evidence.reason = err?.message || String(err);
+    evidence.reason = err instanceof Error ? err.message : String(err);
   }
 
   return evidence;
 }
 
-async function git(cwd: string, args: string[]) {
-  return execFile("git", args, { cwd, maxBuffer: 20 * 1024 * 1024 })
+async function git(cwd: string, args: string[], env: NodeJS.ProcessEnv = process.env) {
+  return execFile("git", args, { cwd, env, maxBuffer: 20 * 1024 * 1024 })
     .then(({ stdout = "", stderr = "" }: { stdout?: string; stderr?: string }) => ({ stdout, stderr }));
 }
 

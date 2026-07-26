@@ -6,18 +6,60 @@ import {
   insertAdversarialVerify,
   validateDagForMutatingJob,
 } from "../core/engine/dag-builder.js";
+import { registerDagWorkflow } from "../core/workflow/definition.js";
 
 test("buildWorkflowDag projects workflow nodes to the requested phase list", () => {
   const dag = buildWorkflowDag({
-    workflow: "complex",
+    workflow: "direct",
     phases: ["execute", "verify"],
     phaseRoleMap: { execute: "executor", verify: "verifier" },
   });
 
   assert.deepEqual(dag.nodes.map((node) => node.id), ["execute", "verify"]);
   assert.deepEqual(dag.nodes.map((node) => node.role), ["executor", "verifier"]);
-  assert.deepEqual(dag.edges, []);
+  assert.deepEqual(dag.edges, [{ from: "execute", to: "verify" }]);
   assert.equal(dag.source, "runtime_phase_projection");
+});
+
+test("buildWorkflowDag reconnects dependencies through filtered workflow phases", () => {
+  const standardLight = buildWorkflowDag({
+    workflow: "standard",
+    phases: ["execute", "verify"],
+    phaseRoleMap: { execute: "executor", verify: "verifier" },
+  });
+  assert.deepEqual(standardLight.nodes.map((node) => [node.id, node.dependsOn]), [
+    ["execute", []],
+    ["verify", ["execute"]],
+  ]);
+  assert.deepEqual(standardLight.edges, [{ from: "execute", to: "verify" }]);
+
+  const complexLight = buildWorkflowDag({
+    workflow: "complex",
+    phases: ["execute", "verify"],
+    phaseRoleMap: { execute: "executor", verify: "verifier" },
+  });
+  assert.deepEqual(complexLight.nodes.map((node) => [node.id, node.dependsOn]), [
+    ["execute", []],
+    ["verify", ["execute"]],
+  ]);
+  assert.deepEqual(complexLight.edges, [{ from: "execute", to: "verify" }]);
+});
+
+test("buildWorkflowDag throws when fallback planning introduces duplicate node IDs", () => {
+  registerDagWorkflow("dup-fallback-dag-fixture", {
+    nodes: [{ id: "execute_2", phase: "execute", role: "executor", dependsOn: [] }],
+    maxConcurrentNodes: 1,
+  });
+
+  assert.throws(
+    () =>
+      buildWorkflowDag({
+        workflow: "dup-fallback-dag-fixture",
+        phases: ["execute", "execute", "execute"],
+        phaseRoleMap: { execute: "executor" },
+      }),
+    /workflow dup-fallback-dag-fixture has duplicate node id: execute_2/,
+  );
 });
 
 test("buildWorkflowDag appends fallback linear nodes for unknown phases", () => {

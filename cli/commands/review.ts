@@ -7,6 +7,12 @@ const RED = "\x1b[0;31m";
 const BOLD = "\x1b[1m";
 const NC = "\x1b[0m";
 
+export function resolveReviewWikiDir(cpbRoot: string, project: string, runtimeRoot = process.env.CPB_PROJECT_RUNTIME_ROOT) {
+  return runtimeRoot
+    ? path.join(runtimeRoot, "wiki")
+    : path.join(cpbRoot, "wiki", "projects", project);
+}
+
 export async function run(args, { cpbRoot, executorRoot }) {
   const project = args[0];
   if (!project) {
@@ -14,7 +20,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
     process.exit(1);
   }
   const { readdir, readFile, access, constants } = await import("node:fs/promises");
-  const wdir = path.join(cpbRoot, "wiki/projects", project);
+  const wdir = resolveReviewWikiDir(cpbRoot, project);
 
   let agentName = "";
   let mode = "";

@@ -11,11 +11,13 @@ import {
 } from "../contracts/failure-recovery.js";
 
 import { recordValue, type LooseRecord } from "../contracts/types.js";
+import type { RunJobProcessHooks } from "./run-job-ports.js";
+import type { AppendEvent, ProgressReporter } from "./run-job-shared.js";
 
 type RetryContext = {
   agent?: string | null;
-  appendEvent?: (cpbRoot: string, project: string, jobId: string, event: LooseRecord) => Promise<unknown> | unknown;
-  onProgress?: (event: LooseRecord) => Promise<unknown> | unknown;
+  appendEvent?: AppendEvent;
+  onProgress?: ProgressReporter;
 };
 
 type RetryState = {
@@ -37,6 +39,10 @@ type RetryState = {
   state: LooseRecord;
   phaseResults: LooseRecord[];
   attemptId?: string | null;
+  scope?: unknown;
+  signal?: AbortSignal;
+  processHooks?: RunJobProcessHooks;
+  env?: NodeJS.ProcessEnv;
   conversationKey?: string | null;
   phaseTimeout: number;
   phaseAgents: ProviderAgents;
@@ -51,23 +57,22 @@ type RetryDeps = {
   retryableKinds?: Set<string>;
   feedbackRetryKinds?: Set<string>;
   retryBaseDelayMs?: () => number;
-  delay?: (ms: number) => Promise<void>;
+  delay?: (ms: number, signal?: AbortSignal) => Promise<void>;
   now?: () => string;
   runPhase?: (ctx: PhaseContext) => Promise<PhaseResult>;
 };
 
-const DEFAULT_PHASE_RETRY_MAX = Number(process.env.CPB_PHASE_RETRY_MAX || 2);
-const DEFAULT_PHASE_RETRY_BASE_DELAY_MS = Number(process.env.CPB_PHASE_RETRY_BASE_DELAY_MS || 30_000);
+const FALLBACK_PHASE_RETRY_MAX = 2;
+const FALLBACK_PHASE_RETRY_BASE_DELAY_MS = 30_000;
 const DEFAULT_PHASE_RETRYABLE_KINDS = new Set<string>([
   FailureKind.AGENT_SPAWN_ERROR,
   FailureKind.AGENT_EXIT_NONZERO,
   FailureKind.TIMEOUT,
   FailureKind.PLAN_BOUNDED_HANDOFF_TIMEOUT,
-  FailureKind.RUNTIME_INTERRUPTED,
 ]);
-const DEFAULT_PHASE_FEEDBACK_RETRY_MAX = Number(process.env.CPB_PHASE_FEEDBACK_RETRY_MAX || 1);
-const DEFAULT_PHASE_QUALITY_REPAIR_MAX = Number(process.env.CPB_PHASE_QUALITY_REPAIR_MAX || 2);
-const DEFAULT_PHASE_RETRY_TOTAL_MAX = Number(process.env.CPB_PHASE_RETRY_TOTAL_MAX || 3);
+const FALLBACK_PHASE_FEEDBACK_RETRY_MAX = 1;
+const FALLBACK_PHASE_QUALITY_REPAIR_MAX = 2;
+const FALLBACK_PHASE_RETRY_TOTAL_MAX = 3;
 const DEFAULT_PHASE_FEEDBACK_RETRY_KINDS = new Set<string>([
   FailureKind.ARTIFACT_INVALID,
   FailureKind.AGENT_CONTRACT_INVALID,
@@ -85,23 +90,68 @@ const HARD_CONSTRAINT_DENIED_KINDS = new Set<string>([
   FailureKind.TOOL_BUDGET_EXCEEDED,
 ]);
 
-function numericEnv(name: string, fallback: number) {
-  const raw = process.env[name];
+function retryEnv(n: Pick<RetryState, "env">): NodeJS.ProcessEnv {
+  return n.env ?? process.env;
+}
+
+function numericEnv(env: NodeJS.ProcessEnv, name: string, fallback: number) {
+  const raw = env[name];
   if (raw === undefined || raw === "") return fallback;
   const value = Number(raw);
   return Number.isFinite(value) ? value : fallback;
 }
 
-function defaultRetryBaseDelayMs() {
-  return numericEnv("CPB_PHASE_RETRY_BASE_DELAY_MS", DEFAULT_PHASE_RETRY_BASE_DELAY_MS);
+function configuredPhaseRetryMax(env: NodeJS.ProcessEnv) {
+  return numericEnv(env, "CPB_PHASE_RETRY_MAX", FALLBACK_PHASE_RETRY_MAX);
+}
+
+function configuredRetryBaseDelayMs(env: NodeJS.ProcessEnv) {
+  return numericEnv(env, "CPB_PHASE_RETRY_BASE_DELAY_MS", FALLBACK_PHASE_RETRY_BASE_DELAY_MS);
+}
+
+function configuredPhaseFeedbackRetryMax(env: NodeJS.ProcessEnv) {
+  return numericEnv(env, "CPB_PHASE_FEEDBACK_RETRY_MAX", FALLBACK_PHASE_FEEDBACK_RETRY_MAX);
+}
+
+function configuredPhaseQualityRepairMax(env: NodeJS.ProcessEnv) {
+  return numericEnv(env, "CPB_PHASE_QUALITY_REPAIR_MAX", FALLBACK_PHASE_QUALITY_REPAIR_MAX);
+}
+
+function configuredPhaseRetryTotalMax(env: NodeJS.ProcessEnv) {
+  return numericEnv(env, "CPB_PHASE_RETRY_TOTAL_MAX", FALLBACK_PHASE_RETRY_TOTAL_MAX);
 }
 
 function stringValue(value: unknown): string {
   return String(value || "");
 }
 
-function defaultDelay(ms: number) {
-  return new Promise<void>((resolve) => setTimeout(resolve, ms));
+function createAbortError(signal: AbortSignal | undefined, message = "Phase retry backoff aborted") {
+  const reason = signal?.reason;
+  if (reason instanceof Error && reason.name === "AbortError") return reason;
+  const error = new Error(reason ? String(reason) : message) as Error & { code?: string };
+  error.name = "AbortError";
+  error.code = "ABORT_ERR";
+  return error;
+}
+
+function defaultDelay(ms: number, signal?: AbortSignal) {
+  if (signal?.aborted) return Promise.reject(createAbortError(signal));
+  if (ms <= 0) return Promise.resolve();
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(createAbortError(signal));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function throwIfAborted(signal?: AbortSignal) {
+  if (signal?.aborted) throw createAbortError(signal, "Phase retry aborted");
 }
 
 async function reportProgress(ctx: RetryContext, event: LooseRecord, now: () => string) {
@@ -136,6 +186,7 @@ function phaseTimeouts(phaseTimeout: number) {
 }
 
 function phaseInput(ctx: RetryContext, n: RetryState, sourceContext: LooseRecord) {
+  const env = retryEnv(n);
   const retry = recordValue(sourceContext.retry);
   const freshConversationKey = retry.forceFreshSession === true
     ? `${n.conversationKey || `${n.project}:${n.jobId}:${n.role}`}:retry:${retry.attempt || 1}:${retry.retryStrategy || "fresh"}`
@@ -153,9 +204,13 @@ function phaseInput(ctx: RetryContext, n: RetryState, sourceContext: LooseRecord
     planMode: n.planMode,
     cpbRoot: n.cpbRoot,
     dataRoot: n.dataRoot,
-    sourcePath: n.sourcePath || process.env.CPB_PROJECT_PATH_OVERRIDE,
+    sourcePath: n.sourcePath || env.CPB_PROJECT_PATH_OVERRIDE,
     sourceContext,
     pool: n.pool,
+    scope: n.scope,
+    signal: n.signal,
+    processHooks: n.processHooks,
+    env,
     state: n.state,
     previousResults: n.phaseResults,
     agent: ctx.agent,
@@ -163,6 +218,7 @@ function phaseInput(ctx: RetryContext, n: RetryState, sourceContext: LooseRecord
     attemptId: n.attemptId,
     conversationKey: freshConversationKey,
     timeouts: phaseTimeouts(n.phaseTimeout),
+    onProgress: ctx.onProgress || null,
   };
 }
 
@@ -238,8 +294,8 @@ function retryContextFromFailure(
   };
 }
 
-function configuredExecuteHardConstraintFallbackAgent() {
-  const raw = process.env.CPB_EXECUTE_HARD_CONSTRAINT_FALLBACK_AGENT;
+function configuredExecuteHardConstraintFallbackAgent(env: NodeJS.ProcessEnv) {
+  const raw = env.CPB_EXECUTE_HARD_CONSTRAINT_FALLBACK_AGENT;
   if (raw === undefined) return "codex";
   const trimmed = raw.trim();
   if (!trimmed || /^(0|false|off|none|null)$/i.test(trimmed)) return "";
@@ -287,13 +343,15 @@ function agentFallbackRetryContext(result: PhaseResult, fallbackAgent: string, r
 }
 
 export async function runPhaseRetryLoops(ctx: RetryContext, n: RetryState, deps: RetryDeps = {}) {
-  const phaseRetryMax = deps.phaseRetryMax ?? DEFAULT_PHASE_RETRY_MAX;
-  const phaseFeedbackRetryMax = deps.phaseFeedbackRetryMax ?? DEFAULT_PHASE_FEEDBACK_RETRY_MAX;
-  const phaseQualityRepairMax = deps.phaseQualityRepairMax ?? DEFAULT_PHASE_QUALITY_REPAIR_MAX;
-  const phaseRetryTotalMax = Math.max(0, deps.phaseRetryTotalMax ?? DEFAULT_PHASE_RETRY_TOTAL_MAX);
+  throwIfAborted(n.signal);
+  const env = retryEnv(n);
+  const phaseRetryMax = deps.phaseRetryMax ?? configuredPhaseRetryMax(env);
+  const phaseFeedbackRetryMax = deps.phaseFeedbackRetryMax ?? configuredPhaseFeedbackRetryMax(env);
+  const phaseQualityRepairMax = deps.phaseQualityRepairMax ?? configuredPhaseQualityRepairMax(env);
+  const phaseRetryTotalMax = Math.max(0, deps.phaseRetryTotalMax ?? configuredPhaseRetryTotalMax(env));
   const retryableKinds = deps.retryableKinds || DEFAULT_PHASE_RETRYABLE_KINDS;
   const feedbackRetryKinds = deps.feedbackRetryKinds || DEFAULT_PHASE_FEEDBACK_RETRY_KINDS;
-  const retryBaseDelayMs = deps.retryBaseDelayMs || defaultRetryBaseDelayMs;
+  const retryBaseDelayMs = deps.retryBaseDelayMs || (() => configuredRetryBaseDelayMs(env));
   const delay = deps.delay || defaultDelay;
   const now = deps.now || (() => new Date().toISOString());
   const phaseSourceContext = n.phaseSourceContext || {};
@@ -386,7 +444,7 @@ export async function runPhaseRetryLoops(ctx: RetryContext, n: RetryState, deps:
 
   let activeState = n;
   const quotaDelegateFailure = String(recordValue(result.failure?.cause).code || "").startsWith("QUOTA_DELEGATE_");
-  const fallbackAgent = configuredExecuteHardConstraintFallbackAgent();
+  const fallbackAgent = configuredExecuteHardConstraintFallbackAgent(env);
   const fallbackAllowed = allowedAgents === null || allowedAgents.includes(fallbackAgent);
   const shouldFallback = !quotaDelegateFailure
     && !isPhasePassed(result)
@@ -452,6 +510,7 @@ export async function runPhaseRetryLoops(ctx: RetryContext, n: RetryState, deps:
       ...recoveryFields(prepared.recovery),
     }, now);
     phaseRetryCount += 1;
+    throwIfAborted(n.signal);
     result = await runPhase(phaseInput(ctx, activeState, { ...phaseSourceContext, retry }));
   }
 
@@ -496,6 +555,7 @@ export async function runPhaseRetryLoops(ctx: RetryContext, n: RetryState, deps:
         ...recoveryFields(recovery),
       }, now);
       phaseRetryCount += 1;
+      throwIfAborted(n.signal);
       result = await runPhase(phaseInput(ctx, activeState, { ...phaseSourceContext, retry }));
       if (isPhasePassed(result)) break;
     }
@@ -537,8 +597,9 @@ export async function runPhaseRetryLoops(ctx: RetryContext, n: RetryState, deps:
           carryForward: Boolean(retry.handoffCarryForward),
           ...recoveryFields(recovery),
         }, now);
-        await delay(retryBaseDelayMs() * phaseRetry);
+        await delay(retryBaseDelayMs() * phaseRetry, n.signal);
         phaseRetryCount += 1;
+      throwIfAborted(n.signal);
       result = await runPhase(phaseInput(ctx, activeState, { ...phaseSourceContext, retry }));
     }
   }
@@ -582,6 +643,7 @@ export async function runPhaseRetryLoops(ctx: RetryContext, n: RetryState, deps:
         ...recoveryFields(recovery),
       }, now);
       phaseRetryCount += 1;
+      throwIfAborted(n.signal);
       result = await runPhase(phaseInput(ctx, activeState, { ...phaseSourceContext, retry }));
       if (isPhasePassed(result)) break;
     }

@@ -1,4 +1,8 @@
 import { isRecord, recordValue, type LooseRecord } from "../../../core/contracts/types.js";
+import {
+  parseWorktreeOwnership,
+  type ReadyWorktreeOwnership,
+} from "../../../core/contracts/worktree-ownership.js";
 import { deriveDagResumeState } from "../../../core/workflow/dag-executor.js";
 import type { EventRecord } from "./event-types.js";
 
@@ -84,6 +88,8 @@ export type MaterializedJobState = LooseRecord & {
   worktree: string | null;
   worktreeBranch: string | null;
   worktreeBaseBranch: string | null;
+  worktreeBaseCommit: string | null;
+  worktreeOwnership: ReadyWorktreeOwnership | null;
   createdAt: string | null;
   updatedAt: string | null;
   phaseStartedAt?: string | null;
@@ -283,6 +289,8 @@ export function materializeJob(events: EventRecord[]): MaterializedJobState {
     worktree: null,
     worktreeBranch: null,
     worktreeBaseBranch: null,
+    worktreeBaseCommit: null,
+    worktreeOwnership: null,
     createdAt: null,
     updatedAt: null,
     blockedReason: null,
@@ -506,6 +514,10 @@ const EVENT_HANDLERS: Record<string, EventHandler> = {
     state.worktree = stringValue(event.worktree) ?? stringValue(event.path) ?? state.worktree;
     state.worktreeBranch = event.branch ?? event.worktreeBranch ?? state.worktreeBranch;
     state.worktreeBaseBranch = event.baseBranch ?? event.worktreeBaseBranch ?? state.worktreeBaseBranch;
+    state.worktreeBaseCommit = event.baseCommit ?? event.worktreeBaseCommit ?? state.worktreeBaseCommit;
+    if (event.worktreeOwnership !== undefined) {
+      state.worktreeOwnership = parseWorktreeOwnership(event.worktreeOwnership) as ReadyWorktreeOwnership;
+    }
   },
   phase_started(state: MaterializedJobState, event: EventRecord) {
     state.phase = event.phase ?? state.phase;

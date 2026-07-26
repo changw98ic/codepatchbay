@@ -573,13 +573,11 @@ test("Hub child environment receives only explicitly scoped authentication confi
   const token = "hub-child-token-with-at-least-32-bytes";
   const serviceTokensFile = "/secure/cpb/hub-service-tokens.json";
   const oidcConfigFile = "/secure/cpb/hub-oidc.json";
-  const stateRedisConfigFile = "/secure/cpb/hub-state-redis.json";
   const env = buildHubServerEnv({
     PATH: process.env.PATH,
     CPB_HUB_BEARER_TOKEN: token,
     CPB_HUB_SERVICE_TOKENS_FILE: serviceTokensFile,
     CPB_HUB_OIDC_CONFIG_FILE: oidcConfigFile,
-    CPB_HUB_STATE_REDIS_CONFIG_FILE: stateRedisConfigFile,
     CPB_HUB_ACCESS_AUDIT_MAX_BYTES: "536870912",
     CPB_HUB_ACCESS_AUDIT_ARCHIVE_SIGNING_KEY: "must-not-leak-to-long-running-hub-child",
     CPB_HUB_ALLOW_INSECURE_HTTP: "1",
@@ -595,7 +593,6 @@ test("Hub child environment receives only explicitly scoped authentication confi
   assert.equal(env.CPB_HUB_BEARER_TOKEN, token);
   assert.equal(env.CPB_HUB_SERVICE_TOKENS_FILE, serviceTokensFile);
   assert.equal(env.CPB_HUB_OIDC_CONFIG_FILE, oidcConfigFile);
-  assert.equal(env.CPB_HUB_STATE_REDIS_CONFIG_FILE, stateRedisConfigFile);
   assert.equal(env.CPB_HUB_ACCESS_AUDIT_MAX_BYTES, "536870912");
   assert.equal(env.CPB_HUB_ACCESS_AUDIT_ARCHIVE_SIGNING_KEY, undefined);
   assert.equal(env.CPB_HUB_ALLOW_INSECURE_HTTP, "1");
@@ -603,7 +600,6 @@ test("Hub child environment receives only explicitly scoped authentication confi
 
   const controlPlaneEnv = buildHubControlPlaneEnv({
     PATH: process.env.PATH,
-    CPB_HUB_STATE_REDIS_CONFIG_FILE: stateRedisConfigFile,
     CPB_HUB_BEARER_TOKEN: token,
     UNRELATED_APPLICATION_SECRET: "must-not-leak",
   }, {
@@ -611,13 +607,10 @@ test("Hub child environment receives only explicitly scoped authentication confi
     executorRoot: "/tmp/cpb",
     hubRoot: "/tmp/cpb-hub",
   });
-  assert.equal(controlPlaneEnv.CPB_HUB_STATE_REDIS_CONFIG_FILE, stateRedisConfigFile);
   assert.equal(controlPlaneEnv.CPB_HUB_BEARER_TOKEN, undefined);
   assert.equal(controlPlaneEnv.UNRELATED_APPLICATION_SECRET, undefined);
 
   const agentEnv = buildChildEnv({
     PATH: process.env.PATH,
-    CPB_HUB_STATE_REDIS_CONFIG_FILE: stateRedisConfigFile,
   });
-  assert.equal(agentEnv.CPB_HUB_STATE_REDIS_CONFIG_FILE, undefined);
 });

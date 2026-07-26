@@ -1,28 +1,22 @@
 import { FailureKind } from "../contracts/failure.js";
 
-import { recordValue, type LooseRecord } from "../contracts/types.js";
-import { ts, type AppendEvent, type FailJob, type JobRunResult } from "./run-job-shared.js";
+import { recordValue } from "../contracts/types.js";
+import type { RunJobPorts, RunJobState } from "./run-job-ports.js";
+import { ts, type JobRunResult } from "./run-job-shared.js";
 
-type PanicContext = {
-  cpbRoot: string;
-  project: string;
-  failJob: FailJob;
-  appendEvent: AppendEvent;
-  _jobId?: string;
-  _attemptId?: string;
-  _currentPhase?: string | null;
-};
+type PanicContext =
+  Pick<RunJobState, "cpbRoot" | "project" | "_jobId" | "_attemptId" | "_currentPhase" | "signal">
+  & Pick<RunJobPorts, "failJob" | "appendEvent">;
 
-type FinalizeAuditTrailInput = {
-  cpbRoot: string;
-  project: string;
-  jobId: string;
-  attemptId: string;
-  appendEvent: AppendEvent;
-  result: JobRunResult;
-  sourceContext?: LooseRecord;
-  now?: () => string;
-};
+type FinalizeAuditTrailInput =
+  Pick<RunJobState, "cpbRoot" | "project" | "sourceContext">
+  & Pick<RunJobPorts, "appendEvent">
+  & {
+    jobId: string | null | undefined;
+    attemptId: string | null | undefined;
+    result: JobRunResult;
+    now?: () => string;
+  };
 
 function stringOrNull(value: unknown): string | null {
   return typeof value === "string" ? value : null;
@@ -48,6 +42,11 @@ export async function finalizeAuditTrail({
   sourceContext,
   now = ts,
 }: FinalizeAuditTrailInput) {
+  // No audit trail for a job that was never created: createJob threw before
+  // resolving a real id, so the panic path carries result.jobId === "unknown"
+  // as a public contract (locked by engine-run-job.test.ts). That sentinel must
+  // NOT be persisted as a durable runtime_context_snapshot / audit_finalized event.
+  if (!jobId || jobId === "unknown") return;
   const assignment = recordValue(sourceContext?.assignment);
   const assignmentMetadata = recordValue(assignment.metadata);
   const resultFailure = recordValue(result.failure);
@@ -103,9 +102,70 @@ export async function handleRunJobPanic(ctx: PanicContext, panic: unknown, now =
   // { message: String(panic) }) collapses null/string and regresses recovery.
   // retain: dynamic catch-value boundary — panic is an unknown thrown value (Error/string/null/object),
   // narrowing via guard cannot model the optional-property shape without an equivalent assertion.
-  const panicObj = panic as { message?: string; stack?: string; constructor?: { name?: string } } | null | undefined;
+  const panicObj = panic as { message?: string; stack?: string; name?: string; code?: string; constructor?: { name?: string } } | null | undefined;
   const panicMessage = panicObj?.message || (panic == null ? "unknown panic" : String(panic));
   const panicType = panicObj?.constructor?.name || "Error";
+  const interrupted = ctx.signal?.aborted === true
+    || panicObj?.name === "AbortError"
+    || panicObj?.code === "ABORT_ERR";
+
+  if (interrupted) {
+    const reason = panicMessage || "runJob aborted";
+    const failPromise = (async () => {
+      if (typeof failJob === "function" && jobId !== "unknown") {
+        try {
+          await failJob(cpbRoot, project, jobId, {
+            reason,
+            code: FailureKind.RUNTIME_INTERRUPTED,
+            kind: FailureKind.RUNTIME_INTERRUPTED,
+            phase,
+            retryable: false,
+            cause: {
+              reason: "abort_signal",
+              code: FailureKind.RUNTIME_INTERRUPTED,
+            },
+          });
+        } catch { /* best-effort */ }
+      }
+      if (typeof appendEvent === "function" && jobId !== "unknown") {
+        try {
+          await appendEvent(cpbRoot, project, jobId, {
+            type: "job_failed",
+            jobId,
+            phase,
+            attemptId: ctx._attemptId || jobId,
+            reason,
+            kind: FailureKind.RUNTIME_INTERRUPTED,
+            retryable: false,
+            ts: now(),
+          });
+        } catch { /* best-effort */ }
+      }
+    })();
+
+    try {
+      await Promise.race([
+        failPromise,
+        new Promise((resolve) => setTimeout(resolve, 3000)),
+      ]);
+    } catch { /* best-effort — timeout or rejection */ }
+
+    return {
+      status: "failed",
+      jobId,
+      exitCode: 1,
+      failure: {
+        kind: FailureKind.RUNTIME_INTERRUPTED,
+        phase,
+        reason,
+        retryable: false,
+        cause: {
+          reason: "abort_signal",
+          code: FailureKind.RUNTIME_INTERRUPTED,
+        },
+      },
+    };
+  }
 
   const failPromise = (async () => {
     if (typeof failJob === "function" && jobId !== "unknown") {

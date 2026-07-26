@@ -160,9 +160,15 @@ async function doneMessage(cpbRoot: string, project: string, id: string) {
   }
 }
 
+export function resolveOutputsDir(cpbRoot: string, project: string, runtimeRoot = process.env.CPB_PROJECT_RUNTIME_ROOT) {
+  return runtimeRoot
+    ? path.join(runtimeRoot, "wiki", "outputs")
+    : path.join(cpbRoot, "wiki", "projects", project, "outputs");
+}
+
 async function listOutputs(cpbRoot: string, project: string) {
   const { readdir, readFile } = await import("node:fs/promises");
-  const dir = path.join(cpbRoot, "wiki/projects", project, "outputs");
+  const dir = resolveOutputsDir(cpbRoot, project);
   console.log(`${BOLD}Outputs: ${project}${NC}`);
   try {
     const files = (await readdir(dir)).filter((f) => f.endsWith(".md")).sort();

@@ -15,7 +15,7 @@ export function phaseExecutionContract(
   return `## Execution Intensity Contract
 ${phaseBoundary}
 ${lookupGuidance}
-- First-pass inspection budget: max 5 files or 3 symbol/index lookups before naming the exact files you will modify or verify.
+- Inspect as many relevant files and symbols as needed to establish the exact scope and acceptance probes; do not stop discovery because of an arbitrary lookup count.
 - Prefer relevant loaded skills/profile guidance when available, and mention the index/skill path used in your JSON summary.
 - Define 2-5 task-specific acceptance probes from the request before running broad regression.
 - Stop after producing this phase's JSON envelope; do not continue into the next phase.`;

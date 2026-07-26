@@ -48,7 +48,7 @@ test("disposable verifier replays permit generated test artifacts without weaken
 
   assert.equal(env.CPB_VERIFIER_REPLAY_WORKSPACE_WRITE, "1");
   assert.equal(env.CPB_CODEX_VERIFIER_WORKSPACE_WRITE, "1");
-  assert.equal(env.CPB_ACP_TOOL_CALL_BUDGET_VERIFY, "45");
+  assert.equal(env.CPB_ACP_TOOL_CALL_BUDGET_VERIFY, "0");
 });
 
 test("fresh verifier ACP audit accepts completed runtime probes but rejects inspection and failed tests", () => {

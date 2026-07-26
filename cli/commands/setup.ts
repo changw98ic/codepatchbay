@@ -290,7 +290,7 @@ export async function run(args = [], { cpbRoot, executorRoot }: LooseRecord = {}
       || args.find((arg) => arg.startsWith("--agents="))?.slice("--agents=".length)
       || "";
     const { runSetupWizard, setupProfilePath } = await import("../../core/setup/wizard.js");
-    const { runInstallPlanWithEvents } = await import("../../server/services/setup.js");
+    const { runInstallPlanWithEvents } = await import("../../server/services/setup-events.js");
     const runInstallPlanForWizard = async (plan: unknown, options: { cpbRoot: string; stdio: string }): Promise<{ [key: string]: unknown; code?: number }> => {
       const planRecord = recordValue(plan);
       const installPlan = {

@@ -253,6 +253,44 @@ test("plan tournament preserves the successful side while retrying only a rate-l
   assert.match(calls.find((call) => call.role === "planner_b_provider_retry_1")?.conversationKey || "", /provider-retry:1$/);
 });
 
+test("plan tournament aborts provider backoff promptly without launching another attempt", async () => {
+  const calls: PlanTournamentRun[] = [];
+  const abort = new AbortController();
+  const execute = async (run: PlanTournamentRun) => {
+    calls.push(run);
+    if (run.role === "planner_a") return { ok: true, output: envelope(proposal("A")) };
+    if (run.role === "planner_b") {
+      setTimeout(() => abort.abort(new Error("job cancelled")), 20);
+      return {
+        ok: false,
+        kind: "agent_rate_limited",
+        reason: "529 overloaded",
+        retryable: true,
+        diagnostics: { cause: { nextEligibleAt: Date.now() + 60_000 } },
+      };
+    }
+    throw new Error(`unexpected provider attempt after abort: ${run.role}`);
+  };
+
+  const startedAt = Date.now();
+  const result = await runPlanTournament({
+    task: "Fix target behavior",
+    basePrompt: "Inspect read-only.",
+    conversationKey: "job:provider-retry-abort",
+    policy,
+    signal: abort.signal,
+    execute,
+  });
+  const elapsedMs = Date.now() - startedAt;
+
+  assert.equal(result.ok, false);
+  assert.equal(result.kind, "runtime_interrupted");
+  assert.equal(result.retryable, false);
+  assert.match(result.reason || "", /job cancelled/);
+  assert.ok(elapsedMs < 1_000, `expected prompt abort, waited ${elapsedMs}ms`);
+  assert.equal(calls.filter((call) => call.role === "planner_b_provider_retry_1").length, 0);
+});
+
 test("plan tournament retries a vanished arbiter locally without replaying prior rounds", async () => {
   const calls: PlanTournamentRun[] = [];
   let arbiterAttempts = 0;

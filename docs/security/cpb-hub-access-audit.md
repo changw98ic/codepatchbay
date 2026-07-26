@@ -1,23 +1,11 @@
 # Hub access-audit integrity log
 
-The Hub records every HTTP decision before sending the response. Without the
-Redis state backend, the log is a durable SHA-256 hash chain at:
+The Hub records every HTTP decision before sending the response. The log is a
+durable SHA-256 hash chain at:
 
 ```text
 <hub-root>/audit/http-access.jsonl
 ```
-
-With `CPB_HUB_STATE_REDIS_CONFIG_FILE`, audit records instead use the shared
-`cpb:{environment}:access-audit` Redis Stream. `auditSequence`, `auditHash`, and
-`auditBytes` live in the control-plane hash. One Lua CAS checks the prior head,
-capacity, and record envelope, appends the Stream record, and advances the head
-atomically. Concurrent Hub processes retry from the winning head, producing one
-global chain. Startup verifies the complete Stream against the head before
-accepting traffic.
-
-A non-empty local JSONL chain, pending append, or archive journal makes Redis
-cutover fail with `HUB_ACCESS_AUDIT_MIGRATION_REQUIRED`; archive the local chain
-first rather than silently hiding it.
 
 Each record contains a monotonically increasing sequence, timestamp, generated
 request id, method, path without query parameters, response status, decision,
@@ -78,9 +66,6 @@ export CPB_HUB_ACCESS_AUDIT_MAX_BYTES=536870912
 The value must be at least 65536 bytes. `cpb doctor` warns at 75% and reports a
 critical error at 95%. At the hard limit, requests fail closed rather than
 silently dropping audit records or filling the remaining filesystem.
-In Redis mode the first committed record pins this value in the shared audit
-head; every Hub must use the same value or startup fails with
-`HUB_ACCESS_AUDIT_POLICY_MISMATCH`.
 
 Verify the complete chain offline or while no requests are being appended:
 
@@ -147,28 +132,6 @@ signature: a privileged attacker who can rewrite the complete log and all local
 state can recompute a new chain. Enterprise deployments should continuously
 export records and periodic terminal hashes to a separately controlled SIEM,
 object-lock bucket, or WORM store.
-
-In Redis mode, ordering and capacity are shared across Hub processes. The
-pre-mutation intent closes the silent commit/audit crash window for
-worker-broker mutations. Create a point-in-sequence signed export without
-pausing writers:
-
-```sh
-export CPB_HUB_ACCESS_AUDIT_ARCHIVE_SIGNING_KEY='at-least-32-non-whitespace-bytes'
-cpb hub export-access-audit --output /secure/audit/cpb-redis-2026-07-11
-cpb hub verify-access-audit-export \
-  --input /secure/audit/cpb-redis-2026-07-11 \
-  --require-signature
-```
-
-The exporter captures the head first and reads exactly that Stream prefix, so
-concurrent later appends do not create a false mismatch. It publishes a private
-JSONL chain plus a manifest containing size, SHA-256, terminal sequence/hash,
-backend identity fingerprint, manifest hash, and optional HMAC-SHA256
-signature. Export does not trim the live Stream. Redis is still not an
-independently controlled WORM sink: move verified exports and terminal hashes
-to separately controlled retention, and validate cross-export continuity. The
-existing `archive-access-audit` command remains specific to local JSONL mode.
 
 Archive HMACs authenticate individual manifests, but the local system does not
 maintain an externally anchored cross-archive inventory. A privileged operator

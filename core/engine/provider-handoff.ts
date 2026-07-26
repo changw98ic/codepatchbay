@@ -12,7 +12,15 @@ type AgentObject = {
 export type ProviderAgent = string | AgentObject | null | undefined;
 export type ProviderAgents = Record<string, ProviderAgent>;
 
-type ProviderPool = {
+export type ProviderPool = {
+  execute?: (
+    agent: string,
+    prompt: string,
+    cwd: string,
+    timeoutMs: number,
+    meta: LooseRecord,
+  ) => Promise<unknown> | unknown;
+  releaseWorktree?: (cwd: string, reason: string, options?: LooseRecord) => Promise<unknown> | unknown;
   providerKey?: (agent: string | null | undefined, variant: string | null) => string | null | undefined;
   fallbackCandidates?: (
     agent: string,
@@ -29,11 +37,77 @@ type ProviderAvailabilityPayload = {
   role: string;
 };
 
+export type ProviderUnavailablePayload = {
+  providerKey: string | null;
+  agent: string | null;
+  variant: string | null;
+  status: string;
+  nextEligibleAt: number;
+  source: string;
+  confidence: number;
+  reason: string;
+};
+
+export type ProviderUsagePayload = {
+  project: string | null;
+  jobId: string | null;
+  attemptId: string | null;
+  taskCategory: string;
+  issueNumber: string | number | null;
+  source: string | null;
+  attempt: unknown;
+  retryCount: number;
+  jobRetryCount: number;
+  phaseRetryCount: number;
+  isRetry: boolean;
+  phase: string;
+  role: string;
+  providerKey: unknown;
+  agent: string;
+  variant: unknown;
+  providerRegion: unknown;
+  providerAdapter: unknown;
+  status: string;
+  phaseStatus: "passed" | "failed";
+  failureKind: string | null;
+  durationMs: unknown;
+  quota: {
+    status: unknown;
+    source: unknown;
+    confidence: unknown;
+    nextEligibleAt: unknown;
+    retryAfterMs: unknown;
+    windowResetAt: unknown;
+    weeklyResetAt: unknown;
+    reason: unknown;
+  };
+  fallback: {
+    used: boolean;
+    fromProviderKey: unknown;
+    toProviderKey: unknown;
+    count: number;
+    reason: unknown;
+  };
+  providerAttempts: unknown[] | null;
+  usage: {
+    calls: number;
+    inputTokens: unknown;
+    cachedInputTokens: unknown;
+    outputTokens: unknown;
+    reasoningOutputTokens: unknown;
+    totalTokens: unknown;
+    costUsd: unknown;
+    tokenSource: unknown;
+    toolCalls: unknown;
+    functionCalls: unknown;
+  };
+};
+
 export type ProviderServices = {
   assertProviderAvailable?: ((hubRoot: string, payload: ProviderAvailabilityPayload) => Promise<unknown> | unknown) | null;
   getProviderAdapter?: ((providerKey: string | null) => unknown) | null;
-  delegateMarkProviderUnavailable?: ((hubRoot: string, payload: LooseRecord) => Promise<unknown> | unknown) | null;
-  delegateEnqueueProviderUsage?: ((hubRoot: string, payload: LooseRecord) => Promise<unknown> | unknown) | null;
+  delegateMarkProviderUnavailable?: ((hubRoot: string, payload: ProviderUnavailablePayload) => Promise<unknown> | unknown) | null;
+  delegateEnqueueProviderUsage?: ((hubRoot: string, payload: ProviderUsagePayload) => Promise<unknown> | unknown) | null;
   readAgentRoutingMetrics?: ((hubRoot: string, query: LooseRecord) => Promise<unknown> | unknown) | null;
 };
 
@@ -105,11 +179,11 @@ export function normalizeProviderServices(services: unknown = {}): ProviderServi
       (typeof source.getProviderAdapter === "function" ? source.getProviderAdapter : null) as ProviderServices["getProviderAdapter"] ||
       (typeof providerAdapters.getProviderAdapter === "function" ? providerAdapters.getProviderAdapter : null) as ProviderServices["getProviderAdapter"],
     delegateMarkProviderUnavailable:
-      (typeof source.delegateMarkProviderUnavailable === "function" ? source.delegateMarkProviderUnavailable : null) as ProviderServices["delegateMarkProviderUnavailable"] ||
-      (typeof quotaDelegate.delegateMarkProviderUnavailable === "function" ? quotaDelegate.delegateMarkProviderUnavailable : null) as ProviderServices["delegateMarkProviderUnavailable"],
+      (typeof source.delegateMarkProviderUnavailable === "function" ? source.delegateMarkProviderUnavailable : undefined) as ProviderServices["delegateMarkProviderUnavailable"] ||
+      (typeof quotaDelegate.delegateMarkProviderUnavailable === "function" ? quotaDelegate.delegateMarkProviderUnavailable : undefined) as ProviderServices["delegateMarkProviderUnavailable"],
     delegateEnqueueProviderUsage:
-      (typeof source.delegateEnqueueProviderUsage === "function" ? source.delegateEnqueueProviderUsage : null) as ProviderServices["delegateEnqueueProviderUsage"] ||
-      (typeof quotaDelegate.delegateEnqueueProviderUsage === "function" ? quotaDelegate.delegateEnqueueProviderUsage : null) as ProviderServices["delegateEnqueueProviderUsage"],
+      (typeof source.delegateEnqueueProviderUsage === "function" ? source.delegateEnqueueProviderUsage : undefined) as ProviderServices["delegateEnqueueProviderUsage"] ||
+      (typeof quotaDelegate.delegateEnqueueProviderUsage === "function" ? quotaDelegate.delegateEnqueueProviderUsage : undefined) as ProviderServices["delegateEnqueueProviderUsage"],
     readAgentRoutingMetrics:
       (typeof source.readAgentRoutingMetrics === "function" ? source.readAgentRoutingMetrics : null) as ProviderServices["readAgentRoutingMetrics"],
   };

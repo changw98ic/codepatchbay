@@ -1,15 +1,29 @@
 import assert from "node:assert/strict";
+import { execFile as execFileCallback } from "node:child_process";
+import { createHash } from "node:crypto";
+import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
+import { promisify } from "node:util";
 
 import { AssignmentStore } from "../shared/orchestrator/assignment-store.js";
 import { WorkerStore } from "../shared/orchestrator/worker-store.js";
 import { FailureKind } from "../core/contracts/failure.js";
 import { FailureRouter } from "../server/orchestrator/failure-router.js";
-import { Reconciler, buildRetrySourceContext } from "../server/orchestrator/reconciler.js";
+import {
+  Reconciler,
+  buildFinalizerOnlyRecoveryPlan,
+  buildRetrySourceContext,
+  persistedFinalizerGitReadbackValid,
+  persistedFinalizerJournalValid,
+  persistedFinalizerSuccessContractValid,
+} from "../server/orchestrator/reconciler.js";
 import { enqueue, listQueue, updateEntry } from "../server/services/hub/hub-queue.js";
+import { finalizerMutationFenceDigest } from "../server/services/finalizer-contract.js";
 import { recordValue } from "../shared/types.js";
 import { tempRoot, oldIso, readJson, writeJson } from "./helpers.js";
+
+const execFile = promisify(execFileCallback);
 
 function attemptDir(hubRoot, assignmentId, attempt = 1) {
   return path.join(hubRoot, "assignments", assignmentId, "attempts", String(attempt).padStart(3, "0"));
@@ -103,6 +117,419 @@ test("buildRetrySourceContext carries verifier verdict into retry metadata", () 
   assert.match(String(retry.previousOutput), /Verifier verdict:/);
   assert.match(String(retry.previousOutput), /src\/api\.js/);
   assert.equal(previousVerdict.status, "fail");
+});
+
+test("buildFinalizerOnlyRecoveryPlan reconciles ambiguous writes before authorizing a fenced resume", () => {
+  const canonicalDigest = (value: unknown) => {
+    const canonical = (nested: unknown): unknown => {
+      if (Array.isArray(nested)) return nested.map(canonical);
+      if (!nested || typeof nested !== "object") return nested;
+      return Object.fromEntries(Object.entries(nested as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, child]) => [key, canonical(child)]));
+    };
+    return createHash("sha256").update(JSON.stringify(canonical(value))).digest("hex");
+  };
+  const recoveryAttempt = (attempt: number) => ({
+    attempt,
+    attemptToken: `attempt-token-${attempt}`,
+    orchestratorEpoch: attempt + 5,
+    workerId: `worker-${attempt}`,
+    completedAt: `2026-07-22T02:0${attempt}:00.000Z`,
+    heartbeat: {
+      workerId: `worker-${attempt}`,
+      workerIncarnation: `incarnation-${attempt}`,
+      processIdentity: {
+        pid: 1200 + attempt,
+        startTimeTicks: `900${attempt}`,
+        birthIdPrecision: "exact",
+      },
+    },
+  });
+  const recoveryResult = (attempt: ReturnType<typeof recoveryAttempt>, committed: boolean | null) => {
+    const claimId = String(attempt.attempt).repeat(64);
+    const ownerDigest = finalizerMutationFenceDigest({
+      assignmentId: "a-finalizer",
+      entryId: "entry-finalizer",
+      attemptToken: attempt.attemptToken,
+      orchestratorEpoch: attempt.orchestratorEpoch,
+      workerId: attempt.workerId,
+      workerIncarnation: attempt.heartbeat.workerIncarnation,
+      processIdentity: attempt.heartbeat.processIdentity,
+    });
+    return {
+      status: "blocked",
+      jobResult: {
+        status: "blocked",
+        jobId: "job-finalizer",
+        failure: { kind: "finalizer_failed", phase: "finalize" },
+      },
+      finalization: { required: true, ok: false, status: "blocked" },
+      finalizeResult: {
+        ok: false,
+        status: "blocked",
+        mode: "remote",
+        jobId: "job-finalizer",
+        committed,
+        remoteIntent: {
+          schema: "cpb.finalizer-mutation-receipt.v1",
+          finalizationId: "f".repeat(64),
+          generation: 1,
+          project: "proj",
+          entryId: "entry-finalizer",
+          originJobId: "job-finalizer",
+          stage: "repository.push.intent",
+          source: { branch: "main", head: "a".repeat(40) },
+          targetBranch: "main",
+          preRemoteHead: "a".repeat(40),
+          commit: "b".repeat(40),
+          tree: "c".repeat(40),
+          claim: { claimId, claimGeneration: 1, ownerDigest },
+          receipts: {},
+        },
+      },
+    };
+  };
+  const firstAttempt = recoveryAttempt(1);
+  const baseResult = recoveryResult(firstAttempt, null);
+  const observedResult = (attempt: ReturnType<typeof recoveryAttempt>, committed: boolean | null) => {
+    const remoteIntent = recordValue(baseResult.finalizeResult).remoteIntent;
+    const readback = { operation: "repository.push", committed };
+    return {
+      ...recoveryResult(attempt, committed),
+      finalizeResult: {
+        ...recordValue(recoveryResult(attempt, committed).finalizeResult),
+        remoteIntent,
+        ...(typeof committed === "boolean" ? {
+          reconciliation: { push: readback },
+          safeContinuation: {
+            schema: "cpb.finalizer-safe-continuation.v1",
+            finalizationId: recordValue(remoteIntent).finalizationId,
+            journalDigest: canonicalDigest(remoteIntent),
+            journalGeneration: recordValue(remoteIntent).generation,
+            stage: "repository.push.intent",
+            operation: "repository.push",
+            decision: committed,
+            readbackKey: "push",
+            readbackDigest: canonicalDigest(readback),
+          },
+        } : {}),
+      },
+    };
+  };
+  const first = buildFinalizerOnlyRecoveryPlan(
+    { assignmentId: "a-finalizer", entryId: "entry-finalizer", metadata: {} },
+    firstAttempt,
+    baseResult,
+  );
+  assert.equal(first?.allowMutation, false);
+  assert.equal(first?.committed, null);
+
+  const resume = buildFinalizerOnlyRecoveryPlan(
+    {
+      assignmentId: "a-finalizer",
+      metadata: { finalizerRecovery: first },
+    },
+    recoveryAttempt(2),
+    observedResult(recoveryAttempt(2), false),
+  );
+  assert.equal(resume?.allowMutation, true);
+  assert.equal(resume?.generation, 2);
+  assert.equal(recordValue(resume?.takeover).kind, "explicit-handoff");
+  assert.equal(recordValue(resume?.takeover).previousClaimId, "1".repeat(64));
+  assert.equal(recordValue(recordValue(resume?.priorAttemptProof).evidence).previousAttempt, 1);
+  assert.equal(recordValue(recordValue(resume?.lastObservationProof).evidence).attempt, 2);
+  assert.match(String(recordValue(resume?.takeover).evidenceId), /^[a-f0-9]{64}$/);
+
+  assert.equal(buildFinalizerOnlyRecoveryPlan(
+    {
+      assignmentId: "a-finalizer",
+      metadata: { finalizerRecovery: { ...first, originJobId: "job-forged-origin" } },
+    },
+    recoveryAttempt(2),
+    observedResult(recoveryAttempt(2), false),
+  ), null);
+
+  const unsafeResume = buildFinalizerOnlyRecoveryPlan(
+    {
+      assignmentId: "a-finalizer",
+      metadata: { finalizerRecovery: first },
+    },
+    recoveryAttempt(2),
+    {
+      ...baseResult,
+      finalizeResult: {
+        ...recordValue(recoveryResult(recoveryAttempt(2), false).finalizeResult),
+        committed: false,
+        remoteIntent: null,
+      },
+    },
+  );
+  assert.equal(unsafeResume, null);
+
+  const stillAmbiguous = buildFinalizerOnlyRecoveryPlan(
+    {
+      assignmentId: "a-finalizer",
+      metadata: { finalizerRecovery: first },
+    },
+    recoveryAttempt(2),
+    observedResult(recoveryAttempt(2), null),
+  );
+  assert.equal(stillAmbiguous?.allowMutation, false);
+  assert.equal(stillAmbiguous?.readOnlyObservations, 2);
+  assert.equal(stillAmbiguous?.retryBackoffMs, 5_000);
+  assert.ok(Date.parse(String(stillAmbiguous?.nextEligibleAt)) > Date.parse(String(stillAmbiguous?.requestedAt)));
+
+  const lastObservation = buildFinalizerOnlyRecoveryPlan(
+    { assignmentId: "a-finalizer", metadata: { finalizerRecovery: stillAmbiguous } },
+    recoveryAttempt(3),
+    observedResult(recoveryAttempt(3), null),
+  );
+  assert.equal(lastObservation?.allowMutation, false);
+  assert.equal(lastObservation?.readOnlyObservations, 3);
+  assert.equal(lastObservation?.retryBackoffMs, 10_000);
+  const exhausted = buildFinalizerOnlyRecoveryPlan(
+    { assignmentId: "a-finalizer", metadata: { finalizerRecovery: lastObservation } },
+    recoveryAttempt(4),
+    observedResult(recoveryAttempt(4), null),
+  );
+  assert.equal(exhausted, null);
+});
+
+test("persisted finalizer completion requires caller-bound mode/job and canonical review bundle audit", () => {
+  const assignment = {
+    entryId: "entry-contract",
+    projectId: "proj",
+    metadata: { autoFinalize: true },
+  };
+  assert.equal(persistedFinalizerSuccessContractValid(assignment, {
+    status: "completed",
+    jobResult: { status: "completed", jobId: "job-contract" },
+    finalization: { required: true, ok: true },
+    finalizeResult: {
+      ok: true,
+      status: "dry-run",
+      mode: "dry-run",
+      jobId: "job-contract",
+      committed: false,
+      pr: { status: "dry-run" },
+    },
+  }), true);
+  assert.equal(persistedFinalizerSuccessContractValid(assignment, {
+    status: "completed",
+    jobResult: { status: "completed", jobId: "job-contract" },
+    finalization: { required: true, ok: true },
+    finalizeResult: {
+      ok: true,
+      status: "dry-run",
+      mode: "dry-run",
+      jobId: "job-forged",
+      committed: false,
+      pr: { status: "dry-run" },
+    },
+  }), false);
+  assert.equal(persistedFinalizerSuccessContractValid(assignment, {
+    status: "completed",
+    jobResult: { status: "completed", jobId: "job-contract" },
+    finalization: { required: true, ok: true },
+    finalizeResult: {
+      ok: true,
+      status: "review_bundle",
+      mode: "review_bundle",
+      jobId: "job-contract",
+      committed: true,
+      eventRecorded: true,
+      bundlePath: "/hub/review-bundles/proj/proj-job-contract-review-bundle.json",
+      audit: {
+        eventType: "review_bundle_created",
+        jobId: "job-contract",
+        project: "proj",
+        bundlePath: "/hub/review-bundles/proj/proj-job-contract-review-bundle.json",
+      },
+    },
+  }), true);
+});
+
+function candidateGate(baseSha: string, headSha: string, treeHash: string) {
+  const identityHash = `sha256:${"e".repeat(64)}`;
+  return {
+    outcome: "complete",
+    completionReport: {
+      candidateValidation: {
+        baseSha,
+        headSha,
+        treeHash,
+        identityHash,
+        validatedCandidateIdentityHash: identityHash,
+        identityMatch: true,
+        cleanReplay: {
+          cleanApply: true,
+          baseSha,
+          expectedTreeHash: treeHash,
+          actualTreeHash: treeHash,
+        },
+      },
+    },
+  };
+}
+
+test("persisted local success rejects a self-consistent commit/tree that is not the durable candidate", () => {
+  const baseSha = "a".repeat(40);
+  const headSha = "b".repeat(40);
+  const treeHash = "c".repeat(40);
+  const assignment = {
+    entryId: "entry-local",
+    projectId: "proj",
+    metadata: { autoFinalize: true, finalizeMode: "local", allowLiveFinalize: true },
+  };
+  const result = {
+    status: "completed",
+    cleanup: {
+      worktree: { binding: { baseBranch: "main", baseCommit: baseSha } },
+    },
+    jobResult: { status: "completed", jobId: "job-local", completionGate: candidateGate(baseSha, headSha, treeHash) },
+    finalization: { required: true, ok: true },
+    finalizeResult: {
+      ok: true,
+      status: "finalized",
+      mode: "local",
+      jobId: "job-local",
+      committed: true,
+      commit: headSha,
+      tree: treeHash,
+      sourceSync: { committed: true, clean: true },
+    },
+  };
+  assert.equal(persistedFinalizerSuccessContractValid(assignment, result), true);
+  assert.equal(persistedFinalizerSuccessContractValid(assignment, {
+    ...result,
+    finalizeResult: {
+      ...result.finalizeResult,
+      commit: "d".repeat(40),
+      tree: "f".repeat(40),
+      sourceSync: { committed: true, clean: true, actualHead: "d".repeat(40) },
+    },
+  }), false);
+});
+
+test("remote completion requires the exact authoritative terminal finalizer journal", async () => {
+  const assignment = {
+    entryId: "entry-journal",
+    projectId: "proj",
+    metadata: { autoFinalize: true, finalizeMode: "remote", allowLiveFinalize: true },
+  };
+  const intent = {
+    schema: "cpb.finalizer-mutation-receipt.v1",
+    finalizationId: "f".repeat(64),
+    originJobId: "job-origin",
+    generation: 8,
+    stage: "local.complete",
+  };
+  const result = { finalizeResult: { remoteIntent: intent } };
+  const resolveDataRoot = async () => "/authority/project-runtime";
+  const snapshot = (record: unknown, invalidReason: string | null = null) => ({
+    journalJobId: "finalizer-entry-journal",
+    cursor: { eventCount: 1, eventDigest: "a".repeat(64) },
+    record,
+    invalidReason,
+  });
+  const validate = (record: unknown, invalidReason: string | null = null) => persistedFinalizerJournalValid(
+    "/authority/cpb",
+    "/authority/hub",
+    assignment,
+    result,
+    {
+      resolveDataRoot: resolveDataRoot as any,
+      readJournal: (async () => snapshot(record, invalidReason)) as any,
+    },
+  );
+  assert.equal(await validate(intent), true);
+  assert.equal(await validate(null), false);
+  assert.equal(await validate(intent, "journal stream invalid"), false);
+  assert.equal(await validate({ ...intent, generation: 7 }), false);
+  assert.equal(await validate({ ...intent, stage: "remote.complete" }), false);
+});
+
+test("local and remote finalizer Git readback accepts root candidates and one-parent frozen commits", async () => {
+  const sourcePath = await tempRoot("cpb-reconciler-finalizer-git");
+  await execFile("git", ["init", "-b", "main"], { cwd: sourcePath });
+  await execFile("git", ["config", "user.email", "cpb@example.test"], { cwd: sourcePath });
+  await execFile("git", ["config", "user.name", "CPB Test"], { cwd: sourcePath });
+  await writeFile(path.join(sourcePath, "candidate.txt"), "base\n", "utf8");
+  await execFile("git", ["add", "candidate.txt"], { cwd: sourcePath });
+  await execFile("git", ["commit", "-m", "base"], { cwd: sourcePath });
+  const base = (await execFile("git", ["rev-parse", "HEAD"], { cwd: sourcePath })).stdout.trim();
+  const baseTree = (await execFile("git", ["rev-parse", "HEAD^{tree}"], { cwd: sourcePath })).stdout.trim();
+  const rootResult = {
+    jobResult: { completionGate: candidateGate(base, base, baseTree) },
+    finalizeResult: {
+      commit: base,
+      tree: baseTree,
+      sourceSync: { actualBranch: "main", actualHead: base },
+    },
+  };
+  assert.equal(await persistedFinalizerGitReadbackValid({
+    sourcePath,
+    metadata: { finalizeMode: "local", allowLiveFinalize: true },
+  }, rootResult), true);
+
+  await writeFile(path.join(sourcePath, "candidate.txt"), "base\nfrozen candidate\n", "utf8");
+  await execFile("git", ["add", "candidate.txt"], { cwd: sourcePath });
+  await execFile("git", ["commit", "-m", "frozen candidate"], { cwd: sourcePath });
+  const commit = (await execFile("git", ["rev-parse", "HEAD"], { cwd: sourcePath })).stdout.trim();
+  const tree = (await execFile("git", ["rev-parse", "HEAD^{tree}"], { cwd: sourcePath })).stdout.trim();
+  const dirtyCandidateResult = {
+    jobResult: { completionGate: candidateGate(base, base, tree) },
+    finalizeResult: {
+      commit,
+      tree,
+      sourceSync: { actualBranch: "main", actualHead: commit },
+    },
+  };
+  assert.equal(await persistedFinalizerGitReadbackValid({
+    sourcePath,
+    metadata: { finalizeMode: "remote", allowLiveFinalize: true },
+  }, dirtyCandidateResult), true);
+  assert.equal(await persistedFinalizerGitReadbackValid({
+    sourcePath,
+    metadata: { finalizeMode: "remote", allowLiveFinalize: true },
+  }, {
+    ...dirtyCandidateResult,
+    finalizeResult: { ...dirtyCandidateResult.finalizeResult, tree: "f".repeat(40) },
+  }), false);
+
+  await execFile("git", ["commit", "--allow-empty", "-m", "unrelated second generation"], { cwd: sourcePath });
+  const grandchild = (await execFile("git", ["rev-parse", "HEAD"], { cwd: sourcePath })).stdout.trim();
+  assert.equal(await persistedFinalizerGitReadbackValid({
+    sourcePath,
+    metadata: { finalizeMode: "remote", allowLiveFinalize: true },
+  }, {
+    ...dirtyCandidateResult,
+    finalizeResult: {
+      ...dirtyCandidateResult.finalizeResult,
+      commit: grandchild,
+      sourceSync: { actualBranch: "main", actualHead: grandchild },
+    },
+  }), false, "a same-tree grandchild is not the authorized single-parent frozen commit");
+
+  await execFile("git", ["branch", "cpb/pr-candidate", base], { cwd: sourcePath });
+  const prResult = {
+    jobResult: { completionGate: candidateGate(base, base, baseTree) },
+    finalizeResult: {
+      commit: base,
+      tree: baseTree,
+      remoteIntent: { targetBranch: "cpb/pr-candidate" },
+    },
+  };
+  assert.equal(await persistedFinalizerGitReadbackValid({
+    sourcePath,
+    metadata: { finalizeMode: "pr", allowLiveFinalize: true },
+  }, prResult), true);
+  await execFile("git", ["branch", "-f", "cpb/pr-candidate", grandchild], { cwd: sourcePath });
+  assert.equal(await persistedFinalizerGitReadbackValid({
+    sourcePath,
+    metadata: { finalizeMode: "pr", allowLiveFinalize: true },
+  }, prResult), false);
 });
 
 test("buildRetrySourceContext carries checklist retry state from checklistVerdict", () => {
@@ -618,7 +1045,66 @@ test("Reconciler advances assigned assignment from accepted file and queue claim
   assert.equal((await listQueue(hubRoot))[0].status, "in_progress");
 });
 
-test("Reconciler finalizes completed result files into queue and worker state", async () => {
+test("Reconciler advances an assigned assignment via a same-worker queue claim (dual-path, no accepted file)", async () => {
+  const hubRoot = await tempRoot("cpb-reconciler-dual-same");
+  const assignments = new AssignmentStore(hubRoot);
+  const workers = new WorkerStore(hubRoot);
+  await assignments.init();
+  await workers.init();
+  const entry = await enqueue(hubRoot, { projectId: "proj", description: "dual same" });
+  const assignment = await assignments.getOrCreateAssignmentForEntry({
+    entryId: entry.id,
+    projectId: "proj",
+    task: "dual same",
+  });
+  await assignments.createAttempt(assignment.assignmentId, {
+    workerId: "w-owner",
+    orchestratorEpoch: 1,
+  });
+  await updateEntry(hubRoot, entry.id, {
+    status: "in_progress",
+    claimedBy: "w-owner",
+    workerId: "w-owner",
+    claimedAt: new Date().toISOString(),
+  });
+
+  await reconciler(hubRoot, assignments, workers).reconcileAssignments();
+
+  assert.equal((await assignments.getAssignment(assignment.assignmentId)).status, "running");
+});
+
+test("Reconciler does not resurrect an orphaned attempt via a foreign queue claim (dual-path)", async () => {
+  const hubRoot = await tempRoot("cpb-reconciler-dual-foreign");
+  const assignments = new AssignmentStore(hubRoot);
+  const workers = new WorkerStore(hubRoot);
+  await assignments.init();
+  await workers.init();
+  const entry = await enqueue(hubRoot, { projectId: "proj", description: "dual foreign" });
+  const assignment = await assignments.getOrCreateAssignmentForEntry({
+    entryId: entry.id,
+    projectId: "proj",
+    task: "dual foreign",
+  });
+  await assignments.createAttempt(assignment.assignmentId, {
+    workerId: "w-owner",
+    orchestratorEpoch: 1,
+  });
+  // The original worker (w-owner) died; a DIFFERENT worker (w-restart) now holds
+  // a fresh queue claim. The orphaned attempt must NOT be resurrected into running.
+  await updateEntry(hubRoot, entry.id, {
+    status: "in_progress",
+    claimedBy: "w-restart",
+    workerId: "w-restart",
+    claimedAt: new Date().toISOString(),
+  });
+
+  await reconciler(hubRoot, assignments, workers).reconcileAssignments();
+
+  const after = await assignments.getAssignment(assignment.assignmentId);
+  assert.notEqual(after.status, "running");
+});
+
+test("Reconciler ignores an uncommitted result file and finalizes only after assignment-store acceptance", async () => {
   const hubRoot = await tempRoot("cpb-reconciler-result");
   const assignments = new AssignmentStore(hubRoot);
   const workers = new WorkerStore(hubRoot);
@@ -640,15 +1126,22 @@ test("Reconciler finalizes completed result files into queue and worker state", 
     orchestratorEpoch: 1,
   });
   await assignments.markRunning(assignment.assignmentId, 1);
-  await writeJson(path.join(attemptDir(hubRoot, assignment.assignmentId), "result.json"), {
+  const result = {
     assignmentId: assignment.assignmentId,
     attempt: 1,
     orchestratorEpoch: attempt.orchestratorEpoch,
     attemptToken: attempt.attemptToken,
     status: "completed",
     jobResult: { status: "completed", jobId: "job-ok" },
-  });
+  };
+  await writeJson(path.join(attemptDir(hubRoot, assignment.assignmentId), "result.json"), result);
 
+  await reconciler(hubRoot, assignments, workers).reconcileAssignments();
+
+  assert.equal((await assignments.getAssignment(assignment.assignmentId)).status, "running");
+  assert.equal((await listQueue(hubRoot))[0].status, "in_progress");
+
+  await assignments.completeAttemptFromExistingResult(assignment.assignmentId, 1, result);
   await reconciler(hubRoot, assignments, workers).reconcileAssignments();
 
   const finalAssignment = await assignments.getAssignment(assignment.assignmentId);
@@ -703,7 +1196,7 @@ test("Reconciler finalizes cancelled result files as cancelled queue entries", a
   assert.match(queued.metadata.cancelReason, /user requested/);
 });
 
-test("Reconciler never completes a queue entry when finalization is blocked", async () => {
+test("Reconciler schedules finalizer-only read-only recovery without rerunning job execution", async () => {
   const hubRoot = await tempRoot("cpb-reconciler-finalizer-blocked");
   const assignments = new AssignmentStore(hubRoot);
   const workers = new WorkerStore(hubRoot);
@@ -722,7 +1215,27 @@ test("Reconciler never completes a queue entry when finalization is blocked", as
     orchestratorEpoch: 6,
   });
   await assignments.markRunning(assignment.assignmentId, 1);
-  await writeJson(path.join(attemptDir(hubRoot, assignment.assignmentId), "result.json"), {
+  const heartbeat = {
+    workerId: "w-1",
+    workerIncarnation: "incarnation-1",
+    processIdentity: {
+      pid: 1201,
+      startTimeTicks: "9001",
+      birthIdPrecision: "exact",
+    },
+  };
+  await writeJson(path.join(attemptDir(hubRoot, assignment.assignmentId), "heartbeat.json"), heartbeat);
+  await assignments.recordHeartbeat(assignment.assignmentId, 1, heartbeat);
+  const ownerDigest = finalizerMutationFenceDigest({
+    assignmentId: assignment.assignmentId,
+    entryId: assignment.entryId,
+    attemptToken: attempt.attemptToken,
+    orchestratorEpoch: attempt.orchestratorEpoch,
+    workerId: "w-1",
+    workerIncarnation: "incarnation-1",
+    processIdentity: { pid: 1201, startTimeTicks: "9001" },
+  });
+  const blockedResult = {
     assignmentId: assignment.assignmentId,
     attempt: 1,
     orchestratorEpoch: attempt.orchestratorEpoch,
@@ -730,6 +1243,7 @@ test("Reconciler never completes a queue entry when finalization is blocked", as
     status: "blocked",
     jobResult: {
       status: "blocked",
+      jobId: "job-finalizer",
       failure: {
         kind: "finalizer_failed",
         phase: "finalize",
@@ -737,15 +1251,52 @@ test("Reconciler never completes a queue entry when finalization is blocked", as
         retryable: false,
       },
     },
-    finalizeResult: { ok: false, status: "blocked", code: "PR_EVIDENCE_BLOCKED" },
+    finalizeResult: {
+      ok: false,
+      status: "blocked",
+      code: "REMOTE_WRITE_AMBIGUOUS",
+      mode: "remote",
+      jobId: "job-finalizer",
+      committed: null,
+      retryable: true,
+      remoteIntent: {
+        schema: "cpb.finalizer-mutation-receipt.v1",
+        finalizationId: "f".repeat(64),
+        generation: 1,
+        project: "proj",
+        entryId: assignment.entryId,
+        originJobId: "job-finalizer",
+        mode: "remote",
+        stage: "repository.push.intent",
+        source: { branch: "main", head: "a".repeat(40) },
+        targetBranch: "main",
+        preRemoteHead: "a".repeat(40),
+        commit: "b".repeat(40),
+        tree: "c".repeat(40),
+        claim: {
+          claimId: "d".repeat(64),
+          claimGeneration: 1,
+          ownerDigest,
+        },
+        receipts: {},
+      },
+    },
     finalization: { required: true, ok: false, status: "blocked" },
-  });
+  };
+  await writeJson(path.join(attemptDir(hubRoot, assignment.assignmentId), "result.json"), blockedResult);
+  await assignments.completeAttemptFromExistingResult(assignment.assignmentId, 1, blockedResult);
 
   await reconciler(hubRoot, assignments, workers).reconcileAssignments();
 
   const [queued] = await listQueue(hubRoot);
-  assert.equal(queued.status, "blocked");
-  assert.match(queued.reason, /PR evidence blocked/);
+  assert.equal(queued.status, "pending");
+  const recovery = recordValue(queued.metadata.finalizerRecovery);
+  assert.equal(recovery.schema, "cpb.finalizer-recovery.v1");
+  assert.equal(recovery.allowMutation, false);
+  assert.equal(recovery.originJobId, "job-finalizer");
+  assert.equal(recordValue(recovery.priorAttemptProof).acceptedOwnerDigest, ownerDigest);
+  assert.equal(recordValue(recordValue(recovery.lastObservationProof).evidence).journalDigest,
+    recordValue(recordValue(recovery.priorAttemptProof).evidence).journalDigest);
   assert.equal((await assignments.getAssignment(assignment.assignmentId)).status, "blocked");
 });
 
@@ -898,7 +1449,7 @@ test("Reconciler closes stale progress early when probe proves waiting cannot re
   assert.match(result.jobResult.failure.reason, /probe confirmed waiting cannot recover/);
   assert.equal(result.jobResult.failure.cause.probe.waitUseful, false);
   assert.ok(result.jobResult.failure.cause.probe.failureSignals.includes("worker_status_exited"));
-  assert.ok(result.jobResult.failure.cause.probe.failureSignals.includes("worker_pid_dead"));
+  assert.ok(result.jobResult.failure.cause.probe.failureSignals.includes("worker_process_identity_missing"));
   assert.equal((await listQueue(hubRoot))[0].status, "pending");
 });
 

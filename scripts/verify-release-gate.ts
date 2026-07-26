@@ -19,6 +19,10 @@ const gateTests = [
   "dist-tests/tests/assignment-finalizer.test.js",
   "dist-tests/tests/auto-finalizer.test.js",
   "dist-tests/tests/github-draft-pr.test.js",
+  "dist-tests/tests/disposable-draft-pr-rehearsal.test.js",
+  "dist-tests/tests/live-release-evidence.test.js",
+  "dist-tests/tests/product-gate.test.js",
+  "dist-tests/tests/release-readiness-report.test.js",
   "dist-tests/tests/dag-node-resume.test.js",
   "dist-tests/tests/dag-node-lifecycle-events.test.js",
   "dist-tests/tests/dag-node-failure.test.js",
@@ -73,6 +77,9 @@ if (process.env.CPB_CHECKLIST_DECOMPOSE === "0") {
   process.exitCode = 1;
 } else {
   const checks = [
+    await run("release gate: release readiness report", process.execPath, [
+      "dist/scripts/release-readiness-report.js",
+    ]),
     await run("release gate: production checklist and finalizer contract tests", process.execPath, [
       "--test",
       ...gateTests,
@@ -81,7 +88,7 @@ if (process.env.CPB_CHECKLIST_DECOMPOSE === "0") {
       "--test",
       "--test-name-pattern",
       flagshipWorkerE2ePattern,
-      "dist/tests/integration/managed-worker.test.js",
+      "dist-tests/tests/integration/managed-worker.test.js",
     ]),
   ];
 

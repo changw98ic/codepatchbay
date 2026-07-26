@@ -11,9 +11,17 @@ test("runQuotaFallbackRetry marks failed provider unavailable and retries with f
   const delegateWrites: Record<string, unknown>[] = [];
   let retryInput: Record<string, unknown> | null = null;
   let handoffInput: Record<string, unknown> | null = null;
+  const scope = { allowedFiles: ["README.md"] };
+  const signal = new AbortController().signal;
+  const processHooks = { registerChild: async (_pid: number) => {} };
+  const conversationKey = "cpb:proj:job-quota:attempt-1:executor";
+  const onProgress = async (event: Record<string, unknown>) => {
+    progress.push(event);
+  };
   const phaseAgents: Record<string, unknown> = { executor: "primary" };
   const handoffState = { count: 0, from: null, to: null, reason: null };
   const providerAttempts: Array<{ providerKey: string | null; agent: string | null; variant: string | null; status: string; at: string }> = [];
+  const env = { ...process.env, CPB_PROVIDER_HANDOFF_MAX_PER_PHASE: "1" };
 
   const result = await runQuotaFallbackRetry({
     agent: "primary",
@@ -30,9 +38,7 @@ test("runQuotaFallbackRetry marks failed provider unavailable and retries with f
     appendEvent: async (_cpbRoot: string, _project: string, _jobId: string, event: Record<string, unknown>) => {
       events.push(event);
     },
-    onProgress: async (event: Record<string, unknown>) => {
-      progress.push(event);
-    },
+    onProgress,
   }, {
     hubRoot: "/tmp/hub",
     pool: {
@@ -60,10 +66,15 @@ test("runQuotaFallbackRetry marks failed provider unavailable and retries with f
     state: { planId: "plan-1" },
     phaseResults: [{ phase: "plan", status: "passed" }],
     attemptId: "attempt-1",
+    scope,
+    signal,
+    processHooks,
+    conversationKey,
     phaseTimeout: 1000,
     handoffState,
     providerAttempts,
     phaseAgents,
+    env,
     result: {
       schemaVersion: 1,
       phase: "execute",
@@ -137,6 +148,255 @@ test("runQuotaFallbackRetry marks failed provider unavailable and retries with f
   const retrySourceContext = recordValue(retryInput?.sourceContext);
   assert.equal(retryAgents.executor, "secondary");
   assert.deepEqual(retrySourceContext.handoff, { kind: "handoff", originProvider: "primary" });
+  assert.equal(retryInput?.scope, scope);
+  assert.equal(retryInput?.signal, signal);
+  assert.equal(retryInput?.processHooks, processHooks);
+  assert.equal(retryInput?.conversationKey, conversationKey);
+  assert.equal(retryInput?.onProgress, onProgress);
+  assert.equal(retryInput?.env, env);
+});
+
+test("runQuotaFallbackRetry resolves handoff limits and source path from job env before ambient env", async () => {
+  const jobEnv = {
+    ...process.env,
+    CPB_PROVIDER_HANDOFF_MAX_PER_PHASE: "2",
+    CPB_PROJECT_PATH_OVERRIDE: "/tmp/job-source",
+  };
+  const phaseAgents: Record<string, unknown> = { executor: "primary" };
+  const handoffInputs: Record<string, unknown>[] = [];
+  const runInputs: Record<string, unknown>[] = [];
+  let fallbackIndex = 0;
+
+  const result = await runQuotaFallbackRetry({
+    agent: "primary",
+    providerServices: {
+      async delegateMarkProviderUnavailable() {},
+    },
+  }, {
+      hubRoot: "/tmp/hub",
+      pool: { providerKey(agent: string) { return agent; } },
+      phase: "execute",
+      role: "executor",
+      nodeId: "execute",
+      dagNode: { id: "execute", phase: "execute" },
+      project: "proj",
+      task: "quota fallback env task",
+      jobId: "job-quota-env",
+      job: {},
+      cpbRoot: "/tmp/cpb",
+      state: {},
+      phaseResults: [],
+      phaseTimeout: 1000,
+      handoffState: { count: 0, from: null, to: null, reason: null },
+      providerAttempts: [],
+      phaseAgents,
+      env: jobEnv,
+      result: {
+        schemaVersion: 1,
+        phase: "execute",
+        status: "failed",
+        failure: {
+          kind: FailureKind.AGENT_RATE_LIMITED,
+          phase: "execute",
+          reason: "primary rate limited",
+          retryable: true,
+          cause: { providerKey: "primary", status: "rate_limited" },
+        },
+        diagnostics: {},
+      },
+    }, {
+      now: () => "2026-06-22T00:00:00.000Z",
+      preflightProvider: async () => {
+        fallbackIndex += 1;
+        return {
+          available: true,
+          switched: true,
+          selectedAgent: fallbackIndex === 1 ? "secondary" : "tertiary",
+          selectedProviderKey: fallbackIndex === 1 ? "secondary" : "tertiary",
+          reason: "fallback",
+          from: fallbackIndex === 1 ? "primary" : "secondary",
+        };
+      },
+      generateHandoffBundle: async (input: Record<string, unknown>) => {
+        handoffInputs.push(input);
+        return { sourcePath: input.sourcePath };
+      },
+      runPhase: async (input: Record<string, unknown>) => {
+        runInputs.push(input);
+        if (runInputs.length === 1) {
+          return {
+            schemaVersion: 1,
+            phase: "execute",
+            status: "failed",
+            failure: {
+              kind: FailureKind.AGENT_RATE_LIMITED,
+              phase: "execute",
+              reason: "secondary rate limited",
+              retryable: true,
+              cause: { providerKey: "secondary", status: "rate_limited" },
+            },
+            diagnostics: {},
+          };
+        }
+        return {
+          schemaVersion: 1,
+          phase: "execute",
+          status: "passed",
+          diagnostics: {},
+        };
+      },
+    });
+
+  assert.equal(result.status, "passed");
+  assert.equal(runInputs.length, 2);
+  assert.deepEqual(handoffInputs.map((input) => input.sourcePath), ["/tmp/job-source", "/tmp/job-source"]);
+  assert.deepEqual(runInputs.map((input) => input.sourcePath), ["/tmp/job-source", "/tmp/job-source"]);
+  assert.deepEqual(runInputs.map((input) => input.env), [jobEnv, jobEnv]);
+  assert.equal(phaseAgents.executor, "tertiary");
+});
+
+test("runQuotaFallbackRetry keeps concurrent job env and source path isolated", async () => {
+  async function runScenario(config: {
+    jobId: string;
+    marker: string;
+    sourcePath: string;
+    maxHandoffs: string;
+    fallbackAgents: string[];
+  }) {
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      CPB_PROVIDER_HANDOFF_MAX_PER_PHASE: config.maxHandoffs,
+      CPB_PROJECT_PATH_OVERRIDE: config.sourcePath,
+      CPB_PROVIDER_FALLBACK_TEST_MARKER: config.marker,
+    };
+    const phaseAgents: Record<string, unknown> = { executor: `${config.marker}-primary` };
+    const handoffState = { count: 0, from: null, to: null, reason: null };
+    const handoffInputs: Record<string, unknown>[] = [];
+    const runInputs: Record<string, unknown>[] = [];
+    let fallbackIndex = 0;
+
+    const result = await runQuotaFallbackRetry({
+      agent: `${config.marker}-primary`,
+      providerServices: {
+        async delegateMarkProviderUnavailable() {
+          await Promise.resolve();
+        },
+      },
+    }, {
+      hubRoot: "/tmp/hub",
+      pool: { providerKey(agent: string) { return agent; } },
+      phase: "execute",
+      role: "executor",
+      nodeId: "execute",
+      dagNode: { id: "execute", phase: "execute" },
+      project: "proj",
+      task: `quota fallback ${config.marker}`,
+      jobId: config.jobId,
+      job: {},
+      cpbRoot: "/tmp/cpb",
+      state: {},
+      phaseResults: [],
+      phaseTimeout: 1000,
+      handoffState,
+      providerAttempts: [],
+      phaseAgents,
+      env,
+      result: {
+        schemaVersion: 1,
+        phase: "execute",
+        status: "failed",
+        failure: {
+          kind: FailureKind.AGENT_RATE_LIMITED,
+          phase: "execute",
+          reason: `${config.marker}-primary rate limited`,
+          retryable: true,
+          cause: { providerKey: `${config.marker}-primary`, status: "rate_limited" },
+        },
+        diagnostics: {},
+      },
+    }, {
+      now: () => "2026-06-22T00:00:00.000Z",
+      preflightProvider: async () => {
+        await Promise.resolve();
+        const selectedAgent = config.fallbackAgents[fallbackIndex];
+        fallbackIndex += 1;
+        return {
+          available: true,
+          switched: true,
+          selectedAgent,
+          selectedProviderKey: selectedAgent,
+          reason: `fallback ${config.marker}`,
+          from: String(phaseAgents.executor),
+        };
+      },
+      generateHandoffBundle: async (input: Record<string, unknown>) => {
+        await Promise.resolve();
+        handoffInputs.push(input);
+        return {
+          marker: config.marker,
+          sourcePath: input.sourcePath,
+        };
+      },
+      runPhase: async (input: Record<string, unknown>) => {
+        await Promise.resolve();
+        runInputs.push(input);
+        if (runInputs.length < config.fallbackAgents.length) {
+          const failedAgent = config.fallbackAgents[runInputs.length - 1];
+          return {
+            schemaVersion: 1,
+            phase: "execute",
+            status: "failed",
+            failure: {
+              kind: FailureKind.AGENT_RATE_LIMITED,
+              phase: "execute",
+              reason: `${failedAgent} rate limited`,
+              retryable: true,
+              cause: { providerKey: failedAgent, status: "rate_limited" },
+            },
+            diagnostics: {},
+          };
+        }
+        return {
+          schemaVersion: 1,
+          phase: "execute",
+          status: "passed",
+          diagnostics: {},
+        };
+      },
+    });
+
+    return { result, env, handoffState, handoffInputs, runInputs };
+  }
+
+  const [oneHandoff, twoHandoffs] = await Promise.all([
+    runScenario({
+      jobId: "job-concurrent-one",
+      marker: "one",
+      sourcePath: "/tmp/job-one-source",
+      maxHandoffs: "1",
+      fallbackAgents: ["one-secondary"],
+    }),
+    runScenario({
+      jobId: "job-concurrent-two",
+      marker: "two",
+      sourcePath: "/tmp/job-two-source",
+      maxHandoffs: "2",
+      fallbackAgents: ["two-secondary", "two-tertiary"],
+    }),
+  ]);
+
+  assert.equal(oneHandoff.result.status, "passed");
+  assert.equal(twoHandoffs.result.status, "passed");
+  assert.equal(oneHandoff.handoffState.count, 1);
+  assert.equal(twoHandoffs.handoffState.count, 2);
+  assert.deepEqual(oneHandoff.handoffInputs.map((input) => input.sourcePath), ["/tmp/job-one-source"]);
+  assert.deepEqual(twoHandoffs.handoffInputs.map((input) => input.sourcePath), ["/tmp/job-two-source", "/tmp/job-two-source"]);
+  assert.deepEqual(oneHandoff.runInputs.map((input) => input.sourcePath), ["/tmp/job-one-source"]);
+  assert.deepEqual(twoHandoffs.runInputs.map((input) => input.sourcePath), ["/tmp/job-two-source", "/tmp/job-two-source"]);
+  assert.deepEqual(oneHandoff.runInputs.map((input) => input.env), [oneHandoff.env]);
+  assert.deepEqual(twoHandoffs.runInputs.map((input) => input.env), [twoHandoffs.env, twoHandoffs.env]);
+  assert.deepEqual(oneHandoff.runInputs.map((input) => recordValue(input.env).CPB_PROVIDER_FALLBACK_TEST_MARKER), ["one"]);
+  assert.deepEqual(twoHandoffs.runInputs.map((input) => recordValue(input.env).CPB_PROVIDER_FALLBACK_TEST_MARKER), ["two", "two"]);
 });
 
 test("runQuotaFallbackRetry preserves the executor-family exclusion during mid-run verifier handoff", async () => {

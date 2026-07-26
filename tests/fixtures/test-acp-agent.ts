@@ -18,8 +18,10 @@ import path from "node:path";
 import { readFile, appendFile } from "node:fs/promises";
 
 const args = process.argv.slice(2);
-let scenarioPath = "";
-let transcriptPath = "";
+// Environment variable fallbacks for capsule environments where command-line
+// args cannot reference external filesystem paths.
+let scenarioPath = process.env.CPB_ACP_TEST_SCENARIO || "";
+let transcriptPath = process.env.CPB_ACP_TEST_TRANSCRIPT || "";
 let directResponse: string | null = null;
 let hangOnClose = false;
 let hangOnPrompt = false;
@@ -81,6 +83,13 @@ if (scenarioPath) {
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     process.stderr.write(`test-acp-agent: failed to load scenario: ${message}\n`);
+  }
+} else if (process.env.CPB_ACP_TEST_SCENARIO_JSON) {
+  try {
+    scenario = JSON.parse(process.env.CPB_ACP_TEST_SCENARIO_JSON);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`test-acp-agent: failed to parse inline scenario: ${message}\n`);
   }
 }
 

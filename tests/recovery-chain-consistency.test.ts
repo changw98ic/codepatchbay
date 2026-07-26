@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { execFile as execFileCallback } from "node:child_process";
 import { existsSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { test } from "node:test";
+import { promisify } from "node:util";
 
 import { completePhase, blockJob, createJob } from "../server/services/job/job-store.js";
 import { acceptSession, dispatchSession } from "../server/services/review/review-dispatch.js";
@@ -12,6 +14,19 @@ import { enqueue, listQueue, updateEntry } from "../server/services/hub/hub-queu
 import { registerProject } from "../server/services/hub/hub-registry.js";
 import { recordValue } from "../shared/types.js";
 import { tempRoot } from "./helpers.js";
+
+const execFile = promisify(execFileCallback);
+
+async function initializeGitSource(sourcePath: string) {
+  const run = async (...args: string[]) => execFile("git", args, { cwd: sourcePath, encoding: "utf8" });
+  await run("init");
+  await run("config", "user.email", "recovery-test@example.invalid");
+  await run("config", "user.name", "Recovery Test");
+  await writeFile(`${sourcePath}/README.md`, "# Recovery fixture\n", "utf8");
+  await run("add", "README.md");
+  await run("commit", "-m", "Initial recovery fixture");
+  await run("branch", "-M", "main");
+}
 
 async function withHubRoot(hubRoot, fn) {
   const previous = process.env.CPB_HUB_ROOT;
@@ -36,6 +51,17 @@ async function prepareProject(prefix = "cpb-recovery") {
   return { cpbRoot, hubRoot, sourcePath, dataRoot: project.projectRuntimeRoot };
 }
 
+function nestedErrorMessages(error: unknown, seen = new Set<unknown>()): string[] {
+  if (!error || typeof error !== "object" || seen.has(error)) return [];
+  seen.add(error);
+  const messages = error instanceof Error ? [error.message] : [];
+  if (error instanceof AggregateError) {
+    for (const entry of error.errors) messages.push(...nestedErrorMessages(entry, seen));
+  }
+  if ("cause" in error) messages.push(...nestedErrorMessages(error.cause, seen));
+  return messages;
+}
+
 test("repair and remediation handlers hold per-job locks until completion", async () => {
   const { cpbRoot, hubRoot, dataRoot } = await prepareProject("cpb-repair-lock");
   await withHubRoot(hubRoot, async () => {
@@ -48,6 +74,9 @@ test("repair and remediation handlers hold per-job locks until completion", asyn
 
     const repair = await runRepair(cpbRoot, { project: "proj", jobId: job.jobId });
     assert.equal(existsSync(repair.lockDir), true);
+    const repairOwner = JSON.parse(await readFile(`${repair.lockDir}/owner.json`, "utf8"));
+    assert.equal(repairOwner.format, "cpb-directory-lock/v1");
+    assert.equal(repairOwner.processIdentity.birthIdPrecision, "exact");
     await assert.rejects(
       () => runRepair(cpbRoot, { project: "proj", jobId: job.jobId }),
       /Repair already running/,
@@ -73,6 +102,9 @@ test("repair and remediation handlers hold per-job locks until completion", asyn
     });
     const remediation = await runRemediation(cpbRoot, { project: "proj", jobId: remediationJob.jobId });
     assert.equal(existsSync(remediation.lockDir), true);
+    const remediationOwner = JSON.parse(await readFile(`${remediation.lockDir}/owner.json`, "utf8"));
+    assert.equal(remediationOwner.format, "cpb-directory-lock/v1");
+    assert.equal(remediationOwner.processIdentity.birthIdPrecision, "exact");
     await assert.rejects(
       () => runRemediation(cpbRoot, { project: "proj", jobId: remediationJob.jobId }),
       /Remediation already running/,
@@ -91,8 +123,89 @@ test("repair and remediation handlers hold per-job locks until completion", asyn
   });
 });
 
+test("repair completion propagates durable lock release failures", async () => {
+  const { cpbRoot, hubRoot, dataRoot } = await prepareProject("cpb-repair-release-failure");
+  await withHubRoot(hubRoot, async () => {
+    const job = await createJob(cpbRoot, {
+      project: "proj",
+      jobId: "job-repair-release-failure",
+      task: "repair release failure",
+      dataRoot,
+    });
+    const repair = await runRepair(cpbRoot, {
+      project: "proj",
+      jobId: job.jobId,
+      workflowLockOptions: {
+        hooks: {
+          beforeRelease: () => {
+            throw Object.assign(new Error("release exploded"), { code: "TEST_RELEASE_FAILED" });
+          },
+        },
+      },
+    });
+
+    await assert.rejects(
+      completeRepair(cpbRoot, {
+        project: "proj",
+        jobId: job.jobId,
+        repairId: repair.repairId,
+        repairFile: repair.repairFile,
+        repairArtifact: repair.repairArtifact,
+        status: "failed",
+        error: "expected failure",
+        lockDir: repair.lockDir,
+      }),
+      (error: NodeJS.ErrnoException) => error?.code === "TEST_RELEASE_FAILED"
+        && /release exploded/.test(error.message),
+    );
+    assert.equal(existsSync(repair.lockDir), false);
+  });
+});
+
+test("repair completion preserves both workflow and durable release failures", async () => {
+  const { cpbRoot, hubRoot, dataRoot } = await prepareProject("cpb-repair-double-failure");
+  await withHubRoot(hubRoot, async () => {
+    const job = await createJob(cpbRoot, {
+      project: "proj",
+      jobId: "job-repair-double-failure",
+      task: "repair double failure",
+      dataRoot,
+    });
+    const repair = await runRepair(cpbRoot, {
+      project: "proj",
+      jobId: job.jobId,
+      workflowLockOptions: {
+        hooks: {
+          beforeRelease: () => {
+            throw new Error("double failure release exploded");
+          },
+        },
+      },
+    });
+
+    await assert.rejects(
+      completeRepair(cpbRoot, {
+        project: "proj",
+        jobId: job.jobId,
+        repairId: repair.repairId,
+        repairFile: repair.repairFile,
+        repairArtifact: repair.repairArtifact,
+        status: "completed",
+        lockDir: repair.lockDir,
+      }),
+      (error: unknown) => error instanceof AggregateError
+        && error.cause instanceof Error
+        && /repair report not created|invalid repair status/.test(error.cause.message)
+        && nestedErrorMessages(error).some((message) => /repair report not created|invalid repair status/.test(message))
+        && nestedErrorMessages(error).some((message) => /double failure release exploded/.test(message)),
+    );
+    assert.equal(existsSync(repair.lockDir), false);
+  });
+});
+
 test("review dispatch serializes enqueue and session updates per session", async () => {
-  const { cpbRoot, hubRoot } = await prepareProject("cpb-review-dispatch");
+  const { cpbRoot, hubRoot, sourcePath } = await prepareProject("cpb-review-dispatch");
+  await initializeGitSource(sourcePath);
   const storageOptions = { hubRoot };
   const session = await createSession(cpbRoot, { project: "proj", intent: "same review task", ...storageOptions });
   await updateSession(cpbRoot, session.sessionId, { status: "user_review" }, { ...storageOptions, skipTransitionCheck: true });
@@ -117,7 +230,7 @@ test("review dispatch serializes enqueue and session updates per session", async
   assert.equal(dispatched[0].metadata.queueDedupeKey, `review:${session.sessionId}`);
 });
 
-test("review accept records merge failure when registry source path is missing", async () => {
+test("review accept fails closed without fabricating merge proof when registry source is missing", async () => {
   const cpbRoot = await tempRoot("cpb-review-accept-cpb");
   const hubRoot = await tempRoot("cpb-review-accept-hub");
   const worktreePath = await tempRoot("cpb-review-accept-worktree");
@@ -129,15 +242,18 @@ test("review accept records merge failure when registry source path is missing",
     worktreePath,
   }, { ...storageOptions, skipTransitionCheck: true });
 
-  const result = await acceptSession(cpbRoot, session.sessionId, { hubRoot });
+  const result: any = await acceptSession(cpbRoot, session.sessionId, { hubRoot });
   const updated = await getSession(cpbRoot, session.sessionId, storageOptions);
 
-  assert.equal(result.ok, true);
-  assert.equal(result.status, "merge_failed");
+  assert.equal(result.ok, false);
+  assert.equal(result.status, "user_review");
   assert.equal(result.mergeFailed, true);
-  assert.equal(result.merged, false);
-  assert.equal(updated.status, "merge_failed");
-  assert.match(updated.mergeError, /sourcePath missing/);
+  assert.equal(result.merged, null);
+  assert.equal(result.code, "REVIEW_PROJECT_SOURCE_MISSING");
+  assert.equal(updated.status, "user_review");
+  assert.equal(updated.reviewDecision, undefined);
+  assert.equal(updated.mergeError, undefined);
+  assert.equal(existsSync(worktreePath), true);
   assert.equal(existsSync(`${cpbRoot}/cpb-task`), false);
 });
 

@@ -3,35 +3,39 @@ import { resolveDynamicAgentPlan } from "./phase-agent-routing.js";
 import { derivePhaseBudgetPolicy } from "../policy/phase-budget.js";
 
 import { isRecord, recordValue, type LooseRecord } from "../contracts/types.js";
+import { parseManagedWorktreeContext } from "../contracts/worktree-ownership.js";
+import type { RunJobPorts, RunJobState } from "./run-job-ports.js";
 import {
   blockPreparedJob,
   reportProgress,
   ts,
-  type AppendEvent,
-  type BlockJob,
   type JobRecord,
   type JobRunResult,
-  type ProgressReporter,
 } from "./run-job-shared.js";
 
-type RunJobPrepareContext = LooseRecord & {
-  cpbRoot: string;
-  hubRoot?: string;
-  project: string;
-  task: string;
-  workflow?: string;
-  planMode?: string;
-  sourcePath?: string;
-  sourceContext?: LooseRecord;
-  createJob: (cpbRoot: string, input: LooseRecord) => Promise<JobRecord> | JobRecord;
-  blockJob?: BlockJob;
-  appendEvent: AppendEvent;
-  prepareTask?: (cpbRoot: string, input: LooseRecord) => Promise<LooseRecord> | LooseRecord;
-  onProgress?: ProgressReporter | null;
-  dynamicAgentPlan?: unknown;
-  _jobId?: string;
-  _attemptId?: string;
-};
+type RunJobPrepareContext =
+  Pick<RunJobState,
+    | "cpbRoot"
+    | "hubRoot"
+    | "project"
+    | "task"
+    | "jobId"
+    | "workflow"
+    | "planMode"
+    | "sourcePath"
+    | "managedWorktree"
+    | "sourceContext"
+    | "dynamicAgentPlan"
+    | "_jobId"
+    | "_attemptId"
+  >
+  & Pick<RunJobPorts,
+    | "createJob"
+    | "blockJob"
+    | "appendEvent"
+    | "prepareTask"
+    | "onProgress"
+  >;
 
 function normalizePrepareFailure(err: unknown) {
   // Accept the raw caught value. Pre-wrapping non-objects as
@@ -83,6 +87,14 @@ export async function createJobAndHandleBlocked(ctx: RunJobPrepareContext): Prom
     blockJob,
     appendEvent,
   } = ctx;
+  const managedWorktree = ctx.managedWorktree === undefined || ctx.managedWorktree === null
+    ? null
+    : parseManagedWorktreeContext(ctx.managedWorktree);
+  if (managedWorktree && ctx.sourcePath !== managedWorktree.path) {
+    throw Object.assign(new Error("managed worktree path does not match the run sourcePath"), {
+      code: "WORKTREE_OWNERSHIP_CONTRACT_INVALID",
+    });
+  }
 
   const job = await createJob(cpbRoot, {
     project,
@@ -110,11 +122,25 @@ export async function createJobAndHandleBlocked(ctx: RunJobPrepareContext): Prom
     type: "job_started",
     jobId,
     project,
+    attemptId,
     task,
     workflow,
     planMode,
     ts: ts(),
   });
+  if (managedWorktree) {
+    await appendEvent(cpbRoot, project, jobId, {
+      type: "worktree_created",
+      jobId,
+      project,
+      worktree: managedWorktree.path,
+      branch: managedWorktree.branch,
+      baseBranch: managedWorktree.baseBranch,
+      baseCommit: managedWorktree.baseCommit,
+      worktreeOwnership: managedWorktree.ownership,
+      ts: ts(),
+    });
+  }
   await reportProgress(ctx, { type: "job_started", jobId, project, workflow, planMode });
 
   if (workflow !== "blocked") {

@@ -44,11 +44,13 @@ function assuranceRecord(ctx: LooseRecord): LooseRecord {
 }
 
 function assuranceMode(ctx: LooseRecord, assurance: LooseRecord): "standard" | "high" {
-  const env = recordValue(ctx.env);
+  const hasExplicitEnv = ctx.env !== undefined && ctx.env !== null;
+  const envMode = hasExplicitEnv
+    ? text(recordValue(ctx.env).CPB_ASSURANCE_MODE)
+    : text(process.env.CPB_ASSURANCE_MODE);
   const raw = text(assurance.mode)
     || text(ctx.assuranceMode)
-    || text(env.CPB_ASSURANCE_MODE)
-    || text(process.env.CPB_ASSURANCE_MODE)
+    || envMode
     || "standard";
   return /^(?:high|high[_-]assurance|quality[_-]first)$/i.test(raw) ? "high" : "standard";
 }

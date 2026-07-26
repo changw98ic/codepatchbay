@@ -13,9 +13,8 @@ export function buildPhaseAcpEnv(ctx: LooseRecord, phase: string): NodeJS.Proces
   if (phase === "plan" && resolveHighAssurancePolicy(ctx).enabled) {
     // Tournament planning is static and read-only. Denying terminal creation
     // prevents dynamic probes from opening a non-TTY process that a planner
-    // later tries to poll through a closed stdin session. The risk-derived
-    // phase budget remains authoritative: high-assurance planning must not
-    // silently replace its 20/40/60/80 call budget with a smaller constant.
+    // later tries to poll through a closed stdin session. Evidence depth is
+    // still risk-derived, while tool/token work ceilings remain unlimited.
     env.CPB_ACP_TERMINAL = "deny";
   }
   return env;

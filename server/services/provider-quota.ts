@@ -1,4 +1,10 @@
-import type { LooseRecord } from "../../shared/types.js";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { isRecord, type LooseRecord } from "../../shared/types.js";
+import {
+  readBoundedRegularFileNoFollow,
+  type BoundedRegularFileReadHooks,
+} from "../../core/runtime/durable-directory-lock.js";
+import { constants } from "node:fs";
 /**
  * Provider Quota — centralised provider availability state.
  *
@@ -8,7 +14,7 @@ import type { LooseRecord } from "../../shared/types.js";
  * Durable file: {hubRoot}/providers/quotas.json
  */
 
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { lstat, mkdir, open, rename } from "node:fs/promises";
 import path from "node:path";
 
 // ─── Status Enum ────────────────────────────────────────────────────
@@ -21,11 +27,73 @@ export const QuotaStatus = Object.freeze({
   UNKNOWN: "unknown",
 });
 
-const TERMINAL_STATUSES = new Set([
+const PROVIDER_UNAVAILABLE_STATUSES: readonly string[] = Object.freeze([
+  QuotaStatus.RATE_LIMITED,
   QuotaStatus.WINDOW_EXHAUSTED,
   QuotaStatus.WEEKLY_EXHAUSTED,
   QuotaStatus.AUTH_ERROR,
+  QuotaStatus.UNKNOWN,
 ]);
+
+type ProviderQuotaEntry = LooseRecord & {
+  providerKey?: string;
+  agent?: string;
+  variant?: string | null;
+  status: string;
+  nextEligibleAt?: number | null;
+  source?: string;
+  confidence?: number;
+  reason?: string;
+  updatedAt?: string;
+  mutationId?: string;
+  commandDigest?: string;
+};
+
+type ProviderQuotaMap = Record<string, ProviderQuotaEntry>;
+
+type ProviderQuotaRead = {
+  quotas: ProviderQuotaMap;
+  sourcePath: string | null;
+  sourceGeneration: FileGeneration | null;
+  canonicalGeneration: FileGeneration | null;
+};
+
+interface ProviderQuotaPersistenceHooks {
+  readHooks?: BoundedRegularFileReadHooks;
+  beforeRename?: (context: { filePath: string; tempPath: string; providerKey: string; entry: ProviderQuotaEntry }) => void | Promise<void>;
+  afterRename?: (context: { filePath: string; tempPath: string; providerKey: string; entry: ProviderQuotaEntry }) => void | Promise<void>;
+}
+
+const providerQuotaPersistenceHookStorage = new AsyncLocalStorage<ProviderQuotaPersistenceHooks>();
+
+export function withProviderQuotaPersistenceHooksForTests<T>(
+  hooks: ProviderQuotaPersistenceHooks,
+  action: () => T,
+): T {
+  const parent = providerQuotaPersistenceHookStorage.getStore() || {};
+  return providerQuotaPersistenceHookStorage.run({ ...parent, ...hooks }, action);
+}
+
+class ProviderQuotaContractError extends Error {
+  code: string;
+
+  constructor(code: string, message: string, cause?: unknown) {
+    super(message, cause === undefined ? undefined : { cause });
+    this.name = "ProviderQuotaContractError";
+    this.code = code;
+  }
+}
+
+type FileGeneration = {
+  dev: number | bigint;
+  ino: number | bigint;
+  size: number | bigint;
+  mtimeMs: number | bigint;
+  ctimeMs: number | bigint;
+  birthtimeMs: number | bigint;
+};
+
+const PROVIDER_QUOTAS_MAX_BYTES = 1024 * 1024;
 
 // ─── Error ──────────────────────────────────────────────────────────
 export class ProviderQuotaError extends Error {
@@ -105,17 +173,385 @@ function legacyRateLimitsFilePath(hubRoot: string) {
   return path.join(hubRoot, "providers", "rate-limits.json");
 }
 
-export async function readProviderQuotas(hubRoot: string) {
-  try {
-    return JSON.parse(await readFile(quotasFilePath(hubRoot), "utf8"));
-  } catch (err) {
-    if (!err || err.code !== "ENOENT") return {};
-    try {
-      return JSON.parse(await readFile(legacyRateLimitsFilePath(hubRoot), "utf8"));
-    } catch {
-      return {};
+function invalidQuotaEntry(filePath: string, providerKey: string, detail: string): never {
+  throw new ProviderQuotaContractError(
+    "PROVIDER_QUOTA_ENTRY_CONTRACT_INVALID",
+    `provider quota entry '${providerKey}' in ${filePath} is invalid: ${detail}`,
+  );
+}
+
+function validateProviderQuotaEntry(value: unknown, providerKey: string, filePath: string): ProviderQuotaEntry {
+  if (!isRecord(value)) invalidQuotaEntry(filePath, providerKey, "expected an object");
+
+  if (value.providerKey !== undefined && (typeof value.providerKey !== "string" || !value.providerKey.trim())) {
+    invalidQuotaEntry(filePath, providerKey, "providerKey must be a non-empty string when present");
+  }
+  if (typeof value.providerKey === "string" && value.providerKey !== providerKey) {
+    invalidQuotaEntry(filePath, providerKey, `providerKey must match the canonical map key '${providerKey}'`);
+  }
+  if (value.agent !== undefined && typeof value.agent !== "string") {
+    invalidQuotaEntry(filePath, providerKey, "agent must be a string when present");
+  }
+  if (value.variant !== undefined && value.variant !== null && typeof value.variant !== "string") {
+    invalidQuotaEntry(filePath, providerKey, "variant must be a string or null when present");
+  }
+  if (typeof value.status !== "string" || !(Object.values(QuotaStatus) as string[]).includes(value.status)) {
+    invalidQuotaEntry(filePath, providerKey, `status is required and must be one of ${Object.values(QuotaStatus).join(", ")}`);
+  }
+  if (value.nextEligibleAt !== undefined && value.nextEligibleAt !== null) {
+    if (typeof value.nextEligibleAt !== "number" || !Number.isFinite(value.nextEligibleAt) || value.nextEligibleAt < 0) {
+      invalidQuotaEntry(filePath, providerKey, "nextEligibleAt must be a non-negative finite number or null when present");
     }
   }
+  if (value.source !== undefined && typeof value.source !== "string") {
+    invalidQuotaEntry(filePath, providerKey, "source must be a string when present");
+  }
+  if (value.confidence !== undefined) {
+    if (typeof value.confidence !== "number" || !Number.isFinite(value.confidence) || value.confidence < 0 || value.confidence > 1) {
+      invalidQuotaEntry(filePath, providerKey, "confidence must be a finite number from 0 to 1 when present");
+    }
+  }
+  if (value.reason !== undefined && typeof value.reason !== "string") {
+    invalidQuotaEntry(filePath, providerKey, "reason must be a string when present");
+  }
+  if (value.updatedAt !== undefined && typeof value.updatedAt !== "string") {
+    invalidQuotaEntry(filePath, providerKey, "updatedAt must be a string when present");
+  }
+  if (value.mutationId !== undefined && typeof value.mutationId !== "string") {
+    invalidQuotaEntry(filePath, providerKey, "mutationId must be a string when present");
+  }
+  if (value.commandDigest !== undefined && typeof value.commandDigest !== "string") {
+    invalidQuotaEntry(filePath, providerKey, "commandDigest must be a string when present");
+  }
+
+  return value as ProviderQuotaEntry;
+}
+
+export function _internalValidateProviderUnavailableInput(
+  providerKeyValue: unknown,
+  value: unknown,
+): LooseRecord {
+  if (typeof providerKeyValue !== "string" || !providerKeyValue.trim()) {
+    throw new ProviderQuotaContractError(
+      "PROVIDER_QUOTA_ENTRY_CONTRACT_INVALID",
+      "quota delegate quota command providerKey must be a non-empty string",
+    );
+  }
+  const validated = validateProviderQuotaEntry(value, providerKeyValue, "quota delegate quota command");
+  if (!PROVIDER_UNAVAILABLE_STATUSES.includes(validated.status)) {
+    invalidQuotaEntry(
+      "quota delegate quota command",
+      providerKeyValue,
+      `status must be one of ${PROVIDER_UNAVAILABLE_STATUSES.join(", ")}`,
+    );
+  }
+  return validated;
+}
+
+function validateProviderQuotas(value: unknown, filePath: string): ProviderQuotaMap {
+  if (!isRecord(value)) {
+    throw new ProviderQuotaContractError(
+      "PROVIDER_QUOTAS_CONTRACT_INVALID",
+      `provider quotas in ${filePath} must be a keyed object`,
+    );
+  }
+
+  const quotas: ProviderQuotaMap = {};
+  for (const [providerKey, entry] of Object.entries(value)) {
+    if (!providerKey.trim()) {
+      throw new ProviderQuotaContractError(
+        "PROVIDER_QUOTAS_CONTRACT_INVALID",
+        `provider quotas in ${filePath} contain an empty provider key`,
+      );
+    }
+    quotas[providerKey] = validateProviderQuotaEntry(entry, providerKey, filePath);
+  }
+  return quotas;
+}
+
+function parseProviderQuotaJson(raw: string, filePath: string): unknown {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new ProviderQuotaContractError(
+      "PROVIDER_QUOTAS_CONTRACT_INVALID",
+      `provider quotas in ${filePath} contain invalid JSON`,
+      err,
+    );
+  }
+  return parsed;
+}
+
+function parseProviderQuotas(raw: string, filePath: string): ProviderQuotaMap {
+  return validateProviderQuotas(parseProviderQuotaJson(raw, filePath), filePath);
+}
+
+function validateAndNormalizeLegacyProviderQuotaEntry(
+  value: unknown,
+  providerKey: string,
+  filePath: string,
+): ProviderQuotaEntry {
+  if (!isRecord(value)) invalidQuotaEntry(filePath, providerKey, "legacy entry must be an object");
+  if (typeof value.untilTs !== "string" || !value.untilTs.trim()) {
+    invalidQuotaEntry(filePath, providerKey, "legacy untilTs must be a non-empty timestamp string");
+  }
+  const nextEligibleAt = Date.parse(value.untilTs);
+  if (!Number.isFinite(nextEligibleAt) || nextEligibleAt < 0) {
+    invalidQuotaEntry(filePath, providerKey, "legacy untilTs must be a valid timestamp");
+  }
+  if (value.reason !== undefined && typeof value.reason !== "string") {
+    invalidQuotaEntry(filePath, providerKey, "legacy reason must be a string when present");
+  }
+
+  return {
+    ...value,
+    providerKey,
+    agent: providerKey,
+    status: QuotaStatus.RATE_LIMITED,
+    nextEligibleAt,
+    source: "legacy-rate-limits",
+    confidence: 1,
+    reason: typeof value.reason === "string" ? value.reason : "",
+  } as ProviderQuotaEntry;
+}
+
+function validateAndNormalizeLegacyProviderQuotas(value: unknown, filePath: string): ProviderQuotaMap {
+  if (!isRecord(value)) {
+    throw new ProviderQuotaContractError(
+      "PROVIDER_QUOTAS_CONTRACT_INVALID",
+      `legacy provider quotas in ${filePath} must be a keyed object`,
+    );
+  }
+
+  const quotas: ProviderQuotaMap = {};
+  for (const [providerKey, entry] of Object.entries(value)) {
+    if (!providerKey.trim()) {
+      throw new ProviderQuotaContractError(
+        "PROVIDER_QUOTAS_CONTRACT_INVALID",
+        `legacy provider quotas in ${filePath} contain an empty provider key`,
+      );
+    }
+    quotas[providerKey] = validateAndNormalizeLegacyProviderQuotaEntry(entry, providerKey, filePath);
+  }
+  return quotas;
+}
+
+function parseLegacyProviderQuotas(raw: string, filePath: string): ProviderQuotaMap {
+  return validateAndNormalizeLegacyProviderQuotas(parseProviderQuotaJson(raw, filePath), filePath);
+}
+
+function isMissingFileError(err: unknown): err is NodeJS.ErrnoException {
+  return err instanceof Error && (err as NodeJS.ErrnoException).code === "ENOENT";
+}
+
+function asError(error: unknown) {
+  return error instanceof Error ? error : new Error(String(error));
+}
+
+function errorCode(error: unknown) {
+  return error && typeof error === "object" && "code" in error
+    ? String((error as NodeJS.ErrnoException).code || "")
+    : "";
+}
+
+async function syncDirectory(dirPath: string) {
+  if (
+    typeof constants.O_NOFOLLOW !== "number"
+    || constants.O_NOFOLLOW === 0
+    || typeof constants.O_DIRECTORY !== "number"
+    || constants.O_DIRECTORY === 0
+  ) {
+    throw Object.assign(new Error("safe provider quota directory fsync flags are unavailable"), {
+      code: "PROVIDER_QUOTA_DIRECTORY_SYNC_UNSAFE",
+    });
+  }
+  const handle = await open(dirPath, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  let primaryError: unknown = null;
+  try {
+    const info = await handle.stat();
+    if (!info.isDirectory() || info.isSymbolicLink()) {
+      throw Object.assign(new Error(`provider quota parent is not a safe directory: ${dirPath}`), {
+        code: "PROVIDER_QUOTA_DIRECTORY_SYNC_UNSAFE",
+      });
+    }
+    await handle.sync();
+  } catch (error) {
+    primaryError = error;
+  }
+  let closeError: unknown = null;
+  try {
+    await handle.close();
+  } catch (error) {
+    closeError = error;
+  }
+  if (primaryError) {
+    if (closeError) {
+      const primary = asError(primaryError);
+      throw new AggregateError([primary, asError(closeError)], primary.message, { cause: primary });
+    }
+    throw primaryError;
+  }
+  if (closeError) throw closeError;
+}
+
+function fileGenerationFromStat(stat: Awaited<ReturnType<typeof lstat>>): FileGeneration {
+  return {
+    dev: stat.dev,
+    ino: stat.ino,
+    size: stat.size,
+    mtimeMs: stat.mtimeMs,
+    ctimeMs: stat.ctimeMs,
+    birthtimeMs: stat.birthtimeMs,
+  };
+}
+
+async function fileGeneration(filePath: string): Promise<FileGeneration | null> {
+  try {
+    const stat = await lstat(filePath);
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      throw new ProviderQuotaContractError(
+        "PROVIDER_QUOTAS_CONTRACT_INVALID",
+        `provider quotas in ${filePath} must be a regular file`,
+      );
+    }
+    return fileGenerationFromStat(stat);
+  } catch (error) {
+    if (isMissingFileError(error)) return null;
+    throw error;
+  }
+}
+
+function sameFileGeneration(left: FileGeneration | null, right: FileGeneration | null) {
+  return left === null || right === null
+    ? left === right
+    : left.dev === right.dev
+      && left.ino === right.ino
+      && left.size === right.size
+      && left.mtimeMs === right.mtimeMs
+      && left.ctimeMs === right.ctimeMs
+      && left.birthtimeMs === right.birthtimeMs;
+}
+
+async function writeFileDurably(filePath: string, content: string) {
+  if (typeof constants.O_NOFOLLOW !== "number" || constants.O_NOFOLLOW === 0) {
+    throw Object.assign(new Error("O_NOFOLLOW is unavailable for provider quota publication"), {
+      code: "PROVIDER_QUOTA_NOFOLLOW_UNAVAILABLE",
+    });
+  }
+  const handle = await open(
+    filePath,
+    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+    0o600,
+  );
+  let primaryError: unknown = null;
+  try {
+    await handle.writeFile(content, "utf8");
+    await handle.sync();
+  } catch (error) {
+    primaryError = error;
+  }
+  let closeError: unknown = null;
+  try {
+    await handle.close();
+  } catch (error) {
+    closeError = error;
+  }
+  if (primaryError) {
+    if (closeError) {
+      const primary = asError(primaryError);
+      throw new AggregateError([primary, asError(closeError)], primary.message, { cause: primary });
+    }
+    throw primaryError;
+  }
+  if (closeError) throw closeError;
+}
+
+function mergeReadHooks(captureGeneration: (filePath: string) => Promise<void>): BoundedRegularFileReadHooks {
+  const userHooks = providerQuotaPersistenceHookStorage.getStore()?.readHooks;
+  return {
+    afterOpen: userHooks?.afterOpen,
+    afterChunk: userHooks?.afterChunk,
+    beforePathGenerationCheck: async (context) => {
+      await userHooks?.beforePathGenerationCheck?.(context);
+      await captureGeneration(context.filePath);
+    },
+  };
+}
+
+async function readFileNoFollow(filePath: string): Promise<{ content: string; generation: FileGeneration | null }> {
+  let generation: FileGeneration | null = null;
+  try {
+    const content = await readBoundedRegularFileNoFollow(filePath, {
+      maxBytes: PROVIDER_QUOTAS_MAX_BYTES,
+      hooks: mergeReadHooks(async (readPath) => {
+        generation = await fileGeneration(readPath);
+      }),
+    });
+    return { content, generation };
+  } catch (error) {
+    if (isMissingFileError(error)) throw error;
+    throw errorCode(error) === "BOUNDED_FILE_UNSAFE"
+      ? new ProviderQuotaContractError(
+        "PROVIDER_QUOTAS_CONTRACT_INVALID",
+        `provider quotas in ${filePath} must be a regular no-follow file`,
+        error,
+      )
+      : errorCode(error) === "BOUNDED_FILE_TOO_LARGE" || errorCode(error) === "BOUNDED_FILE_CHANGED"
+        ? new ProviderQuotaContractError(
+          "PROVIDER_QUOTAS_CONTRACT_INVALID",
+          `provider quotas in ${filePath} changed or exceeded the bounded read limit`,
+          error,
+        )
+        : error;
+  }
+}
+
+async function readProviderQuotaFile(
+  filePath: string,
+  parse: (raw: string, sourcePath: string) => ProviderQuotaMap,
+): Promise<{ quotas: ProviderQuotaMap; generation: FileGeneration | null }> {
+  const { content, generation } = await readFileNoFollow(filePath);
+  return { quotas: parse(content, filePath), generation };
+}
+
+async function readProviderQuotasForWrite(hubRoot: string): Promise<ProviderQuotaRead> {
+  const canonicalPath = quotasFilePath(hubRoot);
+  try {
+    const { quotas, generation } = await readProviderQuotaFile(canonicalPath, parseProviderQuotas);
+    return {
+      quotas,
+      sourcePath: canonicalPath,
+      sourceGeneration: generation,
+      canonicalGeneration: generation,
+    };
+  } catch (err) {
+    if (!isMissingFileError(err)) throw err;
+    const legacyPath = legacyRateLimitsFilePath(hubRoot);
+    try {
+      const { quotas, generation } = await readProviderQuotaFile(legacyPath, parseLegacyProviderQuotas);
+      return {
+        quotas,
+        sourcePath: legacyPath,
+        sourceGeneration: generation,
+        canonicalGeneration: null,
+      };
+    } catch (legacyErr) {
+      if (isMissingFileError(legacyErr)) {
+        return {
+          quotas: {},
+          sourcePath: null,
+          sourceGeneration: null,
+          canonicalGeneration: null,
+        };
+      }
+      throw legacyErr;
+    }
+  }
+}
+
+export async function readProviderQuotas(hubRoot: string): Promise<ProviderQuotaMap> {
+  return (await readProviderQuotasForWrite(hubRoot)).quotas;
 }
 
 // In-process write queue to prevent concurrent write corruption
@@ -126,19 +562,73 @@ export async function _internalWriteProviderQuota(hubRoot: string, providerKey: 
   const queueKey = filePath;
   const prev = _writeQueues.get(queueKey) || Promise.resolve();
   const next = prev.catch(() => null).then(async () => {
+    const persistenceHooks = providerQuotaPersistenceHookStorage.getStore();
     // Re-read latest to avoid clobbering concurrent writes
-    const current = await readProviderQuotas(hubRoot);
-    current[providerKey] = {
+    const read = await readProviderQuotasForWrite(hubRoot);
+    const current = read.quotas;
+    current[providerKey] = validateProviderQuotaEntry({
       ...entry,
       reason: redactSecrets(entry.reason),
       providerKey,
       updatedAt: new Date().toISOString(),
-    };
+    }, providerKey, filePath);
     await mkdir(path.dirname(filePath), { recursive: true });
+    await syncDirectory(path.dirname(filePath));
     const randomSuffix = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const tmp = `${filePath}.tmp-${randomSuffix}`;
-    await writeFile(tmp, `${JSON.stringify(current, null, 2)}\n`, "utf8");
-    await rename(tmp, filePath);
+    let committed = false;
+    let primaryError: unknown = null;
+    try {
+      await writeFileDurably(tmp, `${JSON.stringify(current, null, 2)}\n`);
+      await persistenceHooks?.beforeRename?.({
+        filePath,
+        tempPath: tmp,
+        providerKey,
+        entry: current[providerKey],
+      });
+      const currentGeneration = await fileGeneration(filePath);
+      const sourceCurrentGeneration = read.sourcePath === null ? null : await fileGeneration(read.sourcePath);
+      if (
+        !sameFileGeneration(read.canonicalGeneration, currentGeneration)
+        || !sameFileGeneration(read.sourceGeneration, sourceCurrentGeneration)
+      ) {
+        throw Object.assign(
+          new ProviderQuotaContractError(
+            "PROVIDER_QUOTAS_SOURCE_CHANGED",
+            `provider quotas in ${filePath} changed before quota publication; successor preserved`,
+          ),
+          {
+            code: "PROVIDER_QUOTAS_SOURCE_CHANGED",
+            committed: false,
+            providerKey,
+            recoveryPaths: [filePath, tmp, path.dirname(filePath)],
+          },
+        );
+      }
+      await rename(tmp, filePath);
+      committed = true;
+      await persistenceHooks?.afterRename?.({
+        filePath,
+        tempPath: tmp,
+        providerKey,
+        entry: current[providerKey],
+      });
+      await syncDirectory(path.dirname(filePath));
+    } catch (error) {
+      primaryError = error;
+    }
+    if (primaryError) {
+      const primary = asError(primaryError);
+      throw Object.assign(primary, {
+        code: committed ? "PROVIDER_QUOTA_WRITE_COMMITTED_DURABILITY_AMBIGUOUS" : (primary as NodeJS.ErrnoException).code,
+        committed,
+        ...(committed ? { committedPath: filePath } : {}),
+        providerKey,
+        entry: current[providerKey],
+        cleanupErrors: [],
+        recoveryPaths: [filePath, tmp, path.dirname(filePath)],
+      });
+    }
     return current[providerKey];
   });
   _writeQueues.set(queueKey, next.catch(() => null));
@@ -155,6 +645,8 @@ interface MarkUnavailableOpts {
   source?: string;
   confidence?: number;
   reason?: string;
+  mutationId?: string;
+  commandDigest?: string;
 }
 
 export async function _internalMarkProviderUnavailable(hubRoot: string, {
@@ -166,25 +658,22 @@ export async function _internalMarkProviderUnavailable(hubRoot: string, {
   source,
   confidence,
   reason,
+  mutationId,
+  commandDigest,
 }: MarkUnavailableOpts) {
-  const validStatuses: string[] = [
-    QuotaStatus.RATE_LIMITED,
-    QuotaStatus.WINDOW_EXHAUSTED,
-    QuotaStatus.WEEKLY_EXHAUSTED,
-    QuotaStatus.AUTH_ERROR,
-    QuotaStatus.UNKNOWN,
-  ];
-  if (!validStatuses.includes(status)) {
+  if (!PROVIDER_UNAVAILABLE_STATUSES.includes(status)) {
     throw new Error(`invalid unavailable status: ${status}`);
   }
   return _internalWriteProviderQuota(hubRoot, providerKey, {
     agent,
     variant: variant || null,
     status,
-    nextEligibleAt: nextEligibleAt ?? null,
+    ...(nextEligibleAt == null ? {} : { nextEligibleAt }),
     source: source || "provider-quota",
     confidence: confidence ?? 1,
     reason: reason || "",
+    ...(mutationId ? { mutationId } : {}),
+    ...(commandDigest ? { commandDigest } : {}),
   });
 }
 
@@ -195,7 +684,6 @@ export async function _internalMarkProviderAvailable(hubRoot: string, providerKe
     agent: existing?.agent || providerKey,
     variant: existing?.variant || null,
     status: QuotaStatus.AVAILABLE,
-    nextEligibleAt: null,
     source: "mark-available",
     confidence: 1,
     reason: "",
@@ -265,8 +753,10 @@ export async function assertProviderAvailable(hubRoot: string, {
     return;
   }
 
-  // Terminal statuses without nextEligibleAt (e.g. weekly/window with no reset)
-  if (TERMINAL_STATUSES.has(entry.status) && entry.nextEligibleAt == null) {
+  // Any explicitly unavailable state without a reset stays unavailable until
+  // the delegate writes an available state. Missing reset data must not open
+  // the provider gate.
+  if (entry.status !== QuotaStatus.AVAILABLE && entry.nextEligibleAt == null) {
     throw new ProviderQuotaError(
       `provider ${providerKey} is ${entry.status}: ${entry.reason}`,
       {
@@ -469,7 +959,7 @@ export async function classifyQuotaFailure({ providerKey, agent, variant, error,
         return {
           isQuota: true,
           status: adapterResult.status || QuotaStatus.RATE_LIMITED,
-          nextEligibleAt: adapterResult.nextEligibleAt ?? parseResetTime(combined, adapter.timezone),
+          nextEligibleAt: adapterResult.nextEligibleAt ?? parseResetTime(combined, adapter.timezone || null),
           confidence: adapterResult.confidence ?? 0.8,
           reason: adapterResult.reason || `adapter detected quota: ${msg.slice(0, 200)}`,
         };

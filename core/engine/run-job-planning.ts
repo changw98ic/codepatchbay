@@ -9,6 +9,9 @@ export type WorkflowDagNode = LooseRecord & {
   dependsOn?: string[];
   custom?: boolean;
   sideEffecting?: boolean;
+  parallelSafe?: boolean;
+  conflictKey?: string;
+  conflictKeys?: string[];
   checklistNeutral?: boolean;
   checklistIds?: string[];
   checklistBindingSource?: string;
@@ -16,6 +19,7 @@ export type WorkflowDagNode = LooseRecord & {
 
 export type WorkflowDag = LooseRecord & {
   nodes: WorkflowDagNode[];
+  maxConcurrentNodes?: number;
 };
 
 type ResumeContext = {

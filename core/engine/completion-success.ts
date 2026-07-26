@@ -7,6 +7,10 @@ type CompletedJobResult = {
   failure: null;
   phaseResults: LooseRecord[];
   completionReport?: LooseRecord | null;
+  completionGate?: {
+    outcome: "complete";
+    completionReport: LooseRecord;
+  };
 };
 
 type CompletionSuccessInput = {
@@ -184,6 +188,12 @@ export async function handleCompletionSuccess({
     failure: null,
     phaseResults,
   };
-  if (completionReport) result.completionReport = completionReport;
+  if (completionReport) {
+    result.completionReport = completionReport;
+    result.completionGate = {
+      outcome: "complete",
+      completionReport,
+    };
+  }
   return result;
 }

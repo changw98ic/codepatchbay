@@ -6,13 +6,9 @@
  * that cannot be parsed.
  *
  * Two attack vectors are tested:
- *   1. Pure gate:  when readActiveChecklistArtifacts silently swallows the
- *                  parse error and returns an empty object, the gate falls
- *                  back to the legacy verdict path. For a mutating job with
- *                  no parsedVerdict, gate 3 fires artifact_invalid.
- *   2. Integration: write a truncated acceptance-checklist file to disk,
- *                    call readActiveChecklistArtifacts, confirm the artifact
- *                    is silently dropped, then confirm the gate rejects.
+ *   1. Pure gate: a mutating job without a parsed verdict is rejected.
+ *   2. Artifact loading: truncated, empty, incomplete, or missing required
+ *      artifacts return an explicit artifact_invalid result.
  */
 
 import assert from "node:assert/strict";
@@ -28,11 +24,7 @@ import { tempRoot } from "./helpers.js";
 
 // ─── Pure gate: truncated acceptance-checklist JSON → artifact_invalid ─────
 
-test("adversarial round 1: truncated acceptance-checklist JSON causes artifact_invalid via legacy fallback", () => {
-  // Simulates the real-world scenario: readActiveChecklistArtifacts catches
-  // the JSON.parse error and returns {} — so checklist is undefined, and the
-  // gate falls through to the legacy verdict gates. A mutating job with no
-  // parsedVerdict hits gate 3: artifact_invalid.
+test("adversarial round 1: a mutating job without a verdict fails closed", () => {
   const result = evaluateCompletionGate({
     job: { workflow: "standard", planMode: "full", completedPhases: ["plan", "execute", "verify"] },
     workflowDag: { nodes: [{ id: "verify", phase: "verify" }] },
@@ -48,9 +40,9 @@ test("adversarial round 1: truncated acceptance-checklist JSON causes artifact_i
     `expected missingGates to include 'verdict_artifact', got: ${JSON.stringify(result.missingGates)}`);
 });
 
-// ─── Integration: truncated file on disk → artifact silently dropped ───────
+// ─── Integration: truncated file on disk → artifact fails closed ───────
 
-test("adversarial round 1: readActiveChecklistArtifacts silently drops truncated JSON file", async () => {
+test("adversarial round 1: readActiveChecklistArtifacts fails closed on truncated JSON file", async () => {
   const cpbRoot = await tempRoot("cpb-adversarial-round1");
   const dataRoot = path.join(cpbRoot, "runtime", "projects", "flow");
   const outputs = path.join(dataRoot, "wiki", "outputs");
@@ -87,7 +79,7 @@ test("adversarial round 1: readActiveChecklistArtifacts silently drops truncated
   assert.ok(checklistEntry, "artifact index should list the acceptance-checklist entry");
   assert.strictEqual(checklistEntry.exists, true, "file exists on disk");
 
-  // But readActiveChecklistArtifacts should silently drop it because JSON.parse fails
+  // Fail-closed: readActiveChecklistArtifacts returns artifact_invalid
   const artifactIndex = await buildArtifactIndex(cpbRoot, "flow", "job-1", { dataRoot });
   const artifacts = await readActiveChecklistArtifacts({
     artifactIndex,
@@ -95,8 +87,9 @@ test("adversarial round 1: readActiveChecklistArtifacts silently drops truncated
     requiredKinds: ["acceptance-checklist"],
   });
 
-  assert.strictEqual(artifacts["acceptance-checklist"], undefined,
-    "readActiveChecklistArtifacts must not return broken JSON as a parsed object");
+  assert.equal(artifacts.ok, false, "readActiveChecklistArtifacts must fail");
+  assert.equal(artifacts.outcome, "artifact_invalid", "readActiveChecklistArtifacts must fail with artifact_invalid");
+  assert.ok(String(artifacts.reason || "").includes("not valid JSON"), "failure reason must explain JSON parse failure");
 });
 
 // ─── Integration: truncated file + gate evaluation = artifact_invalid ──────
@@ -137,8 +130,10 @@ test("adversarial round 1: full flow — truncated checklist file leads to artif
     requiredKinds: ["acceptance-checklist", "checklist-verdict", "evidence-ledger", "execution-map"],
   });
 
-  // The broken artifact was silently dropped
-  assert.strictEqual(artifacts["acceptance-checklist"], undefined);
+  // The broken artifact now fails closed and does not fall back to legacy gate logic
+  assert.equal(artifacts.ok, false, "readActiveChecklistArtifacts must fail on broken JSON");
+  assert.equal(artifacts.outcome, "artifact_invalid", "failed artifact parse must map to artifact_invalid");
+  assert.ok(String(artifacts.reason || "").includes("not valid JSON"), "failure reason must explain parse failure");
 
   // Now evaluate the gate exactly as run-job.ts does
   const result = evaluateCompletionGate({
@@ -187,8 +182,9 @@ test("adversarial round 1: empty acceptance-checklist file causes gate failure",
     requiredKinds: ["acceptance-checklist"],
   });
 
-  assert.strictEqual(artifacts["acceptance-checklist"], undefined,
-    "empty file must not produce a parsed artifact");
+  assert.equal(artifacts.ok, false, "readActiveChecklistArtifacts must fail on empty file");
+  assert.equal(artifacts.outcome, "artifact_invalid", "empty file must produce artifact_invalid");
+  assert.ok(String(artifacts.reason || "").includes("not valid JSON"), "empty content must explain parse failure");
 
   const result = evaluateCompletionGate({
     job: { workflow: "standard", planMode: "full", completedPhases: ["plan", "execute", "verify"] },
@@ -229,8 +225,9 @@ test("adversarial round 1: acceptance-checklist with only opening brace causes g
     requiredKinds: ["acceptance-checklist"],
   });
 
-  assert.strictEqual(artifacts["acceptance-checklist"], undefined,
-    "incomplete JSON '{' must not produce a parsed artifact");
+  assert.equal(artifacts.ok, false, "readActiveChecklistArtifacts must fail on incomplete JSON");
+  assert.equal(artifacts.outcome, "artifact_invalid", "incomplete JSON must produce artifact_invalid");
+  assert.ok(String(artifacts.reason || "").includes("not valid JSON"), "parse failure must be explicit");
 
   const result = evaluateCompletionGate({
     job: { workflow: "standard", planMode: "full", completedPhases: ["plan", "execute", "verify"] },
@@ -240,4 +237,34 @@ test("adversarial round 1: acceptance-checklist with only opening brace causes g
   });
 
   assert.strictEqual(result.outcome, "artifact_invalid");
+});
+
+test("adversarial round 1: missing required artifact kind fails closed", async () => {
+  const cpbRoot = await tempRoot("cpb-adversarial-round1-missing-kind");
+  const acceptancePath = path.join(cpbRoot, "acceptance-checklist-001.json");
+  await writeFile(acceptancePath, JSON.stringify({ kind: "acceptance-checklist" }), "utf8");
+
+  const artifacts = await readActiveChecklistArtifacts({
+    artifactIndex: {
+      entries: [
+        {
+          kind: "acceptance-checklist",
+          id: "acceptance-checklist-001",
+          attemptId: "attempt-missing",
+          exists: true,
+          path: acceptancePath,
+          createdAt: new Date().toISOString(),
+        },
+      ],
+    },
+    attemptId: "attempt-missing",
+    requiredKinds: ["acceptance-checklist", "evidence-ledger"],
+  });
+
+  assert.equal(artifacts.ok, false, "missing required kind must fail");
+  assert.equal(artifacts.outcome, "artifact_invalid", "missing required kind should map to artifact_invalid");
+  assert.ok(
+    String(artifacts.reason || "").includes("evidence-ledger"),
+    "failure reason should mention the missing kind",
+  );
 });
