@@ -75,12 +75,21 @@ test("package exposes stabilization verifier entrypoint", async () => {
   );
   assert.equal(pkg.scripts["test:node"], "node dist-tests/scripts/run-node-tests.js");
   assert.equal(pkg.scripts["test:main"], "npm run test:node -- --main && npm run test:shell");
+  assert.equal(pkg.scripts["test:integration"], "node dist-tests/scripts/run-node-tests.js --integration");
   assert.equal(pkg.scripts["test:specialized"], "npm run test:node -- --specialized");
   assert.doesNotMatch(pkg.scripts["build:tests"], /dist\/tests/);
   assert.equal(
     pkg.scripts["verify:dependency-audit"],
     "npm audit --omit=dev --audit-level=moderate && npm audit --audit-level=high",
   );
+});
+
+test("main-flow profile excludes specialized and process integration suites", async () => {
+  const runner = await readFile(path.join(repoRoot, "scripts", "run-node-tests.ts"), "utf8");
+  assert.match(runner, /const mainFlowFiles = discoveredFiles\.filter/);
+  assert.match(runner, /!specializedTestFiles\.has\(file\)/);
+  assert.match(runner, /!file\.startsWith\("tests\/integration\/"\)/);
+  assert.match(runner, /const allFiles = mainOnly\s*\n\s*\? mainFlowFiles/);
 });
 
 test("CI cannot reinstall the removed web toolchain outside the reviewed lockfile", async () => {

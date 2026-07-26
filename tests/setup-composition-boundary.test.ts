@@ -54,11 +54,6 @@ const CANONICAL_IMPORTS = [
     specifier: "../server/services/executor-root.js",
     names: ["REQUIRED_EXECUTOR_FILES"],
   },
-  {
-    file: "tests/integration/fake-acp-smoke.test.ts",
-    specifier: "../../server/services/readiness-checks.js",
-    names: ["runDemo"],
-  },
 ];
 
 async function listSourceFiles(dir: string): Promise<string[]> {

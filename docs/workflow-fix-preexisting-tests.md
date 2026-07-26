@@ -83,7 +83,7 @@ const verification = await agent(
 
 1. node dist-tests/scripts/run-node-tests.js tests/integration/acp-test-agent.test.ts 2>&1 | grep -E "^(✔|✖|ℹ)" | tail -10
 2. node dist-tests/scripts/run-node-tests.js tests/integration/managed-worker.test.ts 2>&1 | grep -E "^(✔|✖|ℹ)" | tail -10
-3. node dist-tests/scripts/run-node-tests.js tests/integration/phase-runner.test.ts 2>&1 | grep -E "^(✔|✖|ℹ)" | tail -10
+3. node dist-tests/scripts/run-node-tests.js tests/integration/phase-runner-authority.test.ts 2>&1 | grep -E "^(✔|✖|ℹ)" | tail -10
 
 输出：每个测试的结果`,
   { label: 'verification', phase: '验证', model: 'sonnet' }

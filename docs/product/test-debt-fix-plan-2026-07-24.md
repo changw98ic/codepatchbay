@@ -114,7 +114,20 @@ npm run typecheck
 npm run test:main
 ```
 
-该 profile 当前包含 232 个 Node 测试文件；架构边界扫描和对抗性 completion-gate 测试仍保留在主流程，因为它们约束核心安全与分层契约。
+该 profile 当前包含 222 个 Node 测试文件；架构边界扫描和对抗性 completion-gate 测试仍保留在主流程，因为它们约束核心安全与分层契约。`tests/integration/` 下的真实进程测试不再进入每次 PR 的主流程 CI；改动 ACP、worker、reconcile、worktree 或 authority 边界时，显式运行：
+
+```sh
+npm run test:integration
+```
+
+保留集成测试的原因是它们覆盖故障注入和安全边界，而不是普通成功链路。发布验收只通过 `verify:release-gate` 运行一个 managed-worker 旗舰任务 E2E；真实 provider/GitHub 任务仍走 `scripts/e2e-test.sh` 的 disposable-target 手工验收。
+
+本次直接删除两条不应继续占用集成测试位的路径：
+
+- `tests/integration/fake-acp-smoke.test.ts`：实际测试的是 readiness demo 的手工 artifact 拼装，不是 ACP/worker 主流程；完整 fake-ACP 任务链已有 `runFakeAcpSmoke` 和 managed-worker 旗舰 E2E 覆盖。
+- `tests/integration/phase-runner.test.ts`：测试的是当前没有生产调用方的 legacy `server/services/phase-runner.ts` dispatch 路径；phase role/wire contract 仍由现有 contract tests 覆盖，authority 故障注入保留在 `phase-runner-authority.test.ts`。
+
+其余 8 个集成文件暂不删除：`managed-worker.test.ts` 是发布门禁唯一保留的产品链路 E2E；`acp-client.test.ts` 与 `acp-test-agent.test.ts` 覆盖工具权限、凭据隔离、超时和进程回收；`phase-runner-authority.test.ts` 覆盖 capsule/替换攻击；`reconcile.test.ts` 覆盖 stale job、orphan lease 和清理竞态；`worker-supervisor.test.ts` 覆盖崩溃重启上限；`worktree-manager.test.ts` 覆盖 worktree/CodeGraph 所有权。`cli-command-alias.test.ts` 只有 5 个 CLI contract 检查，后续可并入 `cli-runtime-contracts.test.ts`，但真实任务 E2E 并不覆盖未知命令和 alias 语义，因此本次不误删。
 
 以下 10 个文件属于专项 profile，不是本地交付主流程的必要路径，但仍可单独运行：
 

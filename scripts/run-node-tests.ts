@@ -149,16 +149,28 @@ const specializedTestFiles = new Set([
 
 const mainOnly = process.argv.includes("--main");
 const specializedOnly = process.argv.includes("--specialized");
+const integrationOnly = process.argv.includes("--integration");
 const listOnly = process.argv.includes("--list");
-if (mainOnly && specializedOnly) {
-  console.error("--main and --specialized are mutually exclusive");
+if ((mainOnly ? 1 : 0) + (specializedOnly ? 1 : 0) + (integrationOnly ? 1 : 0) > 1) {
+  console.error("--main, --specialized, and --integration are mutually exclusive");
   process.exit(1);
 }
 
+// Integration suites spawn ACP, worker, Hub, and process-tree children. The
+// main profile deliberately leaves them to the manual/release E2E lanes; a
+// successful real task is the product-path check, while these suites are
+// fault-injection and authority-boundary checks.
+const mainFlowFiles = discoveredFiles.filter((file) => (
+  !specializedTestFiles.has(file)
+  && !file.startsWith("tests/integration/")
+));
+
 const allFiles = mainOnly
-  ? discoveredFiles.filter((file) => !specializedTestFiles.has(file))
+  ? mainFlowFiles
   : specializedOnly
     ? discoveredFiles.filter((file) => specializedTestFiles.has(file))
+    : integrationOnly
+      ? discoveredFiles.filter((file) => file.startsWith("tests/integration/"))
     : discoveredFiles;
 
 if (allFiles.length === 0) {
@@ -324,10 +336,6 @@ const isolatedIntegrationFiles = new Set([
   "tests/integration/managed-worker.test.js",
   "tests/integration/worker-supervisor.test.js",
   "tests/integration/reconcile.test.js",
-  // Spawns real ACP/managed-worker subprocesses whose process-identity
-  // teardown contends under the parallel integration batch (flake only in the
-  // full --integration run, passes standalone). Run serially.
-  "tests/integration/phase-runner.test.js",
 ]);
 const isolatedUnitTestFiles = unitFiles.filter((f) => isolatedUnitFiles.has(f));
 const slowUnitTestFiles = unitFiles.filter((f) => slowUnitFiles.has(f) && !isolatedUnitFiles.has(f));
@@ -341,7 +349,6 @@ const parallelIntegrationFiles = integrationFiles.filter((f) => !isolatedFiles.i
 // via the default full `npm test`, so coverage is unchanged.
 const unitOnly = process.argv.includes("--unit");
 // When --integration flag is passed, only run integration tests
-const integrationOnly = process.argv.includes("--integration");
 
 try {
   if (unitOnly) {

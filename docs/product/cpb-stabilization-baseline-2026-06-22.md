@@ -140,8 +140,8 @@ This checkpoint establishes the first stabilization gates:
 - `verify:p0p1` focused tests run through `scripts/run-node-tests.js`, so
   fake-agent deterministic tests consistently use the standard
   `CPB_CHECKLIST_DECOMPOSE=0` test isolation.
-- stale focused P0/P1 entries for removed integration tests were replaced with
-  the current `tests/integration/fake-acp-smoke.test.js`.
+- stale focused P0/P1 entries for removed integration tests were removed; the
+  managed-worker flagship E2E remains the isolated product-path check.
 
 Verified after the checkpoint:
 

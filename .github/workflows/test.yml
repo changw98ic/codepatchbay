@@ -59,10 +59,11 @@ jobs:
             /bin/zsh -c 'true'
 
       - name: Run main-flow Node and shell tests
-        # Benchmark, evaluation, release-rehearsal, and packaging suites are
-        # intentionally outside the PR/main acceptance path. Run them
-        # explicitly with `npm run test:specialized` when changing those
-        # tools; `npm test` remains the local full-coverage command.
+        # Benchmark, evaluation, release-rehearsal, packaging, and real-process
+        # integration suites are intentionally outside the PR/main acceptance
+        # path. Run `npm run test:integration` or
+        # `npm run test:specialized` when changing those paths; `npm test`
+        # remains the local full-coverage command.
         run: npm run test:main
 
       - name: Run Node typecheck

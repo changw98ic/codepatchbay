@@ -72,7 +72,6 @@ const focusedTests = [
   "tests/acp-supervisor.test.js",
   "tests/codegraph-capability-map.test.js",
   "tests/checklist-decompose-integration.test.js",
-  "tests/integration/fake-acp-smoke.test.js",
 ];
 
 const isolatedFocusedTests = [

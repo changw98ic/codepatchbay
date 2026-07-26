@@ -14,7 +14,7 @@ const EVENT_REGISTRY = {
   worktree_created:       { class: 'state',    consumer: 'job-store, worktree-manager', testFile: 'integration/worktree-manager.test.js', testMatch: ['worktree'] },
   phase_started:          { class: 'state',    consumer: 'job-store, supervisor',     testFile: 'job-store.test.js', testMatch: ['phase_started', 'startPhase'] },
   phase_completed:        { class: 'state',    consumer: 'job-store, supervisor',     testFile: 'job-store.test.js', testMatch: ['phase_completed', 'completePhase'] },
-  phase_failed:           { class: 'state',    consumer: 'job-store, supervisor',     testFile: 'integration/phase-runner.test.js', testMatch: ['phase_failed'] },
+  phase_failed:           { class: 'state',    consumer: 'job-store, supervisor',     testFile: 'job-runner.test.js', testMatch: ['phase_failed'] },
   budget_exceeded:        { class: 'control',  consumer: 'job-store, supervisor',     testFile: 'job-store.test.js', testMatch: ['budget_exceeded', 'budgetExceeded'] },
   job_blocked:            { class: 'control',  consumer: 'job-store, supervisor',     testFile: 'job-store.test.js', testMatch: ['job_blocked', 'blockJob'] },
   job_failed:             { class: 'state',    consumer: 'job-store, supervisor',     testFile: 'job-store.test.js', testMatch: ['job_failed', 'failJob'] },
