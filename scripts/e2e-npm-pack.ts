@@ -1808,7 +1808,11 @@ type TrustedNpmRuntime = {
   npmVersion: string;
 };
 
-function assertTrustedExecutable(filePath: string, executable: boolean) {
+function assertTrustedExecutable(
+  filePath: string,
+  executable: boolean,
+  { allowForeignOwner = false }: { allowForeignOwner?: boolean } = {},
+) {
   const canonical = realpathSync(filePath);
   if (canonical !== filePath) throw new Error(`trusted runtime path must already be canonical: ${filePath}`);
   const details = lstatSync(canonical, { bigint: true });
@@ -1816,7 +1820,7 @@ function assertTrustedExecutable(filePath: string, executable: boolean) {
   if (
     !details.isFile()
     || details.isSymbolicLink()
-    || (details.uid !== currentUid && details.uid !== 0n)
+    || (!allowForeignOwner && details.uid !== currentUid && details.uid !== 0n)
     || (details.mode & 0o022n) !== 0n
     || (executable && (details.mode & 0o111n) === 0n)
   ) {
@@ -1826,7 +1830,10 @@ function assertTrustedExecutable(filePath: string, executable: boolean) {
 }
 
 export function resolveTrustedNpmRuntime(nodeExecutable = process.execPath): TrustedNpmRuntime {
-  const canonicalNode = assertTrustedExecutable(realpathSync(nodeExecutable), true);
+  // setup-node may select a preinstalled runtime owned by the image/tool-cache
+  // account rather than the job uid. Ownership may differ, but the executable
+  // must still be canonical and non-writable by group/other users.
+  const canonicalNode = assertTrustedExecutable(realpathSync(nodeExecutable), true, { allowForeignOwner: true });
   const nodePrefix = path.resolve(path.dirname(canonicalNode), "..");
   const candidates = [
     path.join(nodePrefix, "lib", "node_modules", "npm", "bin", "npm-cli.js"),
@@ -1837,7 +1844,7 @@ export function resolveTrustedNpmRuntime(nodeExecutable = process.execPath): Tru
   if (!npmCliCandidate) {
     throw new Error(`could not locate the npm CLI adjacent to canonical Node runtime ${canonicalNode}`);
   }
-  const canonicalNpmCli = assertTrustedExecutable(realpathSync(npmCliCandidate), false);
+  const canonicalNpmCli = assertTrustedExecutable(realpathSync(npmCliCandidate), false, { allowForeignOwner: true });
   const npmRoot = path.resolve(path.dirname(canonicalNpmCli), "..");
   assertStrictPathDescendant(nodePrefix, npmRoot, "trusted npm package root");
   const npmPackagePath = path.join(npmRoot, "package.json");
@@ -1900,7 +1907,7 @@ function bindStaticFile(filePath: string, { empty = false }: { empty?: boolean }
   return { validate, dispose };
 }
 
-function captureTrustedRuntimeTree(root: string): PackedTreeManifest {
+function captureTrustedRuntimeTree(root: string, { allowForeignOwner = false }: { allowForeignOwner?: boolean } = {}): PackedTreeManifest {
   const entries: PackedTreeManifestEntry[] = [];
   const visit = (directory: string, relativeDirectory: string) => {
     for (const name of readdirSync(directory).sort()) {
@@ -1911,7 +1918,7 @@ function captureTrustedRuntimeTree(root: string): PackedTreeManifest {
       if (
         details.isSymbolicLink()
         || realpathSync(absolute) !== absolute
-        || (details.uid !== currentUid && details.uid !== 0n)
+        || (!allowForeignOwner && details.uid !== currentUid && details.uid !== 0n)
         || (details.mode & 0o022n) !== 0n
       ) {
         throw new Error(`trusted npm runtime tree contains an unsafe path: ${relative}`);
@@ -1945,13 +1952,13 @@ function captureTrustedRuntimeTree(root: string): PackedTreeManifest {
   return { schemaVersion: 1, entries };
 }
 
-export function bindTrustedRuntimeTree(root: string): BoundStaticFile {
+export function bindTrustedRuntimeTree(root: string, options: { allowForeignOwner?: boolean } = {}): BoundStaticFile {
   const canonicalRoot = realpathSync(root);
   if (canonicalRoot !== root) throw new Error("trusted npm package root must already be canonical");
   const directoryFlags = fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | (fsConstants.O_DIRECTORY || 0);
   let descriptor: number | null = openSync(canonicalRoot, directoryFlags);
   const rootIdentity = runtimePathIdentity(fstatSync(descriptor, { bigint: true }));
-  const expectedManifest = captureTrustedRuntimeTree(canonicalRoot);
+  const expectedManifest = captureTrustedRuntimeTree(canonicalRoot, options);
   const validate = () => {
     if (descriptor === null) throw new Error("trusted npm package tree authority is already closed");
     const descriptorDetails = fstatSync(descriptor, { bigint: true });
@@ -1964,7 +1971,7 @@ export function bindTrustedRuntimeTree(root: string): BoundStaticFile {
     ) {
       throw new Error("trusted npm package root identity changed");
     }
-    const currentManifest = captureTrustedRuntimeTree(canonicalRoot);
+    const currentManifest = captureTrustedRuntimeTree(canonicalRoot, options);
     if (JSON.stringify(currentManifest) !== JSON.stringify(expectedManifest)) {
       throw new Error("trusted npm package execution bytes changed");
     }
@@ -2130,7 +2137,9 @@ function createTrustedNpmExecution(canonicalPackDir: string): TrustedNpmExecutio
   selectedTools.set("node", runtime.canonicalNode);
   selectedTools.set("npm", runtime.canonicalNpmCli);
   const canonicalNpxCli = path.join(path.dirname(runtime.canonicalNpmCli), "npx-cli.js");
-  if (existsSync(canonicalNpxCli)) selectedTools.set("npx", assertTrustedExecutable(realpathSync(canonicalNpxCli), false));
+  if (existsSync(canonicalNpxCli)) {
+    selectedTools.set("npx", assertTrustedExecutable(realpathSync(canonicalNpxCli), false, { allowForeignOwner: true }));
+  }
   for (const command of ["git", "gh", "codegraph", "codex", "claude", "cc"]) {
     const resolved = resolveSelectedTool(command);
     if (resolved) selectedTools.set(command, resolved);
@@ -2150,7 +2159,7 @@ function createTrustedNpmExecution(canonicalPackDir: string): TrustedNpmExecutio
   ));
   const boundFiles = [
     bindStaticFile(runtime.canonicalNode),
-    bindTrustedRuntimeTree(path.resolve(path.dirname(runtime.canonicalNpmCli), "..")),
+    bindTrustedRuntimeTree(path.resolve(path.dirname(runtime.canonicalNpmCli), ".."), { allowForeignOwner: true }),
     bindTrustedRuntimeTree(resolveToolPackageRoot(selectedTools.get("codegraph") as string, "codegraph")),
     bindStaticFile(userConfig, { empty: true }),
     bindStaticFile(globalConfig, { empty: true }),

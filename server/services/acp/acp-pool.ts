@@ -5076,7 +5076,11 @@ export class AcpPool {
             beginTeardown();
             reject(new Error(`${agent} timed out after ${timeoutMs}ms`));
           }, timeoutMs);
-          timer.unref();
+          // The timeout is the only event-loop handle in tests and in some
+          // provider adapters that wait on an externally-resolved promise.
+          // Unref-ing it lets Node exit while the execution promise is still
+          // pending, which turns a provider timeout into a cancelled test or
+          // an unreported runtime hang.
         })
       : new Promise<never>(() => {}); // never resolves — no timeout
     const abort = new Promise<never>((_, reject) => {

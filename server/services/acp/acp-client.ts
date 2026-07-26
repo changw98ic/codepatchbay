@@ -1420,12 +1420,22 @@ async function captureSpawnedProcessIdentity(child: ChildProcess, label: string,
   if (!child.pid) {
     throw acpProcessCleanupError(`${label} process did not expose a pid`, "PROCESS_IDENTITY_UNAVAILABLE");
   }
-  try {
-    const identity = captureSpawnProcessIdentity(child, system);
-    if (!identity) {
-      throw acpProcessCleanupError(`${label} process identity unavailable`, "PROCESS_IDENTITY_UNAVAILABLE");
+  let captureError: unknown = null;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try {
+      const identity = captureSpawnProcessIdentity(child, system);
+      if (identity) return identity;
+      captureError = acpProcessCleanupError(`${label} process identity unavailable`, "PROCESS_IDENTITY_UNAVAILABLE");
+    } catch (error) {
+      captureError = error;
+      if ((error as NodeJS.ErrnoException | undefined)?.code !== "PROCESS_IDENTITY_UNAVAILABLE") break;
     }
-    return identity;
+    if (child.exitCode !== null || child.signalCode !== null) break;
+    if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+
+  try {
+    throw captureError || acpProcessCleanupError(`${label} process identity unavailable`, "PROCESS_IDENTITY_UNAVAILABLE");
   } catch (error) {
     let exitedBeforeIdentityCleanup = child.exitCode !== null || child.signalCode !== null;
     if (!exitedBeforeIdentityCleanup && child.pid) {
