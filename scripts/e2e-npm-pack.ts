@@ -1811,17 +1811,22 @@ type TrustedNpmRuntime = {
 function assertTrustedExecutable(
   filePath: string,
   executable: boolean,
-  { allowForeignOwner = false }: { allowForeignOwner?: boolean } = {},
+  {
+    allowForeignOwner = false,
+    allowCurrentProcessExecutable = false,
+  }: { allowForeignOwner?: boolean; allowCurrentProcessExecutable?: boolean } = {},
 ) {
   const canonical = realpathSync(filePath);
   if (canonical !== filePath) throw new Error(`trusted runtime path must already be canonical: ${filePath}`);
   const details = lstatSync(canonical, { bigint: true });
   const currentUid = typeof process.getuid === "function" ? BigInt(process.getuid()) : details.uid;
+  const currentProcessExecutable = allowCurrentProcessExecutable
+    && canonical === realpathSync(process.execPath);
   if (
     !details.isFile()
     || details.isSymbolicLink()
     || (!allowForeignOwner && details.uid !== currentUid && details.uid !== 0n)
-    || (details.mode & 0o022n) !== 0n
+    || (!currentProcessExecutable && (details.mode & 0o022n) !== 0n)
     || (executable && (details.mode & 0o111n) === 0n)
   ) {
     throw new Error(`trusted runtime file identity is unsafe: ${canonical}`);
@@ -1830,10 +1835,14 @@ function assertTrustedExecutable(
 }
 
 export function resolveTrustedNpmRuntime(nodeExecutable = process.execPath): TrustedNpmRuntime {
-  // setup-node may select a preinstalled runtime owned by the image/tool-cache
-  // account rather than the job uid. Ownership may differ, but the executable
-  // must still be canonical and non-writable by group/other users.
-  const canonicalNode = assertTrustedExecutable(realpathSync(nodeExecutable), true, { allowForeignOwner: true });
+  // The active interpreter is already executing this canonical image. Some
+  // hosted tool caches carry shared permission metadata, so keep the exception
+  // limited to this exact process executable; every later child launch still
+  // binds and revalidates its bytes through bindStaticFile.
+  const canonicalNode = assertTrustedExecutable(realpathSync(nodeExecutable), true, {
+    allowForeignOwner: true,
+    allowCurrentProcessExecutable: true,
+  });
   const nodePrefix = path.resolve(path.dirname(canonicalNode), "..");
   const candidates = [
     path.join(nodePrefix, "lib", "node_modules", "npm", "bin", "npm-cli.js"),
