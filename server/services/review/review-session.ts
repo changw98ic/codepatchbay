@@ -34,6 +34,7 @@ const LOCK_MAX_ATTEMPTS = 6_000;
 const LOCK_BASE_DELAY_MS = 10;
 const LOCK_TTL_MS = 30_000;
 const REVIEW_SESSION_MAX_BYTES = 16 * 1024 * 1024;
+const REVIEW_SESSION_READ_RETRIES = 3;
 const REVIEW_LOCK_DIRECTORY = ".locks";
 const REVIEW_DURABLE_LOCK = "reviews.lock";
 const REVIEW_PROCESS_FENCE = "reviews-operation.lock";
@@ -1245,67 +1246,71 @@ async function readSessionFileAuthority(
   expectedSessionId: string,
   hooks: ReviewSessionLockTestHooks,
 ): Promise<SessionFileAuthority> {
-  let before: Awaited<ReturnType<typeof lstat>>;
-  try {
-    before = await lstat(filePath);
-  } catch (error) {
-    throw error;
+  for (let attempt = 0; attempt < REVIEW_SESSION_READ_RETRIES; attempt += 1) {
+    const before = await lstat(filePath);
+    if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1) {
+      throw reviewSessionError(
+        `unsafe review session file: ${filePath}`,
+        "REVIEW_SESSION_FILE_UNSAFE",
+        { committed: false, successorPreserved: true, recoveryPaths: [filePath] },
+      );
+    }
+    let raw: string;
+    try {
+      raw = await readBoundedRegularFileNoFollow(filePath, {
+        maxBytes: REVIEW_SESSION_MAX_BYTES,
+        hooks: hooks.readFile,
+      });
+    } catch (cause) {
+      if (errorCode(cause) === "ENOENT") throw cause;
+      if (errorCode(cause) === "BOUNDED_FILE_CHANGED" && attempt + 1 < REVIEW_SESSION_READ_RETRIES) continue;
+      throw reviewSessionError(
+        `unsafe review session bounded read: ${filePath}`,
+        errorCode(cause) === "BOUNDED_FILE_TOO_LARGE"
+          ? "REVIEW_SESSION_FILE_TOO_LARGE"
+          : "REVIEW_SESSION_FILE_UNSAFE",
+        { committed: false, successorPreserved: true, recoveryPaths: [filePath] },
+        cause,
+      );
+    }
+    const after = await lstat(filePath);
+    if (
+      !after.isFile()
+      || after.isSymbolicLink()
+      || after.nlink !== 1
+      || !sameSessionFileGeneration(sessionFileGeneration(before), sessionFileGeneration(after))
+    ) {
+      if (attempt + 1 < REVIEW_SESSION_READ_RETRIES) continue;
+      throw reviewSessionError(
+        `review session generation changed during read: ${filePath}`,
+        "REVIEW_SESSION_GENERATION_CONFLICT",
+        { committed: false, successorPreserved: true, recoveryPaths: [filePath] },
+      );
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (cause) {
+      throw reviewSessionError(
+        `invalid review session JSON: ${filePath}`,
+        "REVIEW_SESSION_JSON_INVALID",
+        { committed: false, recoveryPaths: [filePath] },
+        cause,
+      );
+    }
+    const session = validateReviewSession(parsed, expectedSessionId);
+    return {
+      filePath,
+      generation: sessionFileGeneration(after),
+      sha256: createHash("sha256").update(raw).digest("hex"),
+      session,
+    };
   }
-  if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1) {
-    throw reviewSessionError(
-      `unsafe review session file: ${filePath}`,
-      "REVIEW_SESSION_FILE_UNSAFE",
-      { committed: false, successorPreserved: true, recoveryPaths: [filePath] },
-    );
-  }
-  let raw: string;
-  try {
-    raw = await readBoundedRegularFileNoFollow(filePath, {
-      maxBytes: REVIEW_SESSION_MAX_BYTES,
-      hooks: hooks.readFile,
-    });
-  } catch (cause) {
-    if (errorCode(cause) === "ENOENT") throw cause;
-    throw reviewSessionError(
-      `unsafe review session bounded read: ${filePath}`,
-      errorCode(cause) === "BOUNDED_FILE_TOO_LARGE"
-        ? "REVIEW_SESSION_FILE_TOO_LARGE"
-        : "REVIEW_SESSION_FILE_UNSAFE",
-      { committed: false, successorPreserved: true, recoveryPaths: [filePath] },
-      cause,
-    );
-  }
-  const after = await lstat(filePath);
-  if (
-    !after.isFile()
-    || after.isSymbolicLink()
-    || after.nlink !== 1
-    || !sameSessionFileGeneration(sessionFileGeneration(before), sessionFileGeneration(after))
-  ) {
-    throw reviewSessionError(
-      `review session generation changed during read: ${filePath}`,
-      "REVIEW_SESSION_GENERATION_CONFLICT",
-      { committed: false, successorPreserved: true, recoveryPaths: [filePath] },
-    );
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (cause) {
-    throw reviewSessionError(
-      `invalid review session JSON: ${filePath}`,
-      "REVIEW_SESSION_JSON_INVALID",
-      { committed: false, recoveryPaths: [filePath] },
-      cause,
-    );
-  }
-  const session = validateReviewSession(parsed, expectedSessionId);
-  return {
-    filePath,
-    generation: sessionFileGeneration(after),
-    sha256: createHash("sha256").update(raw).digest("hex"),
-    session,
-  };
+  throw reviewSessionError(
+    `review session read retry exhausted: ${filePath}`,
+    "REVIEW_SESSION_GENERATION_CONFLICT",
+    { committed: false, successorPreserved: true, recoveryPaths: [filePath] },
+  );
 }
 
 function sameSessionAuthority(expected: SessionFileAuthority, actual: SessionFileAuthority) {
