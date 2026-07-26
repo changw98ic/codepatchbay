@@ -10,7 +10,10 @@ Before every Codegraph-backed lookup, run the currently available Codegraph sync
 
 ## Build, Test, and Development Commands
 - `npm ci`: install dependencies.
-- `npm test` or `npm run test:node`: run the custom Node test runner over `tests/**/*.test.ts`.
+- `npm test` or `npm run test:node`: run the custom Node test runner over all `tests/**/*.test.ts`.
+- `npm run test:main`: run the 232-file HubOrchestrator → ManagedWorker main-flow profile plus shell checks.
+- `npm run test:specialized`: run benchmark, evaluation, release-rehearsal, and packaging-specific tests excluded from the main-flow profile.
+- `node dist-tests/scripts/run-node-tests.js --main --list`: list a profile without executing it.
 - `npm run build:node`: compile TypeScript to `dist/`.
 - `npm run build:tests`: compile tests to `dist-tests/`.
 - `npm run build:node && node dist/scripts/ci-smoke.js`: run the local setup/demo smoke path.

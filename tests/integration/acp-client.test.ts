@@ -4,6 +4,7 @@ import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { test } from "node:test";
 
 const root = path.resolve(import.meta.dirname, "..", "..");
 const client = path.join(root, "server", "services", "acp", "acp-client.js");
@@ -67,7 +68,7 @@ async function runClient({ env, prompt, cwd }) {
   return { exitCode, stdout, stderr };
 }
 
-{
+test("ACP client writes through fs/write_text_file", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-client-"));
   const outputFile = path.join(tempDir, "plan-001.md");
 
@@ -84,9 +85,9 @@ async function runClient({ env, prompt, cwd }) {
   const output = await readFile(outputFile, "utf8");
   assert.match(output, /Written through ACP fs\/write_text_file/);
   assert.match(stdout, /done/);
-}
+});
 
-{
+test("ACP client scrubs control-plane audit environment from provider children", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-client-audit-env-"));
   const captureFile = path.join(tempDir, "child-env.json");
   const auditFile = path.join(tempDir, "control-plane-audit.jsonl");
@@ -111,9 +112,9 @@ async function runClient({ env, prompt, cwd }) {
   assert.equal(captured.auditDerivationExposed, false);
   const audit = await readFile(auditFile, "utf8");
   assert.match(audit, /"event":"agent_launch"/);
-}
+});
 
-{
+test("ACP client preserves active-agent output while the session remains live", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-active-"));
   const { exitCode, stdout, stderr } = await runClient({
     cwd: tempDir,
@@ -129,10 +130,10 @@ async function runClient({ env, prompt, cwd }) {
 
   assert.equal(exitCode, 0, stderr);
   assert.match(stdout, /tick-5/);
-}
+});
 
 // --- Atomic write: no leftover temp files ---
-{
+test("Atomic write: no leftover temp files", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-atomic-"));
   const outputFile = path.join(tempDir, "output.txt");
 
@@ -155,10 +156,10 @@ async function runClient({ env, prompt, cwd }) {
   const files = await readdir(tempDir);
   const tmpFiles = files.filter((f) => f.startsWith(".cpb-tmp-"));
   assert.equal(tmpFiles.length, 0, `leftover temp files: ${tmpFiles.join(", ")}`);
-}
+});
 
 // --- Non-handoff file (non-wiki path) skips validation ---
-{
+test("Non-handoff file (non-wiki path) skips validation", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-no-handoff-"));
   const outputFile = path.join(tempDir, "plan-001.md");
 
@@ -176,10 +177,10 @@ async function runClient({ env, prompt, cwd }) {
   assert.equal(exitCode, 0, stderr);
   const output = await readFile(outputFile, "utf8");
   assert.match(output, /Written through ACP fs\/write_text_file/);
-}
+});
 
 // --- Valid handoff file (wiki path + valid content) passes validation ---
-{
+test("Valid handoff file (wiki path + valid content) passes validation", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-handoff-ok-"));
   const wikiDir = path.join(tempDir, "wiki", "projects", "testproj", "inbox");
   const outputFile = path.join(wikiDir, "plan-001.md");
@@ -198,10 +199,10 @@ async function runClient({ env, prompt, cwd }) {
   assert.match(output, /## Handoff/);
   assert.match(output, /## Acceptance-Criteria/);
   assert.match(stdout, /done/);
-}
+});
 
 // --- Missing handoff markers on wiki path fails validation ---
-{
+test("Missing handoff markers on wiki path fails validation", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-handoff-bad-"));
   const wikiDir = path.join(tempDir, "wiki", "projects", "testproj", "inbox");
   const outputFile = path.join(wikiDir, "plan-001.md");
@@ -223,10 +224,10 @@ async function runClient({ env, prompt, cwd }) {
   let fileExists = false;
   try { await readFile(outputFile, "utf8"); fileExists = true; } catch { /* expected */ }
   assert.equal(fileExists, false, "file must not exist when handoff validation fails");
-}
+});
 
 // --- Wiki deliverable path also validates ---
-{
+test("Wiki deliverable path also validates", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-deliverable-ok-"));
   const wikiDir = path.join(tempDir, "wiki", "projects", "testproj", "outputs");
   const outputFile = path.join(wikiDir, "deliverable-001.md");
@@ -245,10 +246,10 @@ async function runClient({ env, prompt, cwd }) {
   assert.match(output, /## Handoff/);
   assert.match(output, /## Acceptance-Criteria/);
   assert.match(stdout, /done/);
-}
+});
 
 // --- writeAllowPaths blocks write to disallowed path ---
-{
+test("writeAllowPaths blocks write to disallowed path", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-write-blocked-"));
   const allowedDir = path.join(tempDir, "wiki", "projects", "myproj", "inbox");
   const blockedFile = path.join(tempDir, "etc", "passwd");
@@ -267,10 +268,10 @@ async function runClient({ env, prompt, cwd }) {
   let fileExists = false;
   try { await readFile(blockedFile, "utf8"); fileExists = true; } catch { /* expected */ }
   assert.equal(fileExists, false, "blocked file must not exist");
-}
+});
 
 // --- writeAllowPaths allows write to matched path ---
-{
+test("writeAllowPaths allows write to matched path", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-write-allowed-"));
   const allowedDir = path.join(tempDir, "wiki", "projects", "myproj", "inbox");
   const allowedFile = path.join(allowedDir, "plan-001.md");
@@ -290,10 +291,10 @@ async function runClient({ env, prompt, cwd }) {
   assert.match(output, /## Handoff/);
   assert.match(output, /## Acceptance-Criteria/);
   assert.match(stdout, /done/);
-}
+});
 
 // --- null writeAllowPaths allows all writes (backward compatible) ---
-{
+test("null writeAllowPaths allows all writes (backward compatible)", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-write-norestrict-"));
   const outputFile = path.join(tempDir, "anywhere", "output.txt");
 
@@ -311,10 +312,10 @@ async function runClient({ env, prompt, cwd }) {
   const output = await readFile(outputFile, "utf8");
   assert.match(output, /Written through ACP fs\/write_text_file/);
   assert.match(stdout, /done/);
-}
+});
 
 // --- terminalPolicy 'deny' blocks terminal creation ---
-{
+test("terminalPolicy 'deny' blocks terminal creation", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-terminal-deny-"));
 
   const { exitCode } = await runClient({
@@ -328,10 +329,10 @@ async function runClient({ env, prompt, cwd }) {
   });
 
   assert.equal(exitCode, 0, "client exits cleanly even when terminal is denied");
-}
+});
 
 // --- terminalPolicy 'allow' (default) allows terminal creation ---
-{
+test("terminalPolicy 'allow' (default) allows terminal creation", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-terminal-allow-"));
 
   const { exitCode, stdout, stderr } = await runClient({
@@ -346,10 +347,10 @@ async function runClient({ env, prompt, cwd }) {
 
   assert.equal(exitCode, 0, stderr);
   assert.match(stdout, /done/);
-}
+});
 
 // --- permission matrix allows verifier read-only terminal inspection ---
-{
+test("permission matrix allows verifier read-only terminal inspection", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-verifier-readonly-terminal-"));
 
   const { exitCode, stdout, stderr } = await runClient({
@@ -368,10 +369,10 @@ async function runClient({ env, prompt, cwd }) {
 
   assert.equal(exitCode, 0, stderr);
   assert.match(stdout, /terminal-allowed/);
-}
+});
 
 // --- permission matrix allows verifier test suite execution ---
-{
+test("permission matrix allows verifier test suite execution", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-verifier-test-terminal-"));
 
   const { exitCode, stdout, stderr } = await runClient({
@@ -390,10 +391,10 @@ async function runClient({ env, prompt, cwd }) {
 
   assert.equal(exitCode, 0, stderr);
   assert.match(stdout, /terminal-allowed/);
-}
+});
 
 // --- permission matrix denies verifier arbitrary terminal execution ---
-{
+test("permission matrix denies verifier arbitrary terminal execution", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-verifier-unsafe-terminal-"));
 
   const { exitCode, stdout, stderr } = await runClient({
@@ -412,10 +413,10 @@ async function runClient({ env, prompt, cwd }) {
 
   assert.equal(exitCode, 0, stderr);
   assert.match(stdout, /terminal-denied/);
-}
+});
 
 // --- CPB_ACP_WRITE_ALLOW env var with glob patterns is parsed correctly ---
-{
+test("CPB_ACP_WRITE_ALLOW env var with glob patterns is parsed correctly", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-write-envvar-"));
   const inboxDir = path.join(tempDir, "wiki", "projects", "proj", "inbox");
   const outputsDir = path.join(tempDir, "wiki", "projects", "proj", "outputs");
@@ -454,7 +455,7 @@ async function runClient({ env, prompt, cwd }) {
   let blockedExists = false;
   try { await readFile(blockedFile, "utf8"); blockedExists = true; } catch { /* expected */ }
   assert.equal(blockedExists, false, "blocked file must not exist");
-}
+});
 
 // ============================================================
 // Per-tool ACP policy tests
@@ -463,7 +464,7 @@ async function runClient({ env, prompt, cwd }) {
 const fakeToolPolicyAgent = path.join(root, "tests", "fixtures", "fake-acp-agent-tool-policy.js");
 
 // --- CPB_ACP_DENY_TOOLS blocks denied tools ---
-{
+test("CPB_ACP_DENY_TOOLS blocks denied tools", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-deny-tools-"));
   const outputFile = path.join(tempDir, "output.txt");
 
@@ -483,10 +484,10 @@ const fakeToolPolicyAgent = path.join(root, "tests", "fixtures", "fake-acp-agent
   try { await readFile(outputFile, "utf8"); fileExists = true; } catch { /* expected */ }
   assert.equal(fileExists, false, "denied tool: file must not exist");
   assert.match(stdout, /done/);
-}
+});
 
 // --- CPB_ACP_DENY_TOOLS blocks terminal/create ---
-{
+test("CPB_ACP_DENY_TOOLS blocks terminal/create", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-deny-terminal-"));
 
   const { exitCode, stdout, stderr } = await runClient({
@@ -501,10 +502,10 @@ const fakeToolPolicyAgent = path.join(root, "tests", "fixtures", "fake-acp-agent
 
   assert.equal(exitCode, 0, stderr);
   assert.match(stdout, /done/);
-}
+});
 
 // --- CPB_ACP_ALLOW_TOOLS overrides CPB_ACP_DENY_TOOLS for same tool ---
-{
+test("CPB_ACP_ALLOW_TOOLS overrides CPB_ACP_DENY_TOOLS for same tool", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-allow-override-"));
   const outputFile = path.join(tempDir, "output.txt");
 
@@ -525,10 +526,10 @@ const fakeToolPolicyAgent = path.join(root, "tests", "fixtures", "fake-acp-agent
   const output = await readFile(outputFile, "utf8");
   assert.match(output, /Written by tool-policy agent/);
   assert.match(stdout, /done/);
-}
+});
 
 // --- JSON policy file loads and enforces correctly ---
-{
+test("JSON policy file loads and enforces correctly", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-policy-file-"));
   const outputFile = path.join(tempDir, "output.txt");
   const policyFile = path.join(tempDir, "policy.json");
@@ -554,10 +555,10 @@ const fakeToolPolicyAgent = path.join(root, "tests", "fixtures", "fake-acp-agent
   try { await readFile(outputFile, "utf8"); fileExists = true; } catch { /* expected */ }
   assert.equal(fileExists, false, "policy file: denied write must not create file");
   assert.match(stdout, /done/);
-}
+});
 
 // --- JSON policy file allows explicitly allowed tools ---
-{
+test("JSON policy file allows explicitly allowed tools", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-policy-file-allow-"));
   const outputFile = path.join(tempDir, "output.txt");
   const policyFile = path.join(tempDir, "policy.json");
@@ -580,10 +581,10 @@ const fakeToolPolicyAgent = path.join(root, "tests", "fixtures", "fake-acp-agent
   const output = await readFile(outputFile, "utf8");
   assert.match(output, /Written by tool-policy agent/);
   assert.match(stdout, /done/);
-}
+});
 
 // --- Invalid JSON policy file: fail closed ---
-{
+test("Invalid JSON policy file: fail closed", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-policy-bad-json-"));
   const policyFile = path.join(tempDir, "policy.json");
 
@@ -601,10 +602,10 @@ const fakeToolPolicyAgent = path.join(root, "tests", "fixtures", "fake-acp-agent
 
   assert.equal(exitCode, 1, "must exit with error on invalid JSON");
   assert.match(stderr, /invalid JSON/);
-}
+});
 
 // --- Non-existent policy file: fail closed ---
-{
+test("Non-existent policy file: fail closed", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-policy-no-file-"));
 
   const { exitCode, stderr } = await runClient({
@@ -619,10 +620,10 @@ const fakeToolPolicyAgent = path.join(root, "tests", "fixtures", "fake-acp-agent
 
   assert.equal(exitCode, 1, "must exit with error on missing policy file");
   assert.match(stderr, /failed to read/);
-}
+});
 
 // --- Policy file with invalid action: fail closed ---
-{
+test("Policy file with invalid action: fail closed", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-policy-bad-action-"));
   const policyFile = path.join(tempDir, "policy.json");
 
@@ -640,10 +641,10 @@ const fakeToolPolicyAgent = path.join(root, "tests", "fixtures", "fake-acp-agent
 
   assert.equal(exitCode, 1, "must exit with error on invalid action");
   assert.match(stderr, /invalid action/);
-}
+});
 
 // --- Policy file with array instead of object: fail closed ---
-{
+test("Policy file with array instead of object: fail closed", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-policy-array-"));
   const policyFile = path.join(tempDir, "policy.json");
 
@@ -661,10 +662,10 @@ const fakeToolPolicyAgent = path.join(root, "tests", "fixtures", "fake-acp-agent
 
   assert.equal(exitCode, 1, "must exit with error on array policy");
   assert.match(stderr, /expected a JSON object/);
-}
+});
 
 // --- Backward compat: CPB_ACP_TERMINAL=deny still works ---
-{
+test("Backward compat: CPB_ACP_TERMINAL=deny still works", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-terminal-backcompat-"));
 
   const { exitCode, stdout, stderr } = await runClient({
@@ -679,10 +680,10 @@ const fakeToolPolicyAgent = path.join(root, "tests", "fixtures", "fake-acp-agent
 
   assert.equal(exitCode, 0, stderr);
   assert.match(stdout, /done/);
-}
+});
 
 // --- Backward compat: CPB_ACP_TERMINAL=deny does NOT block fs/write_text_file ---
-{
+test("Backward compat: CPB_ACP_TERMINAL=deny does NOT block fs/write_text_file", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-terminal-write-ok-"));
   const outputFile = path.join(tempDir, "output.txt");
 
@@ -700,10 +701,10 @@ const fakeToolPolicyAgent = path.join(root, "tests", "fixtures", "fake-acp-agent
   const output = await readFile(outputFile, "utf8");
   assert.match(output, /Written by tool-policy agent/);
   assert.match(stdout, /done/);
-}
+});
 
 // --- Priority: TOOL_POLICY_FILE overrides CPB_ACP_DENY_TOOLS ---
-{
+test("Priority: TOOL_POLICY_FILE overrides CPB_ACP_DENY_TOOLS", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-priority-file-"));
   const outputFile = path.join(tempDir, "output.txt");
   const policyFile = path.join(tempDir, "policy.json");
@@ -726,10 +727,10 @@ const fakeToolPolicyAgent = path.join(root, "tests", "fixtures", "fake-acp-agent
   const output = await readFile(outputFile, "utf8");
   assert.match(output, /Written by tool-policy agent/);
   assert.match(stdout, /done/);
-}
+});
 
 // --- Priority: DENY_TOOLS overrides CPB_ACP_TERMINAL ---
-{
+test("Priority: DENY_TOOLS overrides CPB_ACP_TERMINAL", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-priority-env-"));
   const outputFile = path.join(tempDir, "output.txt");
 
@@ -749,10 +750,10 @@ const fakeToolPolicyAgent = path.join(root, "tests", "fixtures", "fake-acp-agent
   // terminal/create should be allowed (ALLOW_TOOLS overrides legacy TERMINAL=deny)
   assert.equal(exitCode, 0, stderr);
   assert.match(stdout, /done/);
-}
+});
 
 // --- No policy set: all tools allowed (default behavior) ---
-{
+test("No policy set: all tools allowed (default behavior)", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-no-policy-"));
   const outputFile = path.join(tempDir, "output.txt");
 
@@ -769,10 +770,10 @@ const fakeToolPolicyAgent = path.join(root, "tests", "fixtures", "fake-acp-agent
   const output = await readFile(outputFile, "utf8");
   assert.match(output, /Written by tool-policy agent/);
   assert.match(stdout, /done/);
-}
+});
 
 // --- Tools not in policy are allowed through ---
-{
+test("Tools not in policy are allowed through", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-policy-passthrough-"));
   const outputFile = path.join(tempDir, "output.txt");
   const policyFile = path.join(tempDir, "policy.json");
@@ -794,4 +795,4 @@ const fakeToolPolicyAgent = path.join(root, "tests", "fixtures", "fake-acp-agent
   const output = await readFile(outputFile, "utf8");
   assert.match(output, /Written by tool-policy agent/);
   assert.match(stdout, /done/);
-}
+});

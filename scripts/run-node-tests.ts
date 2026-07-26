@@ -124,13 +124,55 @@ const requestedFiles = process.argv.slice(2)
   .filter((arg) => !arg.startsWith("-"))
   .map(normalizeRequestedFile);
 
-const allFiles = requestedFiles.length > 0
+const discoveredFiles = requestedFiles.length > 0
   ? requestedFiles
   : await collectTestFiles(path.join(artifactRoot, "tests"));
 
-if (allFiles.length === 0) {
-  console.error("No Node test files found");
+// These suites validate optional benchmark/evaluation and release-rehearsal
+// tooling. They are valuable coverage, but they are not part of the normal
+// HubOrchestrator -> ManagedWorker delivery path. Keep them in the default
+// full run while allowing the main-flow acceptance path to exclude them
+// explicitly. The list is intentional and reviewable; do not infer it from
+// file size alone.
+const specializedTestFiles = new Set([
+  "tests/coding-comparison.test.js",
+  "tests/disposable-draft-pr-rehearsal.test.js",
+  "tests/e2e-npm-pack-safety.test.js",
+  "tests/live-release-evidence.test.js",
+  "tests/plan-tournament.test.js",
+  "tests/promote-live-release-evidence.test.js",
+  "tests/swebench-batch-queue.test.js",
+  "tests/swebench-plan-prompt.test.js",
+  "tests/swebench-product-validation.test.js",
+  "tests/swebench-three-way-runner.test.js",
+]);
+
+const mainOnly = process.argv.includes("--main");
+const specializedOnly = process.argv.includes("--specialized");
+const listOnly = process.argv.includes("--list");
+if (mainOnly && specializedOnly) {
+  console.error("--main and --specialized are mutually exclusive");
   process.exit(1);
+}
+
+const allFiles = mainOnly
+  ? discoveredFiles.filter((file) => !specializedTestFiles.has(file))
+  : specializedOnly
+    ? discoveredFiles.filter((file) => specializedTestFiles.has(file))
+    : discoveredFiles;
+
+if (allFiles.length === 0) {
+  console.error(mainOnly
+    ? "No main-flow Node test files found"
+    : specializedOnly
+      ? "No specialized Node test files found"
+      : "No Node test files found");
+  process.exit(1);
+}
+
+if (listOnly) {
+  for (const file of allFiles) console.log(file);
+  process.exit(0);
 }
 
 const integrationFiles = allFiles.filter((f) => f.startsWith("tests/integration/"));

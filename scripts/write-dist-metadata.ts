@@ -38,6 +38,8 @@ const distPackage = {
   scripts: {
     test: "node scripts/run-node-tests.js",
     "test:node": "node scripts/run-node-tests.js",
+    "test:main": "node scripts/run-node-tests.js --main",
+    "test:specialized": "node scripts/run-node-tests.js --specialized",
     "test:unit": "node scripts/run-node-tests.js --unit",
     "test:integration": "node scripts/run-node-tests.js --integration",
   },

@@ -74,6 +74,8 @@ test("package exposes stabilization verifier entrypoint", async () => {
     "npm run build && npm run build:tests && node dist/scripts/verify-enterprise-gate.js",
   );
   assert.equal(pkg.scripts["test:node"], "node dist-tests/scripts/run-node-tests.js");
+  assert.equal(pkg.scripts["test:main"], "npm run test:node -- --main && npm run test:shell");
+  assert.equal(pkg.scripts["test:specialized"], "npm run test:node -- --specialized");
   assert.doesNotMatch(pkg.scripts["build:tests"], /dist\/tests/);
   assert.equal(
     pkg.scripts["verify:dependency-audit"],
@@ -83,6 +85,8 @@ test("package exposes stabilization verifier entrypoint", async () => {
 
 test("CI cannot reinstall the removed web toolchain outside the reviewed lockfile", async () => {
   const workflow = await readFile(path.join(repoRoot, ".github", "workflows", "test.yml"), "utf8");
+  assert.match(workflow, /run: npm run test:main/);
+  assert.doesNotMatch(workflow, /^\s+run: npm test$/m);
   assert.doesNotMatch(workflow, /\bnpx\s+playwright\b/);
   assert.doesNotMatch(workflow, /npm install @rollup\/rollup-linux-x64-gnu --no-save/);
 });

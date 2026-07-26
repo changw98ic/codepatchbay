@@ -106,6 +106,36 @@ npm run typecheck
 
 验收标准是 `--unit` 结果为 0 fail；13s 仅作为 d123a179 环境下的性能基线。若最终改动继续触及生产代码，再补跑 `typecheck:strict:engine`、`typecheck:type-debt:engine` 及相应稳定性门禁，不提前声称它们“不受影响”。
 
+## 主流程与专项测试分层
+
+全量 `npm test` 仍运行所有 Node 和 shell 测试，不降低覆盖率。针对日常交付验收，可只运行 HubOrchestrator → ManagedWorker 主流程：
+
+```sh
+npm run test:main
+```
+
+该 profile 当前包含 232 个 Node 测试文件；架构边界扫描和对抗性 completion-gate 测试仍保留在主流程，因为它们约束核心安全与分层契约。
+
+以下 10 个文件属于专项 profile，不是本地交付主流程的必要路径，但仍可单独运行：
+
+```sh
+npm run test:specialized
+```
+
+- SweBench：`swebench-batch-queue`、`swebench-plan-prompt`、`swebench-product-validation`、`swebench-three-way-runner`
+- 评估/高保证：`coding-comparison`、`plan-tournament`
+- 发布/打包演练：`disposable-draft-pr-rehearsal`、`e2e-npm-pack-safety`、`live-release-evidence`、`promote-live-release-evidence`
+
+查看某个 profile 的确切文件清单而不执行测试：
+
+```sh
+npm run build:tests
+node dist-tests/scripts/run-node-tests.js --main --list
+node dist-tests/scripts/run-node-tests.js --specialized --list
+```
+
+专项测试没有被删除；发布前仍以 `npm test` 全量结果为最终覆盖口径。
+
 ## 风险与执行顺序
 
 1. shared-boundary：单行 shared import。

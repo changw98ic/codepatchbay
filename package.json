@@ -40,6 +40,8 @@
     "test": "npm run test:node && npm run test:shell",
     "test:node": "node dist-tests/scripts/run-node-tests.js",
     "test:shell": "bash tests/cpb-bridges.test.sh && bash tests/cpb-jobs.test.sh",
+    "test:main": "npm run test:node -- --main && npm run test:shell",
+    "test:specialized": "npm run test:node -- --specialized",
     "test:unit": "node dist-tests/scripts/run-node-tests.js --unit",
     "test:integration": "node dist-tests/scripts/run-node-tests.js --integration",
     "typecheck:node": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.tests.json --noEmit",

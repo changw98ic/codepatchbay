@@ -58,8 +58,12 @@ jobs:
             --chdir "$smoke_root" \
             /bin/zsh -c 'true'
 
-      - name: Run Node and shell tests
-        run: npm test
+      - name: Run main-flow Node and shell tests
+        # Benchmark, evaluation, release-rehearsal, and packaging suites are
+        # intentionally outside the PR/main acceptance path. Run them
+        # explicitly with `npm run test:specialized` when changing those
+        # tools; `npm test` remains the local full-coverage command.
+        run: npm run test:main
 
       - name: Run Node typecheck
         run: npm run typecheck:node
