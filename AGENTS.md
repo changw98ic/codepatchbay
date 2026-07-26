@@ -18,6 +18,7 @@ Before every Codegraph-backed lookup, run the currently available Codegraph sync
 - `npm run build:node`: compile TypeScript to `dist/`.
 - `npm run build:tests`: compile tests to `dist-tests/`.
 - `npm run build:node && node dist/scripts/ci-smoke.js`: run the local setup/demo smoke path.
+- `npm run verify:stabilization`: run the release-only evidence gate manually; it is intentionally not part of every PR CI job.
 
 ## Coding Style & Naming Conventions
 Use ES modules throughout. `.editorconfig` enforces UTF-8, LF endings, final newlines, trimmed trailing whitespace, and two-space indentation. TypeScript strict mode. Use kebab-case for command and test files, camelCase for functions. Keep new CLI commands in `cli/commands/`.

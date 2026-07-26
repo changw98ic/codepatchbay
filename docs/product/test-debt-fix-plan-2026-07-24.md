@@ -120,7 +120,7 @@ npm run test:main
 npm run test:integration
 ```
 
-保留集成测试的原因是它们覆盖故障注入和安全边界，而不是普通成功链路。发布验收只通过 `verify:release-gate` 运行一个 managed-worker 旗舰任务 E2E；真实 provider/GitHub 任务仍走 `scripts/e2e-test.sh` 的 disposable-target 手工验收。
+保留集成测试的原因是它们覆盖故障注入和安全边界，而不是普通成功链路。发布验收只通过 `verify:release-gate` 运行一个 managed-worker 旗舰任务 E2E；真实 provider/GitHub 任务仍走 `scripts/e2e-test.sh` 的 disposable-target 手工验收。`verify:stabilization` 需要 live provider、disposable draft-PR 和产品证据，因此也不挂在每次 PR 的 `test.yml`；需要发布验收时显式运行。
 
 本次直接删除两条不应继续占用集成测试位的路径：
 

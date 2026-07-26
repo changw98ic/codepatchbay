@@ -90,10 +90,6 @@ jobs:
       - name: CI smoke test (setup + Hub lifecycle)
         run: npm run build:node && node dist/scripts/ci-smoke.js
 
-      - name: Run stabilization and release gates
-        if: matrix.node-version == 22
-        run: npm run verify:stabilization
-
   lint:
     runs-on: ubuntu-latest
     steps:
