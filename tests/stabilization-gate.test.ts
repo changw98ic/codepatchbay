@@ -102,7 +102,7 @@ test("retired orchestrator cutover fails closed without moving live state", asyn
   ], { encoding: "utf8" });
   assert.equal(result.status, 2);
   assert.match(result.stderr, /is retired and did not modify Hub state/);
-  assert.match(result.stderr, /cpb hub migrate-to-redis/);
+  assert.match(result.stderr, /cpb hub backup/);
   assert.equal(await readFile(sentinel, "utf8"), "preserved\n");
 });
 

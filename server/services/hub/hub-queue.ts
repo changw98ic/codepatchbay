@@ -8,10 +8,6 @@
 
 import type { LooseRecord } from "../../../core/contracts/types.js";
 import { assertHubWritable } from "../../../shared/hub-maintenance.js";
-import {
-  openPinnedHubRedisStateBackend,
-  type RedisLeaderFence,
-} from "../../../shared/hub-state-redis.js";
 import { processLeaderFence } from "../../../shared/hub-leader-fence.js";
 import {
   normalizeGithubRemoteCapability,
@@ -221,7 +217,6 @@ type QueueClaimOptions = QueueEntryInput & {
   cpbRoot?: string | null;
   indexUnavailableRetryMs?: number;
   assignmentStore?: AssignmentStoreLike | null;
-  leaderFence?: RedisLeaderFence | null;
 };
 
 type ProjectQueueStatus = {
@@ -1443,38 +1438,6 @@ function serializeQueue(queue: QueueState) {
   return serialized;
 }
 
-function parseRedisQueue(serialized: string | null) {
-  if (serialized === null) return defaultQueue();
-  if (Buffer.byteLength(serialized, "utf8") > QUEUE_MAX_BYTES) {
-    throw Object.assign(new Error(`queue exceeds ${QUEUE_MAX_BYTES} bytes`), { code: "HUB_QUEUE_TOO_LARGE" });
-  }
-  try {
-    const parsed = JSON.parse(serialized);
-    if (
-      !isRecord(parsed)
-      || parsed.version !== QUEUE_VERSION
-      || !Array.isArray(parsed.entries)
-      || !parsed.entries.every(isQueueEntry)
-    ) {
-      throw new Error("invalid queue envelope");
-    }
-    return { version: QUEUE_VERSION, entries: parsed.entries };
-  } catch {
-    throw Object.assign(new Error("Redis queue state is not valid JSON"), { code: "HUB_QUEUE_INVALID" });
-  }
-}
-
-async function redisQueueSnapshot(hubRoot: string, serialized: string | null) {
-  const local = await loadLocalQueue(hubRoot);
-  if (local.entries.length > 0) {
-    throw Object.assign(
-      new Error("local queue contains entries and cannot be selected automatically during Redis cutover"),
-      { code: "HUB_QUEUE_MIGRATION_REQUIRED" },
-    );
-  }
-  return parseRedisQueue(serialized);
-}
-
 async function saveLocalQueue(hubRoot: string, queue: QueueState) {
   await assertHubWritable(hubRoot);
   const normalized = { version: QUEUE_VERSION, entries: queue.entries };
@@ -1482,53 +1445,19 @@ async function saveLocalQueue(hubRoot: string, queue: QueueState) {
   return normalized;
 }
 
-async function redisQueueBackend(hubRoot: string) {
-  return await openPinnedHubRedisStateBackend({
-    configFile: process.env.CPB_HUB_STATE_REDIS_CONFIG_FILE,
-    hubRoot,
-  });
-}
-
 async function withQueueMutation<T>(
   hubRoot: string,
   callback: (queue: QueueState, authorityNowMs: number) => Promise<T>,
   {
-    leaderFence,
     maxAttempts = QUEUE_CAS_MAX_ATTEMPTS,
-  }: { leaderFence?: RedisLeaderFence | null; maxAttempts?: number } = {},
+  }: { maxAttempts?: number } = {},
 ) {
   await assertHubWritable(hubRoot);
-  const backend = await redisQueueBackend(hubRoot);
-  if (!backend) return await withQueueLock(hubRoot, (queue) => callback(queue, Date.now()));
-  const effectiveFence = leaderFence === undefined
-    ? processLeaderFence(backend.identityFingerprint)
-    : leaderFence;
-
-  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    const snapshot = await backend.readQueue();
-    const queue = await redisQueueSnapshot(hubRoot, snapshot.serialized);
-    const before = serializeQueue(queue);
-    const result = await callback(queue, await backend.serverTimeMs());
-    const after = serializeQueue(queue);
-    if (after === before) return result;
-    const committed = await backend.compareAndSwapQueue(
-      snapshot.revision,
-      snapshot.revision + 1,
-      after,
-      effectiveFence,
-    );
-    if (committed.fenced) {
-      throw Object.assign(new Error("leader lease no longer authorizes this queue write"), { code: "HUB_LEADER_FENCED" });
-    }
-    if (committed.committed) return result;
-  }
-  throw Object.assign(new Error("queue changed too frequently to commit"), { code: "HUB_QUEUE_CONFLICT" });
+  return await withQueueLock(hubRoot, (queue) => callback(queue, Date.now()));
 }
 
 export async function loadQueue(hubRoot: string) {
-  const backend = await redisQueueBackend(hubRoot);
-  if (!backend) return await loadLocalQueue(hubRoot);
-  return await redisQueueSnapshot(hubRoot, (await backend.readQueue()).serialized);
+  return await loadLocalQueue(hubRoot);
 }
 
 async function writeAtomic(filePath: string, content: string) {
@@ -1700,7 +1629,7 @@ export async function updateEntry(
   entryId: string,
   patch: QueueEntryInput = {},
   guard: QueueUpdateGuard = {},
-  options: { leaderFence?: RedisLeaderFence | null } = {},
+  options: Record<string, never> = {},
 ) {
   return withQueueMutation(hubRoot, async (queue, authorityNowMs) => {
     const entry = queue.entries.find((e) => e.id === entryId);
@@ -1978,7 +1907,6 @@ export async function claimEligible(hubRoot: string, opts: QueueClaimOptions = {
     cpbRoot = null,
     indexUnavailableRetryMs = 300_000,
     assignmentStore = null,
-    leaderFence,
   } = opts;
 
   if (!providerSlotsAvailable) {
@@ -2191,7 +2119,7 @@ export async function claimEligible(hubRoot: string, opts: QueueClaimOptions = {
   // Readiness preparation can refresh CodeGraph manifests. Do not replay that
   // external work after a queue CAS loss; the caller will retry on its next
   // poll with a fresh queue snapshot.
-  }, { leaderFence, maxAttempts: 1 });
+  }, { maxAttempts: 1 });
 }
 
 // ─── auto-enqueue.ts ────────────────────────────────────────────────────────

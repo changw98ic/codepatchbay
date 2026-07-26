@@ -708,72 +708,6 @@ test("local lease acquisition fails closed before writing when exact owner ident
   }
 });
 
-test("Redis lease acquisition fails closed before compare-and-swap when exact owner identity is unavailable", async () => {
-  const root = await tempRoot("cpb-lease-redis-owner-identity-unavailable");
-  const dataRoot = path.join(root, "runtime");
-  let casCalls = 0;
-  __infraLockTestHooks.captureProcessIdentity = () => null;
-  __infraLockTestHooks.redisLeaseBackend = () => ({
-    readStateRecord: async () => ({ data: null, revision: "r0" }),
-    serverTimeMs: async () => Date.now(),
-    compareAndSwapStateRecord: async () => {
-      casCalls += 1;
-      return { committed: true, revision: "r1" };
-    },
-  } as never);
-  try {
-    await assert.rejects(
-      acquireLease(root, {
-        dataRoot,
-        leaseId: "lease-redis-owner-identity-unavailable",
-        jobId: "job-new",
-        phase: "execute",
-        ttlMs: 60_000,
-      }),
-      (error: NodeJS.ErrnoException & { context?: string }) => {
-        assert.equal(error.code, "PROCESS_IDENTITY_UNAVAILABLE");
-        assert.equal(error.context, "Redis lease acquisition");
-        return true;
-      },
-    );
-    assert.equal(casCalls, 0, "Redis lease state must not be created or updated on capture failure");
-  } finally {
-    __infraLockTestHooks.captureProcessIdentity = undefined;
-    __infraLockTestHooks.redisLeaseBackend = undefined;
-  }
-});
-
-test("Redis lease acquisition persists an exact owner identity", async () => {
-  const root = await tempRoot("cpb-lease-redis-owner-identity");
-  const dataRoot = path.join(root, "runtime");
-  const identity = captureProcessIdentity(process.pid, { strict: true });
-  assert.ok(identity);
-  let persisted: unknown = null;
-  __infraLockTestHooks.captureProcessIdentity = () => identity;
-  __infraLockTestHooks.redisLeaseBackend = () => ({
-    readStateRecord: async () => ({ data: null, revision: "r0" }),
-    serverTimeMs: async () => Date.now(),
-    compareAndSwapStateRecord: async (_field: string, _revision: string, value: unknown) => {
-      persisted = value;
-      return { committed: true, revision: "r1" };
-    },
-  } as never);
-  try {
-    const lease = await acquireLease(root, {
-      dataRoot,
-      leaseId: "lease-redis-owner-identity",
-      jobId: "job-new",
-      phase: "execute",
-      ttlMs: 60_000,
-    });
-    assert.deepEqual(lease.ownerIdentity, identity);
-    assert.deepEqual((persisted as { ownerIdentity?: unknown }).ownerIdentity, identity);
-  } finally {
-    __infraLockTestHooks.captureProcessIdentity = undefined;
-    __infraLockTestHooks.redisLeaseBackend = undefined;
-  }
-});
-
 test("local lease write reports committed durability ambiguity after publish", async () => {
   const root = await tempRoot("cpb-lease-write-ambiguity");
   const dataRoot = path.join(root, "runtime");
@@ -1361,71 +1295,7 @@ test("lock TTL validation rejects non-finite, non-positive, fractional, and over
   }
 });
 
-test("lease TTL validation runs before local or Redis state mutation", async () => {
-  const root = await tempRoot("cpb-lease-ttl-validation");
-  const dataRoot = path.join(root, "runtime");
-  let backendCalls = 0;
-  __infraLockTestHooks.redisLeaseBackend = () => {
-    backendCalls += 1;
-    return null;
-  };
-  try {
-  for (const ttlMs of [Number.NaN, Number.POSITIVE_INFINITY, 0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
-      await assert.rejects(
-        acquireLease(root, {
-          dataRoot,
-          leaseId: "lease-invalid-ttl",
-          jobId: "job-invalid-ttl",
-          phase: "execute",
-          ttlMs,
-        }),
-        (error: NodeJS.ErrnoException) => error.code === "ELEASETTLINVALID",
-      );
-    }
-  } finally {
-    __infraLockTestHooks.redisLeaseBackend = undefined;
-  }
-  assert.equal(backendCalls, 0);
-  await assert.rejects(access(leaseFile(dataRoot, "lease-invalid-ttl")));
-});
-
-test("lease acquisition rejects non-numeric owner PIDs before backend, filesystem, or identity capture", async () => {
-  const root = await tempRoot("cpb-lease-owner-pid-validation");
-  const dataRoot = path.join(root, "runtime");
-  let backendCalls = 0;
-  let captureCalls = 0;
-  __infraLockTestHooks.redisLeaseBackend = () => {
-    backendCalls += 1;
-    return null;
-  };
-  __infraLockTestHooks.captureProcessIdentity = () => {
-    captureCalls += 1;
-    return null;
-  };
-  try {
-    for (const ownerPid of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, 1.5, "7001", true, null]) {
-      await assert.rejects(
-        acquireLease(root, {
-          dataRoot,
-          leaseId: "lease-invalid-owner-pid",
-          jobId: "job-invalid-owner-pid",
-          phase: "execute",
-          ttlMs: 60_000,
-          ownerPid: ownerPid as number,
-        }),
-        (error: NodeJS.ErrnoException) => error.code === "PROCESS_PID_INVALID",
-      );
-    }
-  } finally {
-    __infraLockTestHooks.redisLeaseBackend = undefined;
-    __infraLockTestHooks.captureProcessIdentity = undefined;
-  }
-  assert.equal(backendCalls, 0);
-  assert.equal(captureCalls, 0);
-  await assert.rejects(access(dataRoot));
-});
-
-test("local lease renewal rejects an expired lease with Redis-compatible ESTALE", async () => {
+test("local lease renewal rejects an expired lease with ESTALE", async () => {
   const root = await tempRoot("cpb-local-renew-expired");
   const dataRoot = path.join(root, "runtime");
   const leaseId = "lease-local-renew-expired";

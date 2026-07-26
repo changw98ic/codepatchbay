@@ -9,7 +9,6 @@ import {
   removeDurable,
   writeJsonDurableAtomic,
 } from "../../../shared/hub-maintenance.js";
-import type { HubRedisStateBackend, RedisAccessAuditHead } from "../../../shared/hub-state-redis.js";
 
 const AUDIT_FORMAT = "cpb-hub-access-audit/v1";
 const PENDING_FORMAT = "cpb-hub-access-audit-pending/v1";
@@ -81,7 +80,6 @@ type PendingRecord = {
 type AuditOptions = {
   hubRoot: string;
   maxBytes?: number | string;
-  redisBackend?: HubRedisStateBackend | null;
 };
 
 function errnoCode(error: unknown) {
@@ -485,140 +483,6 @@ function createRecord(input: HubAccessAuditInput, state: Pick<AuditState, "lastS
   return { ...payload, hash: hashRecordPayload(payload) };
 }
 
-async function captureRedisAudit(backend: HubRedisStateBackend, maxBytes: number) {
-  const head = await backend.readAccessAuditHead();
-  const serializedRecords = await backend.readAccessAuditRecords(head.sequence);
-  let lastHash = GENESIS_HASH;
-  let sizeBytes = 0;
-  for (let index = 0; index < serializedRecords.length; index += 1) {
-    const serialized = serializedRecords[index];
-    if (Buffer.byteLength(serialized, "utf8") > MAX_RECORD_BYTES) {
-      throw new Error(`Redis Hub access-audit record ${index + 1} exceeds ${MAX_RECORD_BYTES} bytes`);
-    }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(serialized);
-    } catch {
-      throw new Error(`Redis Hub access-audit record ${index + 1} is not valid JSON`);
-    }
-    const record = validateAuditRecord(parsed, index + 1, lastHash);
-    lastHash = record.hash;
-    sizeBytes += Buffer.byteLength(serialized, "utf8") + 1;
-  }
-  if (head.sequence !== serializedRecords.length || head.hash !== lastHash || head.sizeBytes !== sizeBytes) {
-    throw Object.assign(new Error("Redis Hub access-audit head does not match its Stream"), { code: "HUB_ACCESS_AUDIT_INVALID" });
-  }
-  if (head.maxBytes !== null && head.maxBytes !== maxBytes) {
-    throw Object.assign(new Error("Redis Hub access-audit capacity policy differs from this Hub"), {
-      code: "HUB_ACCESS_AUDIT_POLICY_MISMATCH",
-    });
-  }
-  return { verified: {
-    filePath: `redis:${backend.identityFingerprint}`,
-    pendingPath: null,
-    recordCount: head.sequence,
-    lastSequence: head.sequence,
-    lastHash: head.hash,
-    sizeBytes: head.sizeBytes,
-    maxBytes,
-    backend: "redis-stream" as const,
-  }, serializedRecords };
-}
-
-async function verifyRedisAudit(backend: HubRedisStateBackend, maxBytes: number) {
-  return (await captureRedisAudit(backend, maxBytes)).verified;
-}
-
-async function openRedisHubAccessAudit(backend: HubRedisStateBackend, maxBytes: number) {
-  const verified = await verifyRedisAudit(backend, maxBytes);
-  let head: RedisAccessAuditHead = {
-    sequence: verified.lastSequence,
-    hash: verified.lastHash,
-    sizeBytes: verified.sizeBytes,
-    maxBytes: verified.recordCount > 0 ? maxBytes : null,
-  };
-  let queue = Promise.resolve();
-  let fatal: unknown = null;
-  let closed = false;
-  return {
-    filePath: verified.filePath,
-    append(input: HubAccessAuditInput) {
-      const operation = queue.then(async () => {
-        if (closed) throw new Error("Hub access-audit writer is closed");
-        if (fatal) throw fatal;
-        try {
-          for (let attempt = 0; attempt < 100; attempt += 1) {
-            const record = createRecord(input, { lastSequence: head.sequence, lastHash: head.hash });
-            validateAuditRecord(record, head.sequence + 1, head.hash);
-            const serialized = JSON.stringify(record);
-            if (Buffer.byteLength(serialized, "utf8") > MAX_RECORD_BYTES) {
-              throw new Error(`Hub access-audit record exceeds ${MAX_RECORD_BYTES} bytes`);
-            }
-            const result = await backend.appendAccessAudit(
-              head.sequence, head.hash, record.hash, serialized, maxBytes,
-            );
-            head = {
-              sequence: result.sequence,
-              hash: result.hash,
-              sizeBytes: result.sizeBytes,
-              maxBytes: result.maxBytes,
-            };
-            if (result.committed) return record;
-          }
-          throw Object.assign(new Error("Redis Hub access-audit CAS retry limit exceeded"), { code: "HUB_ACCESS_AUDIT_CONFLICT" });
-        } catch (error) {
-          const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
-          if (code !== "HUB_ACCESS_AUDIT_CONFLICT" && code !== "HUB_STATE_BACKEND_UNAVAILABLE") fatal = error;
-          throw error;
-        }
-      });
-      queue = operation.then(() => undefined, () => undefined);
-      return operation;
-    },
-    status() {
-      return {
-        filePath: verified.filePath,
-        recordCount: head.sequence,
-        lastSequence: head.sequence,
-        lastHash: head.hash,
-        sizeBytes: head.sizeBytes,
-        maxBytes,
-        healthy: fatal === null,
-        backend: "redis-stream" as const,
-      };
-    },
-    async close() {
-      closed = true;
-      await queue;
-    },
-  };
-}
-
-async function assertRedisAuditCutoverSafe(hubRoot: string) {
-  const paths = auditPaths(hubRoot);
-  if (await pathExists(paths.directory)) {
-    const directory = await lstat(paths.directory);
-    if (!directory.isDirectory() || directory.isSymbolicLink()) {
-      throw Object.assign(new Error("local Hub access-audit directory is unsafe"), { code: "HUB_ACCESS_AUDIT_MIGRATION_REQUIRED" });
-    }
-  }
-  if (await pathExists(paths.pendingPath) || await pathExists(paths.archiveJournalPath)) {
-    throw Object.assign(
-      new Error("local Hub access-audit recovery must complete before Redis audit cutover"),
-      { code: "HUB_ACCESS_AUDIT_MIGRATION_REQUIRED" },
-    );
-  }
-  if (await pathExists(paths.filePath)) {
-    const info = await assertPrivateRealFile(paths.filePath, "Hub access-audit log");
-    if (info.size > 0) {
-      throw Object.assign(
-        new Error("non-empty local Hub access-audit log must be archived before Redis audit cutover"),
-        { code: "HUB_ACCESS_AUDIT_MIGRATION_REQUIRED" },
-      );
-    }
-  }
-}
-
 export async function verifyHubAccessAudit(options: AuditOptions) {
   const paths = auditPaths(options.hubRoot);
   if (await pathExists(paths.archiveJournalPath)) {
@@ -633,20 +497,6 @@ export async function verifyHubAccessAudit(options: AuditOptions) {
   return verifyAuditFile(paths.filePath, paths.pendingPath, normalizeMaxBytes(options.maxBytes));
 }
 
-export async function verifyRedisHubAccessAudit(
-  redisBackend: HubRedisStateBackend,
-  { maxBytes }: { maxBytes?: number | string } = {},
-) {
-  return verifyRedisAudit(redisBackend, normalizeMaxBytes(maxBytes));
-}
-
-export async function captureRedisHubAccessAudit(
-  redisBackend: HubRedisStateBackend,
-  { maxBytes }: { maxBytes?: number | string } = {},
-) {
-  return captureRedisAudit(redisBackend, normalizeMaxBytes(maxBytes));
-}
-
 export async function verifyHubAccessAuditFile(
   filePath: string,
   { maxBytes }: { maxBytes?: number | string } = {},
@@ -656,16 +506,6 @@ export async function verifyHubAccessAuditFile(
 }
 
 export async function inspectHubAccessAuditUsage(options: AuditOptions) {
-  if (options.redisBackend) {
-    const verified = await verifyRedisAudit(options.redisBackend, normalizeMaxBytes(options.maxBytes));
-    return {
-      ...verified,
-      pending: false,
-      archivePending: false,
-      usagePercent: Math.min(100, (verified.sizeBytes / verified.maxBytes) * 100),
-      remainingBytes: Math.max(0, verified.maxBytes - verified.sizeBytes),
-    };
-  }
   const paths = auditPaths(options.hubRoot);
   const maxBytes = normalizeMaxBytes(options.maxBytes);
   const pending = await pathExists(paths.pendingPath);
@@ -689,10 +529,6 @@ export async function inspectHubAccessAuditUsage(options: AuditOptions) {
 
 export async function openHubAccessAudit(options: AuditOptions) {
   const maxBytes = normalizeMaxBytes(options.maxBytes);
-  if (options.redisBackend) {
-    await assertRedisAuditCutoverSafe(options.hubRoot);
-    return openRedisHubAccessAudit(options.redisBackend, maxBytes);
-  }
   const paths = auditPaths(options.hubRoot);
   if (!await pathExists(paths.directory)) await mkdir(paths.directory, { recursive: true, mode: 0o700 });
   const directoryInfo = await lstat(paths.directory);

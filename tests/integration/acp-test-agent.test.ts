@@ -3868,6 +3868,7 @@ test("AcpPool persistent ACP reuses the provider process across isolated worktre
       ...sandboxTempEnv(tmp),
       CPB_AGENT_ISOLATE_HOME: "0",
       CPB_CODEGRAPH_ENABLED: "0",
+      CPB_ACP_RTK_ENABLED: "0",
       CPB_ACP_PERSISTENT_PROCESS: "1",
       CPB_PROJECT_RUNTIME_ROOT: dataRoot,
       CPB_ACP_FAKE_ACP_COMMAND: process.execPath,
@@ -3917,7 +3918,11 @@ test("AcpPool persistent ACP reuses the provider process across isolated worktre
         timer.unref();
       }),
     ]);
-    assert.ok(["SIGTERM", "SIGKILL"].includes(terminalExitStatus.signal), JSON.stringify(terminalExitStatus));
+    // Accept either a direct signal (SIGTERM/SIGKILL) or a wrapper exit code
+    // (143 = 128+SIGTERM, 137 = 128+SIGKILL) from rtk or similar wrappers.
+    const terminatedBySignal = ["SIGTERM", "SIGKILL"].includes(terminalExitStatus.signal)
+      || [137, 143].includes(terminalExitStatus.exitCode as number);
+    assert.ok(terminatedBySignal, JSON.stringify(terminalExitStatus));
     assert.equal(second.output, "second-cwd-response");
 
     const transcript = await readJsonl(transcriptPath);

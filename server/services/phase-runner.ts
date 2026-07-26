@@ -22,7 +22,6 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { buildChildEnv, providerCredentialKeysForAgent } from "../../core/policy/child-env.js";
-import { pinnedHubRedisConfigFile } from "../../shared/hub-state-redis.js";
 import type { LooseRecord } from "../../shared/types.js";
 import { buildLocator, locatorEnvelope, projectExists } from "./phase-locator.js";
 import { getJob, listJobsFromIndex } from "./job/job-store.js";
@@ -1264,7 +1263,8 @@ async function bindProviderIntoCapsule(
       args = [path.join(destination, path.relative(packageRoot, resolved.canonical)), ...resolved.args];
     } else {
       await assertStandaloneProviderScript(resolved.canonical);
-      const destination = path.join(providerDirectory.path, "adapter.js");
+      const ext = path.extname(resolved.canonical) || ".js";
+      const destination = path.join(providerDirectory.path, `adapter${ext}`);
       await copyStableSourceFile(
         resolved.canonical,
         destination,
@@ -1754,13 +1754,10 @@ function minimalRunnerEnv(
     CPB_EXECUTOR_ROOT: capsuleExecutorRoot,
     ...providerEnv,
   };
-  for (const key of ["CPB_PROJECT_RUNTIME_ROOT", "CPB_HUB_STATE_REDIS_CONFIG_FILE"]) {
-    if (input[key] !== undefined) extra[key] = input[key];
-  }
+  if (input.CPB_PROJECT_RUNTIME_ROOT !== undefined) extra.CPB_PROJECT_RUNTIME_ROOT = input.CPB_PROJECT_RUNTIME_ROOT;
   const options: LooseRecord = {
     includeProviderCredentials: false,
     allowKeys: [
-      "CPB_HUB_STATE_REDIS_CONFIG_FILE",
       "CPB_CAPSULE_CODEX_PATH",
       "CPB_CAPSULE_CLAUDE_CODE_EXECUTABLE",
     ],
@@ -2680,11 +2677,6 @@ export async function dispatchPhase(cpbRoot: string, { project, jobId, phase, sc
       error: error instanceof Error ? error : new Error(String(error)),
       envelope,
     };
-  }
-  const hubRoot = runnerEnv.CPB_HUB_ROOT;
-  if (hubRoot && !runnerEnv.CPB_HUB_STATE_REDIS_CONFIG_FILE) {
-    const pinnedConfig = await pinnedHubRedisConfigFile(hubRoot);
-    if (pinnedConfig) runnerEnv.CPB_HUB_STATE_REDIS_CONFIG_FILE = pinnedConfig;
   }
   const result = await runTrustedJobRunner(
     resolvedExecutorRoot,

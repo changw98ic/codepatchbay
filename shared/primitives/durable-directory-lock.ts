@@ -695,7 +695,13 @@ async function probeProcessFence(
       const line = response.trim();
       finish(line === `${FENCE_PROTOCOL}${expectedKey}` ? "same" : line ? "other" : "indeterminate");
     });
-    socket.on("error", () => finish("indeterminate"));
+    socket.on("error", (error: NodeJS.ErrnoException) => {
+      // The listener may disappear between EADDRINUSE and the probe connect.
+      // ECONNREFUSED proves that no owner is serving this candidate anymore;
+      // continue to the next fence port. A reset or any other transport error
+      // remains indeterminate and must fail closed as possible contention.
+      finish(error.code === "ECONNREFUSED" ? "other" : "indeterminate");
+    });
     signal?.addEventListener("abort", onAbort, { once: true });
     if (signal?.aborted) onAbort();
   });

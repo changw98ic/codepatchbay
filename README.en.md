@@ -156,10 +156,8 @@ lock metadata reads reject symlinks and enforce byte limits. This guarantee is
 for competing processes on one host, not multi-host consensus. See
 [`docs/architecture/cpb-hub-registry-consistency.md`](docs/architecture/cpb-hub-registry-consistency.md).
 
-For multi-host deployments, the project registry, queue, leases, assignments,
-and worker inbox can use the private `CPB_HUB_STATE_REDIS_CONFIG_FILE` backend.
-Remote connections require `rediss://`; the current release still reports
-`activeActiveSafe: false`, so multiple active schedulers are not supported.
+The current release reports `activeActiveSafe: false`, so multiple active
+schedulers are not supported.
 
 The Hub root contains both control-plane state and every registered project's runtime state.
 Backup and restore are offline operations. Snapshots carry a SHA-256 manifest, restore verifies

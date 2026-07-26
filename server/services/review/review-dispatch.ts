@@ -1781,15 +1781,12 @@ export async function autoApproveSession(cpbRoot: string, sessionId: string, { h
  * Cancel a review session.
  */
 export async function cancelReviewDispatch(cpbRoot: string, sessionId: string, reason: string, options: ReviewStorageOptions = {}) {
-  const session = await getSession(cpbRoot, sessionId, options);
-  if (!session) return { ok: false, error: "session_not_found" };
-
   const cancellation = await withReviewWorktreeDecisionLock(
     cpbRoot,
-    session.sessionId,
+    sessionId,
     options,
     async () => {
-      const current = await getSession(cpbRoot, session.sessionId, options);
+      const current = await getSession(cpbRoot, sessionId, options);
       if (!current) return { ok: false as const, error: "session_not_found" };
       const updated = await cancelReviewSession(
         cpbRoot,
@@ -1819,7 +1816,7 @@ export async function cancelReviewDispatch(cpbRoot: string, sessionId: string, r
   // Resolve the active run after the durable cancellation commit. A run that
   // registered while updateSession was in flight is then visible here; a run
   // that registers later re-reads the durable status before spawning ACP.
-  const activeRun = activeReviewRuns.get(reviewRunKey(cpbRoot, session.sessionId));
+  const activeRun = activeReviewRuns.get(reviewRunKey(cpbRoot, sessionId));
   if (activeRun) {
     activeRun.abort(reason || "cancelled");
     await activeRun.teardown;
@@ -3706,10 +3703,6 @@ function combineReviewFailures(failures: unknown[]) {
 }
 
 export async function runReview(cpbRoot: string, sessionId: string, options: ReviewRunOptions = {}): Promise<void> {
-  const session = await getSession(cpbRoot, sessionId);
-  if (!session) throw new Error(`session not found: ${sessionId}`);
-  if (session.status === "cancelled") return;
-
   const controller = new AbortController();
   const key = reviewRunKey(cpbRoot, sessionId);
   if (activeReviewRuns.has(key)) {
@@ -3732,6 +3725,24 @@ export async function runReview(cpbRoot: string, sessionId: string, options: Rev
     },
     teardown,
   });
+
+  let session: ReviewSessionRecord;
+  try {
+    const loaded = await getSession(cpbRoot, sessionId);
+    if (!loaded) throw new Error(`session not found: ${sessionId}`);
+    session = loaded;
+  } catch (error) {
+    externalAbortCleanup();
+    if (activeReviewRuns.get(key)?.teardown === teardown) activeReviewRuns.delete(key);
+    teardownResolve();
+    throw error;
+  }
+  if (session.status === "cancelled") {
+    externalAbortCleanup();
+    if (activeReviewRuns.get(key)?.teardown === teardown) activeReviewRuns.delete(key);
+    teardownResolve();
+    return;
+  }
 
   let codex: PersistentAcp | null = null;
   let claude: PersistentAcp | null = null;

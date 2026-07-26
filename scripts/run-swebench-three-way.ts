@@ -4040,13 +4040,20 @@ export async function runCommand({
     logError = error instanceof Error ? error : new Error(String(error));
   }
 
+  // When the command was aborted or timed out, the initial result may have
+  // cleanupVerified=false because teardown runs in the background. Await the
+  // cleanup promise so that cleanup errors are visible before we decide whether
+  // to throw.
+  const cleanupResult = result.cleanupPromise ? await result.cleanupPromise.catch(() => null) : null;
+  const effectiveError = cleanupResult?.error || result.error;
+  const effectiveCleanupVerified = cleanupResult ? cleanupResult.cleanupVerified : result.cleanupVerified;
   const primaryError = result.aborted
     ? Object.assign(new Error(abortReason(signal)), { name: "AbortError", code: "ABORT_ERR" })
     : result.timedOut
       ? Object.assign(new Error(`timed out after ${timeoutMs}ms`), { code: "COMMAND_TIMEOUT" })
       : null;
   const cleanupErrors = [
-    ...(!result.cleanupVerified && result.error ? [result.error] : []),
+    ...(!effectiveCleanupVerified && effectiveError ? [effectiveError] : []),
     ...(logError ? [logError] : []),
   ];
   if (primaryError && cleanupErrors.length > 0) {

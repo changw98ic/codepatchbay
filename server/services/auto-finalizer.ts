@@ -2869,7 +2869,7 @@ export async function finalizeSuccessfulQueueEntry({
           tree: auditedTree,
           pushed,
           closed,
-          committed: pushed === true ? true : closed,
+          committed: pushed === true && (closed as boolean) === true ? true : closed,
           verification: closeVerification,
           principal: transportPrincipal,
           remoteIntent: journalSnapshot?.record || null,
@@ -2898,7 +2898,7 @@ export async function finalizeSuccessfulQueueEntry({
         await advanceLiveJournal("remote.complete");
       } catch (error) {
         throw Object.assign(error instanceof Error ? error : new Error(String(error)), {
-          committed: true,
+          committed: null,
           attempted: true,
           operation: "issue.close",
         });
@@ -2926,7 +2926,7 @@ export async function finalizeSuccessfulQueueEntry({
         tree: auditedTree,
         pushed,
         closed,
-        committed: anyRemoteWriteCommitted ? true : operationCommitted,
+        committed: pushed === true && (closed as boolean) === true ? true : closed,
         operation: remoteOperation,
         principal: transportPrincipal,
         remoteIntent: journalSnapshot?.record || null,

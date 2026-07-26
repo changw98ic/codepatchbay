@@ -209,10 +209,9 @@ test("npm-pack E2E safety gate rejects before commands when the destructive capa
   assert.equal(commands, 0);
 });
 
-test("npm-pack E2E safety gate rejects external Redis and dangerous-mode overrides before commands", async (t) => {
+test("npm-pack E2E safety gate rejects dangerous-mode overrides before commands", async (t) => {
   const hubRoot = await createDisposableRoot(t);
   for (const override of [
-    { CPB_HUB_STATE_REDIS_CONFIG_FILE: "/shared/redis-state.json" },
     { CPB_DANGEROUS: "1" },
   ]) {
     let commands = 0;

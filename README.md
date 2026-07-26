@@ -151,19 +151,12 @@ hash-chain 访问审计；写入或完整性检查失败时请求返回 `503 HUB
 [`docs/security/cpb-hub-access-audit.md`](docs/security/cpb-hub-access-audit.md)。
 
 项目注册表的所有生产写路径使用带单调 `revision` 的跨进程事务；陈旧快照返回
-`HUB_REGISTRY_CONFLICT`，不会覆盖其他进程已经提交的状态。默认本地文件模式使用所有权 token、续租、
-死进程恢复和提交前所有权复核，保证范围限于同一主机。需要跨主机共享注册表时，可配置私有
-`CPB_HUB_STATE_REDIS_CONFIG_FILE`，通过 Redis 原子 CAS 拒绝恢复后的旧 writer；leader lease、单调 epoch
-、队列、assignment、worker registry 与 worker inbox 也存入同一个 Redis hash；leader 写入会在存储层
-校验 fence，worker inbox 通过一次性 claim token 原子认领。远程连接强制
-`rediss://`，Hub 启动和 `cpb doctor` 都会执行有界预检。凭据可在同一 endpoint/database/key 上轮换，
-切换后端身份必须先停止全部控制面进程。lease、job 和审计状态仍没有完整分布式事务，
-`cpb doctor` 会继续报告 `activeActiveSafe: false`，因此还不能运行多个 active scheduler。部署、迁移、备份和
-拓扑限制见 [`docs/security/cpb-hub-redis-state.md`](docs/security/cpb-hub-redis-state.md)，本地事务细节见
+`HUB_REGISTRY_CONFLICT`，不会覆盖其他进程已经提交的状态。本地文件模式使用所有权 token、续租、
+死进程恢复和提交前所有权复核，保证范围限于同一主机。`cpb doctor` 会继续报告
+`activeActiveSafe: false`，因此还不能运行多个 active scheduler。本地事务细节见
 [`docs/architecture/cpb-hub-registry-consistency.md`](docs/architecture/cpb-hub-registry-consistency.md)。
 
-默认模式下 Hub 与所有注册项目的运行状态都位于 Hub 根目录内。配置 Redis 注册表后，该注册表位于
-外部服务，当前 Hub 备份不会包含它，必须使用 Redis 自身的备份恢复并核对 revision 和项目集合。
+默认模式下 Hub 与所有注册项目的运行状态都位于 Hub 根目录内。
 文件系统备份和恢复必须离线执行；快照包含
 SHA-256 清单，恢复前会完整校验，覆盖已有状态必须显式使用 `--force`，原目录会保留为
 `*.pre-restore-*` 回滚副本：

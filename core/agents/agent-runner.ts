@@ -1,3 +1,4 @@
+import { existsSync, realpathSync } from "node:fs";
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { recordValue, type LooseRecord } from "../../shared/types.js";
@@ -130,8 +131,24 @@ function normalizeFsPath(value: string | null | undefined, cwd = process.cwd()) 
   let raw = value.trim().replace(/^file:\/\//, "");
   raw = raw.replace(/^["']|["']$/g, "");
   if (!raw) return null;
-  if (raw.startsWith("/private/tmp/")) raw = `/tmp/${raw.slice("/private/tmp/".length)}`;
-  return path.resolve(cwd, raw);
+  const resolved = path.resolve(cwd, raw);
+  // Providers may report either side of macOS's /tmp symlink, and the
+  // reported target may not exist yet. Resolve the deepest existing ancestor
+  // while preserving the non-existent suffix so comparisons use one
+  // canonical path without weakening path containment checks.
+  let current = resolved;
+  const suffix: string[] = [];
+  while (!existsSync(current)) {
+    const parent = path.dirname(current);
+    if (parent === current) return resolved;
+    suffix.unshift(path.basename(current));
+    current = parent;
+  }
+  try {
+    return path.join(realpathSync(current), ...suffix);
+  } catch {
+    return resolved;
+  }
 }
 
 function pathWithin(candidate: string, root: string) {

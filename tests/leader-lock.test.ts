@@ -773,38 +773,3 @@ test("LeaderLock release and successor acquisition invalidate an old readiness r
   assert.equal(preserved.ready, true);
   assert.equal(preserved.lockToken, successor.lockToken);
 });
-
-test("LeaderLock Redis readiness receipt is generation-bound and carries ProcessIdentity", async () => {
-  const hubRoot = await tempRoot("cpb-leader-ready-redis");
-  const first = new LeaderLock(hubRoot);
-  const successor = new LeaderLock(hubRoot);
-  first.epoch = 11;
-  successor.epoch = 12;
-  const statusFor = (lock: LeaderLock) => ({
-    alive: true,
-    hubId: lock.hubId,
-    lockToken: lock.lockToken,
-    host: os.hostname(),
-    pid: process.pid,
-    epoch: lock.epoch,
-  });
-  let current = statusFor(first);
-  const backend = { readLeader: async () => current } as never;
-  first._redisBackend = backend;
-  successor._redisBackend = backend;
-
-  assert.equal(await first.markReady(), true);
-  const firstReceipt = await first._readReadyReceipt();
-  assert.ok(firstReceipt?.processIdentity);
-  assert.equal(firstReceipt?.epoch, first.epoch);
-
-  current = statusFor(successor);
-  assert.equal(await successor.markReady(), true);
-  const successorReceipt = await successor._readReadyReceipt();
-  assert.ok(successorReceipt?.processIdentity);
-  assert.equal(successorReceipt?.epoch, successor.epoch);
-  assert.notEqual(successorReceipt?.lockToken, firstReceipt?.lockToken);
-
-  assert.equal(await first.markReady(), false);
-  assert.deepEqual(await successor._readReadyReceipt(), successorReceipt);
-});

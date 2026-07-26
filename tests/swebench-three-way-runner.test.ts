@@ -508,7 +508,7 @@ test("runCommand aggregates the abort reason with verified tree-cleanup failure"
   };
   const pending = runCommand({
     command: process.execPath,
-    args: ["-e", "process.on('SIGTERM', () => process.exit(0)); setInterval(() => {}, 1000);"],
+    args: ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);"],
     cwd: root,
     timeoutMs: 30_000,
     signal: controller.signal,

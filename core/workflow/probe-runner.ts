@@ -388,7 +388,7 @@ function outputTail(input: string): string {
 }
 
 function commandProbeEnv(cwd: string, parentEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  // Never expose Hub/Redis/provider credentials to a verification child.
+  // Never expose Hub/provider credentials to a verification child.
   // Keep only process-discovery and locale values needed by common toolchains.
   const allowed = ["PATH", "HOME", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL", "USER", "LOGNAME", "SYSTEMROOT", "COMSPEC", "PATHEXT"];
   const env: NodeJS.ProcessEnv = { CI: "1", PYTHONPATH: cwd };

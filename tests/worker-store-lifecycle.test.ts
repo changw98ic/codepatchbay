@@ -847,38 +847,6 @@ test("pruneDead keeps the local registry retryable when inbox cleanup fails", as
   assert.deepEqual(JSON.parse(await readFile(registryPath, "utf8")), worker);
 });
 
-test("Redis prune keeps the registry retryable until inbox deletion verifies", async () => {
-  const hubRoot = await tempRoot("cpb-worker-store-redis-prune-order");
-  const store = new WorkerStore(hubRoot);
-  const inboxField = store._inboxField("worker-1", "a-1", 1, "attempt-a-1");
-  let registryDeleteAttempted = false;
-  store._redisBackend = {
-    identityFingerprint: "test-worker-cleanup",
-    scanStateRecords: async (prefix: string) => prefix === store._inboxPrefix("worker-1")
-      ? [{ field: inboxField, record: { revision: 1, data: { assignmentId: "a-1" } } }]
-      : [],
-    readStateRecord: async (field: string) => ({
-      revision: 1,
-      data: field === inboxField ? { assignmentId: "a-1" } : { workerId: "worker-1" },
-    }),
-    compareAndSwapStateRecord: async (field: string) => {
-      if (field !== inboxField) registryDeleteAttempted = true;
-      return { committed: true, fenced: false, revision: 2 };
-    },
-  } as never;
-  store.listWorkers = async () => [{
-    workerId: "worker-1",
-    pid: 1234,
-    host: os.hostname(),
-    status: "exited",
-    processIdentity: testIdentity(1234, "old"),
-  }];
-  store._captureProcessIdentity = () => null;
-
-  await assert.rejects(() => store.pruneDead(), /worker cleanup failed/);
-  assert.equal(registryDeleteAttempted, false);
-});
-
 test("local inbox deletion propagates I/O errors and removes write-owner sidecars", async () => {
   const hubRoot = await tempRoot("cpb-worker-store-delete-errors");
   const store = new WorkerStore(hubRoot);

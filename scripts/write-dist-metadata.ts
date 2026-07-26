@@ -73,8 +73,6 @@ for (const relative of [
   "cli/cpb.js",
   "server/services/test-acp-agent.js",
   "bridges/job-runner.js",
-  "bridges/project-worker.js",
-  "bridges/run-pipeline.js",
   "bridges/run-phase.js",
 ]) {
   try {

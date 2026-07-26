@@ -392,7 +392,10 @@ async function openDirectoryAuthority(
     const opened = await handle.stat();
     if (
       !opened.isDirectory()
-      || !sameMaintenanceLockGeneration(maintenanceLockGeneration(before), opened)
+      // Directory metadata (size/mtime/ctime) legitimately changes when a
+      // sibling is created by another test or worker. The open handle proves
+      // pathname identity; only the stable inode lineage is authority here.
+      || !sameMaintenanceLockLineage(maintenanceLockGeneration(before), opened)
     ) {
       throw directoryAuthorityError(directory);
     }
@@ -430,8 +433,8 @@ async function validateOpenDirectoryAuthority(
     !descriptor.isDirectory()
     || !current.isDirectory()
     || current.isSymbolicLink()
-    || !sameMaintenanceLockGeneration(expected, descriptor)
-    || !sameMaintenanceLockGeneration(expected, current)
+    || !sameMaintenanceLockLineage(expected, descriptor)
+    || !sameMaintenanceLockLineage(expected, current)
   ) {
     throw directoryAuthorityError(directory);
   }
@@ -520,7 +523,7 @@ async function validateDirectoryAuthorityChain(chain: DirectoryAuthorityChainEnt
       || current.isSymbolicLink()
       || !sameMaintenanceLockLineage(entry.generation, descriptor)
       || !sameMaintenanceLockLineage(entry.generation, current)
-      || !sameMaintenanceLockGeneration(maintenanceLockGeneration(descriptor), current)
+      || !sameMaintenanceLockLineage(maintenanceLockGeneration(descriptor), current)
     ) {
       throw directoryAuthorityError(entry.directory);
     }

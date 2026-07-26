@@ -32,7 +32,6 @@ import {
   type ProcessTreeSystem,
 } from "../../core/runtime/process-tree.js";
 import { createTemporaryWorkspace } from "../../core/runtime/temporary-workspace.js";
-import { openPinnedHubRedisStateBackend, type HubRedisStateBackend } from "../../shared/hub-state-redis.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -128,6 +127,10 @@ type ProcessRegistryOptions = RuntimeStorageOptions & {
   processSystem?: ProcessTreeSystem;
   graceMs?: number;
   forceVerifyMs?: number;
+};
+
+type AddChildPidOptions = ProcessRegistryOptions & {
+  processIdentity?: ProcessIdentity;
 };
 
 type ProcessSessionPin = {
@@ -726,7 +729,6 @@ export type InfraLockTestHooks = {
     acquired: boolean;
   }) => void | Promise<void>;
   captureProcessIdentity?: (pid: number, processSystem?: ProcessTreeSystem) => ProcessIdentity | null;
-  redisLeaseBackend?: () => Promise<HubRedisStateBackend | null> | HubRedisStateBackend | null;
   durabilityFault?: string;
 };
 
@@ -769,47 +771,6 @@ async function leaseFileFor(cpbRoot: string, leaseId: string, opts: RuntimeStora
   }
 
   return file;
-}
-
-function redisLeaseField(leaseId: string) {
-  validateLeaseId(leaseId);
-  return `lease:${Buffer.from(leaseId, "utf8").toString("base64url")}`;
-}
-
-async function redisLeaseBackend(): Promise<HubRedisStateBackend | null> {
-  const testBackend = infraLockTestHooks().redisLeaseBackend;
-  if (testBackend) return await testBackend();
-  const hubRoot = process.env.CPB_HUB_ROOT;
-  const configFile = process.env.CPB_HUB_STATE_REDIS_CONFIG_FILE;
-  if (!hubRoot || !configFile) return null;
-  return await openPinnedHubRedisStateBackend({ configFile, hubRoot });
-}
-
-async function assertNoLocalLeaseState(cpbRoot: string, opts: RuntimeStorageOptions) {
-  const root = await prepareStorageDirectory(
-    cpbRoot,
-    leaseBase(cpbRoot, opts),
-    "leases",
-    "HUB_LEASE_MIGRATION_LOCAL_STATE_UNSAFE",
-  );
-  const entries = await readDirectoryNamesNoFollow(root, "HUB_LEASE_MIGRATION_LOCAL_STATE_UNSAFE");
-  if (entries.some((entry) => entry.endsWith(".json"))) {
-    throw Object.assign(new Error("local leases require an explicit Redis migration"), {
-      code: "HUB_LEASE_MIGRATION_REQUIRED",
-    });
-  }
-}
-
-function parseRedisLease(value: unknown, leaseId: string): LeaseRecord | null {
-  if (value === null) return null;
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw Object.assign(new Error(`invalid Redis lease: ${leaseId}`), { code: "HUB_STATE_RECORD_INVALID" });
-  }
-  const lease = value as LeaseRecord;
-  if (!validPersistentLeaseRecord(lease, leaseId, true)) {
-    throw Object.assign(new Error(`invalid Redis lease: ${leaseId}`), { code: "HUB_STATE_RECORD_INVALID" });
-  }
-  return lease;
 }
 
 function expiresAtFor(now: Date, ttlMs: number) {
@@ -1401,13 +1362,13 @@ const LEASE_RECORD_REQUIRED_KEYS = [
   "expiresAt",
 ] as const;
 
-function validPersistentLeaseRecord(lease: LeaseRecord, expectedLeaseId: string, redis: boolean) {
+function validPersistentLeaseRecord(lease: LeaseRecord, expectedLeaseId: string) {
   const ownerPid = lease.ownerPid;
   if (
     !hasExactKeys(
       lease,
-      redis ? [...LEASE_RECORD_REQUIRED_KEYS, "expiresAtMs"] : LEASE_RECORD_REQUIRED_KEYS,
-      redis ? [] : ["expiresAtMs"],
+      LEASE_RECORD_REQUIRED_KEYS,
+      ["expiresAtMs"],
     )
     || lease.formatVersion !== LEASE_FORMAT_VERSION
     || lease.leaseId !== expectedLeaseId
@@ -1423,11 +1384,8 @@ function validPersistentLeaseRecord(lease: LeaseRecord, expectedLeaseId: string,
     || !validCanonicalTimestamp(lease.heartbeatAt)
     || !validCanonicalTimestamp(lease.expiresAt)
   ) return false;
-  if (!redis) {
-    return lease.expiresAtMs === undefined
+  return lease.expiresAtMs === undefined
       || epochMatchesTimestamp(lease.expiresAtMs, lease.expiresAt);
-  }
-  return epochMatchesTimestamp(lease.expiresAtMs, lease.expiresAt);
 }
 
 function parseLeaseRecord(raw: string, file: string): LeaseRecord {
@@ -1439,7 +1397,7 @@ function parseLeaseRecord(raw: string, file: string): LeaseRecord {
   }
   const lease = recordValue(parsed) as LeaseRecord;
   const expectedLeaseId = path.basename(file, ".json");
-  if (!validPersistentLeaseRecord(lease, expectedLeaseId, false)) {
+  if (!validPersistentLeaseRecord(lease, expectedLeaseId)) {
     throw invalidFileRead(`lease record is invalid: ${file}`, "ELEASEINVALID");
   }
   return lease;
@@ -2978,34 +2936,6 @@ export async function acquireLease(
   }
   const effectiveOwnerPid = positiveSafePid(ownerPid, "ownerPid");
   const effectiveTtlMs = leaseTtlMsFor(ttlMs);
-  const redis = await redisLeaseBackend();
-  if (redis) {
-    await assertNoLocalLeaseState(cpbRoot, { dataRoot, includeLegacyFallback });
-    const field = redisLeaseField(leaseId);
-    const ownerToken = randomUUID();
-    for (let retry = 0; retry < 64; retry += 1) {
-      const [snapshot, nowMs] = await Promise.all([redis.readStateRecord(field), redis.serverTimeMs()]);
-      const existing = parseRedisLease(snapshot.data, leaseId);
-      if (existing && Number(existing.expiresAtMs) > nowMs) {
-        throw Object.assign(new Error(`lease already exists: ${leaseId}`), { code: "EEXIST" });
-      }
-      const timestamp = new Date(nowMs).toISOString();
-      const ownerIdentity = requireLeaseOwnerIdentity(effectiveOwnerPid, "Redis lease acquisition");
-      const lease: LeaseRecord = {
-        formatVersion: LEASE_FORMAT_VERSION,
-        leaseId, jobId, phase, ownerPid: effectiveOwnerPid, ownerHost: hostname(), ownerToken,
-        ownerIdentity,
-        acquiredAt: timestamp, heartbeatAt: timestamp,
-        expiresAtMs: nowMs + effectiveTtlMs,
-        expiresAt: new Date(nowMs + effectiveTtlMs).toISOString(),
-      };
-      const committed = await redis.compareAndSwapStateRecord(field, snapshot.revision, lease);
-      if (committed.committed) {
-        return lease;
-      }
-    }
-    throw Object.assign(new Error(`lease changed too frequently: ${leaseId}`), { code: "HUB_STATE_RECORD_CONFLICT" });
-  }
   const file = await leaseFileFor(cpbRoot, leaseId, { dataRoot, includeLegacyFallback });
   return await withLeaseLock(file, async () => {
     const lease = createLease({
@@ -3033,11 +2963,6 @@ export async function readLease(
   leaseId: string,
   { dataRoot, includeLegacyFallback = false, lockTtlMs }: RuntimeStorageOptions & LeaseLockOptions = {},
 ) {
-  const redis = await redisLeaseBackend();
-  if (redis) {
-    await assertNoLocalLeaseState(cpbRoot, { dataRoot, includeLegacyFallback });
-    return parseRedisLease((await redis.readStateRecord(redisLeaseField(leaseId))).data, leaseId);
-  }
   const file = await leaseFileFor(cpbRoot, leaseId, { dataRoot, includeLegacyFallback });
   return await withLeaseLock(file, async () => readLeaseFile(file), { lockTtlMs });
 }
@@ -3065,40 +2990,6 @@ export async function renewLease(
   { ttlMs, now = new Date(), ownerToken, lockTtlMs, dataRoot, includeLegacyFallback = false }: RenewLeaseOptions
 ) {
   const effectiveTtlMs = leaseTtlMsFor(ttlMs);
-  const redis = await redisLeaseBackend();
-  if (redis) {
-    await assertNoLocalLeaseState(cpbRoot, { dataRoot, includeLegacyFallback });
-    const field = redisLeaseField(leaseId);
-    for (let retry = 0; retry < 64; retry += 1) {
-      const [snapshot, nowMs] = await Promise.all([redis.readStateRecord(field), redis.serverTimeMs()]);
-      const existing = parseRedisLease(snapshot.data, leaseId);
-      if (!existing) throw new Error(`lease not found: ${leaseId}`);
-      const effectiveOwnerToken = leaseOwnerTokenFor(cpbRoot, leaseId, ownerToken);
-      assertLeaseOwner(existing, effectiveOwnerToken);
-      if (Number(existing.expiresAtMs) <= nowMs) {
-        throw Object.assign(new Error(`lease expired: ${leaseId}`), { code: "ESTALE" });
-      }
-      const renewed: LeaseRecord = {
-        formatVersion: LEASE_FORMAT_VERSION,
-        leaseId: existing.leaseId,
-        jobId: existing.jobId,
-        phase: existing.phase,
-        ownerPid: existing.ownerPid,
-        ownerHost: existing.ownerHost,
-        ownerToken: existing.ownerToken,
-        ownerIdentity: existing.ownerIdentity,
-        acquiredAt: existing.acquiredAt,
-        heartbeatAt: new Date(nowMs).toISOString(),
-        expiresAtMs: nowMs + effectiveTtlMs,
-        expiresAt: new Date(nowMs + effectiveTtlMs).toISOString(),
-      };
-      const committed = await redis.compareAndSwapStateRecord(field, snapshot.revision, renewed);
-      if (committed.committed) {
-        return renewed;
-      }
-    }
-    throw Object.assign(new Error(`lease changed too frequently: ${leaseId}`), { code: "HUB_STATE_RECORD_CONFLICT" });
-  }
   const file = await leaseFileFor(cpbRoot, leaseId, { dataRoot, includeLegacyFallback });
   return await withLeaseLock(
     file,
@@ -3144,23 +3035,6 @@ export async function releaseLease(
   leaseId: string,
   { ownerToken, lockTtlMs, dataRoot, includeLegacyFallback = false }: ReleaseLeaseOptions = {}
 ) {
-  const redis = await redisLeaseBackend();
-  if (redis) {
-    await assertNoLocalLeaseState(cpbRoot, { dataRoot, includeLegacyFallback });
-    const field = redisLeaseField(leaseId);
-    for (let retry = 0; retry < 64; retry += 1) {
-      const snapshot = await redis.readStateRecord(field);
-      const existing = parseRedisLease(snapshot.data, leaseId);
-      if (!existing) return;
-      const effectiveOwnerToken = leaseOwnerTokenFor(cpbRoot, leaseId, ownerToken);
-      assertLeaseOwner(existing, effectiveOwnerToken);
-      const committed = await redis.compareAndSwapStateRecord(field, snapshot.revision, null);
-      if (committed.committed) {
-        return;
-      }
-    }
-    throw Object.assign(new Error(`lease changed too frequently: ${leaseId}`), { code: "HUB_STATE_RECORD_CONFLICT" });
-  }
   const file = await leaseFileFor(cpbRoot, leaseId, { dataRoot, includeLegacyFallback });
 
   const lock = await acquireLeaseFileLock(file, { lockTtlMs });
@@ -3663,7 +3537,7 @@ export async function markExited(cpbRoot: string, jobId: string, { exitCode, sta
   });
 }
 
-export async function addChildPid(cpbRoot: string, jobId: string, childPid: number, options: ProcessRegistryOptions = {}) {
+export async function addChildPid(cpbRoot: string, jobId: string, childPid: number, options: AddChildPidOptions = {}) {
   const registeredChildPid = positiveSafePid(childPid, "childPid");
   const file = await processFile(cpbRoot, jobId, options);
   return await withProcessFileLock(file, async () => {
@@ -3671,7 +3545,10 @@ export async function addChildPid(cpbRoot: string, jobId: string, childPid: numb
     if (!snapshot) return null;
     const entry = snapshot.entry;
     const processSystem = options.processSystem as ProcessTreeSystem | undefined;
-    const childIdentity = capturedIdentity(registeredChildPid, processSystem);
+    const childIdentity = options.processIdentity?.birthIdPrecision === "exact"
+      && options.processIdentity.pid === registeredChildPid
+      ? options.processIdentity
+      : capturedIdentity(registeredChildPid, processSystem);
     if (!Array.isArray(entry.childPids) || !Array.isArray(entry.childIdentities)) {
       throw processRegistryError(`process registry entry ${jobId} has invalid child identity arrays`, "EPROCESSREGISTRYINVALID");
     }

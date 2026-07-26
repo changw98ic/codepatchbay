@@ -27,7 +27,6 @@ import { runtimeDataPath } from "./runtime.js";
 import { WorkerStore } from "../../shared/orchestrator/worker-store.js";
 import { loadHubAuthConfig } from "../../shared/hub-auth.js";
 import { openHubOidcProvider } from "../../shared/hub-oidc.js";
-import { openHubRedisStateBackend } from "../../shared/hub-state-redis.js";
 import { isLoopbackHost } from "../../shared/network.js";
 
 import { sanitizeProviderReason } from "./acp/acp-pool.js";
@@ -1027,14 +1026,9 @@ export async function checkHubWritability(hubRoot: string) {
 
 async function checkHubAccessAudit(hubRoot: string, env: ReadinessEnv) {
   try {
-    const redisBackend = await openHubRedisStateBackend({
-      hubRoot,
-      configFile: env.CPB_HUB_STATE_REDIS_CONFIG_FILE,
-    });
     const usage = await inspectHubAccessAuditUsage({
       hubRoot,
       maxBytes: env.CPB_HUB_ACCESS_AUDIT_MAX_BYTES,
-      redisBackend,
     });
     const percent = Math.round(usage.usagePercent * 10) / 10;
     const details = {
@@ -1062,9 +1056,7 @@ async function checkHubAccessAudit(hubRoot: string, env: ReadinessEnv) {
     if (usage.usagePercent >= 95) {
       return error("hub-access-audit", "hub", `Hub access audit is ${percent}% full`, {
         details,
-        remediation: redisBackend
-          ? "Export the Redis audit Stream to the configured SIEM/WORM sink, then apply the approved retention workflow or raise CPB_HUB_ACCESS_AUDIT_MAX_BYTES."
-          : "Schedule an offline audit archive or raise CPB_HUB_ACCESS_AUDIT_MAX_BYTES after capacity review.",
+        remediation: "Schedule an offline audit archive or raise CPB_HUB_ACCESS_AUDIT_MAX_BYTES after capacity review.",
       });
     }
     if (usage.usagePercent >= 75) {
@@ -1153,84 +1145,9 @@ export function checkHubBackupSigning(env: ReadinessEnv) {
 }
 
 export async function checkHubStateBackend(hubRoot: string, env: ReadinessEnv) {
-  try {
-    const backend = await openHubRedisStateBackend({
-      configFile: env.CPB_HUB_STATE_REDIS_CONFIG_FILE,
-      hubRoot,
-    });
-    if (!backend) {
-      return warn("hub-state-backend", "hub", "Hub control-plane state uses single-node local-file transactions", {
-        details: { mode: "local-file", multiNodeSafe: false, activeActiveSafe: false },
-        remediation: "Configure a private CPB_HUB_STATE_REDIS_CONFIG_FILE before running multiple Hub nodes.",
-      });
-    }
-    await backend.preflight();
-    const [assignmentRecords, workerRecords, inboxRecords, jobRecords, auditHead] = await Promise.all([
-      backend.scanStateRecords("assignment:"),
-      backend.scanStateRecords("worker:"),
-      backend.scanStateRecords("workerInbox:"),
-      backend.scanStateRecords("job:"),
-      backend.readAccessAuditHead(),
-    ]);
-    for (const { record } of assignmentRecords) {
-      const document = readinessRecord(record.data);
-      const state = readinessRecord(document.state);
-      if (!state.assignmentId || !state.status || !document.attempts
-        || typeof document.attempts !== "object" || Array.isArray(document.attempts)) {
-        throw Object.assign(new Error("Redis assignment record is malformed"), { code: "HUB_STATE_RECORD_INVALID" });
-      }
-    }
-    for (const { record } of workerRecords) {
-      const worker = readinessRecord(record.data);
-      if (!worker.workerId || !worker.status || !worker.incarnationToken) {
-        throw Object.assign(new Error("Redis worker record is malformed"), { code: "HUB_STATE_RECORD_INVALID" });
-      }
-    }
-    for (const { record } of inboxRecords) {
-      const inbox = readinessRecord(record.data);
-      if (!inbox.workerId || !inbox.assignmentId || !inbox.payload
-        || typeof inbox.payload !== "object" || Array.isArray(inbox.payload)
-        || !["pending", "processing"].includes(String(inbox.status || ""))) {
-        throw Object.assign(new Error("Redis worker inbox record is malformed"), { code: "HUB_STATE_RECORD_INVALID" });
-      }
-    }
-    for (const { record } of jobRecords) {
-      const job = readinessRecord(record.data);
-      if (!job.project || !job.jobId || !job.status) {
-        throw Object.assign(new Error("Redis job projection is malformed"), { code: "HUB_STATE_RECORD_INVALID" });
-      }
-    }
-    const brokerUrl = typeof env.CPB_HUB_WORKER_BROKER_URL === "string" ? env.CPB_HUB_WORKER_BROKER_URL : "";
-    let brokerEndpoint: URL | null = null;
-    try {
-      brokerEndpoint = brokerUrl ? new URL(brokerUrl) : null;
-    } catch { /* reported below */ }
-    if (!brokerEndpoint || (brokerEndpoint.protocol !== "https:"
-      && !(brokerEndpoint.protocol === "http:" && isLoopbackHost(brokerEndpoint.hostname)))) {
-      return error("hub-state-backend", "hub", "Redis shared state requires a secure managed-worker broker endpoint", {
-        details: { code: "HUB_WORKER_BROKER_REQUIRED", mode: "redis-cas" },
-        remediation: "Configure CPB_HUB_WORKER_BROKER_URL with HTTPS, or loopback HTTP when the worker runs on the Hub host.",
-      });
-    }
-    return warn("hub-state-backend", "hub", "Redis protects shared runtime and access-audit authority; target-topology failover and load validation remain incomplete", {
-      details: {
-        mode: "redis-cas",
-        topology: backend.topology,
-        multiNodeSafe: true,
-        activeActiveSafe: false,
-        sharedStores: ["registry", "leader", "queue", "assignments", "workers", "workerInbox", "leases", "jobs", "jobEvents", "accessAudit"],
-        remainingLocalStores: [],
-        accessAudit: { sequence: auditHead.sequence, sizeBytes: auditHead.sizeBytes },
-        workerCredentialIsolation: "worker/incarnation-scoped broker; Redis credential retained by Hub only",
-      },
-      remediation: "Keep one elected scheduler and validate Redis failover, rolling restart, sustained load, and recovery objectives in the target topology before production promotion.",
-    });
-  } catch (e) {
-    return error("hub-state-backend", "hub", "Hub Redis state backend is unavailable", {
-      details: { code: e && typeof e === "object" && "code" in e ? String(e.code) : null },
-      remediation: "Validate the private Redis state config, TLS/auth settings, and Redis availability before starting the Hub.",
-    });
-  }
+  return warn("hub-state-backend", "hub", "Hub control-plane state uses single-node local-file transactions", {
+    details: { mode: "local-file", multiNodeSafe: false, activeActiveSafe: false },
+  });
 }
 
 async function checkRegistryConsistency(hubRoot: string) {

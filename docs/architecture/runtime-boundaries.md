@@ -29,7 +29,7 @@
 
 ## Core 执行端口
 
-- `core/engine/run-job-ports.ts` 是核心 job 状态机所需基础设施能力的契约源。核心只依赖这些端口，不感知端口由本地文件、Redis、worker broker 还是独立进程实现。
+- `core/engine/run-job-ports.ts` 是核心 job 状态机所需基础设施能力的契约源。核心只依赖这些端口，不感知端口由本地文件、worker broker 还是独立进程实现。
 - `RunJobContext` 不带开放索引签名；prepare、assurance、checklist、execute、lifecycle helper 只通过 `Pick<RunJobState, ...>` 与 `Pick<RunJobPorts, ...>` 声明实际依赖。新增 helper 依赖必须进入对应 Pick，不能依靠对象扩展字段隐式穿透。
 - checklist 分解接收本次 `createJob` 物化的 `jobId`，不得从调用方预填的旧 context 值推断当前 job。
 - provider pool/services/usage payload 和 process hook 都由 core-owned contract 定义；provider service callbacks 直接消费这些 payload，而不是回退到 `LooseRecord`。artifact-index 的 broker 传输 envelope 属于 `shared/`，core port 从该共享 DTO 派生自己的能力契约，避免 `shared -> core` 反向依赖。server adapter 实现这些 contract，core helper 不再各自声明宽类型或重复结构。
@@ -69,7 +69,7 @@
 
 ## 动态线协议
 
-- `bridges/run-pipeline.ts` 与 `bridges/run-phase.ts` 在使用 project metadata 或 worktree-manager stdout 前执行具名 schema 校验；除明确的 `ENOENT` 外，损坏 JSON、错误字段类型和缺失必需字段一律失败关闭。
+- `bridges/run-phase.ts` 在使用 project metadata 或 worktree-manager stdout 前执行具名 schema 校验；除明确的 `ENOENT` 外，损坏 JSON、错误字段类型和缺失必需字段一律失败关闭。
 - `core/engine/run-phase.ts` 只接受安全 phase 标识符，按 canonical 具名导出或自定义 `run<Phase>` 导出加载适配器，并在结果进入 job 状态机前校验 `PhaseResult` 的 phase、status、artifact、failure、diagnostics 与时间戳。适配器模块仍通过单一受校验的动态 import 加载，避免把插件实现误并入 engine 静态依赖边界。
 - `WorkerBrokerClient` 的原始 HTTP 调用是私有实现。公开方法必须同时校验 `{ ok: true, result }` envelope、operation-specific result shape 以及 project/job identity；测试只能注入 transport，不能绕过这些校验直接返回泛型结果。
 - worker broker 的 `artifact_created` 事件必须同时包含非空 artifact 和 kind/artifactKind；artifact index 使用 `shared/orchestrator/artifact-index.ts` 的共享 DTO/guard，在 core 或 server 消费前拒绝损坏条目。

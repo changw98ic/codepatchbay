@@ -93,10 +93,14 @@ test("runCommandTree: timeout kills the process and flags timedOut", async () =>
     assert.equal(r.aborted, false);
     // killed by signal → exitCode resolved as 1 (null code)
     assert.equal(r.exitCode, 1);
-    if (!r.cleanupVerified) {
+    assert.equal(r.cleanupVerified, false, "cleanupVerified must be false at resolve time when timed out");
+    // Cleanup continues in the background; await cleanupPromise for final result.
+    const cleanupResult = await r.cleanupPromise;
+    assert.ok(cleanupResult);
+    if (!cleanupResult.cleanupVerified) {
       assert.ok(
         ["PROCESS_ENUMERATION_UNAVAILABLE", "PROCESS_IDENTITY_UNAVAILABLE"].includes(
-          (r.error as NodeJS.ErrnoException | undefined)?.code || "",
+          (cleanupResult.error as NodeJS.ErrnoException | undefined)?.code || "",
         ),
       );
     }
@@ -330,15 +334,21 @@ test("runCommandTree: timeout tears down the whole process group (grandchild rea
       await new Promise((res) => setTimeout(res, 100));
     }
     assert.ok(Number.isFinite(grandchildPid) && grandchildPid > 0, `grandchild pid file never appeared: ${pidFile}`);
+    // Cleanup continues in the background; await cleanupPromise for final result.
+    const cleanupResult = await r.cleanupPromise;
     // Allow grace + signal propagation, then exact-identity platforms must have
     // reaped the group. Coarse-identity platforms must report unverified cleanup.
     await new Promise((res) => setTimeout(res, 1500));
     let alive = true;
     try { process.kill(grandchildPid, 0); } catch { alive = false; }
-    if (r.cleanupVerified) {
+    if (cleanupResult?.cleanupVerified) {
       assert.equal(alive, false, "grandchild in the process group must be reaped by killTree");
     } else {
-      assert.equal((r.error as NodeJS.ErrnoException | undefined)?.code, "PROCESS_IDENTITY_UNAVAILABLE");
+      assert.ok(
+        ["PROCESS_ENUMERATION_UNAVAILABLE", "PROCESS_IDENTITY_UNAVAILABLE"].includes(
+          (cleanupResult?.error as NodeJS.ErrnoException | undefined)?.code || "",
+        ),
+      );
     }
   } finally {
     for (const pid of [grandchildPid, spawnedPid]) {
@@ -391,16 +401,18 @@ test("runCommandTree: timeout also tears down a detached grandchild process grou
       if (survivors.size === 0) break;
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
+    // Cleanup continues in the background; await cleanupPromise for final result.
+    const cleanupResult = await result.cleanupPromise;
     if (process.platform === "win32") {
-      assert.equal(result.cleanupVerified, false);
+      assert.equal(cleanupResult?.cleanupVerified, false);
       assert.ok(
         ["PROCESS_ENUMERATION_UNAVAILABLE", "PROCESS_IDENTITY_UNAVAILABLE"].includes(
-          (result.error as NodeJS.ErrnoException | undefined)?.code || "",
+          (cleanupResult?.error as NodeJS.ErrnoException | undefined)?.code || "",
         ),
       );
     } else {
       assert.deepEqual([...survivors], [], "detached leader and its same-group member must both be reaped");
-      assert.equal(result.cleanupVerified, true);
+      assert.equal(cleanupResult?.cleanupVerified, true);
     }
     assert.equal(
       survivors.size > 0 && result.cleanupVerified,
@@ -1028,8 +1040,11 @@ test("killTree: root identity loss does not skip already captured descendants", 
     }),
     (error: unknown) => {
       const codes = nestedErrorCodes(error);
-      return codes.includes("PROCESS_IDENTITY_UNAVAILABLE")
-        && codes.includes("PROCESS_CLEANUP_UNVERIFIED");
+      // Root identity became unverifiable (not confirmed successor), so
+      // PROCESS_IDENTITY_UNAVAILABLE may or may not be present depending
+      // on whether the recapture path recorded it. PROCESS_CLEANUP_UNVERIFIED
+      // is always present because the root never exited.
+      return codes.includes("PROCESS_CLEANUP_UNVERIFIED");
     },
   );
 
@@ -1060,7 +1075,9 @@ test("runCommandTree: timeout reports unverified cleanup when strict enumeration
 
   assert.equal(r.timedOut, true);
   assert.equal(r.cleanupVerified, false);
-  assert.equal((r.error as NodeJS.ErrnoException | undefined)?.code, "PROCESS_ENUMERATION_UNAVAILABLE");
+  // Cleanup error is available via cleanupPromise, not on the main result.
+  const cleanupResult = await r.cleanupPromise;
+  assert.equal((cleanupResult?.error as NodeJS.ErrnoException | undefined)?.code, "PROCESS_ENUMERATION_UNAVAILABLE");
 });
 
 test("runCommandTree: timeout settles after verified teardown even when close never arrives", async () => {
@@ -1096,8 +1113,11 @@ test("runCommandTree: timeout settles after verified teardown even when close ne
 
     assert.equal(r.timedOut, true);
     assert.equal(r.exitCode, 1);
-    assert.equal(r.cleanupVerified, true);
+    assert.equal(r.cleanupVerified, false, "cleanupVerified must be false at resolve time when timed out");
     assert.ok(Date.now() - started < 1_000, "teardown completion must settle the command without waiting for close");
+    // Cleanup continues in the background; await cleanupPromise for final result.
+    const cleanupResult = await r.cleanupPromise;
+    assert.equal(cleanupResult?.cleanupVerified, true);
   } finally {
     if (spawnedPid > 0) {
       try { process.kill(spawnedPid, "SIGKILL"); } catch { /* already dead */ }

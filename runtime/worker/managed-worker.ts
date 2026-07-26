@@ -1070,7 +1070,7 @@ type ManagedAssignmentStore = {
   markRunning: (assignmentId: string, attempt: number, identity?: AttemptIdentity) => Promise<unknown>;
   recordHeartbeat: (assignmentId: string, attempt: number, heartbeat: LooseRecord) => Promise<unknown>;
   readCancel: (assignmentId: string, attempt: number) => Promise<LooseRecord | null>;
-  completeAttemptAndAckInbox: (assignmentId: string, attempt: number, result: LooseRecord, options: { workerId: string; claimToken: string }) => Promise<{ accepted: boolean; inboxAcked: boolean }>;
+  completeAttemptAndAckInbox: (assignmentId: string, attempt: number, result: LooseRecord, options: { workerId: string; claimToken: string; ackInboxFn?: (workerId: string, assignmentId: string, claimToken: string) => Promise<boolean> }) => Promise<{ accepted: boolean; inboxAcked: boolean }>;
 };
 
 type ManagedWorkerStore = {
@@ -1603,6 +1603,7 @@ export function shouldCompleteInboxClaimAfterTerminalSync({
 
 export async function completeAssignmentStateFromResult({
   assignmentStore,
+  workerStore,
   assignmentId,
   attemptNum,
   attemptDir,
@@ -1611,6 +1612,7 @@ export async function completeAssignmentStateFromResult({
   log,
 }: {
   assignmentStore: ManagedAssignmentStore;
+  workerStore?: Pick<ManagedWorkerStore, "completeInboxClaim">;
   assignmentId: string;
   attemptNum: number;
   attemptDir: string;
@@ -1625,7 +1627,13 @@ export async function completeAssignmentStateFromResult({
       assignmentId,
       attemptNum,
       result,
-      { workerId, claimToken },
+      {
+        workerId,
+        claimToken,
+        ackInboxFn: workerStore
+          ? (wid, aid, token) => workerStore.completeInboxClaim(wid, aid, token)
+          : undefined,
+      },
     );
     return {
       result,
@@ -2025,13 +2033,12 @@ export async function main({
     await directWorkerStore.init();
     assignmentStore = directAssignmentStore;
     workerStore = directWorkerStore;
-    sharedWorkerState = await directWorkerStore.usesSharedState();
+    sharedWorkerState = false;
   }
 
-  // Both stores cache the trusted Redis backend during init. Never expose the
-  // credential-bearing config path to repository-controlled test/phase child
+  // Both stores cache the trusted backend during init. Never expose
+  // credential-bearing paths to repository-controlled test/phase child
   // processes spawned later by this worker.
-  delete process.env.CPB_HUB_STATE_REDIS_CONFIG_FILE;
   delete process.env.CPB_WORKER_INCARNATION_TOKEN;
   delete process.env.CPB_HUB_WORKER_BROKER_URL;
   delete process.env.CPB_HUB_WORKER_BROKER_TOKEN;
@@ -2794,6 +2801,7 @@ export async function main({
         worktreeCleanupProof = terminalPublication.cleanupProof as ManagedWorktreeCleanupProof | null;
         const completion = await completeAssignmentStateFromResult({
           assignmentStore,
+          workerStore,
           assignmentId,
           attemptNum,
           attemptDir,
@@ -3017,6 +3025,7 @@ export async function main({
           });
           const completion = await completeAssignmentStateFromResult({
             assignmentStore,
+            workerStore,
             assignmentId,
             attemptNum,
             attemptDir,

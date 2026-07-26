@@ -26,7 +26,6 @@ import { validatePolicy } from "../../../core/policy/team-policy.js";
 import { runtimeDataPath, runtimeDataRoot, resolveProjectDataRoot } from "../runtime.js";
 import { isRecord, type LooseRecord } from "../../../core/contracts/types.js";
 import { AssignmentStore } from "../../../shared/orchestrator/assignment-store.js";
-import { openPinnedHubRedisStateBackend } from "../../../shared/hub-state-redis.js";
 import type { ProcessIdentity } from "../../../core/runtime/process-tree.js";
 import {
   readBoundedRegularFileNoFollow,
@@ -432,37 +431,6 @@ export async function listJobsFromIndex(cpbRoot: string, opts: IndexOpts = {}) {
 // ──────────────────────────────────────────────────────────────────────────────
 
 const TERMINAL_STATUSES = new Set(["completed", "failed", "blocked", "cancelled"]);
-
-async function redisJobBackend() {
-  const hubRoot = process.env.CPB_HUB_ROOT;
-  if (!hubRoot) return null;
-  return await openPinnedHubRedisStateBackend({
-    configFile: process.env.CPB_HUB_STATE_REDIS_CONFIG_FILE,
-    hubRoot,
-  });
-}
-
-function redisJobField(project: string, jobId: string) {
-  const part = (value: string) => Buffer.from(value, "utf8").toString("base64url");
-  return `job:${part(project)}:${part(jobId)}`;
-}
-
-async function assertNoLocalJobEventFiles(cpbRoot: string, dataRoot?: string) {
-  const roots = dataRoot
-    ? [{ dataRoot }]
-    : (await import("../runtime.js")).listRuntimeDataRoots(cpbRoot, {
-        hubRoot: process.env.CPB_HUB_ROOT,
-        includeLegacy: true,
-      });
-  for (const root of await roots) {
-    const files = await listEventFiles(cpbRoot, { dataRoot: root.dataRoot, includeLegacyFallback: false });
-    if (files.length > 0) {
-      throw Object.assign(new Error("local job events require an explicit Redis migration"), {
-        code: "HUB_JOB_MIGRATION_REQUIRED",
-      });
-    }
-  }
-}
 
 async function retryUpdate<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
   for (let i = 0; i < maxRetries; i++) {
@@ -1392,34 +1360,12 @@ export async function consumeRedirect(
 }
 
 export async function getJob(cpbRoot: string, project: string, jobId: string, { dataRoot }: RuntimePathOptions = {}): Promise<JobState | null> {
-  const redis = await redisJobBackend();
-  if (redis) {
-    await assertNoLocalJobEventFiles(cpbRoot, dataRoot);
-    const record = await redis.readStateRecord(redisJobField(project, jobId));
-    if (record.data === null) return null;
-    if (!isRecord(record.data) || record.data.project !== project || record.data.jobId !== jobId) {
-      throw Object.assign(new Error(`invalid Redis job projection: ${project}/${jobId}`), { code: "HUB_STATE_RECORD_INVALID" });
-    }
-    return record.data as JobState;
-  }
   const opts = { dataRoot };
   return (await readJobProjection(cpbRoot, project, jobId, opts)).state as JobState;
 }
 
 export async function listJobs(cpbRoot: string, options: RuntimePathOptions & { project?: string } = {}): Promise<JobState[]> {
   const { dataRoot, legacyOnly, ...rest } = options;
-  const redis = await redisJobBackend();
-  if (redis) {
-    await assertNoLocalJobEventFiles(cpbRoot, dataRoot);
-    const records = await redis.scanStateRecords("job:");
-    return records.flatMap(({ record }) => {
-      if (!isRecord(record.data) || !record.data.project || !record.data.jobId) {
-        throw Object.assign(new Error("invalid Redis job projection"), { code: "HUB_STATE_RECORD_INVALID" });
-      }
-      if (rest.project && record.data.project !== rest.project) return [];
-      return [record.data as JobState];
-    }).sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
-  }
   if (!dataRoot && legacyOnly !== true) {
     const jobs = await listJobsAcrossRuntimeRoots(cpbRoot, rest);
     return rest.project ? jobs.filter((job: JobState) => job.project === rest.project) : jobs;

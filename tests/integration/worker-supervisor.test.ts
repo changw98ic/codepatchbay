@@ -126,8 +126,12 @@ test("WorkerSupervisor MAX_RESTARTS is enforced: worker marked exhausted after 3
   await supervisor.startWorker({ projectId: "test-proj" });
 
   await waitFor(async () => {
-    const workers = await workerStore.listWorkers();
-    return spawned.length >= 4 && workers.some((w) => w.status === "exhausted");
+    try {
+      const workers = await workerStore.listWorkers();
+      return spawned.length >= 4 && workers.some((w) => w.status === "exhausted");
+    } catch {
+      return false;
+    }
   }, { description: "worker restart chain to reach exhausted state" });
 
   // Should have spawned 4 workers: 1 initial + 3 restarts

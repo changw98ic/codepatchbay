@@ -7,12 +7,6 @@ import path from "node:path";
 import os from "node:os";
 import type { LooseRecord } from "../../shared/types.js";
 import { writeJsonAtomic } from "../../shared/fs-utils.js";
-import {
-  openPinnedHubRedisStateBackend,
-  type HubRedisStateBackend,
-  type RedisLeaderStatus,
-} from "../../shared/hub-state-redis.js";
-import { processLeaderFence, registerProcessLeaderFence } from "../../shared/hub-leader-fence.js";
 import { readBoundedRegularFileNoFollow } from "../../core/runtime/durable-directory-lock.js";
 import {
   captureProcessIdentity,
@@ -565,7 +559,7 @@ function readyReceiptPath(hubRoot: string, lockToken: string) {
 
 function readyReceiptMatches(
   receipt: ReadyReceipt | null,
-  leader: LooseRecord | RedisLeaderStatus | ReadyReceipt,
+  leader: LooseRecord | ReadyReceipt,
 ) {
   if (!receipt) return false;
   const identity = parseProcessIdentity("processIdentity" in leader ? leader.processIdentity : undefined);
@@ -892,7 +886,6 @@ export class LeaderLock {
   epoch: number;
   _renewTimer: NodeJS.Timeout | null;
   _onLost?: () => void;
-  _redisBackend: HubRedisStateBackend | null | undefined;
   _recoveryFenceRuntime: RecoveryFenceRuntimeOptions;
 
   constructor(hubRoot: string) {
@@ -916,32 +909,10 @@ export class LeaderLock {
     this.lockToken = randomUUID();
     this.epoch = 0;
     this._renewTimer = null;
-    this._redisBackend = undefined;
     this._recoveryFenceRuntime = {};
   }
 
   async acquire() {
-    const redis = await this._redisState();
-    if (redis) {
-      if (processLeaderFence(redis.identityFingerprint)) {
-        throw Object.assign(
-          new Error("this process has a retired Redis leader fence; start a new process before reacquiring leadership"),
-          { code: "HUB_LEADER_PROCESS_RESTART_REQUIRED" },
-        );
-      }
-      const result = await redis.acquireLeader({
-        hubId: this.hubId,
-        lockToken: this.lockToken,
-        host: os.hostname(),
-        pid: process.pid,
-      }, DEFAULT_TTL_MS);
-      if (!result.acquired) {
-        throw new Error(`leader lock held by ${result.leader.hubId || "unknown"} (expires ${result.leader.expiresAt || "unknown"})`);
-      }
-      this.epoch = result.leader.epoch;
-      registerProcessLeaderFence(redis.identityFingerprint, this._fence());
-      return redisLeaderRecord(result.leader);
-    }
     return this._withRecoveryFence(async () => {
       const existing = await this._readLeader();
 
@@ -1044,9 +1015,6 @@ export class LeaderLock {
   }
 
   async renew() {
-    const redis = await this._redisState();
-    if (redis) return (await redis.renewLeader(this._fence(), DEFAULT_TTL_MS)).renewed;
-
     const current = await this._readLeader();
     if (!this._isCurrentLeader(current)) {
       return false;
@@ -1057,35 +1025,6 @@ export class LeaderLock {
   }
 
   async markReady(): Promise<boolean> {
-    const redis = await this._redisState();
-    if (redis) {
-      const current = await redis.readLeader();
-      if (
-        !current.alive
-        || current.hubId !== this.hubId
-        || current.lockToken !== this.lockToken
-        || current.epoch !== this.epoch
-        || current.host !== os.hostname()
-        || current.pid !== process.pid
-      ) return false;
-      const identity = captureCurrentExactProcessIdentity();
-      if (!identity) {
-        throw leaderLockError(
-          "current process identity could not be captured for leader readiness",
-          "HUB_LEADER_PROCESS_IDENTITY_UNAVAILABLE",
-        );
-      }
-      const receipt = this._readyReceipt(identity);
-      await this._publishReadyReceipt(receipt);
-      const confirmed = await redis.readLeader();
-      return confirmed.alive
-        && confirmed.hubId === this.hubId
-        && confirmed.lockToken === this.lockToken
-        && confirmed.epoch === this.epoch
-        && confirmed.host === os.hostname()
-        && confirmed.pid === process.pid;
-    }
-
     return this._withRecoveryFence(async () => {
       const current = await this._readLeader();
       if (!this._isCurrentLeader(current)) return false;
@@ -1137,15 +1076,6 @@ export class LeaderLock {
 
   async release() {
     this.stopRenewal();
-    const redis = await this._redisState();
-    if (redis) {
-      const fence = this._fence();
-      // Keep the released fence armed in this process. stop() does not join
-      // in-flight tick/janitor callbacks, so clearing it would let their
-      // later queue mutations silently downgrade to unfenced writes. This
-      // process must exit before another LeaderLock can acquire the backend.
-      return await redis.releaseLeader(fence);
-    }
 
     const current = await this._readLeader();
     if (!this._matchesCurrentIdentity(current)) return false;
@@ -1162,26 +1092,8 @@ export class LeaderLock {
    * Check if this Hub still holds the leader lock (for epoch fencing).
    */
   async stillHeld() {
-    const redis = await this._redisState();
-    if (redis) {
-      const current = await redis.readLeader();
-      return current.alive
-        && current.hubId === this.hubId
-        && current.lockToken === this.lockToken
-        && current.epoch === this.epoch;
-    }
-
     const current = await this._readLeader();
     return this._isCurrentLeader(current);
-  }
-
-  async _redisState() {
-    if (this._redisBackend !== undefined) return this._redisBackend;
-    this._redisBackend = await openPinnedHubRedisStateBackend({
-      configFile: process.env.CPB_HUB_STATE_REDIS_CONFIG_FILE,
-      hubRoot: this.hubRoot,
-    });
-    return this._redisBackend;
   }
 
   _fence() {
@@ -1856,35 +1768,6 @@ export class LeaderLock {
 }
 
 export async function readLeaderStatus(hubRoot: string) {
-  const redis = await openPinnedHubRedisStateBackend({
-    configFile: process.env.CPB_HUB_STATE_REDIS_CONFIG_FILE,
-    hubRoot,
-  });
-  if (redis) {
-    const leader = await redis.readLeader();
-    const readyFile = leader.lockToken ? readyReceiptPath(hubRoot, leader.lockToken) : null;
-    const readyReceipt = readyFile
-      ? validateReadyReceipt(await readBoundedRegularJson(readyFile), readyFile)
-      : null;
-    let ready = leader.alive && readyReceiptMatches(readyReceipt, leader);
-    if (ready && leader.host === os.hostname() && readyReceipt) {
-      ready = isProcessIdentityAlive(readyReceipt.processIdentity);
-    }
-    return {
-      status: leader.alive ? "running" : "stopped",
-      ready,
-      readyAt: ready ? readyReceipt?.readyAt || null : null,
-      hubId: leader.hubId,
-      host: leader.host,
-      epoch: leader.epoch,
-      pid: leader.pid,
-      processIdentity: ready ? readyReceipt?.processIdentity || null : null,
-      lockToken: leader.lockToken,
-      heartbeatAt: leader.heartbeatAt,
-      expiresAt: leader.expiresAt,
-    };
-  }
-
   const lockDir = path.join(hubRoot, "orchestrator", "leader.lock");
   const leaderFile = path.join(lockDir, "leader.json");
   const epochFile = path.join(hubRoot, "orchestrator", "epoch.json");
@@ -1922,23 +1805,6 @@ export async function readLeaderStatus(hubRoot: string) {
     lockToken: leader?.lockToken || null,
     heartbeatAt: leader?.heartbeatAt || null,
     expiresAt: leader?.expiresAt || null,
-  };
-}
-
-function redisLeaderRecord(leader: RedisLeaderStatus) {
-  return {
-    hubId: leader.hubId,
-    host: leader.host,
-    pid: leader.pid,
-    processIdentity: null,
-    epoch: leader.epoch,
-    lockToken: leader.lockToken,
-    initializing: false,
-    ready: false,
-    readyAt: null,
-    startedAt: leader.startedAt,
-    heartbeatAt: leader.heartbeatAt,
-    expiresAt: leader.expiresAt,
   };
 }
 

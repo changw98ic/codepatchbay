@@ -151,9 +151,30 @@ async function queryCodegraphSymbol(
     ["query", symbol, "--path", cwd, "--limit", "10", "--json"],
     { cwd, env, signal, timeoutMs, maxBufferBytes },
   );
-  if (result.aborted || signal?.aborted) throw createAbortError(signal, "CodeGraph task-scope query aborted");
-  if (result.error) throw result.error;
-  if (result.timedOut) throw Object.assign(new Error(`CodeGraph query timed out after ${timeoutMs}ms`), { code: "CODEGRAPH_QUERY_TIMEOUT" });
+  const primaryError = result.aborted || signal?.aborted
+    ? createAbortError(signal, "CodeGraph task-scope query aborted")
+    : result.timedOut
+      ? Object.assign(new Error(`CodeGraph query timed out after ${timeoutMs}ms`), { code: "CODEGRAPH_QUERY_TIMEOUT" })
+      : result.error;
+  if (result.cleanupPromise) {
+    const cleanup = await result.cleanupPromise;
+    if (cleanup.error) {
+      if (primaryError) {
+        const aggregate = Object.assign(
+          new AggregateError([primaryError, cleanup.error], primaryError.message, { cause: primaryError }),
+          {
+            code: "CODEGRAPH_QUERY_CLEANUP_FAILED",
+            primaryError,
+            cleanupError: cleanup.error,
+          },
+        );
+        aggregate.name = primaryError.name;
+        throw aggregate;
+      }
+      throw cleanup.error;
+    }
+  }
+  if (primaryError) throw primaryError;
   if (result.exitCode !== 0) return [];
   const parsed = JSON.parse(result.stdout);
   return Array.isArray(parsed) ? parsed : [];

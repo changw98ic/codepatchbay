@@ -1220,24 +1220,29 @@ test("maintenance lease fences Hub, orchestrator, worker, stores, delegate, and 
   }
 });
 
-test("Redis-backed WorkerSupervisor refuses to pass control-plane credentials to a worker", async () => {
-  const root = await tempRoot("cpb-worker-broker-required");
+test("WorkerSupervisor starts a local worker without a broker URL", async () => {
+  const root = await tempRoot("cpb-worker-without-broker");
   const cpbRoot = path.join(root, "cpb");
   const hubRoot = path.join(root, "hub");
+  const executorRoot = path.join(root, "executor");
+  const workerEntry = path.join(executorRoot, "runtime", "worker", "managed-worker.js");
   await mkdir(cpbRoot, { recursive: true });
   await mkdir(hubRoot, { recursive: true });
-  const previousRedis = process.env.CPB_HUB_STATE_REDIS_CONFIG_FILE;
+  await mkdir(path.dirname(workerEntry), { recursive: true });
+  await writeFile(workerEntry, [
+    'process.on("SIGTERM", () => process.exit(0));',
+    "setInterval(() => {}, 1000);",
+  ].join("\n"));
   const previousBroker = process.env.CPB_HUB_WORKER_BROKER_URL;
-  process.env.CPB_HUB_STATE_REDIS_CONFIG_FILE = path.join(root, "private-redis-config.json");
   delete process.env.CPB_HUB_WORKER_BROKER_URL;
+  const supervisor = new WorkerSupervisor(hubRoot, cpbRoot, { executorRoot });
+  let workerId: string | null = null;
   try {
-    await assert.rejects(
-      new WorkerSupervisor(hubRoot, cpbRoot).startWorker({ projectId: "flow" }),
-      { code: "HUB_WORKER_BROKER_REQUIRED" },
-    );
+    const worker = await supervisor.startWorker({ projectId: "flow" });
+    assert.equal(typeof worker.workerId, "string");
+    workerId = String(worker.workerId);
   } finally {
-    if (previousRedis === undefined) delete process.env.CPB_HUB_STATE_REDIS_CONFIG_FILE;
-    else process.env.CPB_HUB_STATE_REDIS_CONFIG_FILE = previousRedis;
+    if (workerId) await supervisor.stopWorker(workerId, "test cleanup");
     if (previousBroker === undefined) delete process.env.CPB_HUB_WORKER_BROKER_URL;
     else process.env.CPB_HUB_WORKER_BROKER_URL = previousBroker;
   }

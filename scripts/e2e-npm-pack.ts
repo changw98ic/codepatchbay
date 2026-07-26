@@ -412,9 +412,6 @@ export function assertE2eNpmPackSafety(options: E2eNpmPackSafetyOptions = {}): E
   }
   assertFinitePositiveInteger(phaseTimeoutMs, "CPB_E2E_ACP_PHASE_TIMEOUT_MS");
   assertFinitePositiveInteger(monitorTimeoutMs, "CPB_E2E_MONITOR_TIMEOUT_MS");
-  if (String(env.CPB_HUB_STATE_REDIS_CONFIG_FILE || "").trim()) {
-    throw new Error("CPB_HUB_STATE_REDIS_CONFIG_FILE is forbidden for the disposable npm-pack E2E");
-  }
   if (env.CPB_DANGEROUS === "1") {
     throw new Error("CPB_DANGEROUS=1 is forbidden for the disposable npm-pack E2E");
   }
@@ -1595,7 +1592,6 @@ const ISOLATED_PACK_ENV_KEYS = [
   "CPB_ROOT",
   "CPB_EXECUTOR_ROOT",
   "CPB_PROJECT_RUNTIME_ROOT",
-  "CPB_HUB_STATE_REDIS_CONFIG_FILE",
   "CPB_DANGEROUS",
   "NODE_OPTIONS",
   "NODE_PATH",

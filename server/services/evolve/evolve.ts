@@ -732,6 +732,30 @@ function throwIfAborted(signal?: AbortSignal) {
   if (signal?.aborted) throw abortError();
 }
 
+type ProcessTreeCleanupResult = {
+  cleanupPromise?: Promise<{ cleanupVerified: boolean; error?: Error }>;
+};
+
+async function awaitProcessTreeCleanup(
+  result: ProcessTreeCleanupResult,
+  primaryError?: Error,
+) {
+  if (!result.cleanupPromise) return;
+  const cleanup = await result.cleanupPromise;
+  if (!cleanup.error) return;
+  if (!primaryError) throw cleanup.error;
+  const aggregate = Object.assign(
+    new AggregateError([primaryError, cleanup.error], primaryError.message, { cause: primaryError }),
+    {
+      code: "EVOLVE_PROCESS_CLEANUP_FAILED",
+      primaryError,
+      cleanupError: cleanup.error,
+    },
+  );
+  aggregate.name = primaryError.name;
+  throw aggregate;
+}
+
 type ResearchOptions = {
   project: string;
   task: string;
@@ -751,6 +775,12 @@ async function acpRun(agent: string, cwd: string, executorRoot: string, cpbRoot:
     signal,
     timeoutMs,
   });
+  const cleanupPrimary = result.aborted || signal?.aborted
+    ? abortError()
+    : result.timedOut
+      ? Object.assign(new Error(`ACP ${agent} research timed out`), { code: "EVOLVE_ACP_TIMEOUT" })
+      : undefined;
+  await awaitProcessTreeCleanup(result, cleanupPrimary);
   return {
     code: result.exitCode,
     stdout: result.stdout,
@@ -856,6 +886,12 @@ export async function runResearch({ project, task, executorRoot, cpbRoot, signal
       onStdout: (chunk) => process.stdout.write(chunk),
       onStderr: (chunk) => process.stderr.write(chunk),
     });
+    const mergeCleanupPrimary = mergeResult.aborted || signal?.aborted
+      ? abortError()
+      : mergeResult.timedOut
+        ? Object.assign(new Error("Research merge timed out"), { code: "EVOLVE_RESEARCH_MERGE_TIMEOUT" })
+        : undefined;
+    await awaitProcessTreeCleanup(mergeResult, mergeCleanupPrimary);
     if (mergeResult.aborted || signal?.aborted) {
       throw abortError();
     }

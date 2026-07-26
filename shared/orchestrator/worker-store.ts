@@ -8,8 +8,6 @@ import crypto from "node:crypto";
 import os from "node:os";
 import { writeJsonAtomic, writeJsonOnce } from "../fs-utils.js";
 import { assertHubWritable, fsyncDirectory, writeJsonDurableAtomic } from "../hub-maintenance.js";
-import { openPinnedHubRedisStateBackend, type HubRedisStateBackend } from "../hub-state-redis.js";
-import { processLeaderFence } from "../hub-leader-fence.js";
 import {
   captureProcessIdentity,
   isProcessIdentityAlive,
@@ -43,24 +41,19 @@ export type WorkerInboxReceipt = {
   assignmentId: string;
   attempt: number;
   attemptToken: string;
-  backend: "local" | "redis";
+  backend: "local";
   ref: string;
   path?: string;
   previousRecord: LooseRecord | null;
   committedRecord: LooseRecord;
-  writeFence:
-    | {
-        backend: "local";
-        ownerToken: string;
-        previousOwner: LooseRecord | null;
-        committedOwner: LooseRecord;
-        payloadGeneration: WorkerPathGeneration;
-        ownerGeneration: WorkerPathGeneration;
-      }
-    | {
-        backend: "redis";
-        revision: number;
-      };
+  writeFence: {
+    backend: "local";
+    ownerToken: string;
+    previousOwner: LooseRecord | null;
+    committedOwner: LooseRecord;
+    payloadGeneration: WorkerPathGeneration;
+    ownerGeneration: WorkerPathGeneration;
+  };
 };
 
 type LocalInboxLockCandidate = {
@@ -786,27 +779,12 @@ export class WorkerStore {
   baseDir: string;
   registryDir: string;
   inboxDir: string;
-  _redisBackend: HubRedisStateBackend | null | undefined;
 
   constructor(hubRoot: string) {
     this.hubRoot = path.resolve(hubRoot);
     this.baseDir = path.join(this.hubRoot, WORKERS_DIR);
     this.registryDir = path.join(this.baseDir, "registry");
     this.inboxDir = path.join(this.baseDir, "inbox");
-    this._redisBackend = undefined;
-  }
-
-  async _backend() {
-    if (this._redisBackend !== undefined) return this._redisBackend;
-    this._redisBackend = await openPinnedHubRedisStateBackend({
-      configFile: process.env.CPB_HUB_STATE_REDIS_CONFIG_FILE,
-      hubRoot: this.hubRoot,
-    });
-    return this._redisBackend;
-  }
-
-  async usesSharedState() {
-    return Boolean(await this._backend());
   }
 
   _recordPart(value: string) {
@@ -1320,74 +1298,8 @@ export class WorkerStore {
     return identity;
   }
 
-  async _mutateRedisRecord<T>(
-    backend: HubRedisStateBackend,
-    field: string,
-    callback: (current: LooseRecord | null) => { data: LooseRecord | null; result: T },
-  ): Promise<T> {
-    const fence = processLeaderFence(backend.identityFingerprint);
-    for (let attempt = 0; attempt < 64; attempt += 1) {
-      const snapshot = await backend.readStateRecord(field);
-      const current = snapshot.data && typeof snapshot.data === "object" && !Array.isArray(snapshot.data)
-        ? snapshot.data as LooseRecord
-        : null;
-      if (snapshot.data !== null && !current) {
-        throw Object.assign(new Error(`invalid Redis worker state record: ${field}`), { code: "HUB_STATE_RECORD_INVALID" });
-      }
-      const mutation = callback(current);
-      const committed = await backend.compareAndSwapStateRecord(field, snapshot.revision, mutation.data, fence);
-      if (committed.fenced) {
-        throw Object.assign(new Error("leader lease no longer authorizes this worker-state write"), { code: "HUB_LEADER_FENCED" });
-      }
-      if (committed.committed) return mutation.result;
-    }
-    throw Object.assign(new Error(`worker state changed too frequently: ${field}`), { code: "HUB_STATE_RECORD_CONFLICT" });
-  }
-
-  async _mutateRedisRecordWithRevision<T>(
-    backend: HubRedisStateBackend,
-    field: string,
-    callback: (current: LooseRecord | null) => {
-      data: LooseRecord | null;
-      result: (revision: number) => T;
-    },
-  ): Promise<T> {
-    const fence = processLeaderFence(backend.identityFingerprint);
-    for (let attempt = 0; attempt < 64; attempt += 1) {
-      const snapshot = await backend.readStateRecord(field);
-      const current = snapshot.data && typeof snapshot.data === "object" && !Array.isArray(snapshot.data)
-        ? snapshot.data as LooseRecord
-        : null;
-      if (snapshot.data !== null && !current) {
-        throw Object.assign(new Error(`invalid Redis worker state record: ${field}`), { code: "HUB_STATE_RECORD_INVALID" });
-      }
-      const mutation = callback(current);
-      const committed = await backend.compareAndSwapStateRecord(field, snapshot.revision, mutation.data, fence);
-      if (committed.fenced) {
-        throw Object.assign(new Error("leader lease no longer authorizes this worker-state write"), { code: "HUB_LEADER_FENCED" });
-      }
-      if (committed.committed) return mutation.result(committed.revision);
-    }
-    throw Object.assign(new Error(`worker state changed too frequently: ${field}`), { code: "HUB_STATE_RECORD_CONFLICT" });
-  }
-
   async init() {
     await assertHubWritable(this.hubRoot);
-    const backend = await this._backend();
-    if (backend) {
-      await backend.preflight();
-      const [workers, inboxes] = await Promise.all([
-        backend.scanStateRecords("worker:"),
-        backend.scanStateRecords("workerInbox:"),
-      ]);
-      if (await this._hasLocalWorkerState()) {
-        throw Object.assign(
-          new Error("local worker registry or inbox state requires an explicit Redis migration"),
-          { code: "HUB_WORKER_MIGRATION_REQUIRED" },
-        );
-      }
-      return;
-    }
     await mkdir(this.registryDir, { recursive: true });
     await mkdir(this.inboxDir, { recursive: true });
   }
@@ -1408,8 +1320,7 @@ export class WorkerStore {
 
   async registerWorker(workerId: string, meta: LooseRecord = {}) {
     await assertHubWritable(this.hubRoot);
-    const backend = await this._backend();
-    const authorityNow = new Date(backend ? await backend.serverTimeMs() : Date.now()).toISOString();
+    const authorityNow = new Date(Date.now()).toISOString();
     const requestedIncarnation = typeof meta.incarnationToken === "string" && meta.incarnationToken
       ? meta.incarnationToken
       : null;
@@ -1429,24 +1340,6 @@ export class WorkerStore {
     if (Object.prototype.hasOwnProperty.call(meta, "processIdentity") && worker.processIdentity != null) {
       worker.processIdentity = processIdentityForPersistence(worker.processIdentity, worker.pid);
     }
-    if (backend) {
-      return this._mutateRedisRecord(backend, this._workerField(workerId), (current) => {
-        const incarnationToken = requestedIncarnation || current?.incarnationToken || crypto.randomUUID();
-        const merged: LooseRecord = { ...current, ...worker, incarnationToken };
-        const sameIncarnation = Boolean(current && current.incarnationToken === incarnationToken);
-        if (sameIncarnation && current.currentAssignmentId) {
-          merged.currentAssignmentId = current.currentAssignmentId;
-          merged.currentAttemptToken = current.currentAttemptToken ?? null;
-          if (["assigned", "running"].includes(String(current.status || ""))) {
-            merged.status = current.status;
-          }
-        }
-        if (worker.status === "starting" && current?.status && current.status !== "starting") {
-          merged.status = current.status;
-        }
-        return { data: merged, result: merged };
-      });
-    }
     worker.incarnationToken ||= crypto.randomUUID();
     const file = path.join(this.registryDir, `worker-${workerId}.json`);
     await writeJsonAtomic(file, worker);
@@ -1459,19 +1352,6 @@ export class WorkerStore {
 
   async updateWorkerIf(workerId: string, updates: LooseRecord, expected: WorkerUpdateExpectation) {
     await assertHubWritable(this.hubRoot);
-    const backend = await this._backend();
-    if (backend) {
-      const authorityNow = new Date(await backend.serverTimeMs()).toISOString();
-      return this._mutateRedisRecord(backend, this._workerField(workerId), (worker) => {
-        if (!worker) return { data: null, result: null };
-        if (!workerMatchesExpectation(worker, expected)) return { data: worker, result: null };
-        const updated: LooseRecord = { ...worker, ...updates, lastHeartbeatAt: authorityNow };
-        if (Object.prototype.hasOwnProperty.call(updates, "processIdentity") && updated.processIdentity != null) {
-          updated.processIdentity = processIdentityForPersistence(updated.processIdentity, updated.pid);
-        }
-        return { data: updated, result: updated };
-      });
-    }
     const worker = await this.getWorker(workerId);
     if (!worker) return null;
     if (!workerMatchesExpectation(worker, expected)) return null;
@@ -1487,18 +1367,10 @@ export class WorkerStore {
   }
 
   async authorityTimeMs() {
-    const backend = await this._backend();
-    return backend ? await backend.serverTimeMs() : Date.now();
+    return Date.now();
   }
 
   async getWorker(workerId: string): Promise<LocalWorkerRecord | null> {
-    const backend = await this._backend();
-    if (backend) {
-      const record = await backend.readStateRecord(this._workerField(workerId));
-      return record.data && typeof record.data === "object" && !Array.isArray(record.data)
-        ? record.data as LocalWorkerRecord
-        : null;
-    }
     return await readLocalWorkerJsonObject(
       path.join(this.registryDir, `worker-${workerId}.json`),
       "worker registry record",
@@ -1507,17 +1379,6 @@ export class WorkerStore {
   }
 
   async listWorkers(filter: LooseRecord = {}): Promise<LocalWorkerRecord[]> {
-    const backend = await this._backend();
-    if (backend) {
-      const records = await backend.scanStateRecords("worker:");
-      return records.flatMap(({ record }) => {
-        const worker = record.data && typeof record.data === "object" && !Array.isArray(record.data)
-          ? record.data as LocalWorkerRecord
-          : null;
-        if (!worker || (filter.status && worker.status !== filter.status)) return [];
-        return [worker];
-      });
-    }
     const workers: LocalWorkerRecord[] = [];
     const files = await readWorkerDirectoryNamesPinned(this.registryDir) ?? [];
     for (const file of files) {
@@ -1547,8 +1408,6 @@ export class WorkerStore {
   }
 
   async hasInboxWork(workerId: string) {
-    const backend = await this._backend();
-    if (backend) return (await backend.scanStateRecords(this._inboxPrefix(workerId))).length > 0;
     const inboxDir = path.join(this.inboxDir, workerId);
     const hasJsonFile = async (dir: string) => {
       return (await readWorkerDirectoryNamesPinned(dir) ?? [])
@@ -1850,59 +1709,6 @@ export class WorkerStore {
     await assertHubWritable(this.hubRoot);
     const assignmentId = String(committedPayload.assignmentId || "");
     if (!assignmentId) throw new Error("assignmentId is required for worker inbox");
-    const backend = await this._backend();
-    if (backend) {
-      const attempt = Number(committedPayload.attempt);
-      const attemptToken = String(committedPayload.attemptToken || "");
-      if (!Number.isInteger(attempt) || attempt < 1 || !attemptToken) {
-        throw new Error("attempt and attemptToken are required for Redis worker inbox");
-      }
-      const field = this._inboxField(workerId, assignmentId, attempt, attemptToken);
-      return this._mutateRedisRecordWithRevision(backend, field, (current) => {
-        const previousRecord = current ? receiptClone(current) : null;
-        if (current) {
-          const existingPayload = current.payload as LooseRecord | undefined;
-          if (existingPayload?.attempt !== attempt || existingPayload?.attemptToken !== attemptToken) {
-            throw Object.assign(new Error("worker inbox idempotency conflict"), { code: "HUB_STATE_RECORD_CONFLICT" });
-          }
-          return {
-            data: current,
-            result: (revision: number) => inboxReceipt({
-              workerId,
-              assignmentId,
-              attempt,
-              attemptToken,
-              backend: "redis",
-              ref: field,
-              previousRecord,
-              committedRecord: current,
-              writeFence: { backend: "redis", revision },
-            }),
-          };
-        }
-        const record = normalizeJsonRecord({
-          workerId,
-          assignmentId,
-          status: "pending",
-          payload: committedPayload,
-          writtenAt: new Date().toISOString(),
-        }, "Redis worker inbox record");
-        return {
-          data: record,
-          result: (revision: number) => inboxReceipt({
-            workerId,
-            assignmentId,
-            attempt,
-            attemptToken,
-            backend: "redis",
-            ref: field,
-            previousRecord,
-            committedRecord: record,
-            writeFence: { backend: "redis", revision },
-          }),
-        };
-      });
-    }
     return this._withLocalInboxLock(workerId, assignmentId, async () => {
       const filePath = path.join(this.inboxDir, workerId, `${assignmentId}.json`);
       const ownerPath = this._localInboxWriteOwnerPath(filePath);
@@ -2080,33 +1886,6 @@ export class WorkerStore {
 
   async compensateInboxReceipt(receipt: WorkerInboxReceipt) {
     await assertHubWritable(this.hubRoot);
-    const backend = await this._backend();
-    if (backend) {
-      if (receipt.writeFence.backend !== "redis") {
-        throw Object.assign(new Error("worker inbox compensation backend mismatch"), { code: "HUB_WORKER_INBOX_COMPENSATION_CONFLICT" });
-      }
-      const field = this._inboxField(receipt.workerId, receipt.assignmentId, receipt.attempt, receipt.attemptToken);
-      const snapshot = await backend.readStateRecord(field);
-      const current = snapshot.data && typeof snapshot.data === "object" && !Array.isArray(snapshot.data)
-        ? snapshot.data as LooseRecord
-        : null;
-      if (snapshot.revision !== receipt.writeFence.revision || !receiptDeepEqual(current, receipt.committedRecord)) {
-        throw Object.assign(new Error("worker inbox compensation conflict"), { code: "HUB_WORKER_INBOX_COMPENSATION_CONFLICT" });
-      }
-      const committed = await backend.compareAndSwapStateRecord(
-        field,
-        snapshot.revision,
-        receipt.previousRecord,
-        processLeaderFence(backend.identityFingerprint),
-      );
-      if (committed.fenced) {
-        throw Object.assign(new Error("leader lease no longer authorizes worker inbox compensation"), { code: "HUB_LEADER_FENCED" });
-      }
-      if (!committed.committed) {
-        throw Object.assign(new Error("worker inbox changed during compensation"), { code: "HUB_WORKER_INBOX_COMPENSATION_CONFLICT" });
-      }
-      return true;
-    }
     return this._withLocalInboxLock(receipt.workerId, receipt.assignmentId, async () => {
       if (receipt.writeFence.backend !== "local") {
         throw Object.assign(new Error("worker inbox compensation backend mismatch"), { code: "HUB_WORKER_INBOX_COMPENSATION_CONFLICT" });
@@ -2164,18 +1943,6 @@ export class WorkerStore {
   }
 
   async readInbox(workerId: string): Promise<LooseRecord[]> {
-    const backend = await this._backend();
-    if (backend) {
-      return (await backend.scanStateRecords(this._inboxPrefix(workerId))).flatMap(({ record }) => {
-        const inbox = record.data && typeof record.data === "object" && !Array.isArray(record.data)
-          ? record.data as LooseRecord
-          : null;
-        const payload = inbox?.payload;
-        return payload && typeof payload === "object" && !Array.isArray(payload)
-          ? [payload as LooseRecord]
-          : [];
-      });
-    }
     const dir = path.join(this.inboxDir, workerId);
     const entries: LooseRecord[] = [];
     const files = await readWorkerDirectoryNamesPinned(dir) ?? [];
@@ -2193,16 +1960,6 @@ export class WorkerStore {
 
   async clearInboxEntry(workerId: string, assignmentId: string) {
     await assertHubWritable(this.hubRoot);
-    const backend = await this._backend();
-    if (backend) {
-      for (const { field, record } of await backend.scanStateRecords(this._inboxPrefix(workerId))) {
-        const inbox = record.data as LooseRecord | null;
-        if (inbox?.assignmentId === assignmentId) {
-          await this._mutateRedisRecord(backend, field, () => ({ data: null, result: undefined }));
-        }
-      }
-      return;
-    }
     await this._withLocalInboxLock(workerId, assignmentId, async () => {
       const filePath = path.join(this.inboxDir, workerId, `${assignmentId}.json`);
       await this._removeLocalInboxPair(filePath);
@@ -2210,42 +1967,6 @@ export class WorkerStore {
   }
 
   async claimInboxEntries(workerId: string, incarnationToken?: string) {
-    const backend = await this._backend();
-    if (backend) {
-      const claims: Array<{ assignmentId: string; assignment: LooseRecord; claimToken: string }> = [];
-      const nowMs = await backend.serverTimeMs();
-      const records = await backend.scanStateRecords(this._inboxPrefix(workerId));
-      records.sort((left, right) => left.field.localeCompare(right.field));
-      for (const { field } of records) {
-        const claimToken = crypto.randomUUID();
-        const claim = await this._mutateRedisRecord(backend, field, (current) => {
-          const expired = current?.status === "processing"
-            && Number(current.claimExpiresAtMs || 0) <= nowMs;
-          if (!current || (current.status !== "pending" && !expired)) return { data: current, result: null };
-          const payload = current.payload;
-          if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-            throw Object.assign(new Error(`invalid Redis inbox payload: ${field}`), { code: "HUB_STATE_RECORD_INVALID" });
-          }
-          return {
-            data: {
-              ...current,
-              status: "processing",
-              claimToken,
-              claimedBy: workerId,
-              claimedIncarnationToken: incarnationToken || null,
-              claimedAt: new Date(nowMs).toISOString(),
-              claimExpiresAtMs: nowMs + INBOX_CLAIM_TTL_MS,
-            },
-            result: { assignmentId: String(current.assignmentId || ""), assignment: payload as LooseRecord, claimToken },
-          };
-        });
-        if (claim) {
-          claims.push(claim);
-          break;
-        }
-      }
-      return claims;
-    }
 
     const dir = path.join(this.inboxDir, workerId);
     const processingDir = path.join(dir, "processing");
@@ -2307,20 +2028,6 @@ export class WorkerStore {
 
   async completeInboxClaim(workerId: string, assignmentId: string, claimToken: string) {
     await assertHubWritable(this.hubRoot);
-    const backend = await this._backend();
-    if (backend) {
-      for (const { field, record } of await backend.scanStateRecords(this._inboxPrefix(workerId))) {
-        const inbox = record.data as LooseRecord | null;
-        if (inbox?.assignmentId !== assignmentId || inbox.claimToken !== claimToken) continue;
-        return this._mutateRedisRecord(backend, field, (current) => {
-          if (!current || current.status !== "processing" || current.claimToken !== claimToken) {
-            return { data: current, result: false };
-          }
-          return { data: null, result: true };
-        });
-      }
-      return false;
-    }
     const expectedClaimToken = path.join(this.inboxDir, workerId, "processing", `${assignmentId}.json`);
     if (path.resolve(claimToken) !== path.resolve(expectedClaimToken)) return false;
     return this._withLocalInboxLock(workerId, assignmentId, async () => {
@@ -2328,52 +2035,8 @@ export class WorkerStore {
     });
   }
 
-  async renewInboxClaim(workerId: string, assignmentId: string, claimToken: string, incarnationToken?: string) {
-    const backend = await this._backend();
-    if (!backend) return true;
-    const nowMs = await backend.serverTimeMs();
-    for (const { field, record } of await backend.scanStateRecords(this._inboxPrefix(workerId))) {
-      const inbox = record.data as LooseRecord | null;
-      if (inbox?.assignmentId !== assignmentId || inbox.claimToken !== claimToken) continue;
-      return this._mutateRedisRecord(backend, field, (current) => {
-        if (!current || current.status !== "processing" || current.claimToken !== claimToken
-          || (incarnationToken && current.claimedIncarnationToken !== incarnationToken)) {
-          return { data: current, result: false };
-        }
-        return {
-          data: { ...current, claimExpiresAtMs: nowMs + INBOX_CLAIM_TTL_MS },
-          result: true,
-        };
-      });
-    }
-    return false;
-  }
-
-  async _removeRedisWorkerInbox(backend: HubRedisStateBackend, workerId: string) {
-    const prefix = this._inboxPrefix(workerId);
-    const records = await backend.scanStateRecords(prefix);
-    const settled = await Promise.allSettled(records.map(({ field }) => (
-      this._mutateRedisRecord(backend, field, () => ({ data: null, result: undefined }))
-    )));
-    const errors = settled.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
-    if (errors.length > 0) {
-      throw new AggregateError(errors, `worker Redis inbox cleanup failed: ${workerId}`);
-    }
-    const remaining = await backend.scanStateRecords(prefix);
-    if (remaining.length > 0) {
-      throw workerCleanupError(
-        `worker ${workerId} Redis inbox still has ${remaining.length} record(s) after cleanup`,
-        "HUB_WORKER_CLEANUP_INBOX_REMAINS",
-      );
-    }
-  }
-
-  async _removeRedisWorkerRegistry(backend: HubRedisStateBackend, workerId: string) {
-    await this._mutateRedisRecord(
-      backend,
-      this._workerField(workerId),
-      () => ({ data: null, result: undefined }),
-    );
+  async renewInboxClaim(_workerId: string, _assignmentId: string, _claimToken: string, _incarnationToken?: string) {
+    return true;
   }
 
   _localWorkerRegistryPath(workerId: string) {
@@ -2463,7 +2126,6 @@ export class WorkerStore {
   async pruneDead() {
     await assertHubWritable(this.hubRoot);
     const workers = await this.listWorkers();
-    const backend = await this._backend();
     let removed = 0;
     const cleanupErrors: unknown[] = [];
     for (const worker of workers) {
@@ -2478,17 +2140,6 @@ export class WorkerStore {
         continue;
       }
       if (!gone) continue;
-      if (backend) {
-        try {
-          const workerId = String(worker.workerId);
-          await this._removeRedisWorkerInbox(backend, workerId);
-          await this._removeRedisWorkerRegistry(backend, workerId);
-          removed++;
-        } catch (error) {
-          cleanupErrors.push(error);
-        }
-        continue;
-      }
       try {
         const workerId = String(worker.workerId);
         await this._removeLocalWorkerInbox(workerId, worker);

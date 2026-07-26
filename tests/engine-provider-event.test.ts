@@ -274,7 +274,14 @@ async function startDelegateAckLoop(t, hubRoot) {
       const command = JSON.parse(await readFile(path.join(inbox, file), "utf8"));
       await writeFile(
         path.join(acks, `${command.commandId}.json`),
-        `${JSON.stringify({ ok: true, entry: command.entry || null })}\n`,
+        `${JSON.stringify({
+          commandId: command.commandId,
+          mutationId: command.commandId,
+          hubRoot: path.resolve(hubRoot),
+          ts: new Date().toISOString(),
+          ok: true,
+          entry: command.entry || null,
+        })}\n`,
         "utf8",
       );
     }

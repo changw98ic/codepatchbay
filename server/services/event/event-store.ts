@@ -28,10 +28,6 @@ import type {
   EventWriteNotification,
 } from "./event-types.js";
 import { withTraceContext } from "../trace/trace-context.js";
-import {
-  openPinnedHubRedisStateBackend,
-  type HubRedisStateBackend,
-} from "../../../shared/hub-state-redis.js";
 import type { ProcessIdentity } from "../../../core/runtime/process-tree.js";
 import { withDurableDirectoryLock } from "../../../core/runtime/durable-directory-lock.js";
 import { parseWorktreeOwnership } from "../../../core/contracts/worktree-ownership.js";
@@ -58,7 +54,6 @@ export type EventLockTestHooks = {
   afterRecoveryWrite?: (context: { filePath: string; bytesWritten: number }) => void | Promise<void>;
   afterEventHandleClose?: (context: { filePath: string; authority: "file" | "directory" }) => void | Promise<void>;
   afterCheckpointSnapshot?: (context: { filePath: string; eventCount: number; eventDigest: string }) => void | Promise<void>;
-  openRedisEventBackend?: () => Promise<HubRedisStateBackend | null>;
   waitMs?: number;
 };
 
@@ -158,41 +153,7 @@ function rejectGenericReservedJournalWriter(jobId: string) {
   });
 }
 
-function redisJobField(project: string, jobId: string) {
-  validatePathComponent("project", project);
-  validatePathComponent("jobId", jobId);
-  const part = (value: string) => Buffer.from(value, "utf8").toString("base64url");
-  return `job:${part(project)}:${part(jobId)}`;
-}
-
-async function redisEventBackend() {
-  const testBackend = eventLockTestHooks().openRedisEventBackend;
-  if (testBackend) return await testBackend();
-  const hubRoot = process.env.CPB_HUB_ROOT;
-  if (!hubRoot) return null;
-  return await openPinnedHubRedisStateBackend({
-    configFile: process.env.CPB_HUB_STATE_REDIS_CONFIG_FILE,
-    hubRoot,
-  });
-}
-
-async function assertNoLocalEvent(cpbRoot: string, project: string, jobId: string, opts: EventStoreOptions) {
-  const dataRoot = opts.dataRoot || resolveCachedProjectRuntimeRoot(cpbRoot, project);
-  if (!dataRoot) return;
-  const file = eventFileFor(cpbRoot, project, jobId, { ...opts, dataRoot, legacyOnly: false });
-  try {
-    if ((await stat(file)).size > 0) {
-      throw Object.assign(new Error("local job events require an explicit Redis migration"), {
-        code: "HUB_JOB_MIGRATION_REQUIRED",
-      });
-    }
-  } catch (error) {
-    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return;
-    throw error;
-  }
-}
-
-function redisPersistableEvent(event: EventRecord, project: string, jobId: string): EventRecord {
+function persistableEvent(event: EventRecord, project: string, jobId: string): EventRecord {
   const artifact = event.artifact;
   const blocked = (reason: string) => {
     const value = makeSecretBlockedEvent(artifact, reason);
@@ -1248,43 +1209,6 @@ export async function appendEvent(cpbRoot: string, project: string, jobId: strin
   serializeEvent(tracedEvent);
   rejectGenericReservedJournalWriter(jobId);
 
-  const redis = await redisEventBackend();
-  if (redis) {
-    await assertNoLocalEvent(cpbRoot, project, jobId, opts);
-    const field = redisJobField(project, jobId);
-    const persistable = redisPersistableEvent(tracedEvent, project, jobId);
-    const serialized = serializeEvent(persistable);
-    for (let retry = 0; retry < 64; retry += 1) {
-      const snapshot = await redis.readStateRecord(field);
-      const current = snapshot.data === null ? null : snapshot.data as MaterializedJobState;
-      if (current && (!isRecord(current) || current.jobId !== jobId || current.project !== project)) {
-        throw Object.assign(new Error(`invalid Redis job projection: ${project}/${jobId}`), { code: "HUB_STATE_RECORD_INVALID" });
-      }
-      if (current && recordValue(current).schema === "cpb.external-event-journal.v1") {
-        throw Object.assign(new Error("job event append cannot reuse an external journal projection"), {
-          code: "JOB_PROJECTION_CONFLICT",
-          committed: false,
-        });
-      }
-      const eventType = text(persistable.type);
-      if (current && TERMINAL_STATUSES.has(current.status) && !POST_TERMINAL_ALLOWED.has(eventType)) {
-        console.warn(`[event-store] skipped ${eventType || "unknown"} on terminal job ${jobId} (status: ${current.status})`);
-        return null;
-      }
-      const projection = current
-        ? advanceMaterializedJob(current, persistable)
-        : materializeJob([persistable]);
-      const committed = await redis.appendJobEvent(field, snapshot.revision, projection, serialized);
-      if (!committed.committed) continue;
-      await notifyEventWritten({
-        cpbRoot, project, jobId, file: `redis:${field}`,
-        dataRoot: opts.dataRoot ?? null, event: persistable,
-      });
-      return persistable;
-    }
-    throw Object.assign(new Error(`job events changed too frequently: ${project}/${jobId}`), { code: "HUB_STATE_RECORD_CONFLICT" });
-  }
-
   const file = eventFileFor(cpbRoot, project, jobId, opts);
 
   const written = await withEventLock(file, async () => {
@@ -1398,32 +1322,6 @@ async function _parseEventFileReadOnly(
     if (err && err.code === "ENOENT") return null;
     throw err;
   }
-}
-
-function parseRedisEventRecords(serializedEvents: string[], project: string, jobId: string): EventRecord[] {
-  return serializedEvents.map((serialized, index) => {
-    let event: unknown;
-    try {
-      event = JSON.parse(serialized);
-      if (!isEventRecord(event)) throw new Error("expected object");
-    } catch (error) {
-      throw new Error(`Redis job event ${project}/${jobId} at index ${index}: malformed event: ${error instanceof Error ? error.message : String(error)}`);
-    }
-    assertPersistedEventStreamIdentity(event, project, jobId, {
-      source: `redis:${redisJobField(project, jobId)}`,
-      eventIndex: index,
-    });
-    return event;
-  });
-}
-
-async function readRedisEventRecords(
-  redis: HubRedisStateBackend,
-  field: string,
-  project: string,
-  jobId: string,
-) {
-  return parseRedisEventRecords(await redis.readJobEvents(field), project, jobId);
 }
 
 function eventDurabilityFailure(error: unknown, authority: string) {
@@ -1591,21 +1489,6 @@ export async function ensureEventStreamDurable(
   try {
     validatePathComponent("project", project);
     validatePathComponent("jobId", jobId);
-    const redis = await redisEventBackend();
-    if (redis) {
-      await assertNoLocalEvent(cpbRoot, project, jobId, opts);
-      const field = redisJobField(project, jobId);
-      authority = `redis:${field}`;
-      const events = await readRedisEventRecords(redis, field, project, jobId);
-      return {
-        backend: "redis",
-        committed: true,
-        exists: events.length > 0,
-        cursor: eventCursor(events),
-        file: authority,
-      };
-    }
-
     const file = eventFileFor(cpbRoot, project, jobId, opts);
     authority = file;
     return await withEventLock(file, () => ensureFilesystemEventStreamDurable(file, project, jobId));
@@ -1620,12 +1503,6 @@ export async function readEventStreamCursor(
   jobId: string,
   opts: EventStoreOptions = {},
 ): Promise<EventStreamCursor> {
-  const redis = await redisEventBackend();
-  if (redis) {
-    await assertNoLocalEvent(cpbRoot, project, jobId, opts);
-    const field = redisJobField(project, jobId);
-    return eventCursor(await readRedisEventRecords(redis, field, project, jobId));
-  }
   const file = eventFileFor(cpbRoot, project, jobId, opts);
   return eventCursor(await _parseEventFileReadOnly(file, project, jobId) ?? []);
 }
@@ -1635,7 +1512,7 @@ export async function readEventStreamCursor(
  *
  * This primitive deliberately does not advance a materialized job projection
  * or jobs index. It is intended for dedicated append-only journals whose
- * reducer and lifecycle are owned by their caller. Redis still uses the job
+ * reducer and lifecycle are owned by their caller.
  * event append transaction for an atomic stream write, but leaves the existing
  * projection data unchanged.
  */
@@ -1652,7 +1529,7 @@ export async function appendEventIfCursor(
   assertConditionalExternalJournalWriter(jobId, opts.externalJournal === true);
   const tracedEvent = withTraceContext(boundEvent, { project, jobId }) as EventRecord;
   const tracedSerialized = serializeEvent(tracedEvent);
-  const candidatePersistable = redisPersistableEvent(tracedEvent, project, jobId);
+  const candidatePersistable = persistableEvent(tracedEvent, project, jobId);
   const candidateSerialized = serializeEvent(candidatePersistable);
   if (
     opts.externalJournal === true
@@ -1667,83 +1544,6 @@ export async function appendEventIfCursor(
   }
   const persistable = opts.externalJournal === true ? tracedEvent : candidatePersistable;
   const serialized = opts.externalJournal === true ? tracedSerialized : candidateSerialized;
-
-  const redis = await redisEventBackend();
-  if (redis) {
-    await assertNoLocalEvent(cpbRoot, project, jobId, opts);
-    const field = redisJobField(project, jobId);
-    const snapshot = await redis.readStateRecord(field);
-    const existing = await readRedisEventRecords(redis, field, project, jobId);
-    const current = eventCursor(existing);
-    if (!sameEventStreamCursor(current, expected)) {
-      return { committed: false, conflict: true, cursor: current };
-    }
-
-    const candidateCursor = eventCursor([...existing, persistable]);
-    // A dedicated external journal does not have a materialized job projection.
-    // Redis state records intentionally reject `data: null`, so initialize the
-    // stream with an explicit non-job projection instead of weakening the normal
-    // job-projection invariant in the shared backend.
-    if (snapshot.data == null && opts.externalJournal !== true) {
-      throw Object.assign(new Error("conditional job event append requires an existing Redis projection"), {
-        code: "JOB_PROJECTION_REQUIRED",
-        committed: false,
-      });
-    }
-    const existingProjection = recordValue(snapshot.data);
-    if (snapshot.data != null && opts.externalJournal === true && (
-      existingProjection.schema !== "cpb.external-event-journal.v1"
-      || existingProjection.project !== project
-      || existingProjection.jobId !== jobId
-    )) {
-      throw Object.assign(new Error("external event journal conflicts with an existing Redis projection"), {
-        code: "EXTERNAL_JOURNAL_PROJECTION_CONFLICT",
-        committed: false,
-      });
-    }
-    if (snapshot.data != null && opts.externalJournal !== true
-      && existingProjection.schema === "cpb.external-event-journal.v1") {
-      throw Object.assign(new Error("job event append cannot reuse an external journal projection"), {
-        code: "JOB_PROJECTION_CONFLICT",
-        committed: false,
-      });
-    }
-    const projection = snapshot.data ?? {
-      schema: "cpb.external-event-journal.v1",
-      project,
-      jobId,
-    };
-    let appended: Awaited<ReturnType<HubRedisStateBackend["appendJobEvent"]>>;
-    try {
-      appended = await redis.appendJobEvent(
-        field,
-        snapshot.revision,
-        projection,
-        serialized,
-      );
-    } catch (error) {
-      if (error && typeof error === "object") {
-        Object.assign(error, {
-          expectedCursor: { ...expected },
-          candidateCursor: { ...candidateCursor },
-        });
-      }
-      throw error;
-    }
-    if (!appended.committed) {
-      const conflictedCursor = eventCursor(await readRedisEventRecords(redis, field, project, jobId));
-      return { committed: false, conflict: true, cursor: conflictedCursor };
-    }
-    await notifyEventWritten({
-      cpbRoot,
-      project,
-      jobId,
-      file: `redis:${field}`,
-      dataRoot: opts.dataRoot ?? null,
-      event: persistable,
-    });
-    return { committed: true, conflict: false, cursor: candidateCursor };
-  }
 
   const file = eventFileFor(cpbRoot, project, jobId, opts);
   let candidateCursor: EventStreamCursor | null = null;
@@ -1785,12 +1585,6 @@ export async function appendEventIfCursor(
 }
 
 export async function readEvents(cpbRoot: string, project: string, jobId: string, opts: EventStoreOptions = {}) {
-  const redis = await redisEventBackend();
-  if (redis) {
-    await assertNoLocalEvent(cpbRoot, project, jobId, opts);
-    const field = redisJobField(project, jobId);
-    return readRedisEventRecords(redis, field, project, jobId);
-  }
   const cachedDataRoot = opts.dataRoot || (opts.legacyOnly !== true ? resolveCachedProjectRuntimeRoot(cpbRoot, project) : null);
 
   // Try runtime root first when we have one and it differs from legacy.
@@ -1812,8 +1606,6 @@ export async function readEvents(cpbRoot: string, project: string, jobId: string
 }
 
 export async function readEventsReadOnly(cpbRoot: string, project: string, jobId: string, opts: EventStoreOptions = {}) {
-  const redis = await redisEventBackend();
-  if (redis) return await readEvents(cpbRoot, project, jobId, opts);
   const cachedDataRoot = opts.dataRoot || (opts.legacyOnly !== true ? resolveCachedProjectRuntimeRoot(cpbRoot, project) : null);
 
   if (opts.legacyOnly !== true && cachedDataRoot && cachedDataRoot !== legacyRuntimeRoot(cpbRoot)) {
@@ -2054,8 +1846,7 @@ export async function readJobProjection(
   jobId: string,
   opts: EventStoreOptions = {},
 ): Promise<JobEventProjection> {
-  const redis = await redisEventBackend();
-  const checkpoint = redis ? null : await readCheckpointRecord(cpbRoot, project, jobId, opts);
+  const checkpoint = await readCheckpointRecord(cpbRoot, project, jobId, opts);
   const events = await readEvents(cpbRoot, project, jobId, opts);
   const cursor = eventCursor(events);
   if (!checkpoint) {
@@ -2094,9 +1885,6 @@ export async function withLockedJobProjection<T>(
   opts: EventStoreOptions,
   operation: (projection: JobEventProjection) => Promise<T>,
 ): Promise<T> {
-  if (await redisEventBackend()) {
-    return operation(await readJobProjection(cpbRoot, project, jobId, opts));
-  }
   const file = eventFileFor(cpbRoot, project, jobId, opts);
   return withEventLock(file, async () => (
     operation(await readJobProjection(cpbRoot, project, jobId, opts))
@@ -2125,7 +1913,6 @@ export async function checkpointJob(cpbRoot: string, project: string, jobId: str
     return state;
   };
 
-  if (await redisEventBackend()) return checkpointSnapshot();
   const file = eventFileFor(cpbRoot, project, jobId, opts);
   return withEventLock(file, checkpointSnapshot);
 }

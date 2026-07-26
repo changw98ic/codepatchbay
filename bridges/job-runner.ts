@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { runCommandTree } from "../core/runtime/process-tree.js";
+import { runCommandTree, type ProcessIdentity } from "../core/runtime/process-tree.js";
 import path from "node:path";
 import type { LooseRecord } from "../core/contracts/types.js";
 import { appendEvent } from "../server/services/event/event-store.js";
@@ -171,7 +171,7 @@ function runChild(
   options: {
     signal?: AbortSignal;
     env?: NodeJS.ProcessEnv;
-    onSpawn?: (child: { pid: number }) => Promise<void> | void;
+    onSpawn?: (child: { pid: number; identity?: ProcessIdentity }) => Promise<void> | void;
   } = {},
 ): Promise<ChildResult> {
   const guardResult = classifyDeleteRisk(command, args, { cwd, repoRoot: cwd });
@@ -185,15 +185,18 @@ function runChild(
 
   // Delegate process-tree control (detached group + SIGTERM→SIGKILL + AbortSignal
   // + timeout) to the shared core primitive. classifyDeleteRisk / event / lease
-  // concerns stay here in the bridges layer. onSpawn now receives { pid } rather
-  // than the full ChildProcess (callers only use .pid).
+  // concerns stay here in the bridges layer. onSpawn receives the pid plus the
+  // exact identity captured at spawn time; registry writes must not recapture a
+  // short-lived child after it has already exited.
   return runCommandTree(command, args, {
     cwd,
     env: options.env,
     signal: options.signal,
     onStdout: (chunk) => { process.stdout.write(chunk); if (onOutput) onOutput(chunk); },
     onStderr: (chunk) => { process.stderr.write(chunk); if (onOutput) onOutput(chunk); },
-    onSpawn: options.onSpawn ? (pid) => options.onSpawn({ pid }) : undefined,
+    onSpawn: options.onSpawn
+      ? (pid, identity) => options.onSpawn({ pid, identity })
+      : undefined,
   }).then((r): ChildResult => {
     const out: ChildResult = { exitCode: r.exitCode };
     if (r.signal) out.signal = r.signal;
@@ -332,7 +335,15 @@ async function main() {
       signal: abortController.signal,
       env: childEnv,
       onSpawn: async (child) => {
-        await addChildPid(cpbRoot, jobId, child.pid, { dataRoot });
+        // A short-lived child may finish before an exact OS identity can be
+        // captured. Do not recapture a dead PID; the process entry itself is
+        // already registered, and session pinning must still complete.
+        if (child.identity?.birthIdPrecision === "exact") {
+          await addChildPid(cpbRoot, jobId, child.pid, {
+            dataRoot,
+            processIdentity: child.identity,
+          });
+        }
         const sessionId = process.env.CPB_SESSION_ID;
         if (sessionId) {
           await pinSessionToJob(cpbRoot, project, jobId, {

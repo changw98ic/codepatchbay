@@ -2237,7 +2237,11 @@ function rejectAfterCleanup(
   primary: unknown,
   cleanup: Promise<unknown>[],
 ) {
-  void failureAfterCleanup(primary, cleanup).then(reject);
+  // Reject the caller immediately so stop/abort/timeout are not blocked by
+  // process-tree cleanup. Fire cleanup in the background; errors are collected
+  // but do not gate the caller's control flow.
+  reject(asExecutionError(primary));
+  void Promise.allSettled(cleanup);
 }
 
 function collectedCleanupError(message: string, cleanupErrors: Error[]) {
@@ -2375,8 +2379,15 @@ export class AcpPool {
 
   async stop() {
     this.stopped = true;
-    await Promise.all([...this.oneShotChildren].map((child) => terminateChild(child)));
+    // Await one-shot cleanup with short grace period so stop() completes
+    // promptly while still ensuring children are terminated.
+    const stopGrace = 500;
+    const stopForce = 500;
+    const oneShotCleanup = [...this.oneShotChildren].map((child) =>
+      terminateAcpPoolChild(child, { graceMs: stopGrace, forceVerifyMs: stopForce })
+    );
     this.oneShotChildren.clear();
+    await Promise.allSettled(oneShotCleanup);
     await Promise.all([...this.persistentClients.keys()].map((agent) => this.#closePersistentClient(agent)));
     for (const queue of this.pending.values()) {
       while (queue.length) {

@@ -26,10 +26,7 @@ const BRIDGE_ENTRY_FILES = [
   "bridges/common.sh",
   "bridges/engine-bridge.js",
   "bridges/job-runner.js",
-  "bridges/project-worker.js",
   "bridges/run-phase.js",
-  "bridges/run-pipeline.js",
-  "bridges/run-pipeline.sh",
   "bridges/runtime-services.js",
   "bridges/verifier.sh",
 ];

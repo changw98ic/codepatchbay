@@ -323,48 +323,6 @@ export async function run(args: string[], { cpbRoot, executorRoot }: LooseRecord
         }
       }
     }
-  } else if (sub === "migrate-to-redis") {
-    const output = optionValue(args, "--output");
-    const configFile = process.env.CPB_HUB_STATE_REDIS_CONFIG_FILE;
-    if (!output || !configFile) {
-      console.error("Usage: CPB_HUB_STATE_REDIS_CONFIG_FILE=... cpb hub migrate-to-redis --output PATH [--yes] [--json]");
-      return 1;
-    }
-    const { migrateLocalHubToRedis } = await import("../../server/services/hub/hub-redis-migration.js");
-    const result = await migrateLocalHubToRedis({
-      cpbRoot,
-      hubRoot,
-      configFile,
-      output,
-      dryRun: !args.includes("--yes"),
-      backupSigningKey: process.env.CPB_HUB_BACKUP_SIGNING_KEY,
-      auditSigningKey: process.env.CPB_HUB_ACCESS_AUDIT_ARCHIVE_SIGNING_KEY,
-    });
-    if (json) console.log(JSON.stringify(result, null, 2));
-    else if (result.dryRun === true) {
-      console.log("Hub Local-to-Redis Migration (dry-run)");
-      console.log(`Projects: ${result.projects}, queue entries: ${result.queueEntries}`);
-      console.log(`Assignments/attempts: ${result.assignments}/${result.attempts}`);
-      console.log(`Workers/inbox: ${result.workers}/${result.inboxEntries}`);
-      console.log(`Leases: ${result.leases}, jobs/events: ${result.jobs}/${result.jobEvents}`);
-      console.log("No state changed. Stop/drain the Hub and re-run with --yes.");
-    } else {
-      console.log(`Hub local-to-Redis migration completed: ${result.output}`);
-      console.log(`Rollback backup: ${result.backupPath}`);
-      console.log(`Snapshot: ${result.snapshotSha256}`);
-    }
-    return 0;
-  } else if (sub === "recover-redis-migration") {
-    const { recoverHubRedisMigration } = await import("../../server/services/hub/hub-redis-migration.js");
-    const result = await recoverHubRedisMigration({
-      hubRoot,
-      configFile: process.env.CPB_HUB_STATE_REDIS_CONFIG_FILE,
-      backupSigningKey: process.env.CPB_HUB_BACKUP_SIGNING_KEY,
-    });
-    if (json) console.log(JSON.stringify(result, null, 2));
-    else if (result.recovered) console.log(`Hub Redis migration recovery completed: ${result.migrationId}`);
-    else console.log("No interrupted Hub Redis migration was found.");
-    return 0;
   } else if (sub === "backup") {
     const output = optionValue(args, "--output");
     if (!output) {
@@ -384,39 +342,6 @@ export async function run(args: string[], { cpbRoot, executorRoot }: LooseRecord
       console.log(`Hub backup created: ${result.output}`);
       console.log(`Snapshot: ${result.manifest.snapshotId}`);
       console.log(`Roots: ${result.manifest.roots.length}, files: ${result.manifest.fileCount}, bytes: ${result.manifest.totalBytes}`);
-    }
-    return 0;
-  } else if (sub === "redis-retention") {
-    const before = optionValue(args, "--before");
-    const tombstonesBefore = optionValue(args, "--tombstones-before");
-    const limitRaw = optionValue(args, "--limit");
-    if (before === "" || tombstonesBefore === "" || limitRaw === "") {
-      console.error("Usage: cpb hub redis-retention [--before ISO] [--tombstones-before ISO] [--limit N] [--yes] [--json]");
-      return 1;
-    }
-    const limit = limitRaw === null ? undefined : Number(limitRaw);
-    const { runHubRedisRetention } = await import("../../server/services/hub/hub-redis-retention.js");
-    const result = await runHubRedisRetention({
-      hubRoot,
-      before: before ?? undefined,
-      tombstonesBefore: tombstonesBefore ?? undefined,
-      limit,
-      dryRun: !args.includes("--yes"),
-    });
-    if (json) console.log(JSON.stringify(result, null, 2));
-    else {
-      console.log(result.dryRun ? "Hub Redis Retention (dry-run)" : "Hub Redis Retention");
-      console.log(`Terminal jobs eligible: ${result.terminalJobs.length} (before ${result.before})`);
-      console.log(`Tombstones eligible: ${result.tombstones.length} (before ${result.tombstonesBefore})`);
-      console.log(`Legacy tombstones to timestamp: ${result.unstampedTombstones.length}`);
-      if (!result.dryRun) {
-        console.log(`Purged jobs: ${result.result.jobsPurged}`);
-        console.log(`Deleted tombstones: ${result.result.tombstonesDeleted}`);
-        console.log(`Timestamped tombstones: ${result.result.tombstonesStamped}`);
-        console.log(`Conflicts/skips: ${result.result.conflicts}`);
-      } else {
-        console.log("No state changed. Re-run with --yes after taking a verified backup.");
-      }
     }
     return 0;
   } else if (sub === "verify-backup") {
@@ -439,16 +364,8 @@ export async function run(args: string[], { cpbRoot, executorRoot }: LooseRecord
     }
     return 0;
   } else if (sub === "verify-access-audit") {
-    const [{ verifyHubAccessAudit, verifyRedisHubAccessAudit }, { openHubRedisStateBackend }] = await Promise.all([
-      import("../../server/services/audit/hub-access-audit.js"),
-      import("../../shared/hub-state-redis.js"),
-    ]);
-    const redis = await openHubRedisStateBackend({
-      hubRoot, configFile: process.env.CPB_HUB_STATE_REDIS_CONFIG_FILE,
-    });
-    const verified = redis
-      ? await verifyRedisHubAccessAudit(redis)
-      : await verifyHubAccessAudit({ hubRoot });
+    const { verifyHubAccessAudit } = await import("../../server/services/audit/hub-access-audit.js");
+    const verified = await verifyHubAccessAudit({ hubRoot });
     const result = {
       filePath: verified.filePath,
       recordCount: verified.recordCount,
@@ -470,14 +387,6 @@ export async function run(args: string[], { cpbRoot, executorRoot }: LooseRecord
       console.error("Usage: cpb hub archive-access-audit --output PATH [--json]");
       return 1;
     }
-    const { openHubRedisStateBackend } = await import("../../shared/hub-state-redis.js");
-    const redis = await openHubRedisStateBackend({
-      hubRoot, configFile: process.env.CPB_HUB_STATE_REDIS_CONFIG_FILE,
-    });
-    if (redis) {
-      console.error("Redis access audit is a shared Stream; use: cpb hub export-access-audit --output PATH");
-      return 1;
-    }
     const { createHubAccessAuditArchive } = await import("../../server/services/audit/hub-access-audit-archive.js");
     const result = await createHubAccessAuditArchive({
       hubRoot,
@@ -490,55 +399,6 @@ export async function run(args: string[], { cpbRoot, executorRoot }: LooseRecord
       console.log(`Archive: ${result.manifest.archiveId}`);
       console.log(`Records: ${result.manifest.recordCount}, bytes: ${result.manifest.sizeBytes}`);
       console.log(`Last sequence: ${result.manifest.lastSequence}, hash: ${result.manifest.lastHash}`);
-    }
-    return 0;
-  } else if (sub === "export-access-audit") {
-    const output = optionValue(args, "--output");
-    if (!output) {
-      console.error("Usage: cpb hub export-access-audit --output PATH [--json]");
-      return 1;
-    }
-    const [{ openHubRedisStateBackend }, { exportRedisHubAccessAudit }] = await Promise.all([
-      import("../../shared/hub-state-redis.js"),
-      import("../../server/services/audit/hub-access-audit-redis-export.js"),
-    ]);
-    const redis = await openHubRedisStateBackend({
-      hubRoot, configFile: process.env.CPB_HUB_STATE_REDIS_CONFIG_FILE,
-    });
-    if (!redis) {
-      console.error("Redis access-audit export requires CPB_HUB_STATE_REDIS_CONFIG_FILE; use archive-access-audit for local JSONL mode.");
-      return 1;
-    }
-    const result = await exportRedisHubAccessAudit({
-      backend: redis,
-      hubRoot,
-      output,
-      signingKey: process.env.CPB_HUB_ACCESS_AUDIT_ARCHIVE_SIGNING_KEY,
-    });
-    if (json) console.log(JSON.stringify(result, null, 2));
-    else {
-      console.log(`Redis access-audit export created: ${result.output}`);
-      console.log(`Records: ${result.manifest.recordCount}, bytes: ${result.manifest.sizeBytes}`);
-      console.log(`Last sequence: ${result.manifest.lastSequence}, hash: ${result.manifest.lastHash}`);
-    }
-    return 0;
-  } else if (sub === "verify-access-audit-export") {
-    const input = optionValue(args, "--input");
-    if (!input) {
-      console.error("Usage: cpb hub verify-access-audit-export --input PATH [--require-signature] [--json]");
-      return 1;
-    }
-    const { verifyRedisHubAccessAuditExport } = await import("../../server/services/audit/hub-access-audit-redis-export.js");
-    const result = await verifyRedisHubAccessAuditExport({
-      input,
-      signingKey: process.env.CPB_HUB_ACCESS_AUDIT_ARCHIVE_SIGNING_KEY,
-      requireSignature: args.includes("--require-signature"),
-    });
-    if (json) console.log(JSON.stringify(result, null, 2));
-    else {
-      console.log(`Redis access-audit export verified: ${result.input}`);
-      console.log(`Records: ${result.manifest.recordCount}, bytes: ${result.manifest.sizeBytes}`);
-      console.log(`Signature verified: ${result.signatureVerified ? "yes" : "no"}`);
     }
     return 0;
   } else if (sub === "verify-access-audit-archive") {

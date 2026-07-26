@@ -55,10 +55,9 @@ cpb                         # bin 入口 → cli/cpb.ts (纯 Node.js 命令路�
 │       └── stream/stream-server.ts # ★ 唯一的 HTTP: Node 原生 SSE (node:http), 由 `cpb stream` 启动
 │
 ├── bridges/                # 运行时胶水 (worker 进程执行用, 不是领域核心)
-│   ├── run-pipeline.ts     # pipeline 编排 (worker 侧)
-│   ├── run-phase.ts / job-runner.ts / project-worker.ts
+│   ├── run-phase.ts / job-runner.ts
 │   ├── runtime-services.ts / engine-bridge.ts
-│   └── *.sh                # common.sh / run-pipeline.sh / verifier.sh
+│   └── *.sh                # common.sh / verifier.sh
 │
 ├── runtime/                # 运行时工作目录 (evolve/ git/ mcp/ worker/)
 ├── cpb-task/               # ★ durable 持久化

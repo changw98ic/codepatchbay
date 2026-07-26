@@ -90,9 +90,15 @@ async function runTests(files: string[], opts: LooseRecord = {}) {
     process.on("exit", onExit);
 
     // Watchdog: bound the subtree's runtime so a hung batch is closed on a
-    // timer instead of leaking. CPB_TEST_TIMEOUT_MS (default 30m) must exceed
+    // timer instead of leaking. CPB_TEST_TIMEOUT_MS (default 45m) must exceed
     // the slowest legitimate suite; 0 disables.
-    const timeoutMs = Number.parseInt(process.env.CPB_TEST_TIMEOUT_MS ?? "", 10) || 30 * 60 * 1000;
+    const rawTimeout = process.env.CPB_TEST_TIMEOUT_MS;
+    const parsed = rawTimeout !== undefined && rawTimeout !== ""
+      ? Number.parseInt(rawTimeout, 10)
+      : Number.NaN;
+    const timeoutMs = Number.isFinite(parsed) && parsed >= 0
+      ? parsed
+      : 45 * 60 * 1000;
     const watchdog = timeoutMs > 0 ? setTimeout(() => {
       console.error(`${label}: subtree exceeded ${timeoutMs}ms, killing it`);
       killTree();
@@ -159,13 +165,32 @@ const isolatedUnitFiles = new Set([
   // window and manufacture a verification failure even though the same
   // frozen candidate passes immediately in isolation.
   "tests/deterministic-light-verify.test.js",
-  // Verifies that an idle Redis socket is unref'd by observing child-process
+  // Verifies that an idle hub socket is unref'd by observing child-process
   // exit timing; parallel process pressure can exceed its two-second bound.
-  "tests/hub-state-redis.test.js",
+  "tests/local-store-atomicity.test.js",
   // Spawns nested Node processes with short timeout assertions; running under
   // the parallel focused suite can starve the child process enough to look like
   // a timeout instead of the intended exit-code assertion.
   "tests/verify-p0p1-runner.test.js",
+  // Process-sensitive tests that spawn real child processes or manage process
+  // trees. Parallel execution causes timing failures (ACP cleanup races and
+  // process-tree signal conflicts).
+  // These suites also create shared process/event-lock and disposable-root
+  // state; under the slow batch their children can starve or race with the
+  // authority probes even when they pass in isolation.
+  "tests/checklist-decompose-integration.test.js",
+  "tests/job-runner.test.js",
+  "tests/swebench-three-way-runner.test.js",
+  "tests/trace-log.test.js",
+  "tests/hub-backup.test.js",
+  "tests/hub-access-audit-archive.test.js",
+  "tests/hub-maintenance.test.js",
+  "tests/acp-process-cleanup.test.js",
+  "tests/script-process-teardown.test.js",
+  "tests/process-registry-incarnation.test.js",
+  "tests/managed-worker-worktree-cleanup.test.js",
+  "tests/review-dispatch-cancellation.test.js",
+  "tests/review-dispatch-worktree-safety.test.js",
 ]);
 
 // Bench-measured slow unit files (>1s standalone OR >30s timeout via per-file
@@ -180,14 +205,12 @@ const slowUnitFiles = new Set([
   "tests/acp-connection-lease.test.js",
   "tests/acp-conversation-isolation.test.js",
   "tests/acp-pool-provider-scope.test.js",
-  "tests/acp-process-cleanup.test.js",
   "tests/adversarial-round-5.test.js",
   "tests/agent-isolation-runtime-root.test.js",
   "tests/artifact-store-atomic.test.js",
   "tests/assignment-lock.test.js",
   "tests/assignment-reconciler.test.js",
   "tests/auto-finalizer.test.js",
-  "tests/bridge-teardown.test.js",
   "tests/candidate-artifact.test.js",
   "tests/candidate-replay.test.js",
   "tests/checklist-decompose-integration.test.js",
@@ -219,20 +242,14 @@ const slowUnitFiles = new Set([
   "tests/leader-lock.test.js",
   "tests/lease-lock-incarnation.test.js",
   "tests/live-release-evidence.test.js",
-  "tests/managed-worker-worktree-cleanup.test.js",
   "tests/openclaw-proactive.test.js",
   "tests/probe-runner-nonstatic.test.js",
-  "tests/process-registry-incarnation.test.js",
-  "tests/project-worker.test.js",
   "tests/promote-live-release-evidence.test.js",
   "tests/queue-orchestrator.test.js",
   "tests/recovery-chain-consistency.test.js",
   "tests/release-install-safety.test.js",
-  "tests/review-dispatch-cancellation.test.js",
-  "tests/review-dispatch-worktree-safety.test.js",
   "tests/scheduler-dag-provider.test.js",
   "tests/scheduler-modes.test.js",
-  "tests/script-process-teardown.test.js",
   "tests/session-cache-lock.test.js",
   "tests/setup-snapshot-contract.test.js",
   "tests/strict-engine-gate.test.js",
@@ -247,6 +264,10 @@ const slowUnitFiles = new Set([
 ]);
 
 const isolatedIntegrationFiles = new Set([
+  // Exercises the CLI ACP client with multiple detached fake agents and
+  // terminals. Under the parallel integration batch, Darwin process identity
+  // probes can lose the short-lived child before its cleanup proof settles.
+  "tests/integration/acp-client.test.js",
   "tests/integration/acp-test-agent.test.js",
   "tests/integration/managed-worker.test.js",
   "tests/integration/worker-supervisor.test.js",
@@ -257,7 +278,7 @@ const isolatedIntegrationFiles = new Set([
   "tests/integration/phase-runner.test.js",
 ]);
 const isolatedUnitTestFiles = unitFiles.filter((f) => isolatedUnitFiles.has(f));
-const slowUnitTestFiles = unitFiles.filter((f) => slowUnitFiles.has(f));
+const slowUnitTestFiles = unitFiles.filter((f) => slowUnitFiles.has(f) && !isolatedUnitFiles.has(f));
 // Fast parallel unit files = unit, minus real-process-isolated, minus slow.
 const parallelUnitFiles = unitFiles.filter((f) => !isolatedUnitTestFiles.includes(f) && !slowUnitTestFiles.includes(f));
 const isolatedFiles = integrationFiles.filter((f) => isolatedIntegrationFiles.has(f));
@@ -294,7 +315,7 @@ try {
       await runTests(parallelUnitFiles, { label: "unit tests (fast)" });
     }
     if (slowUnitTestFiles.length > 0) {
-      await runTests(slowUnitTestFiles, { label: "unit tests (slow)" });
+      await runTests(slowUnitTestFiles, { concurrency: 4, label: "unit tests (slow)" });
     }
     if (isolatedUnitTestFiles.length > 0) {
       await runTests(isolatedUnitTestFiles, { concurrency: 1, label: "isolated unit tests" });

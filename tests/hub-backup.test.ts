@@ -9,8 +9,6 @@ import { test } from "node:test";
 
 import { startHubServer } from "../server/index.js";
 import {
-  _internalCleanupRedisSnapshotArtifactForTests,
-  _internalReadRedisRollbackSnapshotForTests,
   createHubBackup,
   recoverInterruptedHubRestore,
   restoreHubBackup,
@@ -1243,11 +1241,11 @@ test("interrupted restore recovery reports committed metadata when finalization 
       phase: "target_moved",
     }),
   );
-  const finalizationFailure = Object.assign(new Error("simulated Redis restore finalization failure"), { code: "EIO" });
+  const finalizationFailure = Object.assign(new Error("simulated restore journal finalization failure"), { code: "EIO" });
   let recoveryPaths: Record<string, string> = {};
 
   await withHubBackupTestHooksForTests({
-    beforeFinishRedisRestoreRecovery: async () => {
+    beforeRestoreJournalUpdatePublish: async () => {
       throw finalizationFailure;
     },
   }, async () => {
@@ -1277,58 +1275,6 @@ test("interrupted restore recovery reports committed metadata when finalization 
     assert.equal(info.isSymbolicLink(), false);
   }
   assert.equal(await readFile(path.join(fixture.hubRoot, "queue", "queue.json"), "utf8"), "original-queue\n");
-});
-
-test("automatic restore recovery stays explicitly rolled back when Redis finalization then fails", async () => {
-  const fixture = await setupHubFixture("cpb-hub-restore-rollback-finalize-failure");
-  const output = path.join(fixture.root, "backup");
-  await createHubBackup({ ...fixture, output });
-  await writeFile(path.join(fixture.hubRoot, "queue", "queue.json"), "pre-restore-current\n", "utf8");
-  const publicationFailure = Object.assign(new Error("simulated restore publication durability failure"), { code: "EIO" });
-  const finalizationFailure = Object.assign(new Error("simulated rolled-back Redis finalization failure"), { code: "EIO" });
-  let publicationFaulted = false;
-
-  await withHubBackupTestHooksForTests({
-    syncDirectory: async ({ operation }) => {
-      if (operation !== "restore-stage-publish" || publicationFaulted) return;
-      publicationFaulted = true;
-      await rm(fixture.hubRoot, { recursive: true, force: true });
-      throw publicationFailure;
-    },
-    beforeFinishRedisRestoreRecovery: async () => {
-      throw finalizationFailure;
-    },
-  }, async () => {
-    await assert.rejects(
-      restoreHubBackup({ ...fixture, input: output, force: true }),
-      (error: AggregateError & {
-        code?: string;
-        committed?: boolean;
-        committedPath?: string | null;
-        recoveryOutcome?: string;
-        primaryError?: Error & { code?: string };
-        recoveryError?: Error & { code?: string };
-        recoveryPaths?: Record<string, string>;
-        attemptedPaths?: Record<string, string>;
-      }) => {
-        assert.equal(error.code, "HUB_RESTORE_RECOVERY_CLEANUP_FAILED");
-        assert.equal(error.committed, false);
-        assert.equal(error.committedPath, null);
-        assert.equal(error.recoveryOutcome, "rolled_back");
-        assert.equal(error.primaryError?.code, "HUB_RESTORE_STAGE_PUBLISH_COMMITTED_AMBIGUOUS");
-        assert.equal(error.recoveryError?.code, "HUB_RESTORE_RECOVERY_CLEANUP_FAILED");
-        assert.deepEqual(error.recoveryPaths, { canonical: fixture.hubRoot });
-        assert.equal(error.attemptedPaths?.journal, hubRestoreJournalPath(fixture.hubRoot));
-        assert.ok(error.attemptedPaths?.stage);
-        assert.ok(error.attemptedPaths?.rollback);
-        return true;
-      },
-    );
-  });
-
-  assert.equal(publicationFaulted, true);
-  assert.equal(await readFile(path.join(fixture.hubRoot, "queue", "queue.json"), "utf8"), "pre-restore-current\n");
-  await assert.rejects(access(hubRestoreJournalPath(fixture.hubRoot)), { code: "ENOENT" });
 });
 
 test("interrupted restore recovery preserves an invalid canonical successor and rollback root", async () => {
@@ -1419,177 +1365,6 @@ test("restore journal reads reject symlinks and oversized metadata without mutat
     );
     await access(stagePath);
     await access(journalPath);
-  }
-});
-
-test("Redis rollback snapshot reads are bounded, no-follow, and generation pinned", async () => {
-  const root = await tempRoot("cpb-hub-redis-rollback-reader");
-  const snapshot = {
-    format: "cpb-hub-redis-logical-snapshot/v1",
-    backendIdentityFingerprint: "a".repeat(64),
-    capturedAt: new Date(0).toISOString(),
-    hashFields: [],
-    jobStreams: [],
-    sha256: "b".repeat(64),
-  };
-  const raw = `${JSON.stringify(snapshot)}\n`;
-
-  const external = path.join(root, "external.json");
-  const symlinkPath = path.join(root, "rollback-symlink.json");
-  await writeFile(external, raw, { encoding: "utf8", mode: 0o600 });
-  await symlink(external, symlinkPath);
-  await assert.rejects(
-    _internalReadRedisRollbackSnapshotForTests(symlinkPath, snapshot.sha256),
-    { code: "BOUNDED_FILE_UNSAFE" },
-  );
-
-  const oversized = path.join(root, "rollback-oversized.json");
-  await writeFile(oversized, "{", { encoding: "utf8", mode: 0o600 });
-  await truncate(oversized, 300 * 1024 * 1024 + 1);
-  await assert.rejects(
-    _internalReadRedisRollbackSnapshotForTests(oversized, snapshot.sha256),
-    { code: "BOUNDED_FILE_TOO_LARGE" },
-  );
-
-  const replacedPath = path.join(root, "rollback-replaced.json");
-  await writeFile(replacedPath, raw, { encoding: "utf8", mode: 0o600 });
-  let replaced = false;
-  await withHubBackupTestHooksForTests({
-    readHooks: {
-      "redis-rollback": {
-        afterOpen: async ({ filePath }) => {
-          if (replaced) return;
-          replaced = true;
-          await rename(filePath, `${filePath}.predecessor`);
-          await writeFile(filePath, raw, { encoding: "utf8", mode: 0o600 });
-        },
-      },
-    },
-  }, async () => {
-    await assert.rejects(
-      _internalReadRedisRollbackSnapshotForTests(replacedPath, snapshot.sha256),
-      { code: "BOUNDED_FILE_CHANGED" },
-    );
-  });
-});
-
-test("Redis backup snapshot cleanup isolates owned artifacts and preserves after-repin successors", async () => {
-  const ordinaryRoot = await tempRoot("cpb-hub-redis-artifact-cleanup");
-  const ordinaryPath = path.join(ordinaryRoot, `.cpb-redis-logical-snapshot-${randomUUID()}.json`);
-  await writeFile(ordinaryPath, "ordinary\n", { encoding: "utf8", mode: 0o600 });
-
-  await _internalCleanupRedisSnapshotArtifactForTests(ordinaryPath);
-
-  await assert.rejects(access(ordinaryPath), { code: "ENOENT" });
-  const isolatedNames = await readdir(ordinaryRoot);
-  assert.equal(isolatedNames.length, 1);
-  assert.equal(isolatedNames[0].startsWith(".removed-"), true);
-  const isolatedPath = path.join(ordinaryRoot, isolatedNames[0]);
-  const isolatedInfo = await lstat(isolatedPath);
-  assert.equal(isolatedInfo.isFile(), true);
-  assert.equal(isolatedInfo.isSymbolicLink(), false);
-  assert.equal(await readFile(isolatedPath, "utf8"), "ordinary\n");
-
-  for (const variant of ["regular", "symlink"] as const) {
-    const root = await tempRoot(`cpb-hub-redis-artifact-${variant}`);
-    const artifactPath = path.join(root, `.cpb-redis-logical-snapshot-${randomUUID()}.json`);
-    const predecessorPath = `${artifactPath}.predecessor`;
-    const externalPath = path.join(root, "external.json");
-    await writeFile(artifactPath, "predecessor\n", { encoding: "utf8", mode: 0o600 });
-    await writeFile(externalPath, "external\n", { encoding: "utf8", mode: 0o600 });
-
-    await withHubBackupTestHooksForTests({
-      afterRedisSnapshotRepin: async ({ filePath }) => {
-        await rename(filePath, predecessorPath);
-        if (variant === "regular") {
-          await writeFile(filePath, "successor\n", { encoding: "utf8", mode: 0o600 });
-        } else {
-          await symlink(externalPath, filePath);
-        }
-      },
-    }, async () => {
-      await assert.rejects(
-        _internalCleanupRedisSnapshotArtifactForTests(artifactPath),
-        { code: variant === "regular" ? "HUB_BACKUP_AUTHORITY_CHANGED" : "DURABLE_REMOVE_UNSAFE" },
-      );
-    });
-
-    assert.equal(await readFile(predecessorPath, "utf8"), "predecessor\n");
-    if (variant === "regular") {
-      assert.equal(await readFile(artifactPath, "utf8"), "successor\n");
-    } else {
-      assert.equal((await lstat(artifactPath)).isSymbolicLink(), true);
-      assert.equal(await readFile(externalPath, "utf8"), "external\n");
-    }
-  }
-});
-
-test("Redis snapshot cleanup preserves successors installed at the final isolation boundary", async () => {
-  for (const variant of ["regular", "symlink"] as const) {
-    const root = await tempRoot(`cpb-hub-redis-artifact-final-${variant}`);
-    const artifactPath = path.join(root, `.cpb-redis-logical-snapshot-${randomUUID()}.json`);
-    const predecessorPath = `${artifactPath}.predecessor`;
-    const externalPath = path.join(root, "external.json");
-    let quarantinePath = "";
-    await writeFile(artifactPath, "predecessor\n", { encoding: "utf8", mode: 0o600 });
-    await writeFile(externalPath, "external\n", { encoding: "utf8", mode: 0o600 });
-
-    await withHubBackupTestHooksForTests({
-      beforeRedisSnapshotFinalIsolation: async (context) => {
-        quarantinePath = context.quarantinePath;
-        await rename(context.filePath, predecessorPath);
-        if (variant === "regular") {
-          await writeFile(context.filePath, "successor\n", { encoding: "utf8", mode: 0o600 });
-        } else {
-          await symlink(externalPath, context.filePath);
-        }
-      },
-    }, async () => {
-      await assert.rejects(
-        _internalCleanupRedisSnapshotArtifactForTests(artifactPath),
-        { code: "DURABLE_REMOVE_RACE" },
-      );
-    });
-
-    assert.equal(await readFile(predecessorPath, "utf8"), "predecessor\n");
-    if (variant === "regular") assert.equal(await readFile(artifactPath, "utf8"), "successor\n");
-    else assert.equal((await lstat(artifactPath)).isSymbolicLink(), true);
-    await assert.rejects(access(quarantinePath), { code: "ENOENT" });
-  }
-});
-
-test("stale Redis snapshot cleanup preserves regular and symlink successors after repinning", async () => {
-  for (const variant of ["regular", "symlink"] as const) {
-    const hubRoot = await tempRoot(`cpb-hub-stale-redis-artifact-${variant}`);
-    const artifactPath = path.join(hubRoot, `.cpb-redis-logical-snapshot-${randomUUID()}.json`);
-    const predecessorPath = `${artifactPath}.predecessor`;
-    const externalPath = path.join(hubRoot, "external.json");
-    await writeFile(artifactPath, "predecessor\n", { encoding: "utf8", mode: 0o600 });
-    await writeFile(externalPath, "external\n", { encoding: "utf8", mode: 0o600 });
-
-    await withHubBackupTestHooksForTests({
-      afterRedisSnapshotRepin: async ({ filePath }) => {
-        await rename(filePath, predecessorPath);
-        if (variant === "regular") {
-          await writeFile(filePath, "successor\n", { encoding: "utf8", mode: 0o600 });
-        } else {
-          await symlink(externalPath, filePath);
-        }
-      },
-    }, async () => {
-      await assert.rejects(
-        recoverInterruptedHubRestore({ hubRoot }),
-        { code: variant === "regular" ? "HUB_BACKUP_AUTHORITY_CHANGED" : "DURABLE_REMOVE_UNSAFE" },
-      );
-    });
-
-    assert.equal(await readFile(predecessorPath, "utf8"), "predecessor\n");
-    if (variant === "regular") {
-      assert.equal(await readFile(artifactPath, "utf8"), "successor\n");
-    } else {
-      assert.equal((await lstat(artifactPath)).isSymbolicLink(), true);
-      assert.equal(await readFile(externalPath, "utf8"), "external\n");
-    }
   }
 });
 

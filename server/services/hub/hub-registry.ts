@@ -25,7 +25,6 @@ import {
 import { loadHubAuthConfig } from "../../../shared/hub-auth.js";
 import { openHubOidcProvider } from "../../../shared/hub-oidc.js";
 import { assertHubWritable, recoverStaleHubMaintenance } from "../../../shared/hub-maintenance.js";
-import { openPinnedHubRedisStateBackend, type HubRedisStateBackend } from "../../../shared/hub-state-redis.js";
 import {
   captureProcessIdentity,
   isProcessIdentityAlive,
@@ -222,8 +221,6 @@ type RegistryLockLease = {
   assertOwned: () => Promise<void>;
 };
 
-type RegistryBackend = Pick<HubRedisStateBackend, "readRegistry" | "compareAndSwapRegistry">;
-
 type RegistryCommitDetails<T = unknown> = {
   mutationId: string;
   committedRegistry: RegistryRecord;
@@ -277,8 +274,6 @@ type HubRegistryTestHooks = {
   afterRegistryLockQuarantineRename?: (context: { lockDir: string; quarantineDir: string; ownerToken: string | null; kind: string }) => Promise<void> | void;
   beforeRegistryLockQuarantineFinalCheck?: (context: { lockDir: string; quarantineDir: string; ownerToken: string | null; kind: string }) => Promise<void> | void;
   syncDirectory?: (directory: string) => Promise<void> | void;
-  afterRedisCompareAndSwap?: (mutationId: string) => Promise<void> | void;
-  registryBackend?: RegistryBackend | null;
 };
 
 type EvidenceRecord = {
@@ -464,6 +459,15 @@ function samePathGenerationAcrossRename(expected: PathGeneration, actual: PathGe
     && actual.birthtimeMs === expected.birthtimeMs;
 }
 
+function sameDirectoryGeneration(expected: PathGeneration, actual: PathGeneration) {
+  // Directory size and timestamps change when a competing registry process
+  // publishes or retires a sibling lock. Authority is the directory object,
+  // not its mutable child set; bind only its stable inode lineage here.
+  return actual.dev === expected.dev
+    && actual.ino === expected.ino
+    && actual.birthtimeMs === expected.birthtimeMs;
+}
+
 const hubRegistryTestHookStorage = new AsyncLocalStorage<Readonly<HubRegistryTestHooks>>();
 
 export async function withHubRegistryTestHooks<T>(hooks: HubRegistryTestHooks, operation: () => Promise<T>): Promise<T> {
@@ -489,12 +493,12 @@ async function syncDirectory(directory: string) {
   try {
     handle = await open(directory, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_DIRECTORY);
     const opened = await handle.stat();
-    if (!opened.isDirectory() || opened.isSymbolicLink() || !samePathGeneration(pathGeneration(before), pathGeneration(opened))) {
+    if (!opened.isDirectory() || opened.isSymbolicLink() || !sameDirectoryGeneration(pathGeneration(before), pathGeneration(opened))) {
       throw hubRegistryError(`directory identity changed while opening: ${directory}`, "HUB_REGISTRY_DIRECTORY_UNSAFE");
     }
     await handle.sync();
     const after = await lstat(directory);
-    if (!after.isDirectory() || after.isSymbolicLink() || !samePathGeneration(pathGeneration(opened), pathGeneration(after))) {
+    if (!after.isDirectory() || after.isSymbolicLink() || !sameDirectoryGeneration(pathGeneration(opened), pathGeneration(after))) {
       throw hubRegistryError(`directory pathname changed during sync: ${directory}`, "HUB_REGISTRY_DIRECTORY_UNSAFE");
     }
   } catch (error) {
@@ -1328,29 +1332,8 @@ async function loadLocalRegistry(hubRoot: string) {
   }
 }
 
-async function configuredRedisState(hubRoot: string): Promise<HubRedisStateBackend | null> {
-  const hooks = currentHubRegistryTestHooks();
-  if (hooks && Object.hasOwn(hooks, "registryBackend")) {
-    return (hooks.registryBackend || null) as HubRedisStateBackend | null;
-  }
-  return await openPinnedHubRedisStateBackend({
-    configFile: process.env.CPB_HUB_STATE_REDIS_CONFIG_FILE,
-    hubRoot,
-  });
-}
-
-async function loadRedisRegistry(backend: RegistryBackend) {
-  const raw = await backend.readRegistry();
-  if (raw === null) return defaultRegistry();
-  if (Buffer.byteLength(raw, "utf8") > REGISTRY_MAX_BYTES) {
-    throw hubRegistryError(`registry exceeds ${REGISTRY_MAX_BYTES} byte limit`, "HUB_REGISTRY_TOO_LARGE");
-  }
-  return normalizeRegistry(JSON.parse(raw));
-}
-
 export async function loadRegistry(hubRoot: string) {
-  const backend = await configuredRedisState(hubRoot);
-  return backend ? await loadRedisRegistry(backend) : await loadLocalRegistry(hubRoot);
+  return await loadLocalRegistry(hubRoot);
 }
 
 function prepareRegistryWrite(registry: unknown, currentRevision: number, mutationId: string) {
@@ -1364,124 +1347,6 @@ function prepareRegistryWrite(registry: unknown, currentRevision: number, mutati
     throw hubRegistryError(`registry exceeds ${REGISTRY_MAX_BYTES} byte limit`, "HUB_REGISTRY_TOO_LARGE");
   }
   return { registry: normalizeRegistry(JSON.parse(serialized)), serialized };
-}
-
-function redisCommitOutcomeIsUnknown(error: unknown) {
-  return Boolean(error && typeof error === "object" && (error as { commitOutcome?: unknown }).commitOutcome === "unknown");
-}
-
-async function compareAndSwapRegistry(
-  backend: RegistryBackend,
-  expectedRevision: number,
-  prepared: ReturnType<typeof prepareRegistryWrite>,
-  mutationId: string,
-) {
-  const committed = await backend.compareAndSwapRegistry(
-    expectedRevision,
-    prepared.registry.revision,
-    prepared.serialized,
-    mutationId,
-  );
-  if (committed.committed) {
-    try {
-      await currentHubRegistryTestHooks()?.afterRedisCompareAndSwap?.(mutationId);
-    } catch (cause) {
-      throw Object.assign(new Error("Redis registry CAS response was lost after commit"), {
-        code: "HUB_STATE_BACKEND_UNAVAILABLE",
-        commitOutcome: "unknown",
-        mutationId,
-        cause,
-      });
-    }
-  }
-  return committed;
-}
-
-type RedisCommitResolution =
-  | { status: "committed"; registry: RegistryRecord }
-  | { status: "not-committed" }
-  | { status: "unknown"; cause: unknown };
-
-function assessObservedRedisMutation(
-  observed: RegistryRecord,
-  expectedRevision: number,
-  nextRevision: number,
-  mutationId: string,
-): RedisCommitResolution | null {
-  if (observed.mutationId === mutationId) {
-    return observed.revision === nextRevision
-      ? { status: "committed", registry: observed }
-      : {
-        status: "unknown",
-        cause: hubRegistryError(
-          "registry mutation id was reused at an unexpected revision",
-          "HUB_REGISTRY_COMMIT_UNKNOWN",
-        ),
-      };
-  }
-  if (observed.revision === nextRevision) return { status: "not-committed" };
-  if (observed.revision > nextRevision) {
-    return {
-      status: "unknown",
-      cause: hubRegistryError("registry advanced before the ambiguous mutation could be identified", "HUB_REGISTRY_COMMIT_UNKNOWN"),
-    };
-  }
-  if (observed.revision < expectedRevision || observed.revision > expectedRevision) {
-    return {
-      status: "unknown",
-      cause: hubRegistryError("registry revision was invalid while confirming an ambiguous mutation", "HUB_REGISTRY_COMMIT_UNKNOWN"),
-    };
-  }
-  return null;
-}
-
-async function resolveAmbiguousRedisCommit(
-  backend: RegistryBackend,
-  expectedRevision: number,
-  prepared: ReturnType<typeof prepareRegistryWrite>,
-  mutationId: string,
-  initialError: unknown,
-): Promise<RedisCommitResolution> {
-  const errors: unknown[] = [initialError];
-  try {
-    const observed = await loadRedisRegistry(backend);
-    const assessed = assessObservedRedisMutation(observed, expectedRevision, prepared.registry.revision, mutationId);
-    if (assessed) return assessed;
-  } catch (error) {
-    errors.push(error);
-  }
-
-  try {
-    const retried = await backend.compareAndSwapRegistry(
-      expectedRevision,
-      prepared.registry.revision,
-      prepared.serialized,
-      mutationId,
-    );
-    if (retried.committed) {
-      if (retried.revision === prepared.registry.revision) {
-        return { status: "committed", registry: prepared.registry };
-      }
-      errors.push(hubRegistryError(
-        "Redis idempotent registry confirmation returned an unexpected revision",
-        "HUB_REGISTRY_COMMIT_UNKNOWN",
-      ));
-    }
-  } catch (error) {
-    errors.push(error);
-  }
-
-  try {
-    const observed = await loadRedisRegistry(backend);
-    const assessed = assessObservedRedisMutation(observed, expectedRevision, prepared.registry.revision, mutationId);
-    if (assessed) return assessed;
-  } catch (error) {
-    errors.push(error);
-  }
-  return {
-    status: "unknown",
-    cause: new AggregateError(errors, "Redis registry mutation could not be confirmed"),
-  };
 }
 
 async function confirmLocalRegistryMutation(hubRoot: string, mutationId: string) {
@@ -1521,43 +1386,6 @@ async function writeRegistryUnlocked(hubRoot: string, registry: unknown, current
 export async function saveRegistry(hubRoot: string, registry: unknown) {
   const candidate = normalizeRegistry(registry);
   const mutationId = randomUUID();
-  const backend = await configuredRedisState(hubRoot);
-  if (backend) {
-    await assertHubWritable(hubRoot);
-    const current = await loadRedisRegistry(backend);
-    if (candidate.revision !== current.revision) {
-      throw hubRegistryError(
-        `registry revision conflict: expected ${candidate.revision}, current ${current.revision}`,
-        "HUB_REGISTRY_CONFLICT",
-      );
-    }
-    reconcileSavedProjectRevisions(current, candidate);
-    const prepared = prepareRegistryWrite(candidate, current.revision, mutationId);
-    let committed: Awaited<ReturnType<RegistryBackend["compareAndSwapRegistry"]>>;
-    try {
-      committed = await compareAndSwapRegistry(backend, current.revision, prepared, mutationId);
-    } catch (error) {
-      if (!redisCommitOutcomeIsUnknown(error)) throw error;
-      const resolution = await resolveAmbiguousRedisCommit(backend, current.revision, prepared, mutationId, error);
-      if (resolution.status === "committed") {
-        throw hubRegistryCommittedError("registry committed after an ambiguous Redis CAS response", error, {
-          mutationId,
-          committedRegistry: resolution.registry,
-        });
-      }
-      if (resolution.status === "unknown") {
-        throw hubRegistryCommitUnknownError("registry Redis CAS outcome could not be confirmed", resolution.cause, { mutationId });
-      }
-      committed = { committed: false, revision: prepared.registry.revision };
-    }
-    if (!committed.committed) {
-      throw hubRegistryError(
-        `registry revision conflict: expected ${current.revision}, current ${committed.revision}`,
-        "HUB_REGISTRY_CONFLICT",
-      );
-    }
-    return prepared.registry;
-  }
   try {
     const committed = await withRegistryLock(hubRoot, async (lease) => {
       const current = await loadLocalRegistry(hubRoot);
@@ -1602,43 +1430,6 @@ export async function mutateRegistry<T>(
   callback: (registry: RegistryRecord) => Promise<T> | T,
 ): Promise<T> {
   const mutationId = randomUUID();
-  const backend = await configuredRedisState(hubRoot);
-  if (backend) {
-    for (let attempt = 0; attempt < REGISTRY_CAS_MAX_ATTEMPTS; attempt += 1) {
-      await assertHubWritable(hubRoot);
-      const registry = await loadRedisRegistry(backend);
-      const currentRevision = registry.revision;
-      const result = await runRegistryMutationCallback(registry, callback);
-      const prepared = prepareRegistryWrite(registry, currentRevision, mutationId);
-      let committed: Awaited<ReturnType<RegistryBackend["compareAndSwapRegistry"]>>;
-      try {
-        committed = await compareAndSwapRegistry(backend, currentRevision, prepared, mutationId);
-      } catch (error) {
-        if (!redisCommitOutcomeIsUnknown(error)) throw error;
-        const resolution = await resolveAmbiguousRedisCommit(backend, currentRevision, prepared, mutationId, error);
-        if (resolution.status === "committed") {
-          throw hubRegistryCommittedError("registry committed after an ambiguous Redis CAS response", error, {
-            mutationId,
-            committedRegistry: resolution.registry,
-            result,
-            receipt: committedReceiptFromResult(result),
-          });
-        }
-        if (resolution.status === "unknown") {
-          throw hubRegistryCommitUnknownError("registry Redis CAS outcome could not be confirmed", resolution.cause, {
-            mutationId,
-            result,
-            receipt: committedReceiptFromResult(result),
-          });
-        }
-        committed = { committed: false, revision: prepared.registry.revision };
-      }
-      if (committed.committed) return result;
-      const retryDelay = Math.min(100, 2 ** Math.min(attempt, 6)) + Math.floor(Math.random() * 10);
-      await new Promise((resolve) => setTimeout(resolve, retryDelay));
-    }
-    throw hubRegistryError("registry CAS contention exceeded the retry limit", "HUB_REGISTRY_LOCK_BUSY");
-  }
   try {
     const committed = await withRegistryLock(hubRoot, async (lease) => {
       const registry = await loadLocalRegistry(hubRoot);
@@ -1952,7 +1743,7 @@ export function deriveWorkerStatus(worker: HubRecord | null | undefined) {
   return status;
 }
 
-function summarizeProjectWorkers(projects: ProjectRecord[]) {
+function summarizeWorkers(projects: ProjectRecord[]) {
   const summary = {
     workersOnline: 0,
     workersStale: 0,
@@ -1978,7 +1769,7 @@ export async function hubStatus(hubRoot: string) {
     registryPath: registryPath(hubRoot),
     projectCount: projects.length,
     enabledProjectCount: projects.filter((project) => project.enabled !== false).length,
-    ...summarizeProjectWorkers(projects),
+    ...summarizeWorkers(projects),
     updatedAt: registry.updatedAt,
   };
 }
@@ -2216,8 +2007,7 @@ export function buildHubControlPlaneEnv(
     CPB_PORT: port == null ? undefined : String(port),
     CPB_HOST: host,
     CPB_ORCHESTRATOR_START_TOKEN: startupToken,
-    CPB_HUB_STATE_REDIS_CONFIG_FILE: parentEnv.CPB_HUB_STATE_REDIS_CONFIG_FILE,
-  }, { allowKeys: ["CPB_HUB_STATE_REDIS_CONFIG_FILE", "CPB_ORCHESTRATOR_START_TOKEN"] });
+  }, { allowKeys: ["CPB_ORCHESTRATOR_START_TOKEN"] });
 }
 
 export function buildHubServerEnv(parentEnv = process.env, options: HubRecord = {}) {
@@ -2226,14 +2016,12 @@ export function buildHubServerEnv(parentEnv = process.env, options: HubRecord = 
     CPB_HUB_BEARER_TOKEN: parentEnv.CPB_HUB_BEARER_TOKEN,
     CPB_HUB_SERVICE_TOKENS_FILE: parentEnv.CPB_HUB_SERVICE_TOKENS_FILE,
     CPB_HUB_OIDC_CONFIG_FILE: parentEnv.CPB_HUB_OIDC_CONFIG_FILE,
-    CPB_HUB_STATE_REDIS_CONFIG_FILE: parentEnv.CPB_HUB_STATE_REDIS_CONFIG_FILE,
     CPB_HUB_ACCESS_AUDIT_MAX_BYTES: parentEnv.CPB_HUB_ACCESS_AUDIT_MAX_BYTES,
     CPB_HUB_ALLOW_INSECURE_HTTP: parentEnv.CPB_HUB_ALLOW_INSECURE_HTTP,
   }, { allowKeys: [
     "CPB_HUB_BEARER_TOKEN",
     "CPB_HUB_SERVICE_TOKENS_FILE",
     "CPB_HUB_OIDC_CONFIG_FILE",
-    "CPB_HUB_STATE_REDIS_CONFIG_FILE",
     "CPB_HUB_ACCESS_AUDIT_MAX_BYTES",
     "CPB_HUB_ALLOW_INSECURE_HTTP",
   ] });
@@ -2910,8 +2698,6 @@ export async function cmdStart() {
     hubRoot,
     requireAuthentication: hubOidc.configured,
   });
-  const stateBackend = await configuredRedisState(hubRoot);
-  await stateBackend?.preflight();
   if (!isLoopbackHost(host) && !hubAuth.required) {
     throw new Error(
       "CPB_HUB_BEARER_TOKEN, CPB_HUB_SERVICE_TOKENS_FILE, or CPB_HUB_OIDC_CONFIG_FILE is required when CPB_HOST is non-loopback",

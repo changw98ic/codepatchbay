@@ -1065,6 +1065,14 @@ export function buildMcpServers(agent: string, env: NodeJS.ProcessEnv): McpServe
   return [{ name: server.name, type: "stdio", command: server.command, args: server.args }];
 }
 
+/**
+ * Resolve the terminal launch command, optionally wrapping with `rtk`.
+ *
+ * Exit-status contract: when `rtk` wraps the inner command, the terminal's
+ * exit code MUST be the inner command's exit code, not rtk's own status.
+ * The caller (`createTerminal`) reads the child's `exitCode` directly — rk
+ * is expected to propagate the inner exit code via `process.exit(innerCode)`.
+ */
 function resolveTerminalLaunchCommand(command: string, args: string[] = [], env: NodeJS.ProcessEnv = process.env): AgentCommand {
   if (env.CPB_ACP_RTK_ENABLED === "0") {
     return { command, args, rtkEnabled: false };
@@ -1443,6 +1451,26 @@ async function captureSpawnedProcessIdentity(child: ChildProcess, label: string,
         },
       );
     }
+    // On Darwin a short-lived default-system child (notably the default RTK
+    // wrapper) can disappear while the synchronous identity probe is still
+    // running. The close proof above has now established that the original
+    // child is gone; retry once so captureSpawnProcessIdentity can return its
+    // non-authorizing exited-pid coarse identity. A caller-supplied process
+    // system keeps the strict failure contract used by cleanup tests.
+    if (system === undefined) {
+      try {
+        const exitedIdentity = captureSpawnProcessIdentity(child);
+        if (
+          exitedIdentity?.birthIdPrecision === "coarse"
+          && exitedIdentity.birthId.startsWith(`exited-pid:${child.pid}:`)
+        ) {
+          return exitedIdentity;
+        }
+      } catch {
+        // Preserve the original identity error when the post-close retry does
+        // not produce the explicitly non-authorizing exited identity.
+      }
+    }
     throw Object.assign(processTreeCleanupError(error), {
       identityCleanupVerified: true,
       exitedBeforeIdentityCleanup,
@@ -1567,6 +1595,7 @@ export class AcpClient {
   childExitSignal: NodeJS.Signals | null;
   childSpawnError: Error | null;
   childEnv: NodeJS.ProcessEnv | null;
+  cleanupErrors: Error[];
   lineQueue: Promise<void>;
   idleTimer: NodeJS.Timeout | null;
   idleTimeoutMs: number;
@@ -1646,6 +1675,7 @@ export class AcpClient {
     this.childExitSignal = null;
     this.childSpawnError = null;
     this.childEnv = null;
+    this.cleanupErrors = [];
     this.lineQueue = Promise.resolve();
     this.idleTimer = null;
     this.sessionUpdateIdleTimer = null;
@@ -2310,7 +2340,10 @@ export class AcpClient {
   }
 
   async terminateAgent(signal: NodeJS.Signals) {
-    if (!this.child?.pid || !this.childIdentity) return;
+    // A synthetic exited-pid marker is deliberately non-authorizing. It lets
+    // startup failure reporting preserve the fact that a short-lived child
+    // already exited, but it must never reach killTree as a teardown identity.
+    if (!this.child?.pid || !this.childIdentity || this.childIdentity.birthIdPrecision !== "exact") return;
     await killTree(
       this.childIdentity.pid,
       signal === "SIGTERM" ? 500 : 0,
@@ -2393,11 +2426,11 @@ export class AcpClient {
     return [
       this.childIdentity,
       ...[...this.terminals.values()].map((terminal) => terminal.identity),
-    ];
+    ].filter((identity): identity is ProcessIdentity => identity?.birthIdPrecision === "exact");
   }
 
   signalTerminal(terminal: TerminalEntry, signal: NodeJS.Signals): Promise<void> {
-    if (!terminal?.identity) return Promise.resolve();
+    if (!terminal?.identity || terminal.identity.birthIdPrecision !== "exact") return Promise.resolve();
     if (terminal.teardown) return terminal.teardown;
     const cleanup = killTree(
       terminal.identity.pid,
@@ -2944,35 +2977,35 @@ export class AcpClient {
       stdio: ["ignore", "pipe", "pipe"],
       detached,
     });
-    const identity = await captureSpawnedProcessIdentity(child, "ACP terminal", this.processSystem);
-
-    const terminal: TerminalEntry = {
-      child,
-      identity,
-      teardown: null,
-      cwd: terminalCwd,
-      detached,
-      output: "",
-      truncated: false,
-      outputByteLimit: params.outputByteLimit || 1048576,
-      exitStatus: null,
-      exitAudit: null,
-      waiters: [],
-    };
-
+    const outputByteLimit = params.outputByteLimit || 1048576;
+    let bufferedOutput = "";
+    let bufferedTruncated = false;
+    let bufferedExitStatus: TerminalExitStatus | null = null;
+    let terminal: TerminalEntry | null = null;
     const append = (chunk: Buffer) => {
       this.markActivity();
-      terminal.output += chunk.toString("utf8");
-      if (Buffer.byteLength(terminal.output, "utf8") > terminal.outputByteLimit) {
-        terminal.truncated = true;
-        terminal.output = terminal.output.slice(-terminal.outputByteLimit);
+      const text = chunk.toString("utf8");
+      if (terminal) {
+        terminal.output += text;
+        if (Buffer.byteLength(terminal.output, "utf8") > terminal.outputByteLimit) {
+          terminal.truncated = true;
+          terminal.output = terminal.output.slice(-terminal.outputByteLimit);
+        }
+        return;
+      }
+      bufferedOutput += text;
+      if (Buffer.byteLength(bufferedOutput, "utf8") > outputByteLimit) {
+        bufferedTruncated = true;
+        bufferedOutput = bufferedOutput.slice(-outputByteLimit);
       }
     };
-
-    child.stdout.on("data", append);
-    child.stderr.on("data", append);
-    child.on("close", (exitCode: number | null, signal: NodeJS.Signals | null) => {
-      terminal.exitStatus = { exitCode, signal };
+    const recordTerminalExit = (exitCode: number | null, signal: NodeJS.Signals | null) => {
+      const status = { exitCode, signal };
+      if (!terminal) {
+        bufferedExitStatus = status;
+        return;
+      }
+      terminal.exitStatus = status;
       terminal.exitAudit = this.recordAudit("terminal_exit", {
         terminalId,
         cwd: terminalCwd,
@@ -2988,12 +3021,35 @@ export class AcpClient {
         }
       });
       void terminal.exitAudit.then(() => {
-        for (const resolve of terminal.waiters) resolve(terminal.exitStatus!);
-        terminal.waiters = [];
+        for (const resolve of terminal!.waiters) resolve(terminal!.exitStatus!);
+        terminal!.waiters = [];
       });
-    });
+    };
+    // Arm output and close observation before the identity probe. A fast
+    // wrapper such as RTK can finish while the synchronous identity probe is
+    // running; its output and terminal-exit audit must remain observable after
+    // the close-proof fallback returns a coarse completed marker.
+    child.stdout.on("data", append);
+    child.stderr.on("data", append);
+    child.on("close", recordTerminalExit);
+    const identity = await captureSpawnedProcessIdentity(child, "ACP terminal", this.processSystem);
+
+    terminal = {
+      child,
+      identity,
+      teardown: null,
+      cwd: terminalCwd,
+      detached,
+      output: bufferedOutput,
+      truncated: bufferedTruncated,
+      outputByteLimit,
+      exitStatus: bufferedExitStatus,
+      exitAudit: null,
+      waiters: [],
+    };
 
     this.terminals.set(terminalId, terminal);
+    if (bufferedExitStatus) recordTerminalExit(bufferedExitStatus.exitCode, bufferedExitStatus.signal);
     return { terminalId };
   }
 

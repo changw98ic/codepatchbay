@@ -28,11 +28,6 @@ import {
 } from "../../../shared/hub-maintenance.js";
 import { readLeaderStatus } from "../../orchestrator/leader-lock.js";
 import { listProjects, readHubLiveness } from "./hub-registry.js";
-import {
-  openPinnedHubRedisStateBackend,
-  type HubRedisStateBackend,
-  type RedisLogicalSnapshot,
-} from "../../../shared/hub-state-redis.js";
 import { captureProcessIdentity, sameProcessIdentity, type ProcessIdentity } from "../../../core/runtime/process-tree.js";
 import {
   readBoundedRegularFileNoFollow,
@@ -44,7 +39,6 @@ const MAX_BACKUP_ENTRIES = 500_000;
 const MAX_MANIFEST_BYTES = 128 * 1024 * 1024;
 const MAX_MANIFEST_PATH_BYTES = 4096;
 const MAX_MANIFEST_PATH_DEPTH = 256;
-const MAX_REDIS_SNAPSHOT_BYTES = 300 * 1024 * 1024;
 const DEFAULT_MINIMUM_FREE_BYTES = 256 * 1024 * 1024;
 const COPY_SPACE_FIXED_OVERHEAD_BYTES = 16 * 1024 * 1024;
 const COPY_SPACE_PER_ENTRY_BYTES = 8 * 1024;
@@ -58,11 +52,8 @@ type HubBackupMetadataReadKind =
   | "offline-record"
   | "backup-stage-owner"
   | "restore-journal"
-  | "redis-rollback"
-  | "redis-artifact"
   | "backup-manifest"
-  | "backup-digest"
-  | "redis-snapshot";
+  | "backup-digest";
 
 type HubBackupTestHooks = {
   readHooks?: Partial<Record<HubBackupMetadataReadKind, BoundedRegularFileReadHooks>>;
@@ -91,9 +82,6 @@ type HubBackupTestHooks = {
   beforeRollbackRestore?: (context: { canonicalPath: string; rollbackPath: string; journalPath: string }) => void | Promise<void>;
   beforeRestoreStagePublish?: (context: { canonicalPath: string; stagePath: string; journalPath: string }) => void | Promise<void>;
   beforeRestoreTargetMove?: (context: { targetPath: string; rollbackPath: string; journalPath: string }) => void | Promise<void>;
-  afterRedisSnapshotRepin?: (context: { filePath: string }) => void | Promise<void>;
-  beforeRedisSnapshotFinalIsolation?: (context: { filePath: string; quarantinePath: string }) => void | Promise<void>;
-  beforeFinishRedisRestoreRecovery?: (context: { journalPath: string; hasRedisSession: boolean }) => void | Promise<void>;
   syncDirectory?: (context: { directory: string; operation: string }) => void | Promise<void>;
 };
 
@@ -191,17 +179,6 @@ export type HubBackupManifest = {
   entries: HubBackupEntry[];
   fileCount: number;
   totalBytes: number;
-  redisSnapshot?: HubBackupRedisSnapshot;
-};
-
-export type HubBackupRedisSnapshot = {
-  format: "cpb-hub-redis-logical-snapshot/v1";
-  rootId: "hub";
-  path: string;
-  backendIdentityFingerprint: string;
-  capturedAt: string;
-  logicalSha256: string;
-  fileSha256: string;
 };
 
 type SourceNode = {
@@ -2040,7 +2017,6 @@ export async function assertHubBackupOffline(
   _cpbRoot: string,
   hubRoot: string,
   projectRuntimeRoots: string[],
-  redisBackend: HubRedisStateBackend | null = null,
 ) {
   const reasons: string[] = [];
   const liveness = await readHubLiveness(hubRoot);
@@ -2069,22 +2045,6 @@ export async function assertHubBackupOffline(
   for (const worker of workers) {
     const workerProof = processOfflineProof(worker, `worker ${worker.workerId || "unknown"}`);
     if (workerProof) reasons.push(workerProof);
-  }
-
-  if (redisBackend) {
-    for (const { field, record } of await redisBackend.scanStateRecords("worker:")) {
-      const worker = record.data && typeof record.data === "object" && !Array.isArray(record.data)
-        ? record.data as LooseRecord
-        : null;
-      if (!worker || typeof worker.workerId !== "string" || !worker.workerId || typeof worker.status !== "string") {
-        throw Object.assign(new Error(`cannot prove Hub is offline because Redis worker state is malformed: ${field}`), {
-          code: "HUB_STATE_RECORD_INVALID",
-        });
-      }
-      if (!["exited", "exhausted"].includes(worker.status)) {
-        reasons.push(`Redis worker ${worker.workerId} is ${worker.status}`);
-      }
-    }
   }
 
   for (const dataRoot of projectRuntimeRoots) {
@@ -2191,23 +2151,6 @@ function manifestJson(manifest: HubBackupManifest) {
   return `${JSON.stringify(manifest, null, 2)}\n`;
 }
 
-async function cleanRedisLogicalSnapshotArtifacts(hubRoot: string) {
-  const resolved = path.resolve(hubRoot);
-  let names: string[];
-  try {
-    names = await readdir(resolved);
-  } catch (error) {
-    if (errnoCode(error) === "ENOENT") return;
-    throw new Error(`Hub Redis logical snapshot artifacts could not be inspected: ${resolved}`, { cause: error });
-  }
-  for (const name of names) {
-    if (!/^\.cpb-redis-logical-snapshot-[a-f0-9-]{36}\.json$/.test(name)) continue;
-    const filePath = path.join(resolved, name);
-    const pinned = await readPinnedMetadata(filePath, MAX_REDIS_SNAPSHOT_BYTES, "redis-artifact");
-    await removePinnedRedisSnapshotArtifact(pinned.authority);
-  }
-}
-
 async function isolatePinnedFilePreserveOnly(
   authority: FileAuthority,
   label: string,
@@ -2255,86 +2198,6 @@ async function isolatePinnedFilePreserveOnly(
   }
 }
 
-async function removePinnedRedisSnapshotArtifact(authority: FileAuthority) {
-  await isolatePinnedFilePreserveOnly(
-    authority,
-    "Hub Redis logical snapshot artifact",
-    { artifact: authority.filePath },
-    (context) => currentHubBackupTestHooks()?.afterRedisSnapshotRepin?.(context),
-    (context) => currentHubBackupTestHooks()?.beforeRedisSnapshotFinalIsolation?.(context),
-  );
-}
-
-export async function _internalCleanupRedisSnapshotArtifactForTests(filePath: string) {
-  await fsyncFile(filePath);
-  await fsyncDirectory(path.dirname(filePath));
-  const authority = (await readPinnedMetadata(
-    filePath,
-    MAX_REDIS_SNAPSHOT_BYTES,
-    "redis-artifact",
-  )).authority;
-  await removePinnedRedisSnapshotArtifact(authority);
-}
-
-function parseRedisLogicalSnapshot(raw: string, metadata: HubBackupRedisSnapshot): RedisLogicalSnapshot {
-  if (Buffer.byteLength(raw, "utf8") > MAX_REDIS_SNAPSHOT_BYTES) throw new Error("Hub Redis logical snapshot exceeds its size limit");
-  const value = recordValue(JSON.parse(raw));
-  if (
-    value.format !== "cpb-hub-redis-logical-snapshot/v1"
-    || value.backendIdentityFingerprint !== metadata.backendIdentityFingerprint
-    || value.capturedAt !== metadata.capturedAt
-    || !Array.isArray(value.hashFields)
-    || !Array.isArray(value.jobStreams)
-    || typeof value.sha256 !== "string"
-    || value.sha256 !== metadata.logicalSha256
-  ) {
-    throw new Error("Hub Redis logical snapshot metadata mismatch");
-  }
-  const hashFields: Array<[string, string]> = [];
-  const fieldNames = new Set<string>();
-  for (const tuple of value.hashFields) {
-    if (!Array.isArray(tuple) || tuple.length !== 2 || typeof tuple[0] !== "string" || typeof tuple[1] !== "string"
-      || fieldNames.has(tuple[0]) || tuple[0].startsWith("maintenance") || tuple[0] === "leaderToken") {
-      throw new Error("Hub Redis logical snapshot contains an invalid hash field");
-    }
-    fieldNames.add(tuple[0]);
-    hashFields.push([tuple[0], tuple[1]]);
-  }
-  if (hashFields.length > MAX_BACKUP_ENTRIES
-    || JSON.stringify(hashFields.map(([field]) => field)) !== JSON.stringify([...fieldNames].sort())) {
-    throw new Error("Hub Redis logical snapshot hash fields are not canonical");
-  }
-  const jobStreams: RedisLogicalSnapshot["jobStreams"] = [];
-  const streamFields = new Set<string>();
-  let eventCount = 0;
-  for (const item of value.jobStreams) {
-    const stream = recordValue(item);
-    const field = String(stream.field || "");
-    if (!field.startsWith("job:") || !fieldNames.has(field) || streamFields.has(field) || !Array.isArray(stream.events)
-      || !stream.events.every((event) => typeof event === "string")) {
-      throw new Error("Hub Redis logical snapshot contains an invalid job stream");
-    }
-    streamFields.add(field);
-    eventCount += stream.events.length;
-    if (eventCount > MAX_BACKUP_ENTRIES) throw new Error("Hub Redis logical snapshot contains too many events");
-    jobStreams.push({ field, events: [...stream.events] as string[] });
-  }
-  const expectedJobFields = hashFields.filter(([field]) => field.startsWith("job:")).map(([field]) => field);
-  if (JSON.stringify([...streamFields]) !== JSON.stringify(expectedJobFields)) {
-    throw new Error("Hub Redis logical snapshot job stream set is incomplete");
-  }
-  const snapshotBody = {
-    format: "cpb-hub-redis-logical-snapshot/v1" as const,
-    backendIdentityFingerprint: metadata.backendIdentityFingerprint,
-    capturedAt: metadata.capturedAt,
-    hashFields,
-    jobStreams,
-  };
-  const logicalSha256 = createHash("sha256").update(JSON.stringify(snapshotBody), "utf8").digest("hex");
-  if (logicalSha256 !== metadata.logicalSha256) throw new Error("Hub Redis logical snapshot digest mismatch");
-  return { ...snapshotBody, sha256: logicalSha256 };
-}
-
 type CreateHubBackupOptions = {
   cpbRoot: string;
   hubRoot: string;
@@ -2342,8 +2205,6 @@ type CreateHubBackupOptions = {
   signingKey?: string;
   allowUnsignedDev?: boolean;
   minimumFreeBytes?: number;
-  redisSnapshot?: HubBackupRedisSnapshot;
-  redisBackend?: HubRedisStateBackend | null;
   localOnly?: boolean;
   beforeCommit?: () => Promise<void>;
 };
@@ -2476,8 +2337,6 @@ export async function createHubBackupUnlocked({
   signingKey: signingKeyInput,
   allowUnsignedDev = false,
   minimumFreeBytes,
-  redisSnapshot,
-  redisBackend = null,
   localOnly = false,
   beforeCommit,
 }: CreateHubBackupOptions) {
@@ -2499,7 +2358,7 @@ export async function createHubBackupUnlocked({
     }
     throw new Error(`backup output already exists: ${outputRoot}`);
   }
-  await assertHubBackupOffline(cpbRoot, resolvedHubRoot, projectRuntimeRoots, redisBackend);
+  await assertHubBackupOffline(cpbRoot, resolvedHubRoot, projectRuntimeRoots);
 
   const parent = path.dirname(outputRoot);
   const signingKey = normalizeSigningKey(signingKeyInput);
@@ -2577,7 +2436,6 @@ export async function createHubBackupUnlocked({
       entries,
       fileCount: entries.filter((entry) => entry.type === "file").length,
       totalBytes: entries.reduce((sum, entry) => sum + (entry.size || 0), 0),
-      ...(redisSnapshot ? { redisSnapshot } : {}),
     };
     const rawManifest = manifestJson(manifest);
     if (Buffer.byteLength(rawManifest, "utf8") > MAX_MANIFEST_BYTES) {
@@ -2597,7 +2455,7 @@ export async function createHubBackupUnlocked({
     await fsyncDirectory(path.join(stage, "data"));
     await fsyncDirectory(stage);
     await verifyHubBackup(stage, { signingKey, requireSignature: Boolean(signingKey), allowUnsignedDev });
-    await assertHubBackupOffline(cpbRoot, resolvedHubRoot, projectRuntimeRoots, redisBackend);
+    await assertHubBackupOffline(cpbRoot, resolvedHubRoot, projectRuntimeRoots);
     const commitStage = await readDirectoryAuthority(stage, "Hub backup stage");
     const finalizedStageOwner: BackupStageOwner = {
       ...stageOwner,
@@ -2697,125 +2555,19 @@ export async function createHubBackupUnlocked({
 }
 
 export async function createHubBackup(options: CreateHubBackupOptions) {
-  const redis = await openPinnedHubRedisStateBackend({
-    configFile: process.env.CPB_HUB_STATE_REDIS_CONFIG_FILE,
-    hubRoot: options.hubRoot,
-  });
   const maintenance = await acquireHubMaintenance(options.hubRoot, "Hub backup");
-  const redisToken = redis ? `backup-${randomUUID()}` : null;
-  const redisTtlMs = 3_600_000;
-  let redisSnapshotPath: string | null = null;
-  let redisSnapshotAuthority: FileAuthority | null = null;
-  let redisOwned = false;
-  let renewTimer: NodeJS.Timeout | null = null;
-  let renewInFlight = false;
-  let renewalError: unknown = null;
   let result: Awaited<ReturnType<typeof createHubBackupUnlocked>> | null = null;
   let operationError: unknown = null;
   let committedPath: string | null = null;
   try {
-    if (!redis || !redisToken) {
-      result = await createHubBackupUnlocked(options);
-    } else {
-      const acquired = await redis.acquireMaintenance(redisToken, "Hub backup", redisTtlMs);
-      if (!acquired.acquired) {
-        throw Object.assign(new Error("another Hub Redis maintenance operation is active"), { code: "HUB_MAINTENANCE_ACTIVE" });
-      }
-      redisOwned = true;
-      renewTimer = setInterval(() => {
-        if (renewInFlight || renewalError) return;
-        renewInFlight = true;
-        void redis.renewMaintenance(redisToken, redisTtlMs)
-          .then((renewed) => {
-            if (!renewed.acquired) renewalError = Object.assign(new Error("Hub Redis maintenance lease was lost"), { code: "HUB_MAINTENANCE_ACTIVE" });
-          })
-          .catch((error) => { renewalError = error; })
-          .finally(() => { renewInFlight = false; });
-      }, 60_000);
-      renewTimer.unref();
-
-      await cleanRedisLogicalSnapshotArtifacts(options.hubRoot);
-
-      const snapshot: RedisLogicalSnapshot = await redis.exportSnapshot(redisToken);
-      const relativePath = `.cpb-redis-logical-snapshot-${randomUUID()}.json`;
-      redisSnapshotPath = path.join(path.resolve(options.hubRoot), relativePath);
-      const serialized = `${JSON.stringify(snapshot)}\n`;
-      await writeFile(redisSnapshotPath, serialized, { encoding: "utf8", mode: 0o600 });
-      await fsyncFile(redisSnapshotPath);
-      await fsyncDirectory(path.resolve(options.hubRoot));
-      const pinnedSnapshot = await readPinnedMetadata(
-        redisSnapshotPath,
-        MAX_REDIS_SNAPSHOT_BYTES,
-        "redis-artifact",
-      );
-      if (pinnedSnapshot.raw !== serialized) {
-        throw await authorityChanged("Hub Redis logical snapshot artifact", redisSnapshotPath, {
-          artifact: redisSnapshotPath,
-        });
-      }
-      redisSnapshotAuthority = pinnedSnapshot.authority;
-      const redisSnapshot: HubBackupRedisSnapshot = {
-        format: snapshot.format,
-        rootId: "hub",
-        path: relativePath,
-        backendIdentityFingerprint: snapshot.backendIdentityFingerprint,
-        capturedAt: snapshot.capturedAt,
-        logicalSha256: snapshot.sha256,
-        fileSha256: pinnedSnapshot.authority.sha256,
-      };
-      result = await createHubBackupUnlocked({
-        ...options,
-        redisSnapshot,
-        redisBackend: redis,
-        beforeCommit: async () => {
-          if (renewalError) throw renewalError;
-          const status = await redis.readMaintenance();
-          if (!status.active || status.token !== redisToken) {
-            throw Object.assign(new Error("Hub Redis maintenance lease was lost before backup commit"), { code: "HUB_MAINTENANCE_ACTIVE" });
-          }
-        },
-      });
-    }
+    result = await createHubBackupUnlocked(options);
     committedPath = result.output;
   } catch (error) {
     operationError = error;
     if (hasCommittedMetadata(error)) committedPath = error.committedPath;
   }
 
-  if (renewTimer) clearInterval(renewTimer);
   const cleanupErrors: unknown[] = [];
-  if (redisSnapshotPath) {
-    if (redisSnapshotAuthority) {
-      try {
-        await removePinnedRedisSnapshotArtifact(redisSnapshotAuthority);
-      } catch (error) {
-        cleanupErrors.push(error);
-      }
-    } else {
-      try {
-        if (await pathExists(redisSnapshotPath)) {
-          cleanupErrors.push(Object.assign(new Error(`Hub Redis logical snapshot artifact was preserved without deletion authority: ${redisSnapshotPath}`), {
-            code: "HUB_REDIS_SNAPSHOT_CLEANUP_UNVERIFIED",
-            committed: false,
-            committedPath: null,
-            ...(await recoveryMetadata({ artifact: redisSnapshotPath })),
-          }));
-        }
-      } catch (error) {
-        cleanupErrors.push(error);
-      }
-    }
-  }
-  if (redis && redisToken && redisOwned) {
-    try {
-      const status = await redis.readMaintenance();
-      if (!status.active || status.token !== redisToken || !(await redis.releaseMaintenance(redisToken))) {
-        throw new Error("Hub backup lost Redis maintenance lock ownership");
-      }
-    } catch (error) {
-      cleanupErrors.push(error);
-    }
-  }
   try {
     if (!(await maintenance.release())) {
       throw new Error(`Hub backup lost maintenance lock ownership: ${maintenance.lockPath}`);
@@ -2828,7 +2580,6 @@ export async function createHubBackup(options: CreateHubBackupOptions) {
     const recoveryPaths = {
       ...recoveryPathsFromError(operationError),
       ...(committedPath ? { output: committedPath } : {}),
-      ...(redisSnapshotPath ? { redisSnapshot: redisSnapshotPath } : {}),
       maintenance: maintenance.lockPath,
     };
     const cause = operationError
@@ -2841,7 +2592,7 @@ export async function createHubBackup(options: CreateHubBackupOptions) {
     if (committedPath) {
       throw await committedAmbiguityError({
         code: "HUB_BACKUP_COMMITTED_AMBIGUOUS",
-        message: `Hub backup is published but lease or artifact finalization failed: ${committedPath}`,
+        message: `Hub backup is published but lease finalization failed: ${committedPath}`,
         committedPath,
         recoveryPaths,
         cause,
@@ -2935,38 +2686,6 @@ function parseManifest(raw: string): HubBackupManifest {
   if (!Number.isSafeInteger(fileCount) || fileCount < 0 || !Number.isSafeInteger(totalBytes) || totalBytes < 0) {
     throw new Error("invalid Hub backup manifest totals");
   }
-  let redisSnapshot: HubBackupRedisSnapshot | undefined;
-  if (value.redisSnapshot !== undefined) {
-    const rawSnapshot = recordValue(value.redisSnapshot);
-    const snapshotPath = safeManifestPath(rawSnapshot.path);
-    const backendIdentityFingerprint = String(rawSnapshot.backendIdentityFingerprint || "");
-    const capturedAt = String(rawSnapshot.capturedAt || "");
-    const logicalSha256 = String(rawSnapshot.logicalSha256 || "");
-    const fileSha256 = String(rawSnapshot.fileSha256 || "");
-    const snapshotEntry = entries.find((entry) => entry.rootId === "hub" && entry.path === snapshotPath && entry.type === "file");
-    if (
-      rawSnapshot.format !== "cpb-hub-redis-logical-snapshot/v1"
-      || rawSnapshot.rootId !== "hub"
-      || !/^[a-f0-9]{64}$/.test(backendIdentityFingerprint)
-      || !Number.isFinite(Date.parse(capturedAt))
-      || new Date(Date.parse(capturedAt)).toISOString() !== capturedAt
-      || !/^[a-f0-9]{64}$/.test(logicalSha256)
-      || !/^[a-f0-9]{64}$/.test(fileSha256)
-      || !snapshotEntry
-      || snapshotEntry.sha256 !== fileSha256
-    ) {
-      throw new Error("invalid Hub Redis snapshot manifest metadata");
-    }
-    redisSnapshot = {
-      format: "cpb-hub-redis-logical-snapshot/v1",
-      rootId: "hub",
-      path: snapshotPath,
-      backendIdentityFingerprint,
-      capturedAt,
-      logicalSha256,
-      fileSha256,
-    };
-  }
   return {
     format: BACKUP_FORMAT,
     snapshotId,
@@ -2976,7 +2695,6 @@ function parseManifest(raw: string): HubBackupManifest {
     entries,
     fileCount,
     totalBytes,
-    ...(redisSnapshot ? { redisSnapshot } : {}),
   };
 }
 
@@ -3057,153 +2775,10 @@ export async function verifyHubBackup(input: string, options: BackupVerification
       manifest.entries.filter((entry) => entry.rootId === root.id),
     );
   }
-  if (manifest.redisSnapshot) {
-    const snapshotPath = nativePath(path.join(dataRoots, "hub"), manifest.redisSnapshot.path);
-    const snapshotInfo = await assertRealFile(snapshotPath, "Hub Redis logical snapshot");
-    if (snapshotInfo.size > MAX_REDIS_SNAPSHOT_BYTES) throw new Error("Hub Redis logical snapshot exceeds its size limit");
-    parseRedisLogicalSnapshot(
-      (await readPinnedMetadata(snapshotPath, MAX_REDIS_SNAPSHOT_BYTES, "redis-snapshot")).raw,
-      manifest.redisSnapshot,
-    );
-  }
   const fileCount = manifest.entries.filter((entry) => entry.type === "file").length;
   const totalBytes = manifest.entries.reduce((sum, entry) => sum + (entry.size || 0), 0);
   if (fileCount !== manifest.fileCount || totalBytes !== manifest.totalBytes) throw new Error("Hub backup manifest totals mismatch");
   return { backupRoot, manifest };
-}
-
-async function redisSnapshotFromVerifiedBackup(verified: VerifiedBackup) {
-  const metadata = verified.manifest.redisSnapshot;
-  if (!metadata) return null;
-  const snapshotPath = nativePath(path.join(verified.backupRoot, "data", "roots", "hub"), metadata.path);
-  return parseRedisLogicalSnapshot(
-    (await readPinnedMetadata(snapshotPath, MAX_REDIS_SNAPSHOT_BYTES, "redis-snapshot")).raw,
-    metadata,
-  );
-}
-
-async function readRedisRollbackSnapshotFile(filePath: string, expectedSha256: string) {
-  const pinned = await readPinnedMetadata(
-    filePath,
-    MAX_REDIS_SNAPSHOT_BYTES,
-    "redis-rollback",
-  );
-  if (process.platform !== "win32" && (pinned.authority.mode & 0o077) !== 0) {
-    throw new Error("Hub Redis rollback snapshot must be private");
-  }
-  const parsed = JSON.parse(pinned.raw) as RedisLogicalSnapshot;
-  if (parsed.sha256 !== expectedSha256) throw new Error("Hub Redis rollback snapshot digest mismatch");
-  return { snapshot: parsed, authority: pinned.authority };
-}
-
-export async function _internalReadRedisRollbackSnapshotForTests(filePath: string, expectedSha256: string) {
-  return (await readRedisRollbackSnapshotFile(filePath, expectedSha256)).snapshot;
-}
-
-async function readRedisRollbackSnapshot(journal: HubRestoreJournal) {
-  if (!journal.redis) return null;
-  return readRedisRollbackSnapshotFile(journal.redis.rollbackSnapshotPath, journal.redis.rollbackLogicalSha256);
-}
-
-type RedisRestoreRecoverySession = {
-  backend: HubRedisStateBackend;
-  token: string;
-  rollback: RedisLogicalSnapshot;
-  rollbackAuthority: FileAuthority;
-  target: RedisLogicalSnapshot;
-};
-
-async function openRedisRestoreRecoverySession(journal: HubRestoreJournal, signingKey?: string): Promise<RedisRestoreRecoverySession | null> {
-  if (!journal.redis) return null;
-  const backend = await openPinnedHubRedisStateBackend({
-    configFile: process.env.CPB_HUB_STATE_REDIS_CONFIG_FILE,
-    hubRoot: journal.hubRoot,
-  });
-  if (!backend || backend.identityFingerprint !== journal.redis.backendIdentityFingerprint) {
-    throw Object.assign(new Error("Hub Redis restore recovery backend identity is unavailable or changed"), {
-      code: "HUB_STATE_BACKEND_IDENTITY_CHANGED",
-    });
-  }
-  const acquired = await backend.acquireMaintenance(journal.redis.maintenanceToken, "Hub restore recovery", 3_600_000);
-  if (!acquired.acquired) throw Object.assign(new Error("another Hub Redis maintenance operation is active"), { code: "HUB_MAINTENANCE_ACTIVE" });
-  const rollback = await readRedisRollbackSnapshot(journal);
-  if (!rollback) throw new Error("Hub Redis restore recovery rollback snapshot is missing");
-  const verified = await verifyHubBackup(journal.input, {
-    signingKey,
-    requireSignature: journal.signatureRequired,
-    allowUnsignedDev: !journal.signatureRequired,
-  });
-  const target = await redisSnapshotFromVerifiedBackup(verified);
-  if (!target || target.sha256 !== journal.redis.targetLogicalSha256) {
-    throw new Error("Hub Redis restore recovery target snapshot is missing or changed");
-  }
-  return {
-    backend,
-    token: journal.redis.maintenanceToken,
-    rollback: rollback.snapshot,
-    rollbackAuthority: rollback.authority,
-    target,
-  };
-}
-
-async function finishRedisRestoreRecovery(journal: HubRestoreJournal, session: RedisRestoreRecoverySession | null) {
-  await currentHubBackupTestHooks()?.beforeFinishRedisRestoreRecovery?.({
-    journalPath: hubRestoreJournalPath(journal.hubRoot),
-    hasRedisSession: Boolean(session),
-  });
-  if (!session || !journal.redis) return false;
-  const rollbackIsolation = await isolatePinnedFilePreserveOnly(
-    session.rollbackAuthority,
-    "Hub Redis rollback snapshot",
-    { rollbackSnapshot: journal.redis.rollbackSnapshotPath },
-  );
-  const status = await session.backend.readMaintenance();
-  if (!status.active || status.token !== session.token || !(await session.backend.releaseMaintenance(session.token))) {
-    let quarantineVerified = false;
-    if (rollbackIsolation) {
-      try {
-        const current = lstatSync(rollbackIsolation.quarantinePath);
-        quarantineVerified = current.isFile()
-          && !current.isSymbolicLink()
-          && samePathGeneration(rollbackIsolation.generation, pathGeneration(current));
-      } catch {
-        quarantineVerified = false;
-      }
-    }
-    throw Object.assign(new Error("Hub Redis restore recovery lost maintenance lock ownership"), {
-      code: "HUB_MAINTENANCE_ACTIVE",
-      committed: true,
-      committedPath: rollbackIsolation?.quarantinePath || journal.redis.rollbackSnapshotPath,
-      ...(quarantineVerified ? {
-        quarantinePreserved: true,
-        recoveryPaths: { rollbackSnapshot: rollbackIsolation?.quarantinePath as string },
-        attemptedPaths: { rollbackSnapshot: journal.redis.rollbackSnapshotPath },
-      } : {
-        successorPreserved: Boolean(rollbackIsolation),
-        recoveryPaths: {},
-        attemptedPaths: {
-          rollbackSnapshot: journal.redis.rollbackSnapshotPath,
-          ...(rollbackIsolation ? { rollbackQuarantine: rollbackIsolation.quarantinePath } : {}),
-        },
-      }),
-    });
-  }
-  return true;
-}
-
-async function applyRedisRecoverySnapshot(
-  journal: HubRestoreJournal,
-  session: RedisRestoreRecoverySession,
-  kind: "rollback" | "target",
-) {
-  await repinRestoreJournal(journal);
-  if (kind === "rollback" && journal.redis) {
-    await repinFileAuthority(session.rollbackAuthority, "Hub Redis rollback snapshot", {
-      rollbackSnapshot: journal.redis.rollbackSnapshotPath,
-      journal: hubRestoreJournalPath(journal.hubRoot),
-    });
-  }
-  await session.backend.restoreSnapshot(session.token, session[kind]);
 }
 
 async function copyBackupRoot(source: string, destination: string, root: HubBackupRoot, entries: HubBackupEntry[]) {
@@ -3242,21 +2817,11 @@ type RestoreHubBackupOptions = {
   requireSignature?: boolean;
   allowUnsignedDev?: boolean;
   minimumFreeBytes?: number;
-  redisBackend?: HubRedisStateBackend | null;
-  redisToken?: string | null;
   maintenanceToken?: string | null;
-  faultInjector?: (phase: "redis_before_commit" | "redis_after_commit" | "filesystem_after_target_rename") => void | Promise<void>;
+  faultInjector?: (phase: "filesystem_after_target_rename") => void | Promise<void>;
 };
 
-type RestoreJournalPhase = "staged" | "redis_restoring" | "redis_restored" | "target_moved" | "committed";
-
-type RedisRestoreJournal = {
-  backendIdentityFingerprint: string;
-  maintenanceToken: string;
-  rollbackSnapshotPath: string;
-  rollbackLogicalSha256: string;
-  targetLogicalSha256: string;
-};
+type RestoreJournalPhase = "staged" | "target_moved" | "committed";
 
 type HubRestoreJournal = {
   format: "cpb-hub-restore/v1";
@@ -3272,7 +2837,6 @@ type HubRestoreJournal = {
   targetExisted: boolean;
   signatureRequired: boolean;
   maintenanceToken: string | null;
-  redis: RedisRestoreJournal | null;
   phase: RestoreJournalPhase;
   createdAt: string;
   updatedAt: string;
@@ -3284,7 +2848,6 @@ function restoreRecoveryPaths(journal: HubRestoreJournal) {
     journal: hubRestoreJournalPath(journal.hubRoot),
     stage: journal.stagePath,
     ...(journal.rollbackPath ? { rollback: journal.rollbackPath } : {}),
-    ...(journal.redis ? { redisRollbackSnapshot: journal.redis.rollbackSnapshotPath } : {}),
   };
 }
 
@@ -3297,11 +2860,6 @@ function restoreStagePrefix(hubRoot: string) {
 
 function restoreRollbackPrefix(hubRoot: string) {
   return `${path.resolve(hubRoot)}.pre-restore-`;
-}
-
-function redisRestoreRollbackPrefix(hubRoot: string) {
-  const resolved = path.resolve(hubRoot);
-  return path.join(path.dirname(resolved), `.${path.basename(resolved)}.redis-rollback-`);
 }
 
 function parseRestoreJournal(raw: string, expectedHubRoot: string): HubRestoreJournal {
@@ -3317,33 +2875,12 @@ function parseRestoreJournal(raw: string, expectedHubRoot: string): HubRestoreJo
   const rollbackGeneration = value.rollbackGeneration === null || value.rollbackGeneration === undefined
     ? null
     : parsePersistedPathGeneration(value.rollbackGeneration);
-  const phase = value.phase === "staged" || value.phase === "redis_restoring" || value.phase === "redis_restored"
-    || value.phase === "target_moved" || value.phase === "committed"
+  const phase = value.phase === "staged" || value.phase === "target_moved" || value.phase === "committed"
     ? value.phase
     : null;
-  const rawRedis = value.redis === null || value.redis === undefined ? null : recordValue(value.redis);
   const maintenanceToken = value.maintenanceToken === null || value.maintenanceToken === undefined
     ? null
     : String(value.maintenanceToken || "");
-  let redis: RedisRestoreJournal | null = null;
-  if (rawRedis) {
-    const rollbackSnapshotPath = String(rawRedis.rollbackSnapshotPath || "");
-    if (!/^[a-f0-9]{64}$/.test(String(rawRedis.backendIdentityFingerprint || ""))
-      || typeof rawRedis.maintenanceToken !== "string" || rawRedis.maintenanceToken.length < 16
-      || !rollbackSnapshotPath.startsWith(redisRestoreRollbackPrefix(hubRoot))
-      || path.dirname(rollbackSnapshotPath) !== path.dirname(hubRoot)
-      || !/^[a-f0-9]{64}$/.test(String(rawRedis.rollbackLogicalSha256 || ""))
-      || !/^[a-f0-9]{64}$/.test(String(rawRedis.targetLogicalSha256 || ""))) {
-      throw new Error(`invalid Hub Redis restore journal: ${hubRestoreJournalPath(hubRoot)}`);
-    }
-    redis = {
-      backendIdentityFingerprint: String(rawRedis.backendIdentityFingerprint),
-      maintenanceToken: String(rawRedis.maintenanceToken),
-      rollbackSnapshotPath,
-      rollbackLogicalSha256: String(rawRedis.rollbackLogicalSha256),
-      targetLogicalSha256: String(rawRedis.targetLogicalSha256),
-    };
-  }
   if (
     value.format !== "cpb-hub-restore/v1"
     || typeof value.operationToken !== "string"
@@ -3364,7 +2901,6 @@ function parseRestoreJournal(raw: string, expectedHubRoot: string): HubRestoreJo
     || typeof value.signatureRequired !== "boolean"
     || (maintenanceToken !== null && maintenanceToken.length < 16)
     || !phase
-    || ((phase === "redis_restoring" || phase === "redis_restored") && !redis)
     || !String(value.snapshotId || "")
     || !Number.isFinite(Date.parse(String(value.createdAt || "")))
     || !Number.isFinite(Date.parse(String(value.updatedAt || "")))
@@ -3385,7 +2921,6 @@ function parseRestoreJournal(raw: string, expectedHubRoot: string): HubRestoreJo
     targetExisted: value.targetExisted === true,
     signatureRequired: value.signatureRequired,
     maintenanceToken,
-    redis,
     phase,
     createdAt: String(value.createdAt),
     updatedAt: String(value.updatedAt),
@@ -3750,7 +3285,6 @@ async function publishRestoreStage(
 async function recoverRestoreJournalCore(
   journal: HubRestoreJournal,
   signingKey: string | undefined,
-  redisSession: RedisRestoreRecoverySession | null,
 ) {
   const target = await readOptionalDirectoryAuthority(journal.targetPath, "interrupted restore target");
   const stage = await readOptionalDirectoryAuthority(journal.stagePath, "interrupted restore stage");
@@ -3773,10 +3307,7 @@ async function recoverRestoreJournalCore(
     throw await restoreGenerationMismatchError(journal, "canonical", journal.targetPath);
   }
 
-  if (journal.phase === "staged" || journal.phase === "redis_restoring" || journal.phase === "redis_restored") {
-    if (journal.phase !== "staged" && redisSession) {
-      await applyRedisRecoverySnapshot(journal, redisSession, "rollback");
-    }
+  if (journal.phase === "staged") {
     if (journal.targetExisted && target && rollback) {
       throw await successorPreservedError(journal, new Error("staged restore has both canonical and rollback roots"));
     }
@@ -3800,13 +3331,30 @@ async function recoverRestoreJournalCore(
       }
       try {
         await verifyRestoredTarget(journal, signingKey);
-        if (redisSession) await applyRedisRecoverySnapshot(journal, redisSession, "target");
       } catch (error) {
-        if (redisSession) await applyRedisRecoverySnapshot(journal, redisSession, "rollback");
         return preserveInvalidReplacement(journal, error);
       }
-      const committed = await writeRestoreJournal(journal, "committed");
-      await removeRestoreJournal(committed);
+      try {
+        const committed = await writeRestoreJournal(journal, "committed");
+        await removeRestoreJournal(committed);
+      } catch (error) {
+        throw await committedAmbiguityError({
+          code: "HUB_RESTORE_COMMITTED_AMBIGUOUS",
+          message: `Hub restore target is committed but recovery finalization failed: ${journal.targetPath}`,
+          committedPath: journal.targetPath,
+          recoveryPaths: {
+            canonical: journal.targetPath,
+            journal: hubRestoreJournalPath(journal.hubRoot),
+            stage: journal.stagePath,
+            ...(journal.rollbackPath ? { rollback: journal.rollbackPath } : {}),
+          },
+          cause: error,
+          forcedAttemptedPaths: [
+            hubRestoreJournalPath(journal.hubRoot),
+            journal.stagePath,
+          ],
+        });
+      }
       return { recovered: true, outcome: "committed" as const, snapshotId: journal.snapshotId };
     }
     if (target && stage) {
@@ -3818,7 +3366,6 @@ async function recoverRestoreJournalCore(
       }
       await restoreRollbackToCanonical(journal, rollback);
     }
-    if (redisSession) await applyRedisRecoverySnapshot(journal, redisSession, "rollback");
     if (stage) await removeRestoreStage(journal, stage);
     else await removeRestoreJournal(journal);
     return { recovered: true, outcome: "rolled_back" as const, snapshotId: journal.snapshotId };
@@ -3832,9 +3379,7 @@ async function recoverRestoreJournalCore(
   }
   try {
     await verifyRestoredTarget(journal, signingKey);
-    if (redisSession) await applyRedisRecoverySnapshot(journal, redisSession, "target");
   } catch (error) {
-    if (redisSession) await applyRedisRecoverySnapshot(journal, redisSession, "rollback");
     return preserveInvalidReplacement(journal, error);
   }
   await removeRestoreJournal(journal);
@@ -3844,26 +3389,10 @@ async function recoverRestoreJournalCore(
 async function recoverRestoreJournalUnlocked(
   journal: HubRestoreJournal,
   signingKey?: string,
-  onRedisMaintenanceReleased?: () => void,
 ) {
-  let redisSession: RedisRestoreRecoverySession | null;
-  try {
-    redisSession = await openRedisRestoreRecoverySession(journal, signingKey);
-  } catch (error) {
-    if (journal.phase === "committed") {
-      throw await committedAmbiguityError({
-        code: "HUB_RESTORE_COMMITTED_AMBIGUOUS",
-        message: `Hub restore is committed but Redis recovery could not start: ${journal.targetPath}`,
-        committedPath: journal.targetPath,
-        recoveryPaths: restoreRecoveryPaths(journal),
-        cause: error,
-      });
-    }
-    throw error;
-  }
   let result: Awaited<ReturnType<typeof recoverRestoreJournalCore>>;
   try {
-    result = await recoverRestoreJournalCore(journal, signingKey, redisSession);
+    result = await recoverRestoreJournalCore(journal, signingKey);
   } catch (error) {
     if (journal.phase === "committed" && !isExplicitlyUncommitted(error)) {
       throw await committedAmbiguityError({
@@ -3875,27 +3404,6 @@ async function recoverRestoreJournalUnlocked(
       });
     }
     throw error;
-  }
-  try {
-    const redisMaintenanceReleased = await finishRedisRestoreRecovery(journal, redisSession);
-    if (redisMaintenanceReleased) onRedisMaintenanceReleased?.();
-  } catch (error) {
-    if (result.outcome === "committed") {
-      throw await committedAmbiguityError({
-        code: "HUB_RESTORE_COMMITTED_AMBIGUOUS",
-        message: `Hub restore recovery committed but Redis finalization failed: ${journal.targetPath}`,
-        committedPath: journal.targetPath,
-        recoveryPaths: { ...restoreRecoveryPaths(journal), ...recoveryPathsFromError(error) },
-        cause: error,
-      });
-    }
-    throw Object.assign(await incompleteCleanupError({
-      code: "HUB_RESTORE_RECOVERY_CLEANUP_FAILED",
-      message: `Hub restore rollback completed but Redis finalization failed: ${journal.targetPath}`,
-      recoveryPaths: { ...restoreRecoveryPaths(journal), ...recoveryPathsFromError(error) },
-      primaryError: null,
-      cleanupErrors: [error],
-    }), { recoveryOutcome: "rolled_back" as const });
   }
   return result;
 }
@@ -3909,29 +3417,10 @@ async function restoreHubBackupUnlocked({
   requireSignature = false,
   allowUnsignedDev = false,
   minimumFreeBytes,
-  redisBackend = null,
-  redisToken = null,
   maintenanceToken = null,
   faultInjector,
-}: RestoreHubBackupOptions, onRedisMaintenanceReleased?: () => void) {
+}: RestoreHubBackupOptions) {
   const verified = await verifyHubBackup(input, { signingKey, requireSignature, allowUnsignedDev });
-  const targetRedisSnapshot = await redisSnapshotFromVerifiedBackup(verified);
-  if (redisBackend && (!targetRedisSnapshot || !redisToken)) {
-    throw Object.assign(new Error("Redis-aware Hub restore requires an embedded logical snapshot and maintenance token"), {
-      code: "HUB_RESTORE_REDIS_SNAPSHOT_REQUIRED",
-    });
-  }
-  if (!redisBackend && targetRedisSnapshot) {
-    throw Object.assign(new Error("Redis-backed Hub backup requires Redis configuration during restore"), {
-      code: "HUB_RESTORE_REDIS_CONFIGURATION_REQUIRED",
-    });
-  }
-  if (redisBackend && targetRedisSnapshot
-    && targetRedisSnapshot.backendIdentityFingerprint !== redisBackend.identityFingerprint) {
-    throw Object.assign(new Error("Redis restore target identity does not match the backup"), {
-      code: "HUB_STATE_BACKEND_IDENTITY_CHANGED",
-    });
-  }
   const resolvedHubRoot = path.resolve(hubRoot);
   if (isWithin(resolvedHubRoot, verified.backupRoot) || isWithin(verified.backupRoot, resolvedHubRoot)) {
     throw new Error(`backup input and restore target must not overlap: ${resolvedHubRoot}`);
@@ -3941,12 +3430,7 @@ async function restoreHubBackupUnlocked({
     .map((project) => recordValue(project).projectRuntimeRoot)
     .filter((value): value is string => typeof value === "string")
     .map((value) => path.resolve(value));
-  await assertHubBackupOffline(
-    cpbRoot,
-    resolvedHubRoot,
-    currentRuntimeRoots,
-    redisBackend,
-  );
+  await assertHubBackupOffline(cpbRoot, resolvedHubRoot, currentRuntimeRoots);
 
   const targetExisted = await pathExists(resolvedHubRoot);
   const initialTarget = targetExisted
@@ -3966,19 +3450,6 @@ async function restoreHubBackupUnlocked({
   const stagePath = `${restoreStagePrefix(resolvedHubRoot)}${randomUUID()}`;
   const rollbackPath = targetExisted ? `${restoreRollbackPrefix(resolvedHubRoot)}${Date.now()}-${randomUUID()}` : null;
   const dataRoots = path.join(verified.backupRoot, "data", "roots");
-  let rollbackRedisSnapshot: RedisLogicalSnapshot | null = null;
-  let redisRollbackPath: string | null = null;
-  let redisRollbackAuthority: FileAuthority | null = null;
-  if (redisBackend && redisToken && targetRedisSnapshot) {
-    rollbackRedisSnapshot = await redisBackend.exportSnapshot(redisToken);
-    redisRollbackPath = `${redisRestoreRollbackPrefix(resolvedHubRoot)}${verified.manifest.snapshotId}-${randomUUID()}.json`;
-    await writeJsonDurableAtomic(redisRollbackPath, rollbackRedisSnapshot);
-    redisRollbackAuthority = (await readPinnedMetadata(
-      redisRollbackPath,
-      MAX_REDIS_SNAPSHOT_BYTES,
-      "redis-rollback",
-    )).authority;
-  }
   let journal: HubRestoreJournal = {
     format: "cpb-hub-restore/v1",
     operationToken: randomUUID(),
@@ -3993,13 +3464,6 @@ async function restoreHubBackupUnlocked({
     targetExisted,
     signatureRequired: !allowUnsignedDev || requireSignature || Boolean(normalizeSigningKey(signingKey)),
     maintenanceToken,
-    redis: redisBackend && redisToken && targetRedisSnapshot && rollbackRedisSnapshot && redisRollbackPath ? {
-      backendIdentityFingerprint: redisBackend.identityFingerprint,
-      maintenanceToken: redisToken,
-      rollbackSnapshotPath: redisRollbackPath,
-      rollbackLogicalSha256: rollbackRedisSnapshot.sha256,
-      targetLogicalSha256: targetRedisSnapshot.sha256,
-    } : null,
     phase: "staged",
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -4031,14 +3495,6 @@ async function restoreHubBackupUnlocked({
       stageGeneration: persistPathGeneration(stagedRoot.generation),
     });
 
-    if (redisBackend && redisToken && targetRedisSnapshot) {
-      journal = await writeRestoreJournal(journal, "redis_restoring");
-      await faultInjector?.("redis_before_commit");
-      await redisBackend.restoreSnapshot(redisToken, targetRedisSnapshot);
-      await faultInjector?.("redis_after_commit");
-      journal = await writeRestoreJournal(journal, "redis_restored");
-    }
-
     if (targetExisted && rollbackPath && initialTarget) {
       const movedRollback = await moveRestoreTargetToRollback(journal, initialTarget, rollbackPath);
       journal = await writeRestoreJournal(journal, "target_moved", {
@@ -4054,13 +3510,6 @@ async function restoreHubBackupUnlocked({
     await faultInjector?.("filesystem_after_target_rename");
     journal = await writeRestoreJournal(journal, "committed");
     await removeRestoreJournal(journal);
-    if (redisRollbackPath && redisRollbackAuthority) {
-      await isolatePinnedFilePreserveOnly(
-        redisRollbackAuthority,
-        "Hub Redis rollback snapshot",
-        { rollbackSnapshot: redisRollbackPath },
-      );
-    }
     return result();
   } catch (error) {
     const publicationCommitted = restoreCommitted || isRestorePublicationCommitted(error, resolvedHubRoot);
@@ -4069,11 +3518,7 @@ async function restoreHubBackupUnlocked({
       try {
         const authoritative = await readRestoreJournal(resolvedHubRoot);
         if (!authoritative) throw new Error("restore journal disappeared during recovery");
-        const recovery = await recoverRestoreJournalUnlocked(
-          authoritative,
-          signingKey,
-          onRedisMaintenanceReleased,
-        );
+        const recovery = await recoverRestoreJournalUnlocked(authoritative, signingKey);
         if (recovery.outcome === "committed") return result();
         rolledBackJournal = authoritative;
       } catch (recoveryError) {
@@ -4125,24 +3570,6 @@ async function restoreHubBackupUnlocked({
           ...metadata,
         });
       }
-    } else {
-      if (redisRollbackPath && redisRollbackAuthority) {
-        try {
-          await isolatePinnedFilePreserveOnly(
-            redisRollbackAuthority,
-            "Hub Redis rollback snapshot",
-            { rollbackSnapshot: redisRollbackPath },
-          );
-        } catch (cleanupError) {
-          throw await incompleteCleanupError({
-            code: "HUB_RESTORE_CLEANUP_FAILED",
-            message: `Hub restore failed before journaling and Redis rollback cleanup is incomplete: ${resolvedHubRoot}`,
-            recoveryPaths: { canonical: resolvedHubRoot, rollbackSnapshot: redisRollbackPath },
-            primaryError: error,
-            cleanupErrors: [cleanupError],
-          });
-        }
-      }
     }
     if (publicationCommitted) {
       throw await committedAmbiguityError({
@@ -4168,7 +3595,6 @@ export async function recoverInterruptedHubRestore({
   const pending = await readRestoreJournal(resolvedHubRoot);
   if (!pending) {
     await recoverStaleHubMaintenance(resolvedHubRoot);
-    await cleanRedisLogicalSnapshotArtifacts(resolvedHubRoot);
     return { recovered: false as const };
   }
   const maintenance = await acquireHubMaintenance(resolvedHubRoot, "Hub restore recovery", {
@@ -4245,10 +3671,6 @@ export async function recoverInterruptedHubRestore({
 }
 
 export async function restoreHubBackup(options: RestoreHubBackupOptions) {
-  const redis = await openPinnedHubRedisStateBackend({
-    configFile: process.env.CPB_HUB_STATE_REDIS_CONFIG_FILE,
-    hubRoot: options.hubRoot,
-  });
   const resolvedHubRoot = path.resolve(options.hubRoot);
   const resolvedInput = path.resolve(options.input);
   if (isWithin(resolvedHubRoot, resolvedInput) || isWithin(resolvedInput, resolvedHubRoot)) {
@@ -4256,26 +3678,13 @@ export async function restoreHubBackup(options: RestoreHubBackupOptions) {
   }
   await recoverInterruptedHubRestore({ hubRoot: resolvedHubRoot, signingKey: options.signingKey });
   const maintenance = await acquireHubMaintenance(options.hubRoot, "Hub restore");
-  const redisToken = redis ? `restore-${randomUUID()}` : null;
-  let redisOwned = false;
   let result: Awaited<ReturnType<typeof restoreHubBackupUnlocked>> | null = null;
   let operationError: unknown = null;
   let committedPath: string | null = null;
   try {
-    if (redis && redisToken) {
-      const acquired = await redis.acquireMaintenance(redisToken, "Hub restore", 3_600_000);
-      if (!acquired.acquired) {
-        throw Object.assign(new Error("another Hub Redis maintenance operation is active"), { code: "HUB_MAINTENANCE_ACTIVE" });
-      }
-      redisOwned = true;
-    }
     result = await restoreHubBackupUnlocked({
       ...options,
-      redisBackend: redis,
-      redisToken,
       maintenanceToken: maintenance.owner.ownerToken,
-    }, () => {
-      redisOwned = false;
     });
     committedPath = resolvedHubRoot;
   } catch (error) {
@@ -4284,22 +3693,6 @@ export async function restoreHubBackup(options: RestoreHubBackupOptions) {
   }
 
   const cleanupErrors: unknown[] = [];
-  if (redis && redisToken && redisOwned) {
-    try {
-      const journalPresent = await pathExists(hubRestoreJournalPath(resolvedHubRoot));
-      if (journalPresent && committedPath) {
-        throw new Error("Hub restore committed while its recovery journal path remains occupied; Redis maintenance is retained");
-      }
-      if (!journalPresent) {
-        const status = await redis.readMaintenance();
-        if (!status.active || status.token !== redisToken || !(await redis.releaseMaintenance(redisToken))) {
-          throw new Error("Hub restore lost Redis maintenance lock ownership");
-        }
-      }
-    } catch (error) {
-      cleanupErrors.push(error);
-    }
-  }
   try {
     if (!(await maintenance.release())) {
       throw new Error(`Hub restore lost maintenance lock ownership: ${maintenance.lockPath}`);

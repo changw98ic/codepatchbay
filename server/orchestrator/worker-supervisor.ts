@@ -62,13 +62,6 @@ export class WorkerSupervisor {
     const brokerToken = crypto.randomBytes(32).toString("base64url");
     const brokerTokenHash = crypto.createHash("sha256").update(brokerToken, "utf8").digest("hex");
     const brokerUrl = process.env.CPB_HUB_WORKER_BROKER_URL || "";
-    const redisConfigFile = process.env.CPB_HUB_STATE_REDIS_CONFIG_FILE || "";
-    if (redisConfigFile && !brokerUrl) {
-      throw Object.assign(
-        new Error("managed workers require CPB_HUB_WORKER_BROKER_URL when Redis shared state is enabled"),
-        { code: "HUB_WORKER_BROKER_REQUIRED" },
-      );
-    }
     const executorRoot = this.executorRoot;
     const restartCount = assignment._restartCount || 0;
 
@@ -99,8 +92,6 @@ export class WorkerSupervisor {
         env: {
           ...executorEnv(process.env, { cpbRoot: this.cpbRoot, executorRoot }),
           CPB_HUB_ROOT: this.hubRoot,
-          // Redis credentials remain in the Hub. Managed workers receive only a
-          // short-lived, worker/incarnation-scoped broker capability.
           CPB_WORKER_INCARNATION_TOKEN: incarnationToken,
           ...(brokerUrl ? {
             CPB_HUB_WORKER_BROKER_URL: brokerUrl,

@@ -1,9 +1,8 @@
 # Hub registry consistency
 
-By default, the Hub project registry is stored at `<hubRoot>/projects.json` as
-a single-host durable control-plane file. An optional Redis CAS backend can
-make this one registry transactional across hosts; it does not make the rest
-of the Hub state distributed.
+The Hub project registry is stored at `<hubRoot>/projects.json` as a
+single-host durable control-plane file. The local file is the canonical
+registry boundary for the supported deployment model.
 
 ## Write invariants
 
@@ -11,9 +10,7 @@ All production read-modify-write operations use `mutateRegistry`. The
 local-file transaction holds `<hubRoot>/projects.json.lock`, reloads the latest
 registry, applies one mutation, verifies lock ownership, and publishes the new
 file with an atomic rename. The temporary file and parent directory are
-fsynced. With Redis configured, `mutateRegistry` reads one revision and commits
-through an atomic compare-and-swap Lua script; a losing mutation reloads and
-replays with bounded jitter.
+fsynced.
 
 Each committed registry contains a monotonic `revision`. `saveRegistry` is the
 compatibility API for callers that already hold a snapshot. It compares the
@@ -74,10 +71,7 @@ Hub root. They prevent lost updates and make crashes recoverable for the
 supported single-host deployment.
 
 They do not provide multi-host consensus or storage-level fencing on a shared
-network filesystem. Configure the Redis CAS backend when different hosts must
-write one project registry; see
-[`cpb-hub-redis-state.md`](../security/cpb-hub-redis-state.md). Even then, an
-active/active Hub still requires transactional shared queue, job, worker, and
-lease stores, leader fencing epochs enforced by every write, and tested
-cross-store failover semantics. Do not run multiple active schedulers merely
-because the registry uses Redis.
+network filesystem. Multi-host active/active operation is outside this
+single-host registry contract. Keep one active Hub per local Hub root and use
+an externally coordinated deployment architecture when a multi-host control
+plane is required.

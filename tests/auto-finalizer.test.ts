@@ -1107,7 +1107,8 @@ test("live PR finalizer revalidates after branch push and blocks PR creation whe
   await seedJobEvents({ ...fixture });
   const capability = remoteCapability();
   const commit = (await git(fixture.worktreePath, ["rev-parse", "HEAD"])).stdout.trim();
-  let markerChecks = 0;
+  let markerReplaced = false;
+  let markerObservedAfterPush = false;
   let pushWrites = 0;
   let createWrites = 0;
 
@@ -1129,18 +1130,21 @@ test("live PR finalizer revalidates after branch push and blocks PR creation whe
     sourcePath: fixture.sourcePath,
     mode: "pr",
     allowLiveFinalize: true,
-      ...liveFinalizerAuthority(fixture),
+    ...liveFinalizerAuthority(fixture),
     runCommand: async (command, args, options) => {
       if (command === "gh") {
-        if (args[0] === "api" && String(args[1]).includes("/contents/")) markerChecks += 1;
+        if (args[0] === "api" && String(args[1]).includes("/contents/") && markerReplaced) {
+          markerObservedAfterPush = true;
+        }
         return githubAuthorityResult(args, {
           capability,
-          markerSha: markerChecks >= 2 ? "b".repeat(40) : capability.markerSha,
+          markerSha: markerReplaced ? "b".repeat(40) : capability.markerSha,
           refSha: commit,
         });
       }
       if (command === "git" && args[0] === "push") {
         pushWrites += 1;
+        markerReplaced = true;
         return { stdout: "", stderr: "" };
       }
       return execFileAsync(command, args, options);
@@ -1156,6 +1160,7 @@ test("live PR finalizer revalidates after branch push and blocks PR creation whe
   assert.equal(result.pr?.evidence?.committed, false);
   assert.equal(pushWrites, 1);
   assert.equal(createWrites, 0);
+  assert.equal(markerObservedAfterPush, true);
 });
 
 test("live PR finalizer recovers the exact created draft after the transport throws", async () => {

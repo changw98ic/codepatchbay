@@ -155,7 +155,7 @@ export type EventStreamCursor = {
 };
 
 export type EventStreamDurabilityResult = {
-  backend: "filesystem" | "redis";
+  backend: "filesystem";
   committed: true;
   exists: boolean;
   cursor: EventStreamCursor;

@@ -56,6 +56,9 @@ export interface CommandTreeResult {
   cleanupVerified: boolean;
   rootIdentity?: ProcessIdentity;
   error?: Error;
+  /** When timedOut or aborted, cleanup continues in the background. Await
+   *  this promise to get the final cleanup verification result. */
+  cleanupPromise?: Promise<{ cleanupVerified: boolean; error?: Error }>;
 }
 
 const DEFAULT_GRACE_MS = 2000;
@@ -113,14 +116,36 @@ export function captureSpawnProcessIdentity(
   let lastError: Error | null = null;
   for (let attempt = 0; attempt < SPAWN_IDENTITY_CAPTURE_ATTEMPTS; attempt += 1) {
     try {
+      // Spawn identity authorizes later process-tree teardown, so coarse
+      // observations must not be accepted while the child is still live.
       const identity = captureProcessIdentity(child.pid, { strict: true, system });
       if (identity) return identity;
     } catch (error) {
       const normalized = error instanceof Error ? error : new Error(String(error));
-      if ((normalized as NodeJS.ErrnoException).code !== "PROCESS_IDENTITY_UNAVAILABLE") throw normalized;
+      if ((normalized as NodeJS.ErrnoException).code !== "PROCESS_IDENTITY_UNAVAILABLE") {
+        throw normalized;
+      }
       lastError = normalized;
     }
-    if (child.exitCode !== null || child.signalCode !== null) return null;
+    if (child.exitCode !== null || child.signalCode !== null) {
+      // Short-lived process exited before exact birth identity could be
+      // captured (common on Darwin where proc_pidinfo races with exit).
+      // Return a degraded "coarse" identity so callers can still track the
+      // process incarnation without failing closed.
+      return processIdentity(
+        child.pid,
+        `exited-pid:${child.pid}:${new Date().toISOString()}`,
+        "coarse",
+      );
+    }
+  }
+  // Final check: child may have exited between the last retry check and now.
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return processIdentity(
+      child.pid,
+      `exited-pid:${child.pid}:${new Date().toISOString()}`,
+      "coarse",
+    );
   }
   throw lastError || processTreeError(
     "root process identity unavailable after spawn",
@@ -353,12 +378,6 @@ function observeProcessIdentity(identity: ProcessIdentity, system = defaultSyste
     current = captureProcessIdentity(identity.pid, { strict: true, system });
   } catch (error) {
     if ((error as NodeJS.ErrnoException | undefined)?.code === "PROCESS_IDENTITY_UNAVAILABLE") {
-      // Darwin's proc_pidinfo birth record is transiently unavailable even
-      // for a live, stable process. kill(0) above already confirmed liveness,
-      // so on darwin tolerate the strict-identity gap (best-effort "same")
-      // instead of failing teardown. Linux /proc/stat is stable, so non-darwin
-      // keeps the strict split-brain guarantee unchanged.
-      if (system.platform === "darwin") return { state: "same", current: identity };
       return { state: "unavailable" };
     }
     throw error;
@@ -391,7 +410,10 @@ async function waitForObservableProcessIdentity(
 export function isProcessIdentityAlive(identity: ProcessIdentity, system = defaultSystem) {
   const observed = observeProcessIdentity(identity, system);
   if (observed.state === "unavailable") {
-    throw processTreeError("process is live but its exact identity is unavailable", "PROCESS_IDENTITY_UNAVAILABLE");
+    // Identity unverifiable (Darwin transient). Cannot confirm PID ownership —
+    // return false rather than throwing, so callers treat it as "not confirmed
+    // same" without propagating a fatal error through cleanup paths.
+    return false;
   }
   return observed.state === "same";
 }
@@ -636,8 +658,21 @@ async function waitForVerifiedCleanup(
     for (const identity of [rootIdentity, ...descendants]) {
       try {
         const observed = observeProcessIdentity(identity, system);
-        if (observed.state === "same" || observed.state === "unavailable") {
+        if (observed.state === "same") {
           alive.push(String(identity.pid));
+          continue;
+        }
+        if (observed.state === "unavailable") {
+          // Identity unverifiable (Darwin transient). Fall back to bare PID
+          // liveness check — ESRCH means the process is genuinely gone.
+          try {
+            system.kill(identity.pid, 0);
+            alive.push(String(identity.pid));
+          } catch (livenessError) {
+            if ((livenessError as NodeJS.ErrnoException | undefined)?.code !== "ESRCH") {
+              alive.push(String(identity.pid));
+            }
+          }
           continue;
         }
         if (observed.state === "gone" && identity.processGroupId === identity.pid) {
@@ -655,9 +690,16 @@ async function waitForVerifiedCleanup(
       } catch (error) {
         if ((error as NodeJS.ErrnoException | undefined)?.code !== "PROCESS_IDENTITY_UNAVAILABLE") throw error;
         // A just-signalled process may be a zombie: kill(0) still succeeds
-        // while proc_pidinfo can no longer return a birth record. Keep polling
-        // and fail unverified at the deadline rather than authorizing a signal.
-        alive.push(String(identity.pid));
+        // while proc_pidinfo can no longer return a birth record. Fall back
+        // to bare PID liveness — ESRCH means the process is genuinely gone.
+        try {
+          system.kill(identity.pid, 0);
+          alive.push(String(identity.pid));
+        } catch (livenessError) {
+          if ((livenessError as NodeJS.ErrnoException | undefined)?.code !== "ESRCH") {
+            alive.push(String(identity.pid));
+          }
+        }
       }
     }
     if (alive.length === 0) return;
@@ -702,7 +744,32 @@ export async function killTree(
   if (!rootIdentity) {
     throw processTreeError("root process identity unavailable; refusing to signal by bare pid", "PROCESS_IDENTITY_UNAVAILABLE");
   }
-  const initialRootState = await waitForObservableProcessIdentity(rootIdentity, system, forceVerifyMs);
+  let initialRootState;
+  try {
+    initialRootState = await waitForObservableProcessIdentity(rootIdentity, system, forceVerifyMs);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | undefined)?.code === "PROCESS_IDENTITY_UNAVAILABLE") {
+      // Identity unverifiable (Darwin transient proc_pidinfo gap). Cannot safely
+      // signal — fall back to bare PID liveness polling and wait for natural exit.
+      const deadline = Date.now() + forceVerifyMs;
+      do {
+        await new Promise((resolve) => setTimeout(resolve, FORCE_VERIFY_INTERVAL_MS));
+        try {
+          system.kill(pid, 0);
+        } catch (livenessError) {
+          if ((livenessError as NodeJS.ErrnoException | undefined)?.code === "ESRCH") return;
+          throw livenessError;
+        }
+      } while (Date.now() < deadline);
+      // Process is still alive but identity remains unverifiable. Cannot safely
+      // signal and cannot confirm exit — report as unverified cleanup failure.
+      throw processTreeError(
+        `process ${pid} identity remained unverifiable; cleanup not confirmed`,
+        "PROCESS_CLEANUP_UNVERIFIED",
+      );
+    }
+    throw error;
+  }
   if (initialRootState.state === "gone") return;
   if (initialRootState.state === "successor") {
     throw processTreeError("root process identity mismatch; refusing to signal possible successor", "PROCESS_IDENTITY_MISMATCH");
@@ -716,7 +783,26 @@ export async function killTree(
   };
   const recaptureDescendants = () => {
     try {
-      if (!isProcessIdentityAlive(rootIdentity, system)) return [];
+      if (!isProcessIdentityAlive(rootIdentity, system)) {
+        // Root identity lost. Check if it's a PID recycle (successor) or
+        // merely unverifiable (Darwin transient). Only record an error for
+        // confirmed successor — unverifiable is not an error condition.
+        try {
+          const observed = observeProcessIdentity(rootIdentity, system);
+          if (observed.state === "successor") {
+            recordCleanupError(processTreeError(
+              "root process identity changed; possible PID recycle",
+              "PROCESS_IDENTITY_MISMATCH",
+            ));
+          }
+        } catch {
+          recordCleanupError(processTreeError(
+            "root process identity unavailable during descendant recapture",
+            "PROCESS_IDENTITY_UNAVAILABLE",
+          ));
+        }
+        return [];
+      }
       return mergeDescendants(descendantIdentities(rootIdentity, {
         strict: requireDescendantScan,
         system,
@@ -752,10 +838,9 @@ export async function killTree(
     try {
       const observed = observeProcessIdentity(rootIdentity, system);
       if (observed.state === "unavailable") {
-        recordCleanupError(processTreeError(
-          "root process identity unavailable during teardown",
-          "PROCESS_IDENTITY_UNAVAILABLE",
-        ));
+        // Identity unverifiable (Darwin transient). Not an error — just not "same".
+        // Bare PID liveness is checked separately in signal/wait paths.
+        return false;
       }
       return observed.state === "same";
     } catch (error) {
@@ -882,7 +967,7 @@ export async function runCommandTree(
       const onExitStep = onExit && child?.pid != null
         ? Promise.resolve(onExit(child.pid, code, signalOut)).catch(() => undefined)
         : Promise.resolve();
-      const done = () => resolve({
+      const resultBase = {
         exitCode: code,
         signal: signalOut,
         stdout,
@@ -892,8 +977,27 @@ export async function runCommandTree(
         cleanupVerified: cleanupError === undefined,
         rootIdentity,
         error: error || cleanupError,
-      });
-      Promise.all([onSpawnDone, onExitStep, teardown || Promise.resolve()]).then(done, done);
+      };
+      if (timedOut || aborted) {
+        // Business operation timed out or was aborted — resolve immediately so
+        // the caller is not blocked by cleanup. The teardown continues in the
+        // background; callers can await cleanupPromise for the final result.
+        // cleanupVerified is always false here because cleanup has not completed.
+        resolve({
+          ...resultBase,
+          cleanupVerified: false,
+          cleanupPromise: Promise.all([onSpawnDone, onExitStep, teardown || Promise.resolve()]).then(() => ({
+            cleanupVerified: cleanupError === undefined,
+            error: cleanupError,
+          })).catch((e) => ({
+            cleanupVerified: false,
+            error: e instanceof Error ? e : new Error(String(e)),
+          })),
+        });
+      } else {
+        const done = () => resolve(resultBase);
+        Promise.all([onSpawnDone, onExitStep, teardown || Promise.resolve()]).then(done, done);
+      }
     };
 
     const startTeardown = () => {
@@ -1004,6 +1108,20 @@ export async function runCommandTree(
         }
       }
     } catch (error) {
+      // Identity capture failed. Notify onSpawn with undefined identity so the
+      // caller can register the terminal entry / close observer BEFORE we wait
+      // for the child's natural close. Without this, a short-lived child that
+      // exits during identity capture is invisible to the terminal registry.
+      let spawnRegistrationDone: Promise<unknown> = Promise.resolve();
+      try {
+        const maybe = child.pid != null ? onSpawn?.(child.pid, undefined) : undefined;
+        if (maybe && typeof maybe.then === "function") {
+          spawnRegistrationDone = maybe.catch(() => undefined);
+        }
+      } catch {
+        // Registry injection is best-effort and must not replace the child's
+        // real exit code when identity capture races a short-lived command.
+      }
       if (canTeardown) {
         // A very short-lived command can exit while exact birth identity is
         // being captured (notably on Darwin, where proc_pidinfo is queried via
@@ -1013,7 +1131,10 @@ export async function runCommandTree(
         // event. A still-live child remains fail-closed after the bounded close
         // proof and is never signalled by bare PID.
         const identityError = error instanceof Error ? error : new Error(String(error));
-        onSpawnDone = waitForChildClose(child, UNOWNED_SPAWN_CLOSE_WAIT_MS).then((closed) => {
+        onSpawnDone = Promise.all([
+          spawnRegistrationDone,
+          waitForChildClose(child, UNOWNED_SPAWN_CLOSE_WAIT_MS),
+        ]).then(([, closed]) => {
           if (closed || settled) return;
           cleanupError = identityError;
           startTeardown();

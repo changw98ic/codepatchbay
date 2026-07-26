@@ -167,6 +167,8 @@ test("managed worker only accepts a journal takeover backed by a durable termina
         mode: "remote",
         jobId: "job-finalizer-a2",
         committed: false,
+        commit: candidateHead,
+        tree: candidateTree,
         remoteIntent,
         reconciliation: {
           journal: {

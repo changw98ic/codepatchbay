@@ -231,6 +231,9 @@ test("decompose: CodeGraph query timeout is bounded and does not fall back to ag
         env: {
           CPB_CODEGRAPH_COMMAND: command,
           CPB_CHECKLIST_CODEGRAPH_QUERY_TIMEOUT_MS: "25",
+          // The fixture's /usr/bin/env shebang needs the explicit job PATH;
+          // no other ambient variables should be inherited by the child.
+          PATH: process.env.PATH || "",
         },
       },
     }),

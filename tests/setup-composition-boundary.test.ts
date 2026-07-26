@@ -20,16 +20,6 @@ const CANONICAL_IMPORTS = [
     names: ["runInstallPlanWithEvents"],
   },
   {
-    file: "bridges/run-pipeline.ts",
-    specifier: "../server/services/executor-root.js",
-    names: ["executorEnv", "executorMetadata", "resolveExecutorRoot"],
-  },
-  {
-    file: "bridges/project-worker.ts",
-    specifier: "../server/services/executor-root.js",
-    names: ["executorEnv", "resolveExecutorRoot"],
-  },
-  {
     file: "server/orchestrator/worker-supervisor.ts",
     specifier: "../services/executor-root.js",
     names: ["executorEnv", "resolveExecutorRoot"],

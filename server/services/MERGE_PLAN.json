@@ -540,16 +540,6 @@
     {"file": "server/orchestrator/hub-orchestrator.ts", "oldImport": "./services/concurrency-limits.js", "newImport": "../services/lease-manager.js"},
     {"file": "server/orchestrator/hub-orchestrator.ts", "oldImport": "./services/index-freshness.js", "newImport": "../services/process-registry.js"},
 
-    {"file": "bridges/run-pipeline.ts", "oldImport": "./services/hub-registry.js", "newImport": "../server/services/hub/hub-registry.js"},
-    {"file": "bridges/run-pipeline.ts", "oldImport": "./services/hub-queue.js", "newImport": "../server/services/hub/hub-queue.js"},
-    {"file": "bridges/run-pipeline.ts", "oldImport": "./services/event-store.js", "newImport": "../server/services/event/event-store.js"},
-    {"file": "bridges/run-pipeline.ts", "oldImport": "./services/job-store.js", "newImport": "../server/services/job/job-store.js"},
-    {"file": "bridges/run-pipeline.ts", "oldImport": "./services/executor-root.js", "newImport": "../server/services/executor-root.js"},
-    {"file": "bridges/run-pipeline.ts", "oldImport": "./services/workflow-definition.js", "newImport": "../server/services/phase/phase-runner.js"},
-    {"file": "bridges/run-pipeline.ts", "oldImport": "./services/phase-runner.js", "newImport": "../server/services/phase/phase-runner.js"},
-    {"file": "bridges/run-pipeline.ts", "oldImport": "./services/repair-handler.js", "newImport": "../server/services/review/review-dispatch.js"},
-    {"file": "bridges/run-pipeline.ts", "oldImport": "./services/multi-evolve-state.js", "newImport": "../server/services/evolve/evolve.js"},
-
     {"file": "cli/commands/hub.ts", "oldImport": "../../server/services/hub-registry.js", "newImport": "../../server/services/hub/hub-registry.js"},
     {"file": "cli/commands/github.ts", "oldImport": "../../server/services/github-app.js", "newImport": "../../server/services/github/github-api.js"},
     {"file": "cli/commands/github.ts", "oldImport": "../../server/services/github-issues.js", "newImport": "../../server/services/github/github-issues.js"},
@@ -564,9 +554,6 @@
     {"file": "server/orchestrator/scheduler.ts", "oldImport": "./services/lease-manager.js", "newImport": "../services/infra.js"},
     {"file": "server/orchestrator/scheduler.ts", "oldImport": "./services/concurrency-limits.js", "newImport": "../services/infra.js"},
     {"file": "server/orchestrator/scheduler.ts", "oldImport": "./services/process-registry.js", "newImport": "../services/infra.js"},
-
-    {"file": "bridges/run-pipeline.ts", "oldImport": "./services/lease-manager.js", "newImport": "../server/services/infra.js"},
-    {"file": "bridges/run-pipeline.ts", "oldImport": "./services/process-registry.js", "newImport": "../server/services/infra.js"},
 
     {"file": "bridges/runtime-services.ts", "oldImport": "./services/lease-manager.js", "newImport": "../server/services/infra.js"},
 

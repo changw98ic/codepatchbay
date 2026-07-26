@@ -1,14 +1,12 @@
 import { recordValue, type LooseRecord } from "../types.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, readdir, rename } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, rename, unlink } from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
 import os from "node:os";
 import { writeJsonAtomic, writeJsonOnce } from "../fs-utils.js";
 import { assertHubWritable, fsyncDirectory, writeJsonDurableAtomic } from "../hub-maintenance.js";
-import { openPinnedHubRedisStateBackend, type HubRedisStateBackend } from "../hub-state-redis.js";
-import { processLeaderFence } from "../hub-leader-fence.js";
 import {
   captureProcessIdentity,
   isProcessIdentityAlive,
@@ -93,18 +91,13 @@ export type AssignmentEnqueueReceipt = {
   committedDocument: AssignmentDocument;
   assignment: AssignmentRecord;
   attempt: AssignmentAttempt;
-  writeFence:
-    | {
-        backend: "local";
-        ownerToken: string;
-        mutationOwnerToken: string;
-        previousOwner: LooseRecord | null;
-        committedOwner: LooseRecord;
-      }
-    | {
-        backend: "redis";
-        revision: number;
-      };
+  writeFence: {
+    backend: "local";
+    ownerToken: string;
+    mutationOwnerToken: string;
+    previousOwner: LooseRecord | null;
+    committedOwner: LooseRecord;
+  };
 };
 
 export type AssignmentWriteCancelOptions = {
@@ -124,6 +117,19 @@ type LocalAssignmentSnapshot = {
 type AssignmentLockContext = {
   ownerToken: string;
   predecessorMutationOwnerToken: string | null;
+};
+
+type AssignmentLockOptions = AssignmentWriteCancelOptions & {
+  skipCompletionRecovery?: boolean;
+};
+
+type CompletionWalRecord = {
+  schemaVersion: 1;
+  assignmentId: string;
+  attemptNum: number;
+  attemptToken: string;
+  state: AssignmentRecord;
+  attemptRecord: AssignmentAttempt;
 };
 
 type AssignmentLockCandidate = {
@@ -154,8 +160,11 @@ export type AssignmentStoreTestHooks = {
     attempt?: number;
   }) => void | Promise<void>;
   afterLocalCancelCommit?: (context: { assignmentId: string; attempt: number }) => void | Promise<void>;
-  afterRedisCancelRead?: (context: { assignmentId: string; revision: number }) => void | Promise<void>;
-  afterRedisCancelCommit?: (context: { assignmentId: string; attempt: number; revision: number }) => void | Promise<void>;
+  afterLocalCompletionWalWrite?: (context: { assignmentId: string; attempt: number }) => void | Promise<void>;
+  afterLocalCompletionAttemptWrite?: (context: { assignmentId: string; attempt: number }) => void | Promise<void>;
+  beforeLocalCompletionStateWrite?: (context: { assignmentId: string; attempt: number }) => void | Promise<void>;
+  afterLocalCompletionStateWrite?: (context: { assignmentId: string; attempt: number }) => void | Promise<void>;
+  afterLocalCompletionWalClear?: (context: { assignmentId: string; attempt: number }) => void | Promise<void>;
   afterAssignmentLockRecoveryObserved?: (context: { lockDir: string; ownerToken: string | null; kind: string }) => void | Promise<void>;
   afterAssignmentLockQuarantineRename?: (context: { lockDir: string; quarantineDir: string; ownerToken: string | null; kind: string }) => void | Promise<void>;
   captureAssignmentProcessIdentity?: (pid: number) => ProcessIdentity | null;
@@ -183,6 +192,8 @@ function terminalStatusFromResult(status: unknown) {
 
 const TERMINAL_ASSIGNMENT_STATUSES = new Set(["completed", "failed", "cancelled", "blocked"]);
 const ASSIGNMENT_OWNER_SCHEMA_VERSION = 2;
+const COMPLETION_WAL_SCHEMA_VERSION = 1;
+const LOCAL_COMPLETION_WAL_FILE = "completion-wal.json";
 const LOCAL_ASSIGNMENT_JSON_MAX_BYTES = 1024 * 1024;
 
 async function syncAssignmentDirectory(directory: string) {
@@ -194,7 +205,7 @@ async function syncAssignmentDirectory(directory: string) {
   await fsyncDirectory(directory);
 }
 
-async function removeLocalPathDurable(filePath: string, options: { recursive?: boolean } = {}) {
+async function removeLocalPathDurable(filePath: string, options: { recursive?: boolean; deleteAfterQuarantine?: boolean } = {}) {
   let info;
   try {
     info = await lstat(filePath);
@@ -230,6 +241,10 @@ async function removeLocalPathDurable(filePath: string, options: { recursive?: b
     });
   }
   await syncAssignmentDirectory(parent);
+  if (options.deleteAfterQuarantine) {
+    await unlink(quarantinePath);
+    await syncAssignmentDirectory(parent);
+  }
 }
 
 function staleAttemptError(assignmentId: string, attemptNum: number, detail: string) {
@@ -460,161 +475,14 @@ function enqueueReceipt(input: {
 export class AssignmentStore {
   hubRoot: string;
   baseDir: string;
-  _redisBackend: HubRedisStateBackend | null | undefined;
 
   constructor(hubRoot: string) {
     this.hubRoot = path.resolve(hubRoot);
     this.baseDir = path.join(this.hubRoot, ASSIGNMENTS_DIR);
-    this._redisBackend = undefined;
-  }
-
-  async _backend() {
-    if (this._redisBackend !== undefined) return this._redisBackend;
-    this._redisBackend = await openPinnedHubRedisStateBackend({
-      configFile: process.env.CPB_HUB_STATE_REDIS_CONFIG_FILE,
-      hubRoot: this.hubRoot,
-    });
-    return this._redisBackend;
-  }
-
-  _assignmentField(assignmentId: string) {
-    return `assignment:${Buffer.from(String(assignmentId), "utf8").toString("base64url")}`;
-  }
-
-  _inboxClaimField(workerId: string, assignmentId: string, attemptNum: number, attemptToken: string) {
-    const part = (value: string) => Buffer.from(value, "utf8").toString("base64url");
-    return `workerInbox:${part(workerId)}:${part(assignmentId)}:${attemptNum}:${part(attemptToken)}`;
-  }
-
-  _assignmentDocument(value: unknown, assignmentId: string): AssignmentDocument | null {
-    if (value === null) return null;
-    if (!value || typeof value !== "object" || Array.isArray(value)) {
-      throw Object.assign(new Error(`invalid Redis assignment record: ${assignmentId}`), { code: "HUB_STATE_RECORD_INVALID" });
-    }
-    const candidate = value as Partial<AssignmentDocument>;
-    if (!candidate.input || !candidate.state || !candidate.attempts || typeof candidate.attempts !== "object" || Array.isArray(candidate.attempts)) {
-      throw Object.assign(new Error(`invalid Redis assignment envelope: ${assignmentId}`), { code: "HUB_STATE_RECORD_INVALID" });
-    }
-    return candidate as AssignmentDocument;
-  }
-
-  async _readRedisDocument(backend: HubRedisStateBackend, assignmentId: string) {
-    const snapshot = await backend.readStateRecord(this._assignmentField(assignmentId));
-    return { snapshot, document: this._assignmentDocument(snapshot.data, assignmentId) };
-  }
-
-  async _mutateRedisDocument<T>(
-    backend: HubRedisStateBackend,
-    assignmentId: string,
-    callback: (current: AssignmentDocument | null) => { document: AssignmentDocument; result: T },
-  ): Promise<T> {
-    const fence = processLeaderFence(backend.identityFingerprint);
-    for (let retry = 0; retry < 64; retry += 1) {
-      const { snapshot, document } = await this._readRedisDocument(backend, assignmentId);
-      const mutation = callback(document);
-      const committed = await backend.compareAndSwapStateRecord(
-        this._assignmentField(assignmentId),
-        snapshot.revision,
-        mutation.document,
-        fence,
-      );
-      if (committed.fenced) {
-        throw Object.assign(new Error("leader lease no longer authorizes this assignment write"), { code: "HUB_LEADER_FENCED" });
-      }
-      if (committed.committed) return mutation.result;
-    }
-    throw Object.assign(new Error(`assignment changed too frequently: ${assignmentId}`), { code: "HUB_STATE_RECORD_CONFLICT" });
-  }
-
-  async _mutateRedisDocumentWithRevision<T>(
-    backend: HubRedisStateBackend,
-    assignmentId: string,
-    callback: (current: AssignmentDocument | null) => {
-      document: AssignmentDocument;
-      result: (revision: number) => T;
-    },
-  ): Promise<T> {
-    const fence = processLeaderFence(backend.identityFingerprint);
-    for (let retry = 0; retry < 64; retry += 1) {
-      const { snapshot, document } = await this._readRedisDocument(backend, assignmentId);
-      const mutation = callback(document);
-      const committed = await backend.compareAndSwapStateRecord(
-        this._assignmentField(assignmentId),
-        snapshot.revision,
-        mutation.document,
-        fence,
-      );
-      if (committed.fenced) {
-        throw Object.assign(new Error("leader lease no longer authorizes this assignment write"), { code: "HUB_LEADER_FENCED" });
-      }
-      if (committed.committed) return mutation.result(committed.revision);
-    }
-    throw Object.assign(new Error(`assignment changed too frequently: ${assignmentId}`), { code: "HUB_STATE_RECORD_CONFLICT" });
-  }
-
-  async _mutateRedisDocumentAbortable<T>(
-    backend: HubRedisStateBackend,
-    assignmentId: string,
-    options: AssignmentWriteCancelOptions,
-    callback: (current: AssignmentDocument | null) => { document: AssignmentDocument; result: T },
-  ): Promise<T> {
-    const fence = processLeaderFence(backend.identityFingerprint);
-    for (let retry = 0; retry < 64; retry += 1) {
-      throwIfAssignmentOperationStopped(options);
-      const { snapshot, document } = await this._readRedisDocument(backend, assignmentId);
-      await assignmentStoreTestHooks().afterRedisCancelRead?.({ assignmentId, revision: snapshot.revision });
-      throwIfAssignmentOperationStopped(options);
-      const mutation = callback(document);
-      throwIfAssignmentOperationStopped(options);
-      const committed = await backend.compareAndSwapStateRecord(
-        this._assignmentField(assignmentId),
-        snapshot.revision,
-        mutation.document,
-        fence,
-      );
-      if (committed.fenced) {
-        throw Object.assign(new Error("leader lease no longer authorizes this assignment write"), { code: "HUB_LEADER_FENCED" });
-      }
-      if (committed.committed) {
-        await assignmentStoreTestHooks().afterRedisCancelCommit?.({
-          assignmentId,
-          attempt: Number(mutation.document.state.activeAttempt || 0),
-          revision: committed.revision,
-        });
-        return mutation.result;
-      }
-      throwIfAssignmentOperationStopped(options);
-    }
-    throw Object.assign(new Error(`assignment changed too frequently: ${assignmentId}`), { code: "HUB_STATE_RECORD_CONFLICT" });
-  }
-
-  _redisActiveAttempt(document: AssignmentDocument, assignmentId: string, attemptNum: number): ActiveAttemptContext {
-    const activeAttempt = Number(document.state.activeAttempt);
-    if (!Number.isInteger(activeAttempt) || activeAttempt !== attemptNum) {
-      throw staleAttemptError(assignmentId, attemptNum, `active attempt is ${document.state.activeAttempt ?? "none"}`);
-    }
-    const attempt = document.attempts[String(attemptNum)];
-    if (!attempt || attempt.assignmentId !== assignmentId || attempt.attempt !== attemptNum) {
-      throw staleAttemptError(assignmentId, attemptNum, "attempt record identity mismatch");
-    }
-    return { state: document.state, attempt };
   }
 
   async init() {
     await assertHubWritable(this.hubRoot);
-    const backend = await this._backend();
-    if (backend) {
-      await backend.preflight();
-      await backend.scanStateRecords("assignment:");
-      const localEntries = await readdir(this.baseDir).catch((): string[] => []);
-      if (localEntries.some((entry) => entry.startsWith("a-"))) {
-        throw Object.assign(
-          new Error("local assignments exist and require an explicit Redis migration"),
-          { code: "HUB_ASSIGNMENT_MIGRATION_REQUIRED" },
-        );
-      }
-      return;
-    }
     await mkdir(this.baseDir, { recursive: true });
   }
 
@@ -625,54 +493,10 @@ export class AssignmentStore {
   async getOrCreateAssignmentForEntry({ entryId, projectId, task, sourcePath, workflow, planMode, sourceContext, metadata }: AssignmentEntryInput): Promise<AssignmentRecord> {
     const entryIdText = String(entryId);
     const id = `a-${entryIdText}`;
-    const backend = await this._backend();
-    if (backend) {
-      return this._mutateRedisDocument(backend, id, (current) => {
-        if (current) {
-          const updated = {
-            ...current.state,
-            workflow: workflow || current.state.workflow,
-            planMode: planMode || current.state.planMode,
-            sourceContext: { ...recordValue(current.state.sourceContext), ...recordValue(sourceContext) },
-            task: task || current.state.task,
-            sourcePath: sourcePath || current.state.sourcePath,
-            metadata: { ...recordValue(current.state.metadata), ...recordValue(metadata) },
-            status: "scheduled",
-            resultWrittenAt: null,
-            queueFinalizedAt: null,
-            workerFinalizedAt: null,
-          };
-          return {
-            document: { ...current, input: updated, state: updated },
-            result: updated,
-          };
-        }
-        const assignment: AssignmentRecord = {
-          assignmentId: id,
-          entryId: entryIdText,
-          projectId,
-          task,
-          sourcePath,
-          workflow: workflow || "standard",
-          planMode: planMode || "full",
-          sourceContext: recordValue(sourceContext),
-          metadata: recordValue(metadata),
-          status: "scheduled",
-          createdAt: new Date().toISOString(),
-          resultWrittenAt: null,
-          queueFinalizedAt: null,
-          workerFinalizedAt: null,
-        };
-        return {
-          document: { input: assignment, state: { ...assignment, attempts: 0 }, attempts: {} },
-          result: assignment,
-        };
-      });
-    }
     const dir = path.join(this.baseDir, id);
     return this._withAssignmentLock(id, async () => {
       // Preserve existing assignment on retry/reroute — don't reset attempt history
-      const existing = await this._readState(id);
+      const existing = await this._readStateFile(id);
       if (existing) {
         const updated = {
           ...existing,
@@ -723,41 +547,8 @@ export class AssignmentStore {
   }
 
   async createAttempt(assignmentId: string, { workerId, orchestratorEpoch }: LooseRecord): Promise<AssignmentAttempt> {
-    const backend = await this._backend();
-    if (backend) {
-      const authorityNow = new Date(await backend.serverTimeMs()).toISOString();
-      return this._mutateRedisDocument(backend, assignmentId, (current) => {
-        if (!current) throw new Error(`assignment not found: ${assignmentId}`);
-        const state = { ...current.state };
-        const attemptNum = (typeof state.attempts === "number" ? state.attempts : 0) + 1;
-        const attempt: AssignmentAttempt = {
-          assignmentId,
-          attempt: attemptNum,
-          entryId: String(state.entryId || ""),
-          projectId: String(state.projectId || ""),
-          workerId: typeof workerId === "string" ? workerId : undefined,
-          status: "assigned",
-          orchestratorEpoch: typeof orchestratorEpoch === "number" ? orchestratorEpoch : undefined,
-          attemptToken: crypto.randomBytes(16).toString("hex"),
-          createdAt: authorityNow,
-        };
-        state.attempts = attemptNum;
-        state.activeAttempt = attemptNum;
-        state.status = "assigned";
-        state.assignedAt = authorityNow;
-        state.workerId = typeof workerId === "string" ? workerId : undefined;
-        return {
-          document: {
-            ...current,
-            state,
-            attempts: { ...current.attempts, [String(attemptNum)]: attempt },
-          },
-          result: attempt,
-        };
-      });
-    }
     return this._withAssignmentLock(assignmentId, async () => {
-      const state = await this._readState(assignmentId);
+      const state = await this._readStateFile(assignmentId);
       if (!state) throw new Error(`assignment not found: ${assignmentId}`);
       const previousAttempts = typeof state.attempts === "number" ? state.attempts : 0;
       const attemptNum = previousAttempts + 1;
@@ -796,80 +587,6 @@ export class AssignmentStore {
     const normalizedInput = normalizeJsonValue(input, "assignment enqueue input") as AssignmentEntryInput;
     const entryIdText = String(normalizedInput.entryId);
     const assignmentId = `a-${entryIdText}`;
-    const backend = await this._backend();
-    if (backend) {
-      const authorityNow = new Date(await backend.serverTimeMs()).toISOString();
-      return this._mutateRedisDocumentWithRevision(backend, assignmentId, (current) => {
-        const previousDocument = current ? receiptClone(current) : null;
-        const currentState = current?.state;
-        const assignment = normalizeJsonValue(currentState
-          ? {
-              ...currentState,
-              workflow: normalizedInput.workflow || currentState.workflow,
-              planMode: normalizedInput.planMode || currentState.planMode,
-              sourceContext: { ...recordValue(currentState.sourceContext), ...recordValue(normalizedInput.sourceContext) },
-              task: normalizedInput.task || currentState.task,
-              sourcePath: normalizedInput.sourcePath || currentState.sourcePath,
-              metadata: { ...recordValue(currentState.metadata), ...recordValue(normalizedInput.metadata) },
-              status: "scheduled",
-              resultWrittenAt: null,
-              queueFinalizedAt: null,
-              workerFinalizedAt: null,
-            }
-          : {
-              assignmentId,
-              entryId: entryIdText,
-              projectId: normalizedInput.projectId,
-              task: normalizedInput.task,
-              sourcePath: normalizedInput.sourcePath,
-              workflow: normalizedInput.workflow || "standard",
-              planMode: normalizedInput.planMode || "full",
-              sourceContext: recordValue(normalizedInput.sourceContext),
-              metadata: recordValue(normalizedInput.metadata),
-              status: "scheduled",
-              createdAt: authorityNow,
-              resultWrittenAt: null,
-              queueFinalizedAt: null,
-              workerFinalizedAt: null,
-            }, "assignment enqueue record") as AssignmentRecord;
-        const attempts = { ...(current?.attempts || {}) };
-        const state = { ...(assignment as LooseRecord) };
-        const attemptNum = (typeof currentState?.attempts === "number" ? currentState.attempts : 0) + 1;
-        const attempt = normalizeJsonValue({
-          assignmentId,
-          attempt: attemptNum,
-          entryId: String(state.entryId || ""),
-          projectId: String(state.projectId || ""),
-          workerId: typeof workerId === "string" ? workerId : undefined,
-          status: "assigned",
-          orchestratorEpoch: typeof orchestratorEpoch === "number" ? orchestratorEpoch : undefined,
-          attemptToken: crypto.randomBytes(16).toString("hex"),
-          createdAt: authorityNow,
-        }, "assignment enqueue attempt") as AssignmentAttempt;
-        state.attempts = attemptNum;
-        state.activeAttempt = attemptNum;
-        state.status = "assigned";
-        state.assignedAt = authorityNow;
-        state.workerId = typeof workerId === "string" ? workerId : undefined;
-        attempts[String(attemptNum)] = attempt;
-        const committedDocument = normalizeJsonValue({
-          input: assignment,
-          state,
-          attempts,
-        }, "assignment enqueue document") as AssignmentDocument;
-        return {
-          document: committedDocument,
-          result: (revision: number) => enqueueReceipt({
-            assignment: committedDocument.state,
-            attempt: committedDocument.attempts[String(attemptNum)],
-            previousDocument,
-            committedDocument,
-            assignmentId,
-            writeFence: { backend: "redis", revision },
-          }),
-        };
-      });
-    }
     await this.init();
     return this._withAssignmentLock(assignmentId, async (lockContext) => {
       const dir = path.join(this.baseDir, assignmentId);
@@ -1002,6 +719,134 @@ export class AssignmentStore {
       }
       throw error;
     }
+  }
+
+  async _readStateFile(assignmentId: string): Promise<AssignmentRecord | null> {
+    const state = await this._readLocalJsonObject(
+      path.join(this.baseDir, assignmentId, "state.json"),
+      "assignment state",
+    );
+    return state ? recordValue(state) as AssignmentRecord : null;
+  }
+
+  async _readPendingCompletion(assignmentId: string): Promise<CompletionWalRecord | null> {
+    const pending = await this._readLocalJsonObject(
+      path.join(this.baseDir, assignmentId, LOCAL_COMPLETION_WAL_FILE),
+      "assignment completion WAL",
+    );
+    if (!pending) return null;
+
+    const state = recordValue(pending.state);
+    const attemptRecord = recordValue(pending.attemptRecord);
+    const attemptNum = Number(pending.attemptNum);
+    const attemptToken = typeof pending.attemptToken === "string" ? pending.attemptToken : "";
+    if (
+      pending.schemaVersion !== COMPLETION_WAL_SCHEMA_VERSION
+      || pending.assignmentId !== assignmentId
+      || !Number.isSafeInteger(attemptNum)
+      || attemptNum < 1
+      || !attemptToken
+      || state.assignmentId !== assignmentId
+      || Number(state.activeAttempt) !== attemptNum
+      || attemptRecord.assignmentId !== assignmentId
+      || Number(attemptRecord.attempt) !== attemptNum
+      || attemptRecord.attemptToken !== attemptToken
+      || !TERMINAL_ASSIGNMENT_STATUSES.has(String(state.status || ""))
+      || !TERMINAL_ASSIGNMENT_STATUSES.has(String(attemptRecord.status || ""))
+    ) {
+      throw Object.assign(
+        new Error(`assignment completion WAL is invalid: ${assignmentId}`),
+        { code: "HUB_ASSIGNMENT_DOCUMENT_INVALID" },
+      );
+    }
+
+    return {
+      schemaVersion: COMPLETION_WAL_SCHEMA_VERSION,
+      assignmentId,
+      attemptNum,
+      attemptToken,
+      state: state as AssignmentRecord,
+      attemptRecord: attemptRecord as AssignmentAttempt,
+    };
+  }
+
+  async _writePendingCompletion(pending: CompletionWalRecord) {
+    await writeJsonDurableAtomic(
+      path.join(this.baseDir, pending.assignmentId, LOCAL_COMPLETION_WAL_FILE),
+      pending,
+      { syncParentDirectory: syncAssignmentDirectory },
+    );
+    await assignmentStoreTestHooks().afterLocalCompletionWalWrite?.({
+      assignmentId: pending.assignmentId,
+      attempt: pending.attemptNum,
+    });
+  }
+
+  async _clearPendingCompletion(assignmentId: string, attemptNum: number) {
+    await removeLocalPathDurable(
+      path.join(this.baseDir, assignmentId, LOCAL_COMPLETION_WAL_FILE),
+      { deleteAfterQuarantine: true },
+    );
+    await assignmentStoreTestHooks().afterLocalCompletionWalClear?.({ assignmentId, attempt: attemptNum });
+  }
+
+  async _recoverPendingCompletionUnderLock(assignmentId: string): Promise<boolean> {
+    const pending = await this._readPendingCompletion(assignmentId);
+    if (!pending) return false;
+
+    const state = await this._readStateFile(assignmentId);
+    const attemptDir = path.join(
+      this.baseDir,
+      assignmentId,
+      "attempts",
+      String(pending.attemptNum).padStart(3, "0"),
+    );
+    const currentAttempt = await this._readLocalJsonObject(
+      path.join(this.baseDir, assignmentId, "attempts", String(pending.attemptNum).padStart(3, "0"), "attempt.json"),
+      `assignment attempt ${String(pending.attemptNum).padStart(3, "0")}`,
+    );
+
+    const stateMatchesAttempt = !state
+      || state.assignmentId === undefined
+      || state.assignmentId === assignmentId;
+    const activeAttemptMatches = !state || Number(state.activeAttempt) === pending.attemptNum;
+    const attemptMatchesIdentity = !currentAttempt
+      || (currentAttempt.assignmentId === assignmentId
+        && Number(currentAttempt.attempt) === pending.attemptNum
+        && currentAttempt.attemptToken === pending.attemptToken);
+    if (!stateMatchesAttempt || !activeAttemptMatches || !attemptMatchesIdentity) {
+      throw assignmentLockConflict(
+        `assignment completion WAL no longer matches active assignment: ${assignmentId} attempt ${pending.attemptNum}`,
+      );
+    }
+
+    const completionAlreadyApplied = Boolean(
+      state
+      && currentAttempt
+      && receiptDeepEqual(state, pending.state)
+      && receiptDeepEqual(currentAttempt, pending.attemptRecord),
+    );
+    if (!completionAlreadyApplied) {
+      await mkdir(attemptDir, { recursive: true });
+      if (!currentAttempt || !receiptDeepEqual(currentAttempt, pending.attemptRecord)) {
+        await this._writeAttempt(assignmentId, pending.attemptNum, pending.attemptRecord);
+      }
+      if (!state || !receiptDeepEqual(state, pending.state)) {
+        await this._writeState(assignmentId, pending.state);
+      }
+    }
+
+    await this._clearPendingCompletion(assignmentId, pending.attemptNum);
+    return true;
+  }
+
+  async _recoverPendingCompletion(assignmentId: string): Promise<boolean> {
+    if (!await this._readPendingCompletion(assignmentId)) return false;
+    return this._withAssignmentLock(
+      assignmentId,
+      () => this._recoverPendingCompletionUnderLock(assignmentId),
+      { skipCompletionRecovery: true },
+    );
   }
 
   async _localDocumentSnapshot(assignmentId: string): Promise<LocalAssignmentSnapshot | null> {
@@ -1210,29 +1055,6 @@ export class AssignmentStore {
   }
 
   async compensateEnqueueReceipt(receipt: AssignmentEnqueueReceipt) {
-    const backend = await this._backend();
-    if (backend) {
-      if (receipt.writeFence.backend !== "redis") {
-        throw Object.assign(new Error(`assignment compensation backend mismatch: ${receipt.assignmentId}`), { code: "HUB_ASSIGNMENT_COMPENSATION_CONFLICT" });
-      }
-      const { snapshot, document } = await this._readRedisDocument(backend, receipt.assignmentId);
-      if (snapshot.revision !== receipt.writeFence.revision || !receiptDeepEqual(document, receipt.committedDocument)) {
-        throw Object.assign(new Error(`assignment compensation conflict: ${receipt.assignmentId} changed after enqueue`), { code: "HUB_ASSIGNMENT_COMPENSATION_CONFLICT" });
-      }
-      const committed = await backend.compareAndSwapStateRecord(
-        this._assignmentField(receipt.assignmentId),
-        snapshot.revision,
-        receipt.previousDocument,
-        processLeaderFence(backend.identityFingerprint),
-      );
-      if (committed.fenced) {
-        throw Object.assign(new Error("leader lease no longer authorizes assignment compensation"), { code: "HUB_LEADER_FENCED" });
-      }
-      if (!committed.committed) {
-        throw Object.assign(new Error(`assignment compensation conflict: ${receipt.assignmentId} changed during rollback`), { code: "HUB_ASSIGNMENT_COMPENSATION_CONFLICT" });
-      }
-      return true;
-    }
     return this._withAssignmentLock(receipt.assignmentId, async (lockContext) => {
       if (receipt.writeFence.backend !== "local") {
         throw Object.assign(new Error(`assignment compensation backend mismatch: ${receipt.assignmentId}`), { code: "HUB_ASSIGNMENT_COMPENSATION_CONFLICT" });
@@ -1256,29 +1078,6 @@ export class AssignmentStore {
   }
 
   async markRunning(assignmentId: string, attemptNum: number, identity?: AttemptIdentity) {
-    const backend = await this._backend();
-    if (backend) {
-      return this._mutateRedisDocument(backend, assignmentId, (current) => {
-        if (!current) throw new Error(`assignment not found: ${assignmentId}`);
-        const { state: currentState, attempt: currentAttempt } = this._redisActiveAttempt(current, assignmentId, attemptNum);
-        if (identity) this._validateAttemptIdentity(assignmentId, attemptNum, currentAttempt, identity, true);
-        if (TERMINAL_ASSIGNMENT_STATUSES.has(String(currentState.status || "")) || currentAttempt.result) {
-          throw staleAttemptError(assignmentId, attemptNum, `assignment is terminal (${currentState.status})`);
-        }
-        if (!["assigned", "running"].includes(String(currentAttempt.status || ""))) {
-          throw staleAttemptError(assignmentId, attemptNum, `attempt is ${currentAttempt.status || "unknown"}`);
-        }
-        if (currentState.status === "running" && currentAttempt.status === "running") {
-          return { document: current, result: undefined };
-        }
-        const state = { ...currentState, status: "running", startedAt: new Date().toISOString() };
-        const attempt = { ...currentAttempt, status: "running", acceptedAt: new Date().toISOString() };
-        return {
-          document: { ...current, state, attempts: { ...current.attempts, [String(attemptNum)]: attempt } },
-          result: undefined,
-        };
-      });
-    }
     return this._withAssignmentLock(assignmentId, async () => {
       const { state, attempt } = await this._loadActiveAttempt(assignmentId, attemptNum);
       if (identity) this._validateAttemptIdentity(assignmentId, attemptNum, attempt, identity, true);
@@ -1301,38 +1100,6 @@ export class AssignmentStore {
 
   async recordHeartbeat(assignmentId: string, attemptNum: number, heartbeat: LooseRecord) {
     await assertHubWritable(this.hubRoot);
-    const backend = await this._backend();
-    if (backend) {
-      const authorityNow = new Date(await backend.serverTimeMs()).toISOString();
-      return this._mutateRedisDocument(backend, assignmentId, (current) => {
-        if (!current) throw new Error(`assignment not found: ${assignmentId}`);
-        const { state, attempt } = this._redisActiveAttempt(current, assignmentId, attemptNum);
-        if (TERMINAL_ASSIGNMENT_STATUSES.has(String(state.status || "")) || attempt.result) {
-          return { document: current, result: false };
-        }
-        const previousHeartbeat = recordValue(attempt.heartbeat);
-        const sourceProgressUpdatedAt = typeof heartbeat.progressUpdatedAt === "string"
-          ? heartbeat.progressUpdatedAt
-          : null;
-        const progressChanged = Boolean(sourceProgressUpdatedAt
-          && sourceProgressUpdatedAt !== previousHeartbeat.sourceProgressUpdatedAt);
-        const updatedAttempt = {
-          ...attempt,
-          heartbeat: {
-            ...heartbeat,
-            sourceProgressUpdatedAt,
-            updatedAt: authorityNow,
-            progressUpdatedAt: progressChanged
-              ? authorityNow
-              : previousHeartbeat.progressUpdatedAt || authorityNow,
-          },
-        };
-        return {
-          document: { ...current, attempts: { ...current.attempts, [String(attemptNum)]: updatedAttempt } },
-          result: undefined,
-        };
-      });
-    }
     const dir = path.join(this.baseDir, assignmentId, "attempts", String(attemptNum).padStart(3, "0"));
     await writeJsonAtomic(
       path.join(dir, "heartbeat.json"),
@@ -1345,105 +1112,72 @@ export class AssignmentStore {
    * Does NOT write result.json — worker already wrote it.
    */
   async completeAttemptFromExistingResult(assignmentId: string, attemptNum: number, result: LooseRecord) {
-    const backend = await this._backend();
-    if (backend) {
-      return this._mutateRedisDocument(backend, assignmentId, (current) => {
-        if (!current) throw new Error(`assignment not found: ${assignmentId}`);
-        const context = this._redisActiveAttempt(current, assignmentId, attemptNum);
-        this._validateAttemptIdentity(assignmentId, attemptNum, context.attempt, result, true);
-        if (context.attempt.result || TERMINAL_ASSIGNMENT_STATUSES.has(String(context.state.status || ""))) {
-          return { document: current, result: false };
-        }
-        const now = new Date().toISOString();
-        const terminalStatus = terminalStatusFromResult(result.status);
-        const attempt = { ...context.attempt, status: terminalStatus, completedAt: now, result };
-        const state = {
-          ...context.state,
-          status: terminalStatus,
-          completedAt: now,
-          resultWrittenAt: now,
-          queueFinalizedAt: context.state.queueFinalizedAt ?? null,
-          workerFinalizedAt: context.state.workerFinalizedAt ?? null,
-        };
-        return {
-          document: { ...current, state, attempts: { ...current.attempts, [String(attemptNum)]: attempt } },
-          result: true,
-        };
-      });
-    }
     return this._withAssignmentLock(assignmentId, async () => {
       const { state, attempt } = await this._loadActiveAttempt(assignmentId, attemptNum);
       this._validateAttemptIdentity(assignmentId, attemptNum, attempt, result, true);
-      if (TERMINAL_ASSIGNMENT_STATUSES.has(String(state.status || ""))) return false;
+      if (TERMINAL_ASSIGNMENT_STATUSES.has(String(state.status || ""))) {
+        const terminalStatus = terminalStatusFromResult(result.status);
+        return state.status === terminalStatus
+          && attempt.status === terminalStatus
+          && receiptDeepEqual(attempt.result, result);
+      }
 
       const terminalStatus = terminalStatusFromResult(result.status);
-      attempt.status = terminalStatus;
-      attempt.completedAt = new Date().toISOString();
-      attempt.result = result;
-      await this._writeAttempt(assignmentId, attemptNum, attempt);
-
-      state.status = terminalStatus;
-      state.completedAt = new Date().toISOString();
-      state.resultWrittenAt = new Date().toISOString();
+      const completedAt = new Date().toISOString();
+      const completedAttempt = {
+        ...attempt,
+        status: terminalStatus,
+        completedAt,
+        result,
+      } as AssignmentAttempt;
+      const completedState = {
+        ...state,
+        status: terminalStatus,
+        completedAt,
+        resultWrittenAt: completedAt,
+      } as AssignmentRecord;
       // P0-3: reset finalization tracking — reconciler will finalize
-      state.queueFinalizedAt ??= null;
-      state.workerFinalizedAt ??= null;
-      await this._writeState(assignmentId, state);
+      completedState.queueFinalizedAt ??= null;
+      completedState.workerFinalizedAt ??= null;
+
+      await this._writePendingCompletion({
+        schemaVersion: COMPLETION_WAL_SCHEMA_VERSION,
+        assignmentId,
+        attemptNum,
+        attemptToken: attempt.attemptToken,
+        state: completedState,
+        attemptRecord: completedAttempt,
+      });
+      await this._writeAttempt(assignmentId, attemptNum, completedAttempt);
+      await assignmentStoreTestHooks().afterLocalCompletionAttemptWrite?.({ assignmentId, attempt: attemptNum });
+      await assignmentStoreTestHooks().beforeLocalCompletionStateWrite?.({ assignmentId, attempt: attemptNum });
+      await this._writeState(assignmentId, completedState);
+      await assignmentStoreTestHooks().afterLocalCompletionStateWrite?.({ assignmentId, attempt: attemptNum });
+      await this._clearPendingCompletion(assignmentId, attemptNum);
       return true;
     });
   }
 
-  /** Atomically commits a Redis terminal result and acknowledges its inbox claim. */
   async completeAttemptAndAckInbox(
     assignmentId: string,
     attemptNum: number,
     result: LooseRecord,
-    { workerId, claimToken }: { workerId: string; claimToken: string },
+    { workerId, claimToken, ackInboxFn }: {
+      workerId: string;
+      claimToken: string;
+      ackInboxFn?: (workerId: string, assignmentId: string, claimToken: string) => Promise<boolean>;
+    },
   ) {
-    const backend = await this._backend();
-    if (!backend) {
-      const accepted = await this.completeAttemptFromExistingResult(assignmentId, attemptNum, result);
-      return { accepted: accepted !== false, inboxAcked: false };
-    }
-    for (let retry = 0; retry < 64; retry += 1) {
-      const { snapshot, document } = await this._readRedisDocument(backend, assignmentId);
-      if (!document) throw new Error(`assignment not found: ${assignmentId}`);
-      const context = this._redisActiveAttempt(document, assignmentId, attemptNum);
-      this._validateAttemptIdentity(assignmentId, attemptNum, context.attempt, result, true);
-      const alreadyTerminal = Boolean(context.attempt.result)
-        || TERMINAL_ASSIGNMENT_STATUSES.has(String(context.state.status || ""));
-      let nextDocument = document;
-      if (!alreadyTerminal) {
-        const now = new Date().toISOString();
-        const terminalStatus = terminalStatusFromResult(result.status);
-        const attempt = { ...context.attempt, status: terminalStatus, completedAt: now, result };
-        const state = {
-          ...context.state,
-          status: terminalStatus,
-          completedAt: now,
-          resultWrittenAt: now,
-          queueFinalizedAt: context.state.queueFinalizedAt ?? null,
-          workerFinalizedAt: context.state.workerFinalizedAt ?? null,
-        };
-        nextDocument = {
-          ...document,
-          state,
-          attempts: { ...document.attempts, [String(attemptNum)]: attempt },
-        };
+    const accepted = await this.completeAttemptFromExistingResult(assignmentId, attemptNum, result);
+    let inboxAcked = false;
+    if (accepted !== false && ackInboxFn) {
+      try {
+        inboxAcked = await ackInboxFn(workerId, assignmentId, claimToken);
+      } catch {
+        // Inbox ack failure is non-fatal; reconciler will clean up.
       }
-      const committed = await backend.commitStateRecordAndDeleteClaim(
-        this._assignmentField(assignmentId),
-        snapshot.revision,
-        nextDocument,
-        this._inboxClaimField(workerId, assignmentId, attemptNum, String(context.attempt.attemptToken || "")),
-        claimToken,
-      );
-      if (!committed.claimMatched) {
-        throw Object.assign(new Error("worker inbox claim is no longer active"), { code: "STALE_INBOX_CLAIM" });
-      }
-      if (committed.committed) return { accepted: !alreadyTerminal, inboxAcked: true };
     }
-    throw Object.assign(new Error(`assignment changed too frequently: ${assignmentId}`), { code: "HUB_STATE_RECORD_CONFLICT" });
+    return { accepted: accepted !== false, inboxAcked };
   }
 
   /**
@@ -1451,36 +1185,6 @@ export class AssignmentStore {
    * Uses writeJsonOnce to prevent overwriting worker results.
    */
   async writeSyntheticFailure(assignmentId: string, attemptNum: number, result: LooseRecord) {
-    const backend = await this._backend();
-    if (backend) {
-      return this._mutateRedisDocument(backend, assignmentId, (current) => {
-        if (!current) throw new Error(`assignment not found: ${assignmentId}`);
-        const context = this._redisActiveAttempt(current, assignmentId, attemptNum);
-        this._validateAttemptIdentity(assignmentId, attemptNum, context.attempt, result, false);
-        if (context.attempt.result) return { document: current, result: false };
-        const syntheticResult = {
-          ...result,
-          assignmentId,
-          attempt: attemptNum,
-          attemptToken: context.attempt.attemptToken,
-          ...(context.attempt.orchestratorEpoch !== undefined ? { orchestratorEpoch: context.attempt.orchestratorEpoch } : {}),
-        };
-        const now = new Date().toISOString();
-        const attempt = { ...context.attempt, status: "failed", completedAt: now, result: syntheticResult };
-        const state = {
-          ...context.state,
-          status: "failed",
-          completedAt: now,
-          resultWrittenAt: now,
-          queueFinalizedAt: null,
-          workerFinalizedAt: null,
-        };
-        return {
-          document: { ...current, state, attempts: { ...current.attempts, [String(attemptNum)]: attempt } },
-          result: true,
-        };
-      });
-    }
     return this._withAssignmentLock(assignmentId, async () => {
       const { state, attempt } = await this._loadActiveAttempt(assignmentId, attemptNum);
       this._validateAttemptIdentity(assignmentId, attemptNum, attempt, result, false);
@@ -1519,20 +1223,8 @@ export class AssignmentStore {
    * P0-3 fix: Mark finalization steps complete. Idempotent.
    */
   async markFinalized(assignmentId: string, step: string) {
-    const backend = await this._backend();
-    if (backend) {
-      return this._mutateRedisDocument(backend, assignmentId, (current) => {
-        if (!current) throw new Error(`assignment not found: ${assignmentId}`);
-        const key = `${step}FinalizedAt`;
-        if (current.state[key]) return { document: current, result: undefined };
-        return {
-          document: { ...current, state: { ...current.state, [key]: new Date().toISOString() } },
-          result: undefined,
-        };
-      });
-    }
     return this._withAssignmentLock(assignmentId, async () => {
-      const state = await this._readState(assignmentId);
+      const state = await this._readStateFile(assignmentId);
       if (!state) return;
       const key = `${step}FinalizedAt`;
       if (!state[key]) {
@@ -1543,17 +1235,6 @@ export class AssignmentStore {
   }
 
   async assertActiveAttemptIdentity(assignmentId: string, attemptNum: number, identity: AttemptIdentity) {
-    const backend = await this._backend();
-    if (backend) {
-      const { document } = await this._readRedisDocument(backend, assignmentId);
-      if (!document) throw new Error(`assignment not found: ${assignmentId}`);
-      const context = this._redisActiveAttempt(document, assignmentId, attemptNum);
-      this._validateAttemptIdentity(assignmentId, attemptNum, context.attempt, identity, true);
-      if (context.attempt.result || TERMINAL_ASSIGNMENT_STATUSES.has(String(context.state.status || ""))) {
-        throw staleAttemptError(assignmentId, attemptNum, `assignment is terminal (${context.state.status})`);
-      }
-      return context.attempt;
-    }
     return this._withAssignmentLock(assignmentId, async () => {
       const context = await this._loadActiveAttempt(assignmentId, attemptNum);
       this._validateAttemptIdentity(assignmentId, attemptNum, context.attempt, identity, true);
@@ -1576,25 +1257,6 @@ export class AssignmentStore {
     options: AssignmentWriteCancelOptions = {},
   ) {
     throwIfAssignmentOperationStopped(options);
-    const backend = await this._backend();
-    throwIfAssignmentOperationStopped(options);
-    if (backend) {
-      return this._mutateRedisDocumentAbortable(backend, assignmentId, options, (current) => {
-        if (!current) throw new Error(`assignment not found: ${assignmentId}`);
-        const context = this._redisActiveAttempt(current, assignmentId, attemptNum);
-        if (["completed", "failed", "cancelled", "blocked"].includes(String(context.state.status || ""))) {
-          return { document: current, result: false };
-        }
-        const attempt = {
-          ...context.attempt,
-          cancel: { reason, requestedAt: new Date().toISOString(), requestedBy: "hub" },
-        };
-        return {
-          document: { ...current, attempts: { ...current.attempts, [String(attemptNum)]: attempt } },
-          result: true,
-        };
-      });
-    }
     return this._withAssignmentLock(assignmentId, async () => {
       throwIfAssignmentOperationStopped(options);
       const { state } = await this._loadActiveAttempt(assignmentId, attemptNum);
@@ -1617,12 +1279,6 @@ export class AssignmentStore {
   }
 
   async readCancel(assignmentId: string, attemptNum: number) {
-    const backend = await this._backend();
-    if (backend) {
-      const { document } = await this._readRedisDocument(backend, assignmentId);
-      if (!document) return null;
-      return document.attempts[String(attemptNum)]?.cancel || null;
-    }
     try {
       return await this._readLocalJsonObject(
         path.join(this.baseDir, assignmentId, "attempts", String(attemptNum).padStart(3, "0"), "control", "cancel.json"),
@@ -1635,19 +1291,13 @@ export class AssignmentStore {
   }
 
   async getAssignment(assignmentId: string): Promise<AssignmentRecord | null> {
-    const backend = await this._backend();
-    if (backend) return (await this._readRedisDocument(backend, assignmentId)).document?.state || null;
     return this._readState(assignmentId);
   }
 
   async getAttempt(assignmentId: string, attemptNum: number): Promise<AssignmentAttempt | null> {
     if (!Number.isSafeInteger(attemptNum) || attemptNum < 1) return null;
-    const backend = await this._backend();
-    if (backend) {
-      const { document } = await this._readRedisDocument(backend, assignmentId);
-      return document?.attempts[String(attemptNum)] || null;
-    }
     try {
+      await this._recoverPendingCompletion(assignmentId);
       const attempt = await this._readAttempt(assignmentId, attemptNum);
       const heartbeat = await this._readLocalJsonObject(
         path.join(
@@ -1667,14 +1317,6 @@ export class AssignmentStore {
   }
 
   async getActiveAttempt(assignmentId: string): Promise<AssignmentAttempt | null> {
-    const backend = await this._backend();
-    if (backend) {
-      const { document } = await this._readRedisDocument(backend, assignmentId);
-      if (!document) return null;
-      const activeAttempt = Number(document.state.activeAttempt);
-      if (!Number.isInteger(activeAttempt) || activeAttempt <= 0) return null;
-      return document.attempts[String(activeAttempt)] || null;
-    }
     const state = await this._readState(assignmentId);
     if (!state) return null;
     const activeAttempt = typeof state.activeAttempt === "number" ? state.activeAttempt : Number(state.activeAttempt);
@@ -1683,18 +1325,6 @@ export class AssignmentStore {
   }
 
   async listAssignments(filter: LooseRecord = {}): Promise<AssignmentRecord[]> {
-    const backend = await this._backend();
-    if (backend) {
-      const records = await backend.scanStateRecords("assignment:");
-      return records.flatMap(({ record }) => {
-        const document = this._assignmentDocument(record.data, "scanned");
-        const state = document?.state;
-        if (!state) return [];
-        if (filter.status && state.status !== filter.status) return [];
-        if (filter.projectId && state.projectId !== filter.projectId) return [];
-        return [state];
-      });
-    }
     const entries: AssignmentRecord[] = [];
     try {
       const dirs = await readdir(this.baseDir);
@@ -1711,11 +1341,8 @@ export class AssignmentStore {
   }
 
   async _readState(assignmentId: string): Promise<AssignmentRecord | null> {
-    const state = await this._readLocalJsonObject(
-      path.join(this.baseDir, assignmentId, "state.json"),
-      "assignment state",
-    );
-    return state ? recordValue(state) as AssignmentRecord : null;
+    await this._recoverPendingCompletion(assignmentId);
+    return this._readStateFile(assignmentId);
   }
 
   async _writeState(assignmentId: string, state: LooseRecord) {
@@ -1738,7 +1365,7 @@ export class AssignmentStore {
   }
 
   async _loadActiveAttempt(assignmentId: string, attemptNum: number): Promise<ActiveAttemptContext> {
-    const state = await this._readState(assignmentId);
+    const state = await this._readStateFile(assignmentId);
     if (!state) throw new Error(`assignment not found: ${assignmentId}`);
     const activeAttempt = Number(state.activeAttempt);
     if (!Number.isInteger(activeAttempt) || activeAttempt !== attemptNum) {
@@ -1793,7 +1420,7 @@ export class AssignmentStore {
   async _withAssignmentLock<T>(
     assignmentId: string,
     callback: (context: AssignmentLockContext) => Promise<T>,
-    options: AssignmentWriteCancelOptions = {},
+    options: AssignmentLockOptions = {},
   ): Promise<T> {
     throwIfAssignmentOperationStopped(options);
     await assertHubWritable(this.hubRoot);
@@ -1911,6 +1538,10 @@ export class AssignmentStore {
         processIdentity,
       }, { syncParentDirectory: syncAssignmentDirectory });
       await syncAssignmentDirectory(assignmentDir);
+      throwIfAssignmentOperationStopped(options);
+      if (!options.skipCompletionRecovery) {
+        await this._recoverPendingCompletionUnderLock(assignmentId);
+      }
       throwIfAssignmentOperationStopped(options);
       value = await callback({
         ownerToken,

@@ -1,8 +1,8 @@
-import type { RedisLeaderFence } from "./hub-state-redis.js";
+import type { LocalLeaderFence } from "./types/leader-fence.js";
 
-const processFences = new Map<string, RedisLeaderFence>();
+const processFences = new Map<string, LocalLeaderFence>();
 
-export function registerProcessLeaderFence(identityFingerprint: string, fence: RedisLeaderFence) {
+export function registerProcessLeaderFence(identityFingerprint: string, fence: LocalLeaderFence) {
   processFences.set(identityFingerprint, { ...fence });
 }
 

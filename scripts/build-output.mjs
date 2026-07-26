@@ -953,7 +953,18 @@ async function probeProcessFence(port, expectedKey, deadline) {
       clearTimeout(timer);
       socket.removeAllListeners();
       socket.on("error", () => undefined);
-      socket.destroy();
+      // The fence response is served by a short-lived listener. Destroying
+      // the probe socket immediately after receiving the line can send an
+      // RST while the listener is still flushing its response, surfacing as
+      // ECONNRESET in an otherwise healthy holder. Half-close first so the
+      // probe does not turn a successful protocol exchange into peer noise;
+      // the socket remains unref'd and is still force-closed if the peer does
+      // not finish the graceful close promptly.
+      if (!socket.destroyed) {
+        socket.end();
+        const closeTimer = setTimeout(() => socket.destroy(), 1_000);
+        closeTimer.unref();
+      }
       resolve(result);
     };
     const timer = setTimeout(
@@ -1319,8 +1330,6 @@ if (Number.isInteger(code)) process.exitCode = code;
   for (const relative of [
     "cli/cpb.js",
     "bridges/job-runner.js",
-    "bridges/project-worker.js",
-    "bridges/run-pipeline.js",
     "bridges/run-phase.js",
   ]) {
     await chmod(path.join(destinationRoot, relative), 0o755);
