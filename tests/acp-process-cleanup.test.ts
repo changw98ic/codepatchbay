@@ -412,7 +412,7 @@ test("AcpClient terminal launch waits for close instead of bare-killing when ide
   await assert.rejects(
     async () => client.createTerminal({
       command: process.execPath,
-      args: ["-e", "process.exit(0)", marker],
+      args: ["-e", "setTimeout(() => process.exit(0), 250)", marker],
       cwd: root,
     }),
     (error: unknown) => {

@@ -723,7 +723,41 @@ async function moveDirectoryNoClobber(
       destinationPath,
       carrierPath,
     });
-    await runNoClobberDirectoryMove(carrierSourcePath, parentPath);
+    try {
+      await runNoClobberDirectoryMove(carrierSourcePath, parentPath);
+    } catch (error) {
+      // GNU mv -n can report a non-zero exit when a hostile successor appears
+      // between its internal destination check and rename. The source is
+      // still safely held in the carrier in that case; preserve the more
+      // useful successor evidence instead of masking the publication race as
+      // an opaque command failure.
+      let destinationPresent = false;
+      let carrierSourcePresent = false;
+      try {
+        destinationPresent = lstatSync(destinationPath).isDirectory();
+      } catch (probeError) {
+        if (errnoCode(probeError) !== "ENOENT") throw probeError;
+      }
+      try {
+        carrierSourcePresent = lstatSync(carrierSourcePath).isDirectory();
+      } catch (probeError) {
+        if (errnoCode(probeError) !== "ENOENT") throw probeError;
+      }
+      if (destinationPresent && carrierSourcePresent) {
+        throw Object.assign(new Error(`${label} destination successor preserved: ${destinationPath}`), {
+          code: "HUB_BACKUP_SUCCESSOR_PRESERVED",
+          committed: false,
+          committedPath: null,
+          successorPreserved: true,
+          recoveryPaths: { publicationSource: carrierSourcePath },
+          attemptedPaths: {
+            destination: destinationPath,
+            ...Object.fromEntries(Object.entries(recoveryPaths).map(([key, candidatePath]) => [key, candidatePath])),
+          },
+        });
+      }
+      throw error;
+    }
     let carrierSourceCurrent: Stats | null = null;
     try {
       carrierSourceCurrent = lstatSync(carrierSourcePath);
