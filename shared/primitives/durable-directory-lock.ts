@@ -122,6 +122,28 @@ function errorCode(error: unknown) {
     : "";
 }
 
+function errorCause(error: unknown) {
+  return error && typeof error === "object" && "cause" in error
+    ? (error as { cause?: unknown }).cause
+    : undefined;
+}
+
+function isOwnerPathDisappearance(error: unknown) {
+  if (errorCode(error) !== "DIRECTORY_LOCK_UNSAFE") return false;
+  let current = errorCause(error);
+  for (let depth = 0; depth < 4 && current; depth += 1) {
+    if (errorCode(current) === "BOUNDED_FILE_CHANGED") {
+      let cause = errorCause(current);
+      for (let causeDepth = 0; causeDepth < 4 && cause; causeDepth += 1) {
+        if (errorCode(cause) === "ENOENT") return true;
+        cause = errorCause(cause);
+      }
+    }
+    current = errorCause(current);
+  }
+  return false;
+}
+
 function lockError(message: string, code: string, cause?: unknown) {
   return Object.assign(new Error(message, cause === undefined ? undefined : { cause }), { code });
 }
@@ -1208,7 +1230,37 @@ async function recoveryCandidate(
   if (!info.isDirectory() || info.isSymbolicLink()) {
     throw lockError(`unsafe directory lock path: ${lockDir}`, "DIRECTORY_LOCK_UNSAFE");
   }
-  const owner = await readOwner(path.join(lockDir, "owner.json"));
+  let owner: DirectoryLockOwner | null;
+  try {
+    owner = await readOwner(path.join(lockDir, "owner.json"));
+  } catch (error) {
+    if (!isOwnerPathDisappearance(error)) throw error;
+
+    // A releasing contender can rename the lock directory after the bounded
+    // owner read has pinned its descriptor but before the final pathname
+    // generation check. If the canonical lock path is now absent, the
+    // observation is stale and the acquisition loop can safely retry. A
+    // present successor or a directory generation change remains unsafe.
+    let currentInfo: Awaited<ReturnType<typeof lstat>>;
+    try {
+      currentInfo = await lstat(lockDir);
+    } catch (recheckError) {
+      if (errorCode(recheckError) === "ENOENT") return null;
+      throw recheckError;
+    }
+    if (
+      !currentInfo.isDirectory()
+      || currentInfo.isSymbolicLink()
+      || !sameDirectoryGeneration(info, currentInfo)
+    ) {
+      throw lockError(
+        `directory lock generation changed while reading owner: ${lockDir}`,
+        "DIRECTORY_LOCK_UNSAFE",
+        error,
+      );
+    }
+    throw error;
+  }
   const acquiredAt = owner ? new Date(owner.acquiredAt).getTime() : 0;
   if (Date.now() - Math.max(info.mtimeMs, acquiredAt) < ttlMs) return null;
   if (!owner) {

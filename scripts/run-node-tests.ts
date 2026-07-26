@@ -172,6 +172,12 @@ const isolatedUnitFiles = new Set([
   // the same wave. Parallel slow-suite load can starve one scheduler callback
   // long enough to make the test observe a false non-overlap failure.
   "tests/engine-prepare-task.test.js",
+  // Spawns comparison-lane helpers whose cleanup promises can otherwise lose
+  // their only event-loop handle under the parallel slow-suite load.
+  "tests/coding-comparison.test.js",
+  // Spawns concurrent jobs-index readers and removes their temporary runtime;
+  // parallel process pressure can race cleanup with a child still publishing.
+  "tests/jobs-index-concurrency.test.js",
   // Spawns nested Node processes with short timeout assertions; running under
   // the parallel focused suite can starve the child process enough to look like
   // a timeout instead of the intended exit-code assertion.

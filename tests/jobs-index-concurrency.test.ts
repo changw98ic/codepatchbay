@@ -392,7 +392,7 @@ test("cross-process jobs-index readers converge on one complete index without lo
     assert.deepEqual(Object.keys(index?.jobs ?? {}).sort(), expectedSorted.map((jobId) => `${project}/${jobId}`));
     assert.equal(existsSync(path.join(dataRoot, "jobs-index.json.lock")), false);
   } finally {
-    await rm(cpbRoot, { recursive: true, force: true });
+    await rm(cpbRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   }
 });
 
