@@ -53,7 +53,6 @@ import {
   sanitizeTaskView,
 } from "../../../core/contracts/task-view-fields.js";
 import { recordValue, isRecord, type LooseRecord } from "../../../core/contracts/types.js";
-import { parseVerdict } from "../../../core/engine/completion-gate.js";
 import { loadQueue } from "../hub/hub-queue.js";
 import { getJobByQueueEntryId } from "../job/job-store.js";
 import { resolveHubRoot } from "../hub/hub-registry.js";
@@ -137,9 +136,7 @@ function joinReasons(parts: string[]): string {
  *
  * The authoritative source is `job.completionGate` (materialized from the
  * `completion_gate_evaluated` event), which carries the gate outcome and every
- * evidence-ref category at the top level. When the materialized gate is absent
- * (older / partial records), the function falls back to the nested
- * `completionReport.checklist` shape that earlier code paths wrote.
+ * evidence-ref category at the top level.
  *
  * Only COUNTS and plain CATEGORIES are produced. The underlying evidence refs
  * (ledgerId / evidenceId / attemptId) are deliberately reduced to counts —
@@ -170,11 +167,7 @@ const CLEAN_GATE: GateEvidence = {
 function extractGateEvidence(job: LooseRecord | null): GateEvidence {
   if (!job) return CLEAN_GATE;
   const completionGate = recordValue(job.completionGate);
-  const completionReport = recordValue(job.completionReport);
-  const reportChecklist = recordValue(completionReport.checklist);
 
-  // completionGate is authoritative when it carries any gate content. Only
-  // when it is entirely empty do we consult the legacy report.checklist.
   const gateHasContent = Boolean(
     completionGate.outcome
     || completionGate.reason
@@ -189,11 +182,8 @@ function extractGateEvidence(job: LooseRecord | null): GateEvidence {
     || completionGate.runtimeFailureRefs
     || completionGate.unmappedChangedFiles,
   );
-  const src = gateHasContent ? completionGate : reportChecklist;
-  if (!gateHasContent && !isRecord(completionReport.checklist)) {
-    // No gate content and no legacy checklist — nothing to report.
-    return CLEAN_GATE;
-  }
+  if (!gateHasContent) return CLEAN_GATE;
+  const src = completionGate;
 
   const failedCheckCount = stringCount(src.failedChecklistIds);
   const uncheckedCheckCount = stringCount(src.uncheckedChecklistIds);
@@ -304,9 +294,8 @@ type ProjectedState = {
  *   - `succeeded` REQUIRES evidence-driven verification to have passed. The
  *     authoritative signal is `completionGate.outcome === "complete"` (the
  *     completion gate already incorporates the verify verdict, candidate
- *     identity, and clean-replay checks). When no gate is materialized but a
- *     canonical `VERDICT: PASS` text is present, that is accepted as a
- *     fallback signal. A job that ran to completion without passing
+ *     identity, and clean-replay checks). A job that ran to completion without
+ *     a completed gate
  *     verification is `failed`, never `succeeded`.
  *   - `verifying` is surfaced distinctly from `running` when the current phase
  *     is the verify gate.
@@ -317,14 +306,8 @@ function deriveStateFromJob(job: LooseRecord | null): ProjectedState {
   const phase = stringValue(job.phase);
   const completionGate = recordValue(job.completionGate);
   const completionReport = recordValue(job.completionReport);
-  const gateOutcome = stringValue(
-    completionGate.outcome || completionReport.outcome,
-  );
-  const parsedVerdict = parseVerdict(job.verdict);
-  const verdictPass = parsedVerdict?.status === "pass";
-  // `complete` is the authoritative success signal; the verdict fallback only
-  // applies when the gate was never materialized (older / partial records).
-  const verified = gateOutcome === "complete" || (gateOutcome === "" && verdictPass);
+  const gateOutcome = stringValue(completionGate.outcome);
+  const verified = gateOutcome === "complete";
 
   const isTerminalStatus =
     status === "completed"
@@ -388,7 +371,6 @@ function deriveStateFromQueueEntry(entry: LooseRecord): ProjectedState {
     case "blocked":
       return { state: TaskState.Blocked, verified: false, reachedTerminal: false };
     case "codegraph_unavailable":
-    case "index_unavailable":
       // Runtime indexing is unavailable; the user can only wait for the
       // index to recover. Surfaced as `blocked` (runtime gate), not failed.
       return { state: TaskState.Blocked, verified: false, reachedTerminal: false };

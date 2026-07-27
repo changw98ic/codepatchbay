@@ -100,7 +100,8 @@ test("agent HOME roots reject serialized missing-value sentinels before writing"
     );
   }
   await assert.rejects(
-    createAgentHome(sentinelRoot, "codex", "job-invalid-root", {
+    createAgentHome(path.join(root, "cpb"), "codex", "job-invalid-root", {
+      dataRoot: sentinelRoot,
       parentEnv: { HOME: path.join(root, "user-home") },
     }),
     { code: "CPB_AGENT_HOME_INVALID_ROOT" },
@@ -468,7 +469,7 @@ test("createAgentHome fails closed for project job context without runtime root"
         CPB_ACP_JOB_ID: "job-missing",
       },
     }),
-    /CPB_PROJECT_RUNTIME_ROOT is required/,
+    /project runtime root is required for isolated agent HOME/,
   );
   await assertMissing(path.join(cpbRoot, "cpb-task", "agent-homes"));
 });
@@ -680,7 +681,7 @@ test("AcpClient.start fails closed for project job env without runtime root", as
   try {
     await assert.rejects(
       client.start(),
-      /CPB_PROJECT_RUNTIME_ROOT is required/,
+    /project runtime root is required for isolated agent HOME/,
     );
     await assertMissing(path.join(cpbRoot, "cpb-task", "agent-homes"));
   } finally {

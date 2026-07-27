@@ -272,7 +272,7 @@ export async function assertFixReadiness(
   }
   let projectAgents: Awaited<ReturnType<typeof readProjectConfig>> = null;
   try {
-    projectAgents = await readProjectConfig(cpbRoot, projectId);
+    projectAgents = await readProjectConfig(runtimeRoot, projectId);
   } catch {
     projectAgents = null;
   }

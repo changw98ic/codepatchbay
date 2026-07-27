@@ -10,8 +10,8 @@ import {
 } from "../server/services/hub/hub-queue.js";
 import { tempRoot } from "./helpers.js";
 
-function inboxPaths(cpbRoot: string, project: string) {
-  const inbox = path.join(cpbRoot, "wiki", "projects", project, "inbox");
+function inboxPaths(dataRoot: string) {
+  const inbox = path.join(dataRoot, "wiki", "inbox");
   return { inbox, lockDir: `${inbox}.lock` };
 }
 
@@ -24,7 +24,8 @@ function privateVarAlias(filePath: string) {
 test("hub inbox recovers an expired exact-owner lock before publishing", async (t) => {
   const cpbRoot = await tempRoot("cpb-hub-inbox-stale-lock");
   const project = "project-a";
-  const { inbox, lockDir } = inboxPaths(cpbRoot, project);
+  const dataRoot = path.join(cpbRoot, "projects", project);
+  const { inbox, lockDir } = inboxPaths(dataRoot);
   await mkdir(path.dirname(lockDir), { recursive: true });
   const canonicalLockPath = path.join(await realpath(path.dirname(lockDir)), path.basename(lockDir));
   const aliasLockPath = privateVarAlias(canonicalLockPath);
@@ -54,9 +55,9 @@ test("hub inbox recovers an expired exact-owner lock before publishing", async (
   const published = await writeInboxMessage(cpbRoot, project, {
     type: "plan",
     content: "durable message",
-  });
+  }, { dataRoot });
 
-  assert.equal((await readInboxMessage(cpbRoot, project, published.id))?.content, "durable message\n");
+  assert.equal((await readInboxMessage(cpbRoot, project, published.id, { dataRoot }))?.content, "durable message\n");
   await assert.rejects(readFile(path.join(lockDir, "owner.json"), "utf8"), { code: "ENOENT" });
   assert.equal(path.dirname(path.join(inbox, `${published.id}.md`)), inbox);
 });
@@ -64,7 +65,8 @@ test("hub inbox recovers an expired exact-owner lock before publishing", async (
 test("hub inbox rejects a symbolic-link lock without touching its target", async () => {
   const cpbRoot = await tempRoot("cpb-hub-inbox-symlink-lock");
   const project = "project-b";
-  const { lockDir } = inboxPaths(cpbRoot, project);
+  const dataRoot = path.join(cpbRoot, "projects", project);
+  const { lockDir } = inboxPaths(dataRoot);
   const target = path.join(cpbRoot, "external-lock-target");
   await mkdir(path.dirname(lockDir), { recursive: true });
   await mkdir(target, { recursive: true });
@@ -72,7 +74,7 @@ test("hub inbox rejects a symbolic-link lock without touching its target", async
   await symlink(target, lockDir, "dir");
 
   await assert.rejects(
-    writeInboxMessage(cpbRoot, project, { content: "must not publish" }),
+    writeInboxMessage(cpbRoot, project, { content: "must not publish" }, { dataRoot }),
     (error: unknown) => {
       assert.equal((error as NodeJS.ErrnoException).code, "DIRECTORY_LOCK_UNSAFE");
       return true;

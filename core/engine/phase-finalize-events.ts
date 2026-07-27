@@ -15,9 +15,7 @@ type PreflightProviderServices = Parameters<typeof preflightProvider>[0]["provid
 type PreflightPool = Parameters<typeof preflightProvider>[0]["pool"];
 
 /**
- * Narrows a value to LooseRecord. Mirrors the prior
- * `typeof rawAgent === "object" && rawAgent !== null` test exactly (arrays still
- * match) so the agent-name resolution branch keeps identical runtime behaviour.
+ * Narrows a value to LooseRecord for the structured agent selection shape.
  */
 function isRecordValue(value: unknown): value is LooseRecord {
   return value !== null && typeof value === "object";
@@ -71,7 +69,6 @@ type FinalizePhaseResultInput = {
   onProgress?: ((event: LooseRecord) => Promise<unknown> | unknown) | null;
   completePhase: CompletePhase;
   now: () => string;
-  legacyAgentForPhase: (phase: string) => string;
   phaseRoutingDecision?: LooseRecord | null;
   readArtifactFile?: (path: string, encoding: BufferEncoding) => Promise<string>;
 };
@@ -93,7 +90,7 @@ export async function finalizePhaseResult(input: FinalizePhaseResultInput): Prom
     phaseResults, state, phaseAgents, result: inResult,
     agent, providerServices, hubRoot, pool, job, phaseSourceContext,
     handoffState, providerAttempts, appendEvent, onProgress, completePhase,
-    now, legacyAgentForPhase, phaseRoutingDecision = null, readArtifactFile,
+    now, phaseRoutingDecision = null, readArtifactFile,
   } = input;
 
   let result: PhaseResult = inResult;
@@ -112,11 +109,13 @@ export async function finalizePhaseResult(input: FinalizePhaseResultInput): Prom
     now,
   });
 
-  // Resolve agent name for this phase (use potentially handoff-modified phaseAgents)
-  const rawAgent = phaseAgents[role] || agent || legacyAgentForPhase(phase);
+  // Resolve the canonical agent name for this phase after provider handoff.
+  const rawAgent = phaseAgents[role] || agent;
+  if (!rawAgent) throw new Error(`agent is required for phase ${phase} (${role})`);
   const agentName = isRecordValue(rawAgent)
-    ? String(rawAgent.agent || rawAgent.name || legacyAgentForPhase(phase))
-    : String(rawAgent || legacyAgentForPhase(phase));
+    ? String(rawAgent.agent || rawAgent.name || "")
+    : String(rawAgent);
+  if (!agentName) throw new Error(`agent name is required for phase ${phase} (${role})`);
 
   result = await evaluatePoisonedSessionGate({
     cpbRoot, project, jobId, phase, nodeId, attemptId, result, appendEvent,

@@ -1,6 +1,5 @@
 import { resolvePhaseAgentWithFallback } from "../agents/routing.js";
 import { resolveAllowedAgentNames, selectOutcomeAwareAgent } from "../agents/outcome-routing.js";
-import { legacyAgentForPhase } from "../agents/registry.js";
 import { highAssuranceAgentForRole, resolveHighAssurancePolicy } from "../policy/high-assurance.js";
 
 import { isRecord, recordValue, type LooseRecord } from "../contracts/types.js";
@@ -171,7 +170,7 @@ export function resolvePhaseAgentRouting({
     phaseAgents[role] = staticRoutingDecision.selectedAgent;
   }
 
-  const configuredAgent = phaseAgents[role] || legacyAgentForPhase(phase);
+  const configuredAgent = phaseAgents[role] || null;
   const outcomePreferredAgent = dynamicAgent?.selectedAgent || staticRoutingDecision?.selectedAgent || configuredAgent;
   const tracePreferredAgent = staticRoutingDecision?.preferredAgent || outcomePreferredAgent;
   const selectionSource = assuranceAgent?.selectedAgent
@@ -182,12 +181,10 @@ export function resolvePhaseAgentRouting({
       ? "static_routing"
       : phaseAgents[role]
         ? "configured_agent"
-        : "legacy_default";
+        : "unconfigured";
   const routingCandidates = [
     staticRoutingDecision?.fallbackAgent,
     phaseAgents[role],
-    "codex",
-    ...(role === "verifier" || role === "adversarial_verifier" ? ["claude"] : []),
     ...(allowedAgents || []),
   ];
   const outcomeDecision = selectOutcomeAwareAgent({

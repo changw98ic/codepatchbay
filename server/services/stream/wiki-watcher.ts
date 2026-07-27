@@ -10,7 +10,6 @@ export interface WikiChangeEvent {
 }
 
 export interface WikiWatcherOptions {
-  cpbRoot: string;
   hubRoot: string;
   onChange: (event: WikiChangeEvent) => void;
 }
@@ -19,8 +18,8 @@ const IGNORED_NAMES = new Set([".DS_Store", ".tmp", ".lock"]);
 const DEBOUNCE_MS = 100;
 
 export function startWikiWatcher(options: WikiWatcherOptions): { close: () => void } {
-  const { cpbRoot, onChange } = options;
-  const wikiDir = path.join(cpbRoot, "wiki", "projects");
+  const { hubRoot, onChange } = options;
+  const projectsDir = path.join(path.resolve(hubRoot), "projects");
   let watcher: fs.FSWatcher | null = null;
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
   const pending = new Map<string, { project: string; filePath: string; action: "create" | "update" | "delete" }>();
@@ -52,17 +51,18 @@ export function startWikiWatcher(options: WikiWatcherOptions): { close: () => vo
   }
 
   function extractProject(filePath: string): string | null {
-    // filePath is relative to wiki/projects/ — first segment is the project name
+    // filePath is relative to Hub projects/ — first segment is the project name.
     const normalized = filePath.replace(/\\/g, "/");
-    const slash = normalized.indexOf("/");
-    return slash > 0 ? normalized.slice(0, slash) : null;
+    const parts = normalized.split("/");
+    return parts.length > 2 && parts[1] === "wiki" ? parts[0] : null;
   }
 
   try {
-    // Ensure the directory exists so fs.watch doesn't throw
-    fs.mkdirSync(wikiDir, { recursive: true });
+    // Watch all Hub-managed project runtime roots. Changes outside each
+    // project's wiki namespace are ignored below.
+    fs.mkdirSync(projectsDir, { recursive: true });
 
-    watcher = fs.watch(wikiDir, { recursive: true }, (eventType, filename) => {
+    watcher = fs.watch(projectsDir, { recursive: true }, (eventType, filename) => {
       if (!filename || shouldIgnore(filename)) return;
 
       const project = extractProject(filename);
@@ -79,14 +79,14 @@ export function startWikiWatcher(options: WikiWatcherOptions): { close: () => vo
       let action: "create" | "update" | "delete";
       if (eventType === "rename") {
         // Check if the file still exists to distinguish create vs delete
-        const fullPath = path.join(wikiDir, filename);
+        const fullPath = path.join(projectsDir, filename);
         action = fs.existsSync(fullPath) ? "create" : "delete";
       } else {
         action = "update";
       }
 
-      // Strip project prefix from path for the event
-      const filePath = relativePath.slice(project.length + 1);
+      // Strip project and wiki prefixes from path for the event
+      const filePath = relativePath.split("/").slice(2).join("/");
       if (!filePath) return; // Skip the project dir itself
 
       const key = `${project}:${filePath}:${action}`;

@@ -93,6 +93,10 @@ async function setupJobsIndex(root, jobs) {
   return { hubRoot, dataRoot };
 }
 
+function managedWorktree(root: string, name: string) {
+  return path.join(root, "hub", "projects", "test", "worktrees", name);
+}
+
 describe("worktree-retention: normalizePolicy defaults", () => {
   test("defaults to null (workflow-aware) when no policy specified", async () => {
     const root = await tempRoot("cpb-wt-ret");
@@ -131,7 +135,7 @@ describe("worktree-retention: normalizePolicy defaults", () => {
 describe("worktree-retention: completed job worktrees can be archived or deleted", () => {
   test("completed job worktree marked delete when policy is delete", async () => {
     const root = await tempRoot("cpb-wt-ret");
-    const wtPath = path.join(root, "worktrees", "wt-del");
+    const wtPath = managedWorktree(root, "wt-del");
     await mkdir(wtPath, { recursive: true });
     const { hubRoot } = await setupJobsIndex(root, [
       { project: "test", jobId: "job-del-001", status: "completed", worktree: wtPath },
@@ -150,7 +154,7 @@ describe("worktree-retention: completed job worktrees can be archived or deleted
 
   test("completed job worktree marked archive when policy is archive", async () => {
     const root = await tempRoot("cpb-wt-ret");
-    const wtPath = path.join(root, "worktrees", "wt-arch");
+    const wtPath = managedWorktree(root, "wt-arch");
     await mkdir(wtPath, { recursive: true });
     const { hubRoot } = await setupJobsIndex(root, [
       { project: "test", jobId: "job-arch-001", status: "completed", worktree: wtPath },
@@ -169,7 +173,7 @@ describe("worktree-retention: completed job worktrees can be archived or deleted
 
   test("completed job worktree preserved by default", async () => {
     const root = await tempRoot("cpb-wt-ret");
-    const wtPath = path.join(root, "worktrees", "wt-keep");
+    const wtPath = managedWorktree(root, "wt-keep");
     await mkdir(wtPath, { recursive: true });
     const { hubRoot } = await setupJobsIndex(root, [
       { project: "test", jobId: "job-keep-001", status: "completed", worktree: wtPath },
@@ -184,7 +188,7 @@ describe("worktree-retention: completed job worktrees can be archived or deleted
 describe("worktree-retention: failed and blocked worktrees retained by default", () => {
   test("failed job worktree is preserved regardless of completed policy", async () => {
     const root = await tempRoot("cpb-wt-ret");
-    const wtPath = path.join(root, "worktrees", "wt-fail");
+    const wtPath = managedWorktree(root, "wt-fail");
     await mkdir(wtPath, { recursive: true });
     const { hubRoot } = await setupJobsIndex(root, [
       { project: "test", jobId: "job-fail-001", status: "failed", worktree: wtPath },
@@ -203,7 +207,7 @@ describe("worktree-retention: failed and blocked worktrees retained by default",
 
   test("blocked job worktree is preserved regardless of completed policy", async () => {
     const root = await tempRoot("cpb-wt-ret");
-    const wtPath = path.join(root, "worktrees", "wt-block");
+    const wtPath = managedWorktree(root, "wt-block");
     await mkdir(wtPath, { recursive: true });
     const { hubRoot } = await setupJobsIndex(root, [
       { project: "test", jobId: "job-block-001", status: "blocked", worktree: wtPath },
@@ -224,8 +228,8 @@ describe("worktree-retention: failed and blocked worktrees retained by default",
 describe("worktree-retention: dry-run lists exact paths and reasons", () => {
   test("dry-run plan includes exact worktree paths and reasons", async () => {
     const root = await tempRoot("cpb-wt-ret");
-    const wt1 = path.join(root, "worktrees", "wt-alpha");
-    const wt2 = path.join(root, "worktrees", "wt-beta");
+    const wt1 = managedWorktree(root, "wt-alpha");
+    const wt2 = managedWorktree(root, "wt-beta");
     await mkdir(wt1, { recursive: true });
     await mkdir(wt2, { recursive: true });
     const { hubRoot } = await setupJobsIndex(root, [
@@ -251,7 +255,7 @@ describe("worktree-retention: dry-run lists exact paths and reasons", () => {
 
   test("dry-run does not delete or move anything", async () => {
     const root = await tempRoot("cpb-wt-ret");
-    const wtPath = path.join(root, "worktrees", "wt-safe");
+    const wtPath = managedWorktree(root, "wt-safe");
     await mkdir(wtPath, { recursive: true });
     await writeFile(path.join(wtPath, "marker.txt"), "still here", "utf8");
     const { hubRoot } = await setupJobsIndex(root, [
@@ -269,7 +273,7 @@ describe("worktree-retention: dry-run lists exact paths and reasons", () => {
 
   test("summary counts match entries", async () => {
     const root = await tempRoot("cpb-wt-ret");
-    const paths = ["wt-a", "wt-b", "wt-c"].map((s) => path.join(root, "worktrees", s));
+    const paths = ["wt-a", "wt-b", "wt-c"].map((s) => managedWorktree(root, s));
     for (const p of paths) await mkdir(p, { recursive: true });
     const { hubRoot } = await setupJobsIndex(root, [
       { project: "test", jobId: "job-sum-001", status: "completed", worktree: paths[0] },
@@ -315,7 +319,7 @@ describe("worktree-retention: actual cleanup executes", () => {
     if (process.platform === "win32") return;
     const root = await tempRoot("cpb-wt-ret");
     const outside = path.join(root, "outside", "symlink-target");
-    const link = path.join(root, "worktrees", "linked-worktree");
+    const link = managedWorktree(root, "linked-worktree");
     await mkdir(outside, { recursive: true });
     await mkdir(path.dirname(link), { recursive: true });
     await writeFile(path.join(outside, "marker.txt"), "preserve", "utf8");
@@ -339,7 +343,7 @@ describe("worktree-retention: actual cleanup executes", () => {
   test("cleanup rejects a symlinked declared hub root", async () => {
     if (process.platform === "win32") return;
     const root = await tempRoot("cpb-wt-ret");
-    const wtPath = path.join(root, "worktrees", "wt-linked-hub");
+    const wtPath = managedWorktree(root, "wt-linked-hub");
     await mkdir(wtPath, { recursive: true });
     await writeFile(path.join(wtPath, "file.txt"), "preserve", "utf8");
     const { hubRoot } = await setupJobsIndex(root, [
@@ -363,7 +367,7 @@ describe("worktree-retention: actual cleanup executes", () => {
 
   test("delete action quarantines worktree directory without claiming data deletion", async () => {
     const root = await tempRoot("cpb-wt-ret");
-    const wtPath = path.join(root, "worktrees", "wt-del");
+    const wtPath = managedWorktree(root, "wt-del");
     await mkdir(wtPath, { recursive: true });
     await writeFile(path.join(wtPath, "file.txt"), "data", "utf8");
     const { hubRoot } = await setupJobsIndex(root, [
@@ -399,7 +403,7 @@ describe("worktree-retention: actual cleanup executes", () => {
 
   test("archive action moves worktree to archive root", async () => {
     const root = await tempRoot("cpb-wt-ret");
-    const wtPath = path.join(root, "worktrees", "wt-arch");
+    const wtPath = managedWorktree(root, "wt-arch");
     const archiveRoot = path.join(await realpath(root), "archive");
     await mkdir(wtPath, { recursive: true });
     await writeFile(path.join(wtPath, "file.txt"), "archived data", "utf8");
@@ -423,7 +427,7 @@ describe("worktree-retention: actual cleanup executes", () => {
 
   test("archive action is no-clobber and preserves original on destination collision", async () => {
     const root = await tempRoot("cpb-wt-ret");
-    const wtPath = path.join(root, "worktrees", "wt-arch-collision");
+    const wtPath = managedWorktree(root, "wt-arch-collision");
     const archiveRoot = path.join(await realpath(root), "archive");
     const archivePath = path.join(archiveRoot, path.basename(wtPath));
     await mkdir(wtPath, { recursive: true });
@@ -451,7 +455,7 @@ describe("worktree-retention: actual cleanup executes", () => {
     if (process.platform === "win32") return;
     const root = await tempRoot("cpb-wt-ret");
     const canonicalRoot = await realpath(root);
-    const wtPath = path.join(root, "worktrees", "wt-arch-linked-ancestor");
+    const wtPath = managedWorktree(root, "wt-arch-linked-ancestor");
     const outside = path.join(canonicalRoot, "outside-archive");
     const linkedAncestor = path.join(canonicalRoot, "linked-archive");
     const archiveRoot = path.join(linkedAncestor, "nested");
@@ -480,7 +484,7 @@ describe("worktree-retention: actual cleanup executes", () => {
   test("archive reservation cannot clobber a destination created after the absence check", async () => {
     const root = await tempRoot("cpb-wt-ret");
     const canonicalRoot = await realpath(root);
-    const wtPath = path.join(root, "worktrees", "wt-arch-late-collision");
+    const wtPath = managedWorktree(root, "wt-arch-late-collision");
     const archiveRoot = path.join(canonicalRoot, "archive");
     await mkdir(wtPath, { recursive: true });
     await writeFile(path.join(wtPath, "file.txt"), "source data", "utf8");
@@ -509,8 +513,8 @@ describe("worktree-retention: actual cleanup executes", () => {
 
   test("delete action preserves successor when target generation changes at final window", async () => {
     const root = await tempRoot("cpb-wt-ret");
-    const wtPath = path.join(root, "worktrees", "wt-aba");
-    const displaced = path.join(root, "worktrees", "wt-aba-original");
+    const wtPath = managedWorktree(root, "wt-aba");
+    const displaced = managedWorktree(root, "wt-aba-original");
     await mkdir(wtPath, { recursive: true });
     await writeFile(path.join(wtPath, "file.txt"), "original", "utf8");
     const { hubRoot } = await setupJobsIndex(root, [
@@ -539,8 +543,8 @@ describe("worktree-retention: actual cleanup executes", () => {
 
   test("delete action preserves a same-path successor published after planning", async () => {
     const root = await tempRoot("cpb-wt-ret");
-    const wtPath = path.join(root, "worktrees", "wt-plan-successor");
-    const displaced = path.join(root, "worktrees", "wt-plan-successor-original");
+    const wtPath = managedWorktree(root, "wt-plan-successor");
+    const displaced = managedWorktree(root, "wt-plan-successor-original");
     await mkdir(wtPath, { recursive: true });
     await writeFile(path.join(wtPath, "file.txt"), "original", "utf8");
     const { hubRoot } = await setupJobsIndex(root, [
@@ -572,8 +576,8 @@ describe("worktree-retention: actual cleanup executes", () => {
 
   test("delete action rejects a successor that predates planning when durable ownership identifies the predecessor", async () => {
     const root = await tempRoot("cpb-wt-ret");
-    const wtPath = path.join(root, "worktrees", "wt-owned-successor");
-    const displaced = path.join(root, "worktrees", "wt-owned-successor-original");
+    const wtPath = managedWorktree(root, "wt-owned-successor");
+    const displaced = managedWorktree(root, "wt-owned-successor-original");
     await mkdir(wtPath, { recursive: true });
     await writeFile(path.join(wtPath, "file.txt"), "original", "utf8");
     const owned = await lstat(wtPath, { bigint: true });
@@ -623,7 +627,7 @@ describe("worktree-retention: actual cleanup executes", () => {
     if (process.platform === "win32") return;
     const root = await tempRoot("cpb-wt-ret");
     const hubRoot = path.join(root, "hub");
-    const wtPath = path.join(hubRoot, "worktrees", "wt-ancestor-aba");
+    const wtPath = managedWorktree(root, "wt-ancestor-aba");
     const displacedHub = path.join(root, "hub-original");
     await mkdir(wtPath, { recursive: true });
     await writeFile(path.join(wtPath, "file.txt"), "original", "utf8");
@@ -646,12 +650,12 @@ describe("worktree-retention: actual cleanup executes", () => {
     assert.equal(entry.action, "preserve");
     assert.equal(entry.result, "preserved");
     assert.match(entry.reason, /source ancestor changed before cleanup rename/);
-    assert.equal(await readFile(path.join(displacedHub, "worktrees", "wt-ancestor-aba", "file.txt"), "utf8"), "original");
+    assert.equal(await readFile(path.join(displacedHub, "projects", "test", "worktrees", "wt-ancestor-aba", "file.txt"), "utf8"), "original");
   });
 
   test("preserve action leaves worktree untouched", async () => {
     const root = await tempRoot("cpb-wt-ret");
-    const wtPath = path.join(root, "worktrees", "wt-keep");
+    const wtPath = managedWorktree(root, "wt-keep");
     await mkdir(wtPath, { recursive: true });
     await writeFile(path.join(wtPath, "file.txt"), "kept", "utf8");
     const { hubRoot } = await setupJobsIndex(root, [
@@ -853,7 +857,7 @@ describe("workflow-retention: resolveRetentionPolicy returns correct action per 
 describe("workflow-retention: workflow-aware plan entries use workflow policy", () => {
   test("pipeline completed job gets delete action without explicit policy override", async () => {
     const root = await tempRoot("cpb-wf-ret");
-    const wtPath = path.join(root, "worktrees", "wt-pipe");
+    const wtPath = managedWorktree(root, "wt-pipe");
     await mkdir(wtPath, { recursive: true });
     const { hubRoot } = await setupJobsIndex(root, [
       { project: "test", jobId: "job-pipe-001", status: "completed", worktree: wtPath, workflow: "pipeline" },
@@ -867,7 +871,7 @@ describe("workflow-retention: workflow-aware plan entries use workflow policy", 
 
   test("research completed job gets archive action without explicit policy override", async () => {
     const root = await tempRoot("cpb-wf-ret");
-    const wtPath = path.join(root, "worktrees", "wt-res");
+    const wtPath = managedWorktree(root, "wt-res");
     await mkdir(wtPath, { recursive: true });
     const { hubRoot } = await setupJobsIndex(root, [
       { project: "test", jobId: "job-res-001", status: "completed", worktree: wtPath, workflow: "research" },
@@ -881,7 +885,7 @@ describe("workflow-retention: workflow-aware plan entries use workflow policy", 
 
   test("standard completed job gets preserve action (default)", async () => {
     const root = await tempRoot("cpb-wf-ret");
-    const wtPath = path.join(root, "worktrees", "wt-std");
+    const wtPath = managedWorktree(root, "wt-std");
     await mkdir(wtPath, { recursive: true });
     const { hubRoot } = await setupJobsIndex(root, [
       { project: "test", jobId: "job-std-001", status: "completed", worktree: wtPath, workflow: "standard" },
@@ -894,7 +898,7 @@ describe("workflow-retention: workflow-aware plan entries use workflow policy", 
 
   test("explicit policy:delete overrides workflow default", async () => {
     const root = await tempRoot("cpb-wf-ret");
-    const wtPath = path.join(root, "worktrees", "wt-exp");
+    const wtPath = managedWorktree(root, "wt-exp");
     await mkdir(wtPath, { recursive: true });
     const { hubRoot } = await setupJobsIndex(root, [
       { project: "test", jobId: "job-exp-001", status: "completed", worktree: wtPath, workflow: "standard" },
@@ -910,7 +914,7 @@ describe("workflow-retention: workflow-aware plan entries use workflow policy", 
 
   test("pipeline failed job is preserved regardless of workflow policy", async () => {
     const root = await tempRoot("cpb-wf-ret");
-    const wtPath = path.join(root, "worktrees", "wt-pipe-fail");
+    const wtPath = managedWorktree(root, "wt-pipe-fail");
     await mkdir(wtPath, { recursive: true });
     const { hubRoot } = await setupJobsIndex(root, [
       { project: "test", jobId: "job-pipe-fail-001", status: "failed", worktree: wtPath, workflow: "pipeline" },
@@ -927,8 +931,8 @@ describe("workflow-retention: workflow-aware plan entries use workflow policy", 
 describe("worktree-retention: unassociated worktrees are detected and preserved", () => {
   test("orphan worktree directory with no associated job is detected", async () => {
     const root = await tempRoot("cpb-wt-orphan");
-    const wtJob = path.join(root, "worktrees", "wt-has-job");
-    const wtOrphan = path.join(root, "worktrees", "wt-orphan");
+    const wtJob = managedWorktree(root, "wt-has-job");
+    const wtOrphan = managedWorktree(root, "wt-orphan");
     await mkdir(wtJob, { recursive: true });
     await mkdir(wtOrphan, { recursive: true });
 
@@ -947,8 +951,8 @@ describe("worktree-retention: unassociated worktrees are detected and preserved"
 
   test("fresh worktree without a published job is preserved on actual cleanup", async () => {
     const root = await tempRoot("cpb-wt-orphan");
-    const wtJob = path.join(root, "worktrees", "wt-has-job2");
-    const wtOrphan = path.join(root, "worktrees", "wt-orphan2");
+    const wtJob = managedWorktree(root, "wt-has-job2");
+    const wtOrphan = managedWorktree(root, "wt-orphan2");
     await mkdir(wtJob, { recursive: true });
     await mkdir(wtOrphan, { recursive: true });
     await writeFile(path.join(wtOrphan, "stale.txt"), "orphan data", "utf8");
@@ -977,8 +981,8 @@ describe("worktree-retention: unassociated worktrees are detected and preserved"
 
   test("no orphans when all worktree dirs have jobs", async () => {
     const root = await tempRoot("cpb-wt-orphan");
-    const wt1 = path.join(root, "worktrees", "wt-a");
-    const wt2 = path.join(root, "worktrees", "wt-b");
+    const wt1 = managedWorktree(root, "wt-a");
+    const wt2 = managedWorktree(root, "wt-b");
     await mkdir(wt1, { recursive: true });
     await mkdir(wt2, { recursive: true });
 

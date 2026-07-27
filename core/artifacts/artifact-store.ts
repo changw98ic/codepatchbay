@@ -10,9 +10,7 @@ import {
 } from "../runtime/durable-directory-lock.js";
 import type { LooseRecord } from "../../shared/types.js";
 import {
-  resolveArtifactDir,
   resolveArtifactDirForRoot,
-  resolveArtifactPath,
   resolveArtifactPathForRoot,
 } from "./artifact-paths.js";
 
@@ -466,9 +464,8 @@ async function allocateArtifactReservation(
     hooks,
   }: { dataRoot?: string; ownerToken?: string; hooks: ArtifactStoreTestHooks },
 ): Promise<ArtifactReservation> {
-  const artifactDir = dataRoot
-    ? resolveArtifactDirForRoot(dataRoot, kind)
-    : resolveArtifactDir(cpbRoot, project, kind);
+  if (!dataRoot) throw new Error(`project runtime root required for artifact '${kind}'`);
+  const artifactDir = resolveArtifactDirForRoot(dataRoot, kind);
   await mkdir(artifactDir, { recursive: true });
   await assertArtifactDirectoryAuthority(artifactDir);
 
@@ -484,9 +481,7 @@ async function allocateArtifactReservation(
   for (const id of candidates) {
     const filePath = assertArtifactDirectChildPath(
       artifactDir,
-      dataRoot
-        ? resolveArtifactPathForRoot(dataRoot, kind, id)
-        : resolveArtifactPath(cpbRoot, project, kind, id),
+      resolveArtifactPathForRoot(dataRoot, kind, id),
       "final",
     );
     const lockDir = assertArtifactDirectChildPath(

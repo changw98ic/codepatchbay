@@ -145,10 +145,7 @@ export function checkPolicy(issue: EvolveIssue, opts: EvolveOptions = {}) {
         .split("\n")
         .map((line) => line.trimEnd())
         .filter(Boolean)
-        .filter((line) => {
-          const filePath = line.slice(3).replace(/^"|"$/g, "");
-          return !(filePath === "cpb-task" || filePath.startsWith("cpb-task/") || filePath === ".cpb" || filePath.startsWith(".cpb/"));
-        });
+        .filter(Boolean);
       if (dirtyLines.length > 0) {
         reasons.push(`dirty worktree: ${dirtyLines.length} uncommitted change(s)`);
       }
@@ -353,9 +350,6 @@ export const MERGE_CLASSIFICATION = Object.freeze({
 });
 
 const SHARED_STATE_PREFIXES = [
-  ".omx/",
-  ".cpb/",
-  "cpb-task/",
   "wiki/",
 ];
 
@@ -761,6 +755,7 @@ type ResearchOptions = {
   task: string;
   executorRoot: string;
   cpbRoot: string;
+  dataRoot: string;
   signal?: AbortSignal;
   acpTimeoutMs?: number;
   mergeTimeoutMs?: number;
@@ -790,7 +785,7 @@ async function acpRun(agent: string, cwd: string, executorRoot: string, cpbRoot:
   };
 }
 
-export async function runResearch({ project, task, executorRoot, cpbRoot, signal, acpTimeoutMs, mergeTimeoutMs }: ResearchOptions) {
+export async function runResearch({ project, task, executorRoot, cpbRoot, dataRoot, signal, acpTimeoutMs, mergeTimeoutMs }: ResearchOptions) {
   throwIfAborted(signal);
   if (!isValidName(project)) {
     throw Object.assign(new Error(`Invalid project name: '${project}'`), {
@@ -798,7 +793,7 @@ export async function runResearch({ project, task, executorRoot, cpbRoot, signal
       project,
     });
   }
-  const wikiDir = path.join(cpbRoot, "wiki/projects", project);
+  const wikiDir = path.join(path.resolve(dataRoot), "wiki");
   try {
     const info = await lstat(wikiDir);
     if (!info.isDirectory() || info.isSymbolicLink()) {
@@ -990,7 +985,8 @@ function assertProject(project: string) {
 export function evolveDir(projectRoot: string, project: string, options: EvolveOptions = {}) {
   assertProject(project);
   const dataRoot = options.dataRoot || options.projectRuntimeRoot;
-  return path.join(path.resolve(dataRoot || path.join(projectRoot, "cpb-task")), "evolve", project);
+  if (!dataRoot) throw new Error(`project runtime root required for evolve project '${project}'`);
+  return path.join(path.resolve(dataRoot), "evolve", project);
 }
 
 function statePath(projectRoot: string, project: string, file: string, options: EvolveOptions = {}) {

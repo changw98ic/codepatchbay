@@ -42,7 +42,6 @@ type ParsedArgs = {
 
 type RuntimeOpts = {
   dataRoot: string;
-  includeLegacyFallback: boolean;
 };
 
 type PhaseFailureDetails = LooseRecord & {
@@ -227,7 +226,7 @@ async function main() {
 
   const { cpbRoot, project, jobId, phase, script, scriptArgs } = parsed;
   process.env.CPB_PROJECT_RUNTIME_ROOT = dataRoot;
-  const runtimeOpts = { dataRoot, includeLegacyFallback: false };
+  const runtimeOpts: RuntimeOpts = { dataRoot };
   const leaseId = `lease-${jobId}-${phase}`;
   // Phase lease TTL: how long a lease is valid before considered stale.
   // Separate from the lock TTL (DEFAULT_LOCK_TTL_MS in lease-manager.js) which controls lock contention timeout.

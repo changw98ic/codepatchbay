@@ -332,7 +332,6 @@ export async function listProfiles(cpbRoot: string): Promise<string[]> {
 // ── skill-extractor ───────────────────────────────────────────────────
 
 import { writeFile, mkdir } from "node:fs/promises";
-import { runtimeDataPath } from "../runtime.js";
 import { appendEvent } from "../event/event-store.js";
 
 function skillsDirExtract(cpbRoot: string, role: string) {
@@ -587,7 +586,7 @@ function writePolicyForLayer(layerName: string): string {
 
 async function resolveLayerContent(layerName: string, { hubRoot, sourcePath, dataRoot, projectRuntimeRoot, sessionId, profile, task, onSecretBlocked }: LayerResolveOptions): Promise<{ content: string | null; source: string }> {
   const hub = path.resolve(requiredString(hubRoot, "hubRoot"));
-  const src = path.resolve(requiredString(sourcePath, "sourcePath"));
+  const runtimeRoot = path.resolve(requiredString(dataRoot || projectRuntimeRoot, "dataRoot"));
 
   switch (layerName) {
     case "global-soul-profile": {
@@ -599,20 +598,20 @@ async function resolveLayerContent(layerName: string, { hubRoot, sourcePath, dat
       return { content: await readFileOrNull(policyPath, onSecretBlocked), source: "file" };
     }
     case "project-context": {
-      const ctxPath = path.join(src, ".cpb", "context.md");
+      const ctxPath = path.join(runtimeRoot, "wiki", "context.md");
       return { content: await readFileOrNull(ctxPath, onSecretBlocked), source: "file" };
     }
     case "project-wiki-excerpts": {
       const wikiFiles = ["overview.md", "architecture.md", "conventions.md", "workflows.md"];
       const parts = [];
       for (const f of wikiFiles) {
-        const c = await readFileOrNull(path.join(src, ".cpb", "wiki", f), onSecretBlocked);
+        const c = await readFileOrNull(path.join(runtimeRoot, "wiki", f), onSecretBlocked);
         if (c) parts.push(`### ${f}\n${c}`);
       }
       return { content: parts.length ? parts.join("\n\n") : null, source: "file" };
     }
     case "project-memory": {
-      const memPath = path.join(src, ".cpb", "memory.md");
+      const memPath = path.join(runtimeRoot, "wiki", "memory.md");
       return { content: await readFileOrNull(memPath, onSecretBlocked), source: "file" };
     }
     case "session-memory": {

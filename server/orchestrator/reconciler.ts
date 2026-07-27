@@ -258,9 +258,6 @@ function compactVerifierVerdict(verdict: ReconcilerRecord) {
       : null,
     blocking,
     retryScope,
-    blockingMissingInputs: Array.isArray(verdict.blockingMissingInputs)
-      ? compactStructuredValue(verdict.blockingMissingInputs, { maxItems: 8, maxChars: 500 })
-      : [],
   };
 }
 

@@ -614,25 +614,15 @@ async function inheritClaudeConfig(targetHome: string, parentEnv: StringRecord =
   return targetClaudeHome;
 }
 
-function hasProjectJobContext(parentEnv: StringRecord = {}) {
-  return Boolean(
-    (parentEnv.CPB_ACP_PROJECT || parentEnv.CPB_PROJECT) &&
-    (parentEnv.CPB_ACP_JOB_ID || parentEnv.CPB_JOB_ID)
-  );
-}
-
-function resolveAgentHomeRoot(cpbRoot: string, { dataRoot, parentEnv = {} }: { dataRoot?: string | null; parentEnv?: StringRecord } = {}) {
+function resolveAgentHomeRoot(_cpbRoot: string, { dataRoot, parentEnv = {} }: { dataRoot?: string | null; parentEnv?: StringRecord } = {}) {
   const root = dataRoot || parentEnv.CPB_PROJECT_RUNTIME_ROOT;
-  if (root) {
-    return resolveAgentHomeRuntimeRoot(
-      root,
-      dataRoot ? "dataRoot" : "CPB_PROJECT_RUNTIME_ROOT",
-    );
+  if (!root) {
+    throw new Error("project runtime root is required for isolated agent HOME");
   }
-  if (hasProjectJobContext(parentEnv)) {
-    throw new Error("CPB_PROJECT_RUNTIME_ROOT is required for isolated agent HOME in project job context");
-  }
-  return path.join(resolveAgentHomeRuntimeRoot(cpbRoot, "CPB_ROOT"), "cpb-task");
+  return resolveAgentHomeRuntimeRoot(
+    root,
+    dataRoot ? "dataRoot" : "CPB_PROJECT_RUNTIME_ROOT",
+  );
 }
 
 /**

@@ -128,7 +128,7 @@ function phaseOutput(role: string, overrides: LooseRecord = {}) {
         {
           checklistId: "AC-001",
           result: verdictStatus,
-          evidenceRefs: verdictStatus === "pass" ? [{ ledgerId: "pending", evidenceId: "EV-001" }] : [],
+          evidenceRefs: verdictStatus === "pass" ? [{ ledgerId: "evidence-ledger-job-runjob-test", evidenceId: "EV-001" }] : [],
           actualResult: verdictStatus === "pass" ? "fixture verified" : "fixture failed",
           reason: verdictStatus === "pass" ? "fake verifier confirms the fixture" : "fake verifier reports fixture failure",
           fixScope: verdictStatus === "pass" ? [] : ["README.md"],

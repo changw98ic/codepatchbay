@@ -61,7 +61,7 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-  A["任务来源：cpb run、Web NewTask、GitHub webhook、渠道命令"] --> B["路由并规范化请求"]
+  A["任务来源：cpb pipeline、GitHub webhook、渠道命令"] --> B["路由并规范化请求"]
   B --> C["resolveTaskRoute：决定 workflow、planMode 与 triage"]
   C --> D["hub-queue.enqueue"]
   D --> E["HubOrchestrator.tick"]
@@ -138,11 +138,11 @@ flowchart TD
 - `cli/cpb.mjs`
 - `cli/commands/*.js`
 
-### `cpb run` / `cpb pipeline`
+### `cpb pipeline`
 
 ```mermaid
 flowchart TD
-  A["cpb run 或 cpb pipeline"] --> B["解析 project、task、workflow、agents、variants"]
+  A["cpb pipeline"] --> B["解析 project、task、workflow、agents、variants"]
   B --> C{"task/project 合法？"}
   C -->|"否"| D["打印 usage 并退出 1"]
   C -->|"是"| E["resolveTaskRoute"]
@@ -155,7 +155,6 @@ flowchart TD
 
 主要依据文件：
 
-- `cli/commands/run.js`
 - `cli/commands/pipeline.js`
 - `core/workflow/auto-route.js`
 - `server/services/hub-registry.js`
@@ -704,7 +703,7 @@ flowchart TD
   H --> I["选中时 executeInstallPlan"]
   I --> J["checkSetupAgentHealth"]
   J --> K["getAuthConnectInstructions"]
-  K --> L["写 cpb-task/setup-profile.json"]
+  K --> L["写 hub/setup/profile.json"]
 
   M["cpb doctor"] --> N["checkReadiness"]
   N --> O["环境、agent、队列与 runtime 检查"]
@@ -743,7 +742,7 @@ flowchart TD
 
   I["cpb provider add/list/test"] --> J["cli/commands/provider.js"]
   J --> K["创建或检查 provider config"]
-  K --> L["添加时将模板写入 cpb-task/agents"]
+  K --> L["添加时将配置写入项目 runtime root/wiki/project.json"]
   L --> M["Agent 注册表 / 安装检测可消费 provider 形态"]
 
   H --> N["server/services/dual-research buildSkillsSection"]

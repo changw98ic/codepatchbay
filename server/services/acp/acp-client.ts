@@ -8,7 +8,6 @@ import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import type { LooseRecord } from "../../../core/contracts/types.js";
 import {
-  checkPermission,
   classifyDeleteRisk,
   evaluatePermissionDecision,
   formatDeleteBlockedMessage,
@@ -16,7 +15,7 @@ import {
   recordPermissionDenial,
 } from "../permission-matrix.js";
 import { createAgentHome } from "../../../core/agents/isolation.js";
-import { getDescriptor, resolveAgentEnvPrefix } from "../../../core/agents/registry.js";
+import { getDescriptor, hasAgent, loadRegistry, resolveAgentEnvPrefix } from "../../../core/agents/registry.js";
 import {
   codexConfiguredSandboxModeForExecution,
   codexExecutionConfigArgs,
@@ -233,9 +232,8 @@ type AuditContextOptions = {
 };
 
 
-// Permission matrix integration (Stage 3 / #13)
-let _permCheck: ((...args: Parameters<typeof checkPermission>) => PermissionDecision) | null = checkPermission;
-let _permEvaluate: ((...args: Parameters<typeof evaluatePermissionDecision>) => PermissionDecision) | null = evaluatePermissionDecision;
+// Permission matrix integration.
+const _permEvaluate: ((...args: Parameters<typeof evaluatePermissionDecision>) => PermissionDecision) = evaluatePermissionDecision;
 let _permRecord: ((...args: Parameters<typeof recordPermissionDenial>) => Promise<void>) | null = recordPermissionDenial;
 const DENIAL_HISTORY_MAX = 50;
 const denialHistory: PermissionDenial[] = [];
@@ -315,48 +313,16 @@ function childEnvWithoutControlPlaneAuditPath(env: NodeJS.ProcessEnv) {
 async function enforcePermission(action: string, targetPath: string, env: NodeJS.ProcessEnv = process.env): Promise<PermissionDecision> {
   if (env.CPB_PERMISSION_MODE === "off") return { allowed: true };
   const permEnv = await loadPermissionModules(env);
-  if (!_permCheck || !permEnv) return { allowed: true };
+  if (!permEnv) return { allowed: true };
 
-  // Use ReAct-style decision envelope when available
-  if (_permEvaluate) {
-    const decision = _permEvaluate(
-      permEnv.role, permEnv.phase, action, targetPath,
-      permEnv.cpbRoot, permEnv.project,
-      { sourcePath: permEnv.sourcePath, dataRoot: permEnv.dataRoot }
-    );
+  const decision = _permEvaluate(
+    permEnv.role, permEnv.phase, action, targetPath,
+    permEnv.cpbRoot, permEnv.project,
+    { sourcePath: permEnv.sourcePath, dataRoot: permEnv.dataRoot }
+  );
+  if (decision.allowed) return decision;
 
-    if (decision.allowed) return decision;
-
-    // Record denial event with classification context
-    denialHistory.push({ targetPath, action, ts: Date.now(), classification: decision.classification });
-    if (denialHistory.length > DENIAL_HISTORY_MAX) denialHistory.shift();
-
-    if (_permRecord && permEnv.jobId) {
-      await _permRecord(permEnv.cpbRoot, permEnv.project, permEnv.jobId, {
-        role: permEnv.role,
-        action,
-        targetPath,
-        reason: decision.reason || "action denied by permission matrix",
-        phase: permEnv.phase,
-        allowedBoundary: "",
-        recoveryGuidance: decision.recoveryGuidance || "",
-        dataRoot: permEnv.dataRoot,
-      }).catch(() => {});
-    }
-
-    return decision;
-  }
-
-  // Fallback to legacy checkPermission
-  const result = _permCheck(permEnv.role, action, targetPath, permEnv.cpbRoot, permEnv.project, {
-    sourcePath: permEnv.sourcePath,
-    jobId: permEnv.jobId,
-    dataRoot: permEnv.dataRoot,
-  });
-
-  if (result.allowed) return result;
-
-  denialHistory.push({ targetPath, action, ts: Date.now() });
+  denialHistory.push({ targetPath, action, ts: Date.now(), classification: decision.classification });
   if (denialHistory.length > DENIAL_HISTORY_MAX) denialHistory.shift();
 
   if (_permRecord && permEnv.jobId) {
@@ -364,67 +330,41 @@ async function enforcePermission(action: string, targetPath: string, env: NodeJS
       role: permEnv.role,
       action,
       targetPath,
-      reason: result.reason || "write denied by permission matrix",
+      reason: decision.reason || "action denied by permission matrix",
       phase: permEnv.phase,
-      allowedBoundary: result.allowedBoundary || "",
-      recoveryGuidance: result.recoveryGuidance || "",
+      allowedBoundary: "",
+      recoveryGuidance: decision.recoveryGuidance || "",
       dataRoot: permEnv.dataRoot,
     }).catch(() => {});
   }
 
-  return result;
+  return decision;
 }
 
 function enforcePermissionSync(action: string, target: string, env: NodeJS.ProcessEnv = process.env): PermissionDecision {
   if (env.CPB_PERMISSION_MODE === "off") return { allowed: true };
   const permEnv = buildPermissionEnv(env);
-  if (!_permCheck || !permEnv) return { allowed: true };
+  if (!permEnv) return { allowed: true };
 
-  // Use ReAct-style decision envelope when available
-  if (_permEvaluate) {
-    const decision = _permEvaluate(
-      permEnv.role, permEnv.phase, action, target,
-      permEnv.cpbRoot, permEnv.project,
-      { sourcePath: permEnv.sourcePath, dataRoot: permEnv.dataRoot }
-    );
-    if (decision.allowed) return decision;
-
-    denialHistory.push({ targetPath: target, action, ts: Date.now(), classification: decision.classification });
-    if (denialHistory.length > DENIAL_HISTORY_MAX) denialHistory.shift();
-    if (_permRecord && permEnv.jobId) {
-      _permRecord(permEnv.cpbRoot, permEnv.project, permEnv.jobId, {
-        role: permEnv.role,
-        action,
-        targetPath: target,
-        reason: decision.reason || "action denied by permission matrix",
-        phase: permEnv.phase,
-        recoveryGuidance: decision.recoveryGuidance || "",
-        dataRoot: permEnv.dataRoot,
-      }).catch(() => {});
-    }
-    return decision;
-  }
-
-  // Legacy path
-  const result = _permCheck(permEnv.role, action, target, permEnv.cpbRoot, permEnv.project, {
-    sourcePath: permEnv.sourcePath,
-    jobId: permEnv.jobId,
-    dataRoot: permEnv.dataRoot,
-  });
-  if (result.allowed) return result;
-  denialHistory.push({ targetPath: target, action, ts: Date.now() });
+  const decision = _permEvaluate(
+    permEnv.role, permEnv.phase, action, target,
+    permEnv.cpbRoot, permEnv.project,
+    { sourcePath: permEnv.sourcePath, dataRoot: permEnv.dataRoot }
+  );
+  if (decision.allowed) return decision;
+  denialHistory.push({ targetPath: target, action, ts: Date.now(), classification: decision.classification });
   if (denialHistory.length > DENIAL_HISTORY_MAX) denialHistory.shift();
   if (_permRecord && permEnv.jobId) {
     _permRecord(permEnv.cpbRoot, permEnv.project, permEnv.jobId, {
       role: permEnv.role,
       action,
       targetPath: target,
-      reason: result.reason || "action denied by permission matrix",
+      reason: decision.reason || "action denied by permission matrix",
       phase: permEnv.phase,
       dataRoot: permEnv.dataRoot,
     }).catch(() => {});
   }
-  return result;
+  return decision;
 }
 
 const PROTOCOL_VERSION = 1;
@@ -490,13 +430,6 @@ export async function parseToolPolicy(env: NodeJS.ProcessEnv = process.env): Pro
     }
 
     return policy.size > 0 ? policy : null;
-  }
-
-  // 3. Legacy: CPB_ACP_TERMINAL=deny maps to terminal/create=deny
-  if (env.CPB_ACP_TERMINAL === "deny") {
-    const policy = new Map();
-    policy.set("terminal/create", "deny");
-    return policy;
   }
 
   return null;
@@ -891,66 +824,20 @@ function usageDelta(
   return delta;
 }
 
-// ACP adapter lookup table — replaces hardcoded per-agent resolution
-const ACP_ADAPTERS = {
-  codex:    { command: "codex-acp",         args: [],            npxPkg: "@zed-industries/codex-acp" },
-  claude:   { command: "claude-agent-acp",  args: [],            npxPkg: "@agentclientprotocol/claude-agent-acp" },
-  reasonix: { command: "reasonix",          args: ["acp"],       npxPkg: null },
-};
-
-function isKnownAdapter(agent: string): agent is keyof typeof ACP_ADAPTERS {
-  return agent in ACP_ADAPTERS;
-}
-
-function defaultAgentCommand(agent: string): AgentCommand | null {
-  const entry = isKnownAdapter(agent) ? ACP_ADAPTERS[agent] : null;
-  if (!entry) return null;
-  if (commandExists(entry.command)) return { command: entry.command, args: entry.args };
-  if (entry.npxPkg) return { command: "npx", args: ["-y", entry.npxPkg] };
-  // Reasonix-style: binary itself is the adapter, return as-is
-  return { command: entry.command, args: entry.args };
-}
-
 export async function resolveAgentCommand(agent: string, env: NodeJS.ProcessEnv = process.env): Promise<AgentCommand> {
-  const canonicalPrefix = resolveAgentEnvPrefix(agent);
-  // Try registry-based resolution first
-  try {
-    const { loadRegistry, getDescriptor, hasAgent } = await import("../../../core/agents/registry.js");
-    // retain: dynamic signature mismatch — registry.ts declares loadRegistry(configDir: string) as required,
-    // but its body short-circuits on `_loaded && !configDir`, so a no-arg call is runtime-safe. Fixing the
-    // source signature is out of scope (cross-module); cast relaxes the param to optional here.
-    await (loadRegistry as (configDir?: string) => Promise<void>)();
-    if (hasAgent(agent)) {
-      const descriptor = getDescriptor(agent);
-      if (descriptor) {
-        const prefix = resolveAgentEnvPrefix(agent, descriptor.envPrefix);
-        const envCommand = env[`${prefix}_COMMAND`];
-        let command = envCommand || descriptor.command;
-        let args = parseEnvArgs(env[`${prefix}_ARGS`]) ?? [...(descriptor.args || [])];
+  await loadRegistry("");
+  if (!hasAgent(agent)) throw new Error(`Unknown agent: '${agent}'. Register a descriptor first.`);
+  const descriptor = getDescriptor(agent);
+  if (!descriptor) throw new Error(`Agent descriptor unavailable: '${agent}'.`);
+  const prefix = resolveAgentEnvPrefix(agent, descriptor.envPrefix);
+  const envCommand = env[`${prefix}_COMMAND`];
+  let command = envCommand || descriptor.command;
+  let args = parseEnvArgs(env[`${prefix}_ARGS`]) ?? [...(descriptor.args || [])];
 
-        // Fallback: if primary command not found and descriptor has fallback
-        if (!envCommand && descriptor.fallbackCommand && !commandExists(command)) {
-          command = descriptor.fallbackCommand;
-          args = [...(descriptor.fallbackArgs || [])];
-        }
-
-        appendCodexLaunchConfigArgs(agent, command, args, env);
-
-        return { command, args };
-      }
-    }
-  } catch {
-    // Registry unavailable, fall through to legacy
+  if (!envCommand && descriptor.fallbackCommand && !commandExists(command)) {
+    command = descriptor.fallbackCommand;
+    args = [...(descriptor.fallbackArgs || [])];
   }
-
-  // Legacy hardcoded resolution
-  const defaults = defaultAgentCommand(agent);
-  const envCommand = env[`${canonicalPrefix}_COMMAND`];
-  if (!defaults && !envCommand) {
-    throw new Error(`Unknown agent: '${agent}'. Register a descriptor or set ${canonicalPrefix}_COMMAND.`);
-  }
-  const command = envCommand || defaults?.command || "";
-  const args = parseEnvArgs(env[`${canonicalPrefix}_ARGS`]) ?? [...(defaults?.args || [])];
 
   appendCodexLaunchConfigArgs(agent, command, args, env);
 
@@ -1048,11 +935,7 @@ export function buildMcpServers(agent: string, env: NodeJS.ProcessEnv): McpServe
   // ACP adapters must opt in to session/new.mcpServers. Some adapters exit
   // after rejecting this field, so retrying with [] is too late because the
   // process is already gone.
-  try {
-    if (getDescriptor(agent)?.sessionMcpServers === false) return [];
-  } catch {
-    // Test/custom agents without a loaded registry retain protocol fallback.
-  }
+  if (getDescriptor(agent)?.sessionMcpServers === false) return [];
 
   // Claude ACP requires SSE-based MCP servers with a "type" field.
   // When CPB_CODEGRAPH_PORT is set, expose CodeGraph as an SSE endpoint.
@@ -1061,7 +944,7 @@ export function buildMcpServers(agent: string, env: NodeJS.ProcessEnv): McpServe
     return [{ name: server.name, type: "sse", url: `http://localhost:${port}` }];
   }
 
-  // Fallback: stdio-based MCP server for adapters that support it.
+  // Stdio-based MCP server for adapters that support it.
   return [{ name: server.name, type: "stdio", command: server.command, args: server.args }];
 }
 
@@ -1571,7 +1454,6 @@ function isNarrowResidualProcessPath(targetPath: string) {
   const tempRoot = path.resolve(tmpdir());
   if (resolved === tempRoot || withSep.startsWith(`${tempRoot}${path.sep}`)) return true;
   return [
-    `${path.sep}.omx${path.sep}`,
     `${path.sep}worktrees${path.sep}`,
     `${path.sep}agent-homes${path.sep}`,
     `${path.sep}acp-audit${path.sep}`,
@@ -2392,8 +2274,8 @@ export class AcpClient {
     // Parallel agents intentionally share the worktree and project runtime.
     // Path-scanning either shared location lets the first completed agent kill
     // the other agent's still-live ACP process. With isolated homes, use only
-    // the per-agent paths as residual ownership markers. Legacy non-isolated
-    // clients retain the broader cleanup fallback.
+    // the per-agent paths as residual ownership markers. Explicitly disabled
+    // isolation uses the job-scoped paths supplied by the current launch.
     const candidates = isolatedHome
       ? [
           this.childEnv?.HOME,
@@ -3141,21 +3023,8 @@ async function parseCli(argv: string[]) {
     }
   }
 
-  if (result.agent !== "codex" && result.agent !== "claude") {
-    try {
-      const { loadRegistry, hasAgent } = await import("../../../core/agents/registry.js");
-      // retain: dynamic signature mismatch — registry.ts declares loadRegistry(configDir: string) as required,
-      // but its body short-circuits on `_loaded && !configDir`, so a no-arg call is runtime-safe. Cast relaxes
-      // the param to optional; fixing the source signature is out of scope (cross-module).
-      await (loadRegistry as (configDir?: string) => Promise<void>)();
-      if (!hasAgent(result.agent)) {
-        throw new Error(`unknown agent: ${result.agent}`);
-      }
-    } catch (err) {
-      if (err.message.startsWith("unknown agent:")) throw err;
-      throw new Error("--agent must be a registered agent name (registry unavailable, fallback: codex or claude)");
-    }
-  }
+  await loadRegistry("");
+  if (!hasAgent(result.agent)) throw new Error(`unknown agent: ${result.agent}`);
 
   result.cwd = path.resolve(result.cwd || process.cwd());
   return result;

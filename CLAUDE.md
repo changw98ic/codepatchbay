@@ -57,14 +57,15 @@ cpb                         # bin 入口 → cli/cpb.ts (纯 Node.js 命令路�
 ├── bridges/                # 运行时胶水 (worker 进程执行用, 不是领域核心)
 │   ├── run-phase.ts / job-runner.ts
 │   ├── runtime-services.ts / engine-bridge.ts
-│   └── *.sh                # common.sh / verifier.sh
+│   └── *.js                # 运行时边界适配器
 │
 ├── runtime/                # 运行时工作目录 (evolve/ git/ mcp/ worker/)
-├── cpb-task/               # ★ durable 持久化
-│   ├── events/{project}/{jobId}.jsonl  # append-only event log
-│   ├── checkpoints/        # ★ job 检查点 (替代旧 lease 模型)
-│   ├── jobs-index.json     # 全局 job 索引 (projection)
-│   ├── agent-homes/  evolve/  acp-audit/  performance/  codegraph-logs/
+├── Hub projects/<project>/ # ★ 项目隔离的 durable runtime
+│   ├── wiki/               # 项目上下文、inbox、outputs
+│   ├── events/             # append-only event log
+│   ├── checkpoints/        # job 检查点
+│   ├── state/              # canonical runtime state
+│   └── jobs-index.json     # 项目 job 索引
 │
 ├── cli/                    # cpb.ts 路由 + commands/*.ts (17 commands)
 ├── shared/                 # 跨层共享 (logger / orchestrator store)
@@ -129,9 +130,9 @@ cpb                         # bin 入口 → cli/cpb.ts (纯 Node.js 命令路�
 - verify phase（`core/phases/verify.ts`）：verifier agent 必须产出逐项 `checklistVerdict`；`status:"fail"` 的 checklistVerdict（或缺失/非法 → 合成）使 verify phase `VERIFICATION_FAILED`/`VERDICT_INVALID`
 
 ### Durable Job 系统
-- Event log: `cpb-task/events/{project}/{jobId}.jsonl` (append-only)
-- Checkpoints: `cpb-task/checkpoints/` (job 检查点，恢复用)
-- 索引: `cpb-task/jobs-index.json` (projection)
+- Event log: `<hub>/projects/<project>/events/<project>/<jobId>.jsonl` (append-only)
+- Checkpoints: `<hub>/projects/<project>/checkpoints/` (job 检查点，恢复用)
+- 索引: `<hub>/projects/<project>/jobs-index.json` (projection)
 - Leader/worker: `server/orchestrator/` 通过 checkpoint + event log 恢复执行
 - Worktree: task-level git worktree 隔离改动
 
@@ -151,7 +152,6 @@ Completion-gate 解析此行决定 job 走向。
 # === CLI（核心路径）===
 cpb init /path/to/project my-project      # 初始化项目
 cpb pipeline my-project "Add unit tests" 3  # 全自动流水线 (含 retries)
-cpb run "Add dark mode" --project my-project  # pipeline 别名
 cpb retry my-project <job-id> [--agent codex] # 重试 job phase
 cpb status my-project                     # 项目状态
 cpb list                                  # 列出项目
@@ -167,7 +167,7 @@ cpb stream [--port PORT] [--host HOST]    # 启动 SSE 流式服务
 cpb agents [list|detect|install|test]     # agent gateway 设置
 cpb github [bind|connect|doctor]          # GitHub 集成
 cpb doctor [--json]                       # 健康检查 (exit 0=ok, 1=errors)
-cpb health-check                          # 完整自检 (含测试 + 构建)
+cpb setup --quickstart --demo             # 本地无密钥演示
 cpb setup                                 # 交互式 setup 向导
 
 # === 开发 ===

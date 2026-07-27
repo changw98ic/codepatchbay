@@ -87,7 +87,7 @@ function formatWizardHuman(result) {
   return lines.join("\n");
 }
 
-// ─── Quickstart helpers ───
+// ─── Setup quickstart helpers ───
 
 import { execFile as execFileCb } from "node:child_process";
 import { promisify } from "node:util";
@@ -146,8 +146,8 @@ async function detectQuickAgents() {
 async function runQuickstart(args: string[], { cpbRoot, executorRoot }: LooseRecord = {}) {
   if (args.includes("--help") || args.includes("-h")) {
     console.log(`Usage:
-  cpb quickstart [--agent <name>] [--project-path <path>] [--project-name <name>] [--demo]
-  cpb quickstart --demo    # Run with mock agent (no real agent needed)`);
+  cpb setup --quickstart [--agent <name>] [--project-path <path>] [--project-name <name>] [--demo]
+  cpb setup --quickstart --demo    # Run with mock agent (no real agent needed)`);
     return 0;
   }
 
@@ -160,7 +160,7 @@ async function runQuickstart(args: string[], { cpbRoot, executorRoot }: LooseRec
   const demo = args.includes("--demo");
 
   // ─── Step 1: Welcome ───
-  qHeader("CodePatchbay Quickstart");
+  qHeader("CodePatchbay Setup Quickstart");
   console.log("  This wizard will get you running in 4 steps:");
   console.log("  1. Check environment & agents");
   console.log("  2. Configure your agent");
@@ -207,8 +207,8 @@ async function runQuickstart(args: string[], { cpbRoot, executorRoot }: LooseRec
     } else {
       qWarn("No agents detected. Install a supported agent using its vendor's official documentation.");
       console.log("");
-      console.log("  Then run: cpb quickstart --agent <name>");
-      console.log("  Or try:   cpb quickstart --demo");
+      console.log("  Then run: cpb setup --quickstart --agent <name>");
+      console.log("  Or try:   cpb setup --quickstart --demo");
       return 1;
     }
   }
@@ -249,15 +249,11 @@ async function runQuickstart(args: string[], { cpbRoot, executorRoot }: LooseRec
   console.log("  Your project is set up. Here's how to use it:\n");
   console.log(`  ${Q_CYAN}Run a full pipeline:${Q_NC}`);
   console.log(`    cpb pipeline ${projectName} "Add a hello world endpoint" --agent ${selectedAgent || "claude"}\n`);
-  console.log(`  ${Q_CYAN}Or enqueue through the Hub worker:${Q_NC}`);
-  console.log(`    cpb run "Add a hello world endpoint" --project ${projectName} --agent ${selectedAgent || "claude"}\n`);
   console.log(`  ${Q_CYAN}Inspect progress:${Q_NC}`);
   console.log(`    cpb status ${projectName}`);
   console.log(`    cpb jobs report\n`);
   console.log(`  ${Q_CYAN}Configure agent instructions:${Q_NC}`);
   console.log(`    cpb setup ${projectName}\n`);
-  console.log(`  ${Q_CYAN}Web UI:${Q_NC}`);
-  console.log(`    cpb ui\n`);
   console.log(`  ${Q_CYAN}Help:${Q_NC}`);
   console.log(`    cpb <command> --help\n`);
 

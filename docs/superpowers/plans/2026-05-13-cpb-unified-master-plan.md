@@ -61,7 +61,7 @@ profiles/     → Agent 角色定义（soul.md + config.yaml）
 ### Commit `646311f` — Phase 4-5（Runtime Root 迁移）
 - .omc/ → cpb-task/ 全量迁移
 - runtime-root.js 新增
-- migrate-runtime-root.mjs 新增
+- 不新增 CPB 内置 runtime 迁移命令；切换前由部署流程在 CPB 外部处理旧数据
 - provider-semaphore.js + test 删除（dead code）
 - no-omc-writes guard tests 新增
 - 所有测试路径更新

@@ -166,14 +166,7 @@ function phaseBudgetTable(policy: LooseRecord) {
 }
 
 async function jobReadOptions(cpbRoot: string, hubRoot: string, project: string) {
-  try {
-    return {
-      dataRoot: await resolveProjectDataRoot(cpbRoot, project, { hubRoot }),
-      includeLegacyFallback: true,
-    };
-  } catch {
-    return { includeLegacyFallback: true };
-  }
+  return { dataRoot: await resolveProjectDataRoot(cpbRoot, project, { hubRoot }) };
 }
 
 function jobPanelHtml(stateInput: unknown) {
@@ -397,9 +390,15 @@ export async function startStreamServer(options: StreamServerOptions) {
     const wikiMatch = pathname.match(/^\/wiki\/([A-Za-z0-9][A-Za-z0-9-]*)\/(.+)$/);
     if (wikiMatch) {
       const [, project, filePath] = wikiMatch;
+      let dataRoot: string;
+      try {
+        dataRoot = await resolveProjectDataRoot(cpbRoot, project, { hubRoot });
+      } catch (err) {
+        return jsonResponse(res, 404, { error: err instanceof Error ? err.message : String(err) }, responseCorsHeaders);
+      }
       // Prevent path traversal
-      const resolved = path.resolve(cpbRoot, "wiki", "projects", project, filePath);
-      const wikiBase = path.resolve(cpbRoot, "wiki", "projects", project);
+      const resolved = path.resolve(dataRoot, "wiki", filePath);
+      const wikiBase = path.resolve(dataRoot, "wiki");
       if (!resolved.startsWith(wikiBase + path.sep) && resolved !== wikiBase) {
         return jsonResponse(res, 403, { error: "path traversal blocked" }, responseCorsHeaders);
       }
@@ -430,7 +429,6 @@ export async function startStreamServer(options: StreamServerOptions) {
 
   // ── Broadcast: wiki watcher ──────────────────────────────────────────────
   const wikiWatcher = startWikiWatcher({
-    cpbRoot,
     hubRoot,
     onChange(evt: WikiChangeEvent) {
       const msg = { type: "wiki", ...evt };

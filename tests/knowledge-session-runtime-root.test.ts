@@ -42,7 +42,8 @@ test("session knowledge paths resolve and initialize under explicit runtime root
 
   assert.equal(await pathExists(path.join(dataRoot, "sessions", "sess-001")), true);
   assert.equal(await pathExists(path.join(dataRoot, "sessions", "sess-002")), true);
-  assert.equal(await pathExists(path.join(sourcePath, ".cpb", "wiki")), true);
+  assert.equal(await pathExists(path.join(dataRoot, "wiki")), true);
+  assert.equal(await pathExists(path.join(sourcePath, ".cpb", "wiki")), false);
   assert.equal(await pathExists(path.join(sourcePath, ".cpb", "memory.md")), false);
   assert.equal(await pathExists(path.join(sourcePath, "cpb-task")), false);
 });
@@ -131,7 +132,7 @@ test("session prompt context reads runtime memory and ignores legacy cpb-task", 
 
   await assert.rejects(
     composePromptContext({ hubRoot, sourcePath, sessionId: "sess-001" }),
-    /projectRuntimeRoot or dataRoot is required/,
+    /dataRoot must be a string/,
   );
   await assert.rejects(
     composePromptContext({ hubRoot, sourcePath, dataRoot, sessionId: "../escape" }),

@@ -111,7 +111,7 @@ function phaseOutput(role: string, overrides: LooseRecord = {}) {
         {
           checklistId: "AC-001",
           result: verdictStatus,
-          evidenceRefs: verdictStatus === "pass" ? [{ ledgerId: "pending", evidenceId: "EV-001" }] : [],
+          evidenceRefs: verdictStatus === "pass" ? [{ ledgerId: "evidence-ledger-job-runjob-test", evidenceId: "EV-001" }] : [],
           actualResult: verdictStatus === "pass" ? "fixture verified" : "fixture failed",
           reason: verdictStatus === "pass" ? "fake verifier confirms the fixture" : "fake verifier reports fixture failure",
           fixScope: verdictStatus === "pass" ? [] : ["README.md"],
@@ -353,7 +353,7 @@ test("runDagNode decision: high-risk map inserts adversarial_verify routed to ad
     agents: {
       planner: "fake-primary",
       executor: "fake-primary",
-      verifier: "fake-primary",
+      verifier: "fake-verifier-agent",
       adversarial_verifier: "fake-adversarial-agent",
     },
     prepareTask: async () => ({
@@ -373,23 +373,9 @@ test("runDagNode decision: high-risk map inserts adversarial_verify routed to ad
   const adversarial = calls.filter((c) => recordValue(c.meta).role === "adversarial_verifier");
   assert.equal(adversarial.length, 1, "adversarial_verify node must run exactly once");
 
-  // CHARACTERIZATION: the agent is "codex", NOT the configured
-  // agents.adversarial_verifier ("fake-adversarial-agent"). When the risk map
-  // is high/adversarialRequired, runJob generates a dynamic agent plan
-  // (core/engine/run-job-checklist-dag.ts -> generateDynamicAgentPlan) whose
-  // agentConfig.adversarial_verifier.agent is forcibly set to
-  // DEFAULT_DYNAMIC_VERIFIER_AGENT
-  //   = process.env.CPB_DYNAMIC_VERIFIER_AGENT || "codex"
-  // (core/agents/dynamic-agent-plan.ts:2). resolvePhaseAgentRouting treats
-  // this as a `required`+`independent` dynamic agent, so it OVERRIDES the
-  // caller-configured agents.adversarial_verifier. The test runner clears
-  // every CPB_* env var at startup, so the override resolves to "codex".
-  //
-  // This is genuine assurance-policy behavior (the independent-verifier
-  // mandate for high-risk workloads), not a provider fallback. Pinning "codex"
-  // here freezes that override so Phase 4 cannot silently drop it; if the
-  // kernel stops overriding, this assertion must change.
-  assert.equal(adversarial[0].agent, "codex");
+  // High-risk dynamic routing preserves the explicitly configured role agent
+  // while enforcing provider-family independence from the executor.
+  assert.equal(adversarial[0].agent, "fake-adversarial-agent");
 });
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -600,6 +586,31 @@ test("runDagNode outcome: execute mutation outside retry.fixScope triggers SCOPE
 
 test("runDagNode outcome: repairable verify failure defers (no terminal) and triggers solver repair re-execute", async () => {
   const { result, calls, events } = await runEngine({
+    prepareTask: async () => ({
+      riskMap: mediumRiskMap(),
+      acceptanceChecklist: {
+        schemaVersion: 1,
+        jobId: "job-runjob-test",
+        project: "flow",
+        status: "frozen",
+        source: { task: "runDagNode characterization fixture", issue: null, documents: [] },
+        items: [{
+          id: "AC-001",
+          requirement: "README is updated by the runDagNode fixture.",
+          source: "user_task",
+          sourceRefs: [{ kind: "task_text", locator: "task:0" }],
+          predicateId: "runjob-readme-update",
+          required: true,
+          area: "test_fixture",
+          risk: "medium",
+          verificationMethod: "static",
+          expectedEvidence: "README.md is changed by the fixture execution",
+          dependsOn: [],
+          allowedFiles: ["README.md"],
+        }],
+        assumptions: [],
+      },
+    }),
     poolOpts: {
       customOutput: ({ call, calls: allCalls }: { call: LooseRecord; calls: LooseRecord[] }) => {
         const role = recordValue(call.meta).role;

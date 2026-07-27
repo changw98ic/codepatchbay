@@ -18,6 +18,7 @@ import {
   RELEASE_METADATA_MAX_BYTES,
   currentReleaseLinkPath,
   currentReleaseStatePath,
+  installRelease,
   readReleaseMetadata,
   selectRelease,
 } from "../server/services/release/release-store.js";
@@ -28,31 +29,45 @@ async function createRelease(
   releaseId: string,
   marker = releaseId,
 ) {
-  const installedPath = path.join(releaseStoreRoot, releaseId);
-  await mkdir(path.join(installedPath, "release"), { recursive: true });
-  for (const relativePath of REQUIRED_EXECUTOR_FILES) {
-    const target = path.join(installedPath, relativePath);
-    await mkdir(path.dirname(target), { recursive: true });
-    await writeFile(target, `fixture:${marker}:${relativePath}\n`, "utf8");
+  const sourceRoot = await tempRoot(`cpb-release-source-${releaseId}-`);
+  for (const directory of [
+    "bridges",
+    "cli",
+    "core",
+    "profiles",
+    "runtime",
+    "scripts",
+    "server",
+    "shared",
+    "skills",
+    "templates",
+    "web",
+  ]) {
+    await mkdir(path.join(sourceRoot, directory), { recursive: true });
   }
-  await writeFile(path.join(installedPath, "cpb"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
-  await chmod(path.join(installedPath, "cpb"), 0o755);
-  const manifest = {
-    metadataVersion: 1,
-    releaseId,
-    sourcePath: `/source/${releaseId}`,
-    installedPath,
-    createdAt: "2026-07-21T00:00:00.000Z",
-    codeVersion: "1.0.0",
-    packageName: "codepatchbay",
-    stateFormatVersions: {},
-  };
   await writeFile(
-    path.join(installedPath, "release", "manifest.json"),
-    `${JSON.stringify(manifest, null, 2)}\n`,
+    path.join(sourceRoot, "package.json"),
+    `${JSON.stringify({ name: "codepatchbay", version: "1.0.0" }, null, 2)}\n`,
     "utf8",
   );
-  return { installedPath, manifestPath: path.join(installedPath, "release", "manifest.json") };
+  for (const relativePath of REQUIRED_EXECUTOR_FILES) {
+    const target = path.join(sourceRoot, relativePath);
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, `fixture:${marker}:${relativePath}\n`, "utf8");
+    if (relativePath === "cpb") await chmod(target, 0o755);
+  }
+  const manifest = await installRelease({
+    sourceRoot,
+    destRoot: releaseStoreRoot,
+    name: releaseId,
+    now: new Date("2026-07-21T00:00:00.000Z"),
+  });
+  const installedPath = String(manifest.generationPath);
+  return {
+    installedPath,
+    canonicalPath: String(manifest.installedPath),
+    manifestPath: path.join(installedPath, "release", "manifest.json"),
+  };
 }
 
 async function selectionFixture(prefix: string) {
@@ -207,7 +222,7 @@ test("release selection preserves a link successor instead of overwriting it", a
 
 test("release selection detects replacement after link publication and never deletes the successor", async () => {
   const fixture = await selectionFixture("cpb-release-select-link-aba-");
-  await createRelease(fixture.releaseStoreRoot, "release-selected");
+  const release = await createRelease(fixture.releaseStoreRoot, "release-selected");
   const successorTarget = path.join(fixture.root, "successor-release");
   await mkdir(successorTarget);
   const linkPath = currentReleaseLinkPath({ env: fixture.env });
@@ -249,12 +264,12 @@ test("release selection detects replacement after link publication and never del
   );
 
   assert.equal(path.resolve(path.dirname(linkPath), await readlink(linkPath)), successorTarget);
-  assert.equal(path.resolve(path.dirname(displaced), await readlink(displaced)), path.join(fixture.releaseStoreRoot, "release-selected"));
+  assert.equal(path.resolve(path.dirname(displaced), await readlink(displaced)), release.installedPath);
 });
 
 test("release selection never advertises a replaced link stage after the canonical link is replaced", async () => {
   const fixture = await selectionFixture("cpb-release-select-link-stage-aba-");
-  await createRelease(fixture.releaseStoreRoot, "release-selected");
+  const release = await createRelease(fixture.releaseStoreRoot, "release-selected");
   const successorTarget = path.join(fixture.root, "successor-release");
   await mkdir(successorTarget);
   const linkPath = currentReleaseLinkPath({ env: fixture.env });
@@ -306,11 +321,11 @@ test("release selection never advertises a replaced link stage after the canonic
   assert.equal(path.resolve(path.dirname(linkStagePath), await readlink(linkStagePath)), successorTarget);
   assert.equal(
     path.resolve(path.dirname(displacedCanonical), await readlink(displacedCanonical)),
-    path.join(fixture.releaseStoreRoot, "release-selected"),
+    release.installedPath,
   );
   assert.equal(
     path.resolve(path.dirname(displacedStage), await readlink(displacedStage)),
-    path.join(fixture.releaseStoreRoot, "release-selected"),
+    release.installedPath,
   );
 });
 
@@ -419,8 +434,8 @@ test("release selection revalidates both the state stage and the earlier link be
 
 test("release reselection never adopts a same-path successor as the predecessor to isolate", async () => {
   const fixture = await selectionFixture("cpb-release-select-pre-isolation-aba-");
-  await createRelease(fixture.releaseStoreRoot, "release-first");
-  await createRelease(fixture.releaseStoreRoot, "release-second");
+  const first = await createRelease(fixture.releaseStoreRoot, "release-first");
+  const second = await createRelease(fixture.releaseStoreRoot, "release-second");
   await selectRelease({ releaseId: "release-first", destRoot: fixture.releaseStoreRoot, env: fixture.env });
   const statePath = currentReleaseStatePath({ env: fixture.env });
   const linkPath = currentReleaseLinkPath({ env: fixture.env });
@@ -480,10 +495,10 @@ test("release reselection never adopts a same-path successor as the predecessor 
   assert.equal(JSON.parse(await readFile(stateStagePath, "utf8")).releaseId, "release-second");
   assert.equal(
     path.resolve(path.dirname(linkStagePath), await readlink(linkStagePath)),
-    path.join(fixture.releaseStoreRoot, "release-second"),
+    second.installedPath,
   );
   assert.equal(JSON.parse(await readFile(predecessorState, "utf8")).releaseId, "release-first");
-  assert.equal(path.resolve(path.dirname(predecessorLink), await readlink(predecessorLink)), path.join(fixture.releaseStoreRoot, "release-first"));
+  assert.equal(path.resolve(path.dirname(predecessorLink), await readlink(predecessorLink)), first.installedPath);
 });
 
 test("release selection reports a committed recovery path when parent fsync fails", async () => {

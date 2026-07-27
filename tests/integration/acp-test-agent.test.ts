@@ -2028,6 +2028,7 @@ test("AcpPool one-shot creates runtime roots before spawning the ACP client", as
   const tmp = await tempRoot("cpb-acp-oneshot-roots");
   const cpbRoot = path.join(tmp, "missing-cpb-root");
   const hubRoot = path.join(tmp, "missing-hub-root");
+  const dataRoot = path.join(tmp, "project-runtime");
   const pool = new AcpPool({
     cpbRoot,
     hubRoot,
@@ -2035,6 +2036,7 @@ test("AcpPool one-shot creates runtime roots before spawning the ACP client", as
       ...process.env,
       CPB_CODEGRAPH_ENABLED: "0",
       CPB_ACP_RTK_ENABLED: "0",
+      CPB_PROJECT_RUNTIME_ROOT: dataRoot,
       CPB_ACP_FAKE_ACP_COMMAND: process.execPath,
       CPB_ACP_FAKE_ACP_ARGS: JSON.stringify([testAgent, "--response", "one-shot-ok"]),
     },
@@ -2043,6 +2045,8 @@ test("AcpPool one-shot creates runtime roots before spawning the ACP client", as
 
   try {
     const result = await pool.execute("fake-acp", "root creation smoke", repoRoot, 10_000, {
+      projectId: "root-creation-project",
+      jobId: "root-creation-job",
       phase: "plan",
       role: "planner",
     });

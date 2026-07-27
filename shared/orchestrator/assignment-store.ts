@@ -29,6 +29,7 @@ export type AssignmentRecord = LooseRecord & {
   assignmentId?: string;
   entryId?: string;
   projectId?: string;
+  projectRuntimeRoot?: string;
   task?: string;
   sourcePath?: string;
   workflow?: string;
@@ -56,6 +57,7 @@ export type AssignmentAttempt = LooseRecord & {
 type AssignmentEntryInput = Omit<LooseRecord, "sourceContext"> & {
   entryId?: string | number;
   projectId?: string;
+  projectRuntimeRoot?: string;
   task?: string;
   sourcePath?: string;
   workflow?: string;
@@ -490,7 +492,7 @@ export class AssignmentStore {
    * Idempotent: creates assignment on first call, updates mutable fields on retry/reroute.
    * Preserves attempt history (counter + attempt directories) across retries.
    */
-  async getOrCreateAssignmentForEntry({ entryId, projectId, task, sourcePath, workflow, planMode, sourceContext, metadata }: AssignmentEntryInput): Promise<AssignmentRecord> {
+  async getOrCreateAssignmentForEntry({ entryId, projectId, projectRuntimeRoot, task, sourcePath, workflow, planMode, sourceContext, metadata }: AssignmentEntryInput): Promise<AssignmentRecord> {
     const entryIdText = String(entryId);
     const id = `a-${entryIdText}`;
     const dir = path.join(this.baseDir, id);
@@ -506,6 +508,7 @@ export class AssignmentStore {
           sourceContext: { ...recordValue(existing.sourceContext), ...recordValue(sourceContext) },
           task: task || existing.task,
           sourcePath: sourcePath || existing.sourcePath,
+          projectRuntimeRoot: projectRuntimeRoot || existing.projectRuntimeRoot,
           metadata: { ...recordValue(existing.metadata), ...recordValue(metadata) },
           // Reset scheduling state for new attempt
           status: "scheduled",
@@ -525,6 +528,7 @@ export class AssignmentStore {
         assignmentId: id,
         entryId: entryIdText,
         projectId,
+        projectRuntimeRoot,
         task,
         sourcePath,
         workflow: workflow || "standard",
@@ -602,6 +606,7 @@ export class AssignmentStore {
             sourceContext: { ...recordValue(existing.sourceContext), ...recordValue(normalizedInput.sourceContext) },
             task: normalizedInput.task || existing.task,
             sourcePath: normalizedInput.sourcePath || existing.sourcePath,
+            projectRuntimeRoot: normalizedInput.projectRuntimeRoot || existing.projectRuntimeRoot,
             metadata: { ...recordValue(existing.metadata), ...recordValue(normalizedInput.metadata) },
             status: "scheduled",
             resultWrittenAt: null,
@@ -612,6 +617,7 @@ export class AssignmentStore {
             assignmentId,
             entryId: entryIdText,
             projectId: normalizedInput.projectId,
+            projectRuntimeRoot: normalizedInput.projectRuntimeRoot,
             task: normalizedInput.task,
             sourcePath: normalizedInput.sourcePath,
             workflow: normalizedInput.workflow || "standard",

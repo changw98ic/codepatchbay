@@ -154,9 +154,6 @@ function buildTitle(category: string, envelope: LooseRecord) {
 
 function buildDetails(envelope: LooseRecord) {
   const parts: string[] = [];
-  if (envelope?._legacyDetails) {
-    parts.push(String(envelope._legacyDetails));
-  }
   if (Array.isArray(envelope?.blocking) && envelope.blocking.length > 0) {
     parts.push(`Blocking: ${envelope.blocking.length} item(s)`);
   }
@@ -208,34 +205,6 @@ function buildPrevention(envelope: LooseRecord) {
     if (criteria.length > 0) parts.push(`验收标准: ${criteria.join("; ")}`);
   }
   return parts.length > 0 ? parts.join("\n") : "待补充";
-}
-
-/**
- * Extract ## Status / ## Reason / ## Details / ## Confidence from legacy Markdown verdict.
- */
-function extractLegacyMarkdownSections(content: unknown) {
-  const result: LooseRecord = {};
-  const text = typeof content === "string" ? content : String(content ?? "");
-  const sections = text.split(/^## /m);
-  for (const section of sections) {
-    const headerMatch = section.match(/^(\w[\w -]*)\s*\n([\s\S]*)/);
-    if (!headerMatch) continue;
-    const heading = headerMatch[1].trim().toLowerCase();
-    const body = headerMatch[2].trim();
-    if (heading === "status") {
-      const statusLine = body.split(/\n/)[0].trim();
-      const m = statusLine.match(/^(pass|fail|partial|inconclusive|infra_error)\b/i);
-      if (m) result.status = m[1];
-    } else if (heading === "reason") {
-      result.reason = body.slice(0, 500);
-    } else if (heading === "details") {
-      result.details = body.slice(0, 1000);
-    } else if (heading === "confidence") {
-      const num = parseFloat(body);
-      if (!Number.isNaN(num) && num >= 0 && num <= 1) result.confidence = num;
-    }
-  }
-  return result;
 }
 
 /**
@@ -362,27 +331,7 @@ export async function extractExperienceFromVerdict(cpbRoot: string, project: str
     return null; // artifact not readable — skip silently
   }
 
-  let envelope = recordValue(parseVerdictEnvelope(content));
-
-  // Enrich legacy Markdown verdicts that parseVerdictEnvelope returns as legacy/inconclusive
-  // by extracting ## Status / ## Reason / ## Details / ## Confidence sections
-  if (envelope.source === "legacy" || envelope.source === "unknown") {
-    const legacy = extractLegacyMarkdownSections(content);
-    if (legacy.status) {
-      const normalizedStatus = legacy.status.toLowerCase();
-      if (["pass", "fail", "partial", "inconclusive", "infra_error"].includes(normalizedStatus)) {
-        envelope = {
-          ...envelope,
-          status: normalizedStatus === "partial" ? "fail" : normalizedStatus,
-          reason: legacy.reason || envelope.reason,
-          confidence: legacy.confidence ?? envelope.confidence,
-          source: "legacy-enriched",
-        };
-        // Store details for buildDetails fallback
-        if (legacy.details) envelope._legacyDetails = legacy.details;
-      }
-    }
-  }
+  const envelope = recordValue(parseVerdictEnvelope(content));
   const artifactId = path.basename(artifactPath, ".md");
   const experience = buildExperienceFromVerdict(project, jobId, artifactId, artifactPath, envelope);
   if (!experience) return null;
@@ -430,28 +379,17 @@ export async function extractExperienceForJob(
   return null;
 }
 
-/**
- * Find verdict artifact path using artifact index (authoritative),
- * falling back to job state artifacts + standard wiki path.
- */
+/** Find the canonical verdict artifact path from the project artifact index. */
 async function findVerdictArtifactPath(cpbRoot: string, project: string, jobId: string, state: LooseRecord, { dataRoot }: LooseRecord = {}) {
-  // Primary: use artifact index for authoritative path resolution
+  if (typeof dataRoot !== "string" || !dataRoot) return null;
   try {
     const { buildArtifactIndex } = await import("./job/job-projection.js");
     const index = await buildArtifactIndex(cpbRoot, project, jobId, { dataRoot });
     const entries = Array.isArray(index.entries) ? index.entries.map(recordValue) : [];
     const verdictEntry = [...entries].reverse().find((e) => e.kind === "verdict" && !e.broken);
     if (verdictEntry?.path) return String(verdictEntry.path);
-  } catch { /* index not available — fall through */ }
-
-  // Fallback: job state artifacts + standard wiki path
-  if (!state?.artifacts) return null;
-  for (const [phase, artifact] of Object.entries(recordValue(state.artifacts))) {
-    if (phase === "verify" || phase.includes("verdict") || (typeof artifact === "string" && artifact.includes("verdict"))) {
-      const artifactName = String(artifact);
-      if (path.isAbsolute(artifactName)) return artifactName;
-      return path.join(cpbRoot, "wiki", "projects", project, "outputs", artifactName);
-    }
+  } catch {
+    return null;
   }
   return null;
 }

@@ -1,6 +1,5 @@
 import type { LooseRecord } from "../../shared/types.js";
 import path from "node:path";
-import { readFile } from "node:fs/promises";
 
 export function buildAgentMetadata({
   agent,
@@ -128,43 +127,13 @@ export function parseCommonFlags(args: string[]) {
 }
 
 /**
- * Pipeline / Run command — unified entry point.
+ * Pipeline command.
  *
  * cpb pipeline <project> "<task>" [--flags...]
- * cpb run "<task>" [--project <id>] [--flags...]
- *
- * Both resolve to the same enqueue call. "run" mode auto-detects project
- * from cwd/package.json when --project is not specified.
  */
-export async function run(args, { cpbRoot, executorRoot, command }: LooseRecord = {}) {
-  const isRunMode = command === "run" || args[0] === "--project" || args[0]?.startsWith('"') || args[0]?.startsWith("'") || !args[0]?.match(/^[a-zA-Z0-9-]+$/);
-
-  // Detect: if --project flag is present, treat as run mode
-  const hasProjectFlag = args.includes("--project");
-  const effectiveRunMode = isRunMode || hasProjectFlag;
-
+export async function run(args, { cpbRoot, executorRoot }: LooseRecord = {}) {
   if (args.includes("--help") || args.includes("-h")) {
-    if (effectiveRunMode) {
-      console.log(`Usage: cpb run "<task>" [--project <id>] [--workflow <name>] [--plan-mode <mode>] [flags]
-
-Enqueue a task through the plan -> execute -> verify pipeline.
-Auto-detects project from cwd, package.json, or directory name.
-
-Options:
-  --project <id>       Target project ID
-  --workflow <n>       Workflow name (default: standard)
-  --plan-mode <mode>   auto|none|light|full|parent (default: auto)
-  --triage <mode>      auto|rules|acp|none
-  --retries <n>        Max pipeline retries (default: 3)
-  --agent <name>       Agent for all phases
-  --plan-agent <name>  Agent for the planning phase
-  --execute-agent <name> Agent for the execution phase
-  --verify-agent <name> Agent for the verification phase
-  --review-agent <name> Agent for the review phase
-  --model <profile>    Model profile
-  --help               Show this help`);
-    } else {
-      console.log(`Usage: cpb pipeline [--interactive] <project> "<task>" [flags]
+    console.log(`Usage: cpb pipeline <project> "<task>" [flags]
 
 Full plan -> execute -> verify pipeline.
 
@@ -183,61 +152,21 @@ Options:
   --issue-url <url>    Link to GitHub issue URL
   --repo <owner/repo>  GitHub repository
   --help               Show this help`);
-    }
     return 0;
   }
 
   const parsed = parseCommonFlags(args);
-  let project: string;
-  let task: string;
-
-  if (effectiveRunMode) {
-    // run mode: task is positional, project is --project flag or auto-detected
-    task = parsed.positional.join(" ").trim();
-    if (!task) {
-      console.error("Usage: cpb run \"<task>\" [--project <id>]");
-      return 1;
-    }
-    project = parsed.project;
-
-    if (!project) {
-      // Auto-detect project from cwd
-      try {
-        const { resolveHubRoot, loadRegistry } = await import("../../server/services/hub/hub-registry.js");
-        const hubRoot = resolveHubRoot(cpbRoot);
-        const registry = await loadRegistry(hubRoot);
-        const cwd = path.resolve(process.cwd());
-        for (const [id, proj] of Object.entries(registry.projects || {}) as Array<[string, LooseRecord]>) {
-          const src = proj.sourcePath && path.resolve(proj.sourcePath);
-          if (src === cwd || cwd.startsWith(src + path.sep)) {
-            project = id;
-            break;
-          }
-        }
-      } catch {}
-
-      if (!project) {
-        try {
-          const pkg = JSON.parse(await readFile(path.join(process.cwd(), "package.json"), "utf8"));
-          if (pkg.name) project = pkg.name.replace(/[^a-zA-Z0-9-]/g, "-").replace(/^-+|-+$/g, "");
-        } catch {}
-      }
-
-      if (!project) {
-        project = path.basename(process.cwd()).replace(/[^a-zA-Z0-9-]/g, "-").replace(/^-+|-+$/g, "");
-      }
-    }
-  } else {
-    // pipeline mode: project is first positional, task is second
-    project = parsed.positional[0];
-    task = parsed.positional.slice(1).join(" ").trim();
-    if (!project || !task) {
-      console.error("Usage: cpb pipeline <project> \"<task>\" [--retries <n>]");
-      return 1;
-    }
+  if (parsed.project) {
+    console.error("Usage: cpb pipeline <project> \"<task>\" [--retries <n>]");
+    return 1;
+  }
+  const project = parsed.positional[0];
+  const task = parsed.positional.slice(1).join(" ").trim();
+  if (!project || !task) {
+    console.error("Usage: cpb pipeline <project> \"<task>\" [--retries <n>]");
+    return 1;
   }
 
-  const resolvedCpbRoot = cpbRoot || process.env.CPB_ROOT || process.cwd();
   const hubRoot = process.env.CPB_HUB_ROOT || path.join(process.env.HOME || ".", ".cpb");
 
   const { resolveTaskRoute } = await import("../../core/workflow/auto-route.js");

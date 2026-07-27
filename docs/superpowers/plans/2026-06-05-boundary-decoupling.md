@@ -44,7 +44,7 @@
 - 修改：`runtime/worker/managed-worker.js`
 - 修改：`runtime/evolve/multi-evolve.js`
 - 删除：runtime 旧 ACP pool 入口
-- 修改：`runtime/migrate-runtime-root.js`
+- 不保留 CPB 内置 runtime 迁移命令；旧数据切换由部署流程在 CPB 外部完成
 - 修改：`runtime/record-ui-escalation.js`
 
 完成状态：

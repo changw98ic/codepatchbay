@@ -410,20 +410,16 @@ export async function runAdversarialVerify(ctx: LooseRecord) {
   }
 
   const riskMap = riskMapFromContext(ctx);
+  const persistedVerdict = renderAdversarialVerdictJson(verdict, riskMap);
   throwIfPhaseAborted(ctx.signal as AbortSignal | undefined);
   const artifact = await writeArtifact(cpbRoot, {
     signal: ctx.signal as AbortSignal | undefined,
     project,
     jobId,
     kind: "adversarial_verdict",
-    content: renderAdversarialVerdictMarkdown(verdict, riskMap),
+    content: JSON.stringify(persistedVerdict, null, 2),
     dataRoot,
-    metadata: {
-      ...verdict,
-      adversarial: true,
-      riskMap: Object.keys(riskMap).length > 0 ? riskMap : null,
-      frozenEvidenceSnapshot,
-    },
+    metadata: { ...persistedVerdict, adversarial: true, riskMap: Object.keys(riskMap).length > 0 ? riskMap : null, frozenEvidenceSnapshot },
   });
 
   const diagnostics = withPromptArtifactDiagnostics({
@@ -458,10 +454,9 @@ export async function runAdversarialVerify(ctx: LooseRecord) {
 
   return phasePassed({
     phase: "adversarial_verify",
-    verdict: `VERDICT: ${verdict.status.toUpperCase()}`,
     artifact,
     diagnostics,
-  } as Parameters<typeof phasePassed>[0] & { verdict?: string });
+  });
 }
 
 function latestCandidateIdentity(previousResults: LooseRecord[]) {
@@ -502,24 +497,19 @@ function hasUnresolvedPlanMismatch(previousResults: LooseRecord[]) {
   return null;
 }
 
-function renderAdversarialVerdictMarkdown(verdict: LooseRecord, riskMap: LooseRecord | null = null) {
-  const statusUpper = String(verdict.status || "unknown").toUpperCase();
-  return `# Adversarial Verdict
-
-VERDICT: ${statusUpper}
-
-## Status
-${statusUpper}
-
-## Risk
-${riskMap?.riskLevel || "unknown"}
-
-## Reason
-${verdict.reason || "N/A"}
-
-## Details
-${verdict.details || "N/A"}
-`;
+function renderAdversarialVerdictJson(verdict: LooseRecord, riskMap: LooseRecord | null = null) {
+  const status = verdict.status === "partial" ? "fail" : stringValue(verdict.status, "inconclusive");
+  const envelope: LooseRecord = {
+    schemaVersion: 2,
+    status,
+    reason: stringValue(verdict.reason, "adversarial verification did not provide a reason"),
+    summary: stringValue(verdict.details),
+  };
+  if (typeof verdict.confidence === "number") envelope.confidence = verdict.confidence;
+  if (Array.isArray(verdict.fix_scope)) envelope.fix_scope = verdict.fix_scope;
+  if (Array.isArray(verdict.targetChecklistIds)) envelope.targetChecklistIds = verdict.targetChecklistIds;
+  if (riskMap?.riskLevel) envelope.riskLevel = riskMap.riskLevel;
+  return envelope;
 }
 
 function promptJson(value: unknown, maxBytes = 20 * 1024) {

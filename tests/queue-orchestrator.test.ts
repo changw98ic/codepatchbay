@@ -1107,39 +1107,37 @@ test("claimEligible blocks high-confidence projects when live CodeGraph readines
   assert.deepEqual(gated.metadata.indexFreshness.dirtyReasons, ["missing_codegraph_state"]);
 });
 
-test("codegraph unavailable counters and recovery accept legacy index_unavailable rows", async () => {
-  const hubRoot = await tempRoot("cpb-queue-codegraph-legacy");
+test("codegraph unavailable counters and recovery use only the canonical status", async () => {
+  const hubRoot = await tempRoot("cpb-queue-codegraph");
   const current = await enqueue(hubRoot, { projectId: "proj", description: "current codegraph gate" });
   await updateEntry(hubRoot, current.id, {
     status: "codegraph_unavailable",
     updatedAt: oldIso(),
     metadata: { indexFreshness: { available: false } },
   });
-  const legacy = await enqueue(hubRoot, { projectId: "proj", description: "legacy index gate" });
-  await updateEntry(hubRoot, legacy.id, {
-    status: "index_unavailable",
+  const second = await enqueue(hubRoot, { projectId: "proj", description: "second codegraph gate" });
+  await updateEntry(hubRoot, second.id, {
+    status: "codegraph_unavailable",
     updatedAt: oldIso(),
     metadata: { indexFreshness: { available: false } },
   });
 
   const status = await queueStatus(hubRoot);
-  assert.equal(status.indexUnavailable, 2);
   assert.equal(status.codegraphUnavailable, 2);
-  assert.equal(status.projects.proj.indexUnavailable, 2);
   assert.equal(status.projects.proj.codegraphUnavailable, 2);
 
   const first = await claimEligible(hubRoot, {
-    workerId: "w-legacy",
-    indexUnavailableRetryMs: 1,
+    workerId: "w-codegraph",
+    codegraphUnavailableRetryMs: 1,
     assignmentStore: noAssignmentStore,
   });
 
   assert.equal(first.entry.id, current.id);
-  assert.deepEqual(first.recovered, [current.id, legacy.id]);
+  assert.deepEqual(first.recovered, [current.id, second.id]);
   const recovered = await listQueue(hubRoot);
   assert.equal(recovered.find((entry) => entry.id === current.id).status, "in_progress");
-  assert.equal(recovered.find((entry) => entry.id === legacy.id).status, "pending");
-  assert.equal(recovered.find((entry) => entry.id === legacy.id).metadata.indexFreshness, undefined);
+  assert.equal(recovered.find((entry) => entry.id === second.id).status, "pending");
+  assert.equal(recovered.find((entry) => entry.id === second.id).metadata.indexFreshness, undefined);
 });
 
 test("HubOrchestrator.tick stops on leader lock loss", async () => {
@@ -1486,6 +1484,7 @@ test("HubOrchestrator.tick writes inbox then keeps queue, assignment, and worker
   const hubRoot = await tempRoot("cpb-orch-tick");
   const cpbRoot = await tempRoot("cpb-orch-cpb");
   const sourcePath = await tempRoot("cpb-source");
+  await registerProject(hubRoot, { id: "proj", sourcePath, skipCodeGraphGate: true });
   const entry = await enqueue(hubRoot, {
     projectId: "proj",
     sourcePath,

@@ -2,7 +2,7 @@ import type { LooseRecord } from "../../shared/types.js";
 /**
  * DAG executor for workflow nodes.
  * Provides topological sort, ready-node identification, and concurrency control.
- * Compatible with legacy linear phase workflows via automatic conversion.
+ * Executes the canonical explicit DAG workflow contract.
  */
 
 type DagCallbackContext = LooseRecord & {
@@ -315,19 +315,6 @@ export function validateDag(nodes: LooseRecord[]) {
   }
 
   return { valid: true, errors: [] };
-}
-
-/**
- * Convert a legacy linear workflow (phases array) to a single-chain DAG.
- */
-export function phasesToDag(phases: string[], roleForPhase: Record<string, string> = {}, agent: string | null = null) {
-  return phases.map((phase, idx) => ({
-    id: phase,
-    phase,
-    role: roleForPhase[phase] || null,
-    agent: agent || null,
-    dependsOn: idx === 0 ? [] : [phases[idx - 1]],
-  }));
 }
 
 /**

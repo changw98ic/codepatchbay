@@ -13,6 +13,17 @@ import { tempRoot } from "./helpers.js";
 
 const execFile = promisify(execFileCb);
 
+function verdictArtifact(status: "pass" | "fail" = "pass") {
+  return {
+    kind: "verdict",
+    content: JSON.stringify({
+      schemaVersion: 2,
+      status,
+      reason: status === "pass" ? "fixture passed" : "fixture failed",
+    }),
+  };
+}
+
 async function makeJobGitEnv() {
   const root = await tempRoot("cpb-completion-git-env");
   const bin = path.join(root, "bin");
@@ -46,7 +57,7 @@ test("runCompletionGate appends a complete gate event and completes the job", as
   const phaseResults = [{
     phase: "verify",
     status: "passed",
-    verdict: "VERDICT: PASS",
+    artifact: verdictArtifact(),
   }];
 
   const result = await runCompletionGate({
@@ -145,7 +156,7 @@ test("runCompletionGate fails closed when the candidate changes after verificati
       {
         phase: "verify",
         status: "passed",
-        verdict: "VERDICT: PASS",
+        artifact: verdictArtifact(),
         diagnostics: { validatedCandidateIdentityHash: candidateArtifact.identityHash },
       },
     ],
@@ -186,7 +197,7 @@ test("runCompletionGate fails closed when a candidate has no persisted replay bu
       {
         phase: "verify",
         status: "passed",
-        verdict: "VERDICT: PASS",
+        artifact: verdictArtifact(),
         diagnostics: { validatedCandidateIdentityHash: candidateArtifact.identityHash },
       },
     ],
@@ -236,7 +247,7 @@ test("runCompletionGate fails closed when a candidate replay bundle is malformed
       {
         phase: "verify",
         status: "passed",
-        verdict: "VERDICT: PASS",
+        artifact: verdictArtifact(),
         diagnostics: { validatedCandidateIdentityHash: candidateArtifact.identityHash },
       },
     ],
@@ -279,7 +290,7 @@ test("runCompletionGate returns candidate identity and clean replay evidence on 
         {
           phase: "verify",
           status: "passed",
-          verdict: "VERDICT: PASS",
+          artifact: verdictArtifact(),
           diagnostics: { validatedCandidateIdentityHash: candidateArtifact.identityHash },
         },
       ],
@@ -348,7 +359,7 @@ test("runCompletionGate replays and recaptures candidates with the explicit job 
         {
           phase: "verify",
           status: "passed",
-          verdict: "VERDICT: PASS",
+          artifact: verdictArtifact(),
           diagnostics: { validatedCandidateIdentityHash: candidateArtifact.identityHash },
         },
       ],
@@ -502,13 +513,13 @@ test("runCompletionGate applies only identical dual-verifier scope approvals", a
         {
           phase: "verify",
           status: "passed",
-          verdict: "VERDICT: PASS",
+          artifact: verdictArtifact(),
           diagnostics: { validatedCandidateIdentityHash: candidateArtifact.identityHash, verdict: { scopeReview } },
         },
         {
           phase: "adversarial_verify",
           status: "passed",
-          verdict: "VERDICT: PASS",
+          artifact: verdictArtifact(),
           diagnostics: { verdict: { scopeReview } },
         },
       ],
@@ -619,7 +630,7 @@ test("runCompletionGate persists completion report from checklist artifacts", as
       job: { workflow: "standard", planMode: "full" },
       workflowDag: { nodes: [{ id: "verify", phase: "verify" }] },
       riskMap: { riskLevel: "medium", adversarialRequired: false },
-      phaseResults: [{ phase: "verify", status: "passed", verdict: "VERDICT: PASS" }],
+      phaseResults: [{ phase: "verify", status: "passed", artifact: verdictArtifact() }],
       getArtifactIndex: async () => ({ entries }),
       appendEvent: async (_cpbRoot, _project, _jobId, event) => {
         events.push(event);
@@ -733,7 +744,7 @@ test("runCompletionGate can defer a repairable evidence mismatch without termina
       job: { workflow: "standard", planMode: "full" },
       workflowDag: { nodes: [{ id: "execute", phase: "execute" }, { id: "verify", phase: "verify" }] },
       riskMap: {},
-      phaseResults: [{ phase: "execute", status: "passed" }, { phase: "verify", status: "passed", verdict: "VERDICT: PASS" }],
+      phaseResults: [{ phase: "execute", status: "passed" }, { phase: "verify", status: "passed", artifact: verdictArtifact() }],
       getArtifactIndex: async () => ({ entries }),
       appendEvent: async (_cpbRoot, _project, _jobId, event) => { events.push(event); },
       failJob: async (_cpbRoot, _project, _jobId, failure) => { failures.push(failure); },

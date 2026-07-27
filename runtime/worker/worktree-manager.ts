@@ -384,22 +384,23 @@ function assertSafeComponent(name: string, value: unknown) {
   }
 }
 
-function managedCoordinates(hubRootInput: string, entryId: string, slug: string) {
+function managedCoordinates(projectRuntimeRootInput: string, entryId: string, slug: string) {
   assertSafeComponent("entryId", entryId);
   assertSafeComponent("slug", slug);
-  const hubRoot = path.resolve(hubRootInput);
-  const worktreesRoot = path.join(hubRoot, "worktrees");
+  const projectRuntimeRoot = path.resolve(projectRuntimeRootInput);
+  const worktreesRoot = path.join(projectRuntimeRoot, "worktrees");
   const worktreeJobId = `job-${entryId}`;
   const worktreePath = path.join(worktreesRoot, `${worktreeJobId}-${slug}`);
   const branch = `cpb/${worktreeJobId}-${slug}`;
-  const lockRoot = path.join(hubRoot, ".locks");
+  const lockRoot = path.join(projectRuntimeRoot, ".locks");
   const lockPath = path.join(lockRoot, "managed-worktrees.lock");
-  return { hubRoot, worktreesRoot, worktreePath, branch, lockRoot, lockPath, worktreeJobId };
+  return { projectRuntimeRoot, worktreesRoot, worktreePath, branch, lockRoot, lockPath, worktreeJobId };
 }
 
-async function ensureManagedNamespace(hubRootInput: string, entryId: string, slug: string) {
-  const hub = await captureStableDirectory(hubRootInput, "Hub root");
-  const coordinates = managedCoordinates(hub.canonical, entryId, slug);
+async function ensureManagedNamespace(projectRuntimeRootInput: string, entryId: string, slug: string) {
+  await mkdir(projectRuntimeRootInput, { recursive: true });
+  const runtimeRoot = await captureStableDirectory(projectRuntimeRootInput, "project runtime root");
+  const coordinates = managedCoordinates(runtimeRoot.canonical, entryId, slug);
   await mkdir(coordinates.lockRoot, { recursive: true });
   const lockRoot = await captureStableDirectory(coordinates.lockRoot, "managed worktree lock root");
   if (lockRoot.canonical !== coordinates.lockRoot) {
@@ -921,7 +922,7 @@ export type ManagedWorktreeCleanupHooks = {
 };
 
 type CleanupManagedWorkerWorktreeOptions = {
-  hubRoot: string;
+  projectRuntimeRoot: string;
   sourcePath: string;
   entryId: string;
   managedWorktree: unknown;
@@ -1048,7 +1049,7 @@ async function observeRecoveryTruth(
 }
 
 async function cleanupManagedWorkerWorktreeUnlocked({
-  hubRoot,
+  projectRuntimeRoot,
   sourcePath,
   entryId,
   managedWorktree,
@@ -1056,7 +1057,7 @@ async function cleanupManagedWorkerWorktreeUnlocked({
   runGit = defaultGitRunner,
   hooks = {},
 }: CleanupManagedWorkerWorktreeOptions): Promise<ManagedWorktreeCleanupProof> {
-  const coordinates = managedCoordinates(hubRoot, entryId, slug);
+  const coordinates = managedCoordinates(projectRuntimeRoot, entryId, slug);
   const binding = parseVerifiedManagedWorktreeContext(managedWorktree);
   const canonicalSourcePath = (await captureStableDirectory(sourcePath, "source repository")).canonical;
   assertCoordinatesAndSource(coordinates, binding, canonicalSourcePath);
@@ -1238,23 +1239,23 @@ export async function cleanupManagedWorkerWorktree(
   options: CleanupManagedWorkerWorktreeOptions,
 ): Promise<ManagedWorktreeCleanupProof> {
   const slug = options.slug || WORKTREE_SLUG;
-  const coordinates = await ensureManagedNamespace(options.hubRoot, options.entryId, slug);
+  const coordinates = await ensureManagedNamespace(options.projectRuntimeRoot, options.entryId, slug);
   return await withDurableDirectoryLock(
     coordinates.lockPath,
-    () => cleanupManagedWorkerWorktreeUnlocked({ ...options, hubRoot: coordinates.hubRoot, slug }),
+    () => cleanupManagedWorkerWorktreeUnlocked({ ...options, projectRuntimeRoot: coordinates.projectRuntimeRoot, slug }),
     { ttlMs: 30_000, waitMs: 30_000 },
   );
 }
 
 export async function verifyRetainedManagedWorkerWorktree({
-  hubRoot,
+  projectRuntimeRoot,
   sourcePath,
   entryId,
   managedWorktree,
   slug = WORKTREE_SLUG,
   runGit = defaultGitRunner,
 }: CleanupManagedWorkerWorktreeOptions): Promise<ManagedWorktreeCleanupProof> {
-  const coordinates = await ensureManagedNamespace(hubRoot, entryId, slug);
+  const coordinates = await ensureManagedNamespace(projectRuntimeRoot, entryId, slug);
   return await withDurableDirectoryLock(coordinates.lockPath, async () => {
     const binding = parseVerifiedManagedWorktreeContext(managedWorktree);
     const canonicalSourcePath = (await captureStableDirectory(sourcePath, "source repository")).canonical;
@@ -1325,14 +1326,12 @@ type CreateManagedWorktree = (options: {
 }) => Promise<unknown>;
 
 type CreateIsolatedWorktreeOptions = {
-  hubRoot?: string;
+  projectRuntimeRoot: string;
   sourcePath?: string;
   entryId?: string;
   slug?: string;
   create?: CreateManagedWorktree;
   runGit?: ManagedWorktreeGitRunner;
-  /** @deprecated Cleanup is preserve-only; pathname removal is never invoked. */
-  removePath?: (...args: unknown[]) => Promise<unknown>;
   maxAttempts?: number;
   retryDelayMs?: number;
   log?: WorktreeLog | null;
@@ -1353,7 +1352,7 @@ function delay(ms: number) {
 }
 
 export async function createIsolatedWorktreeWithRetry({
-  hubRoot,
+  projectRuntimeRoot,
   sourcePath,
   entryId,
   slug = WORKTREE_SLUG,
@@ -1362,14 +1361,14 @@ export async function createIsolatedWorktreeWithRetry({
   maxAttempts = WORKTREE_CREATE_MAX_ATTEMPTS,
   retryDelayMs = WORKTREE_CREATE_RETRY_DELAY_MS,
   log = null,
-}: CreateIsolatedWorktreeOptions = {}): Promise<VerifiedManagedWorktreeContext> {
-  if (!hubRoot) throw new Error("hubRoot is required for worktree isolation");
+}: CreateIsolatedWorktreeOptions): Promise<VerifiedManagedWorktreeContext> {
+  if (!projectRuntimeRoot) throw new Error("projectRuntimeRoot is required for worktree isolation");
   if (!sourcePath) throw new Error("sourcePath is required for worktree isolation");
   if (!entryId) throw new Error("entryId is required for worktree isolation");
   if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1) throw new Error("maxAttempts must be a positive integer");
   if (!Number.isSafeInteger(retryDelayMs) || retryDelayMs < 0) throw new Error("retryDelayMs must be a non-negative integer");
 
-  const coordinates = await ensureManagedNamespace(hubRoot, entryId, slug);
+  const coordinates = await ensureManagedNamespace(projectRuntimeRoot, entryId, slug);
   return await withDurableDirectoryLock(coordinates.lockPath, async () => {
     const source = await captureStableDirectory(sourcePath, "source repository");
     let lastError: unknown = null;

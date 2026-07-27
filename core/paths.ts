@@ -1,21 +1,6 @@
 import os from "node:os";
 import path from "node:path";
 
-// --- Legacy (backward compat) ---
-
-export function runtimeDataRoot(cpbRoot: string) {
-  if (process.env.CPB_PROJECT_RUNTIME_ROOT) {
-    return path.resolve(process.env.CPB_PROJECT_RUNTIME_ROOT);
-  }
-  return path.join(path.resolve(cpbRoot), "cpb-task");
-}
-
-export function runtimeDataPath(cpbRoot: string, ...parts: string[]) {
-  return path.join(runtimeDataRoot(cpbRoot), ...parts);
-}
-
-// --- New root resolution (hub-managed) ---
-
 export function cpbHome() {
   return process.env.CPB_HOME || path.join(os.homedir(), ".cpb");
 }
@@ -32,11 +17,11 @@ export function projectRuntimePath(hubRoot: string, projectId: string, ...parts:
   return path.join(projectRuntimeRoot(hubRoot, projectId), ...parts);
 }
 
-export function resolveDataRoot(cpbRoot: string, { hubRoot, projectId }: { hubRoot?: string; projectId?: string } = {}) {
-  if (hubRoot && projectId) {
-    return projectRuntimeRoot(hubRoot, projectId);
+export function resolveDataRoot(_cpbRoot: string, { hubRoot, projectId }: { hubRoot?: string; projectId?: string } = {}) {
+  if (!hubRoot || !projectId) {
+    throw new Error("hubRoot and projectId are required for project runtime paths");
   }
-  return runtimeDataRoot(cpbRoot);
+  return projectRuntimeRoot(hubRoot, projectId);
 }
 
 export function dataPath(root: string, ...parts: string[]) {

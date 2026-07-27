@@ -5,7 +5,6 @@ import { link, lstat, mkdir, open, readdir, realpath, rename, unlink } from "nod
 import path from "node:path";
 
 import type { LooseRecord } from "../../shared/types.js";
-import { runtimeDataPath } from "../paths.js";
 import {
   readBoundedRegularFileNoFollow,
   withDurableDirectoryLock,
@@ -98,27 +97,37 @@ function normalizeDataRoot(value: unknown) {
 
 function cacheDir(cpbRoot: string, { dataRoot }: LooseRecord = {}) {
   const root = normalizeDataRoot(dataRoot);
-  return root ? path.join(root, CACHE_DIR_NAME) : runtimeDataPath(cpbRoot, CACHE_DIR_NAME);
+  if (!root) throw new Error("dataRoot is required for session cache paths");
+  return path.join(root, CACHE_DIR_NAME);
 }
 
 function normalizeConversationKey(value: unknown) {
   return typeof value === "string" && value ? value : "";
 }
 
-function cacheEntryName(agent: string, conversationKey = "") {
+function requireConversationKey(value: unknown) {
+  const conversationKey = normalizeConversationKey(value);
+  if (!conversationKey) {
+    throw Object.assign(new Error("session cache conversationKey is required"), {
+      code: "SESSION_CACHE_CONVERSATION_INVALID",
+    });
+  }
+  return conversationKey;
+}
+
+function cacheEntryName(agent: string, conversationKey: string) {
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(agent) || agent.includes("..")) {
     throw Object.assign(new Error(`invalid session cache agent: ${agent}`), { code: "SESSION_CACHE_AGENT_INVALID" });
   }
-  if (!conversationKey) return agent;
   const digest = createHash("sha256").update(conversationKey).digest("hex");
   return `${agent}--conversation-${digest}`;
 }
 
-function sessionFile(cpbRoot: string, agent: string, conversationKey = "", options: LooseRecord = {}) {
+function sessionFile(cpbRoot: string, agent: string, conversationKey: string, options: LooseRecord = {}) {
   return path.join(cacheDir(cpbRoot, options), `${cacheEntryName(agent, conversationKey)}.json`);
 }
 
-function lockDir(cpbRoot: string, agent: string, conversationKey = "", options: LooseRecord = {}) {
+function lockDir(cpbRoot: string, agent: string, conversationKey: string, options: LooseRecord = {}) {
   return path.join(cacheDir(cpbRoot, options), `${cacheEntryName(agent, conversationKey)}.lock`);
 }
 
@@ -169,7 +178,7 @@ function sessionFileOwner(record: LooseRecord): SessionFileOwner {
     format: typeof record.format === "string" ? record.format : null,
     generation: typeof record.generation === "string" ? record.generation : null,
     agent: String(record.agent || ""),
-    conversationKey: normalizeConversationKey(record.conversationKey),
+    conversationKey: typeof record.conversationKey === "string" ? record.conversationKey : "",
   };
 }
 
@@ -1168,10 +1177,11 @@ async function readSessionFile(filePath: string, hooks?: BoundedRegularFileReadH
     || typeof record.savedAt !== "string"
     || Number.isNaN(Date.parse(record.savedAt))
     || new Date(Date.parse(record.savedAt)).toISOString() !== record.savedAt
-    || (record.conversationKey !== undefined && typeof record.conversationKey !== "string")
-    || (record.format !== undefined && record.format !== SESSION_CACHE_FORMAT)
-    || (record.format === SESSION_CACHE_FORMAT && (typeof record.generation !== "string" || !UUID_RE.test(record.generation)))
-    || (record.format === undefined && record.generation !== undefined)
+    || typeof record.conversationKey !== "string"
+    || !record.conversationKey
+    || record.format !== SESSION_CACHE_FORMAT
+    || typeof record.generation !== "string"
+    || !UUID_RE.test(record.generation)
   ) throw Object.assign(new Error(`session cache record is malformed: ${filePath}`), { code: "SESSION_CACHE_INVALID" });
   return {
     record,
@@ -1213,8 +1223,7 @@ function assertSessionRecordBinding(
 
 /**
  * Save a session ID for an agent (cached lifecycle mode).
- * Explicit conversation keys receive independent durable entries; calls without
- * a key retain the legacy agent-level cache entry.
+ * Every session belongs to an explicit conversation identity.
  */
 export async function saveSessionId(cpbRoot: string, agent: string, sessionId: string, meta: LooseRecord = {}) {
   if (typeof sessionId !== "string" || !sessionId) {
@@ -1222,7 +1231,7 @@ export async function saveSessionId(cpbRoot: string, agent: string, sessionId: s
       code: "SESSION_CACHE_SESSION_INVALID",
     });
   }
-  const conversationKey = normalizeConversationKey(meta.conversationKey);
+  const conversationKey = requireConversationKey(meta.conversationKey);
   const cacheOptions = { dataRoot: meta.dataRoot };
   const dir = cacheDir(cpbRoot, cacheOptions);
   const filePath = sessionFile(cpbRoot, agent, conversationKey, cacheOptions);
@@ -1252,10 +1261,10 @@ export async function saveSessionId(cpbRoot: string, agent: string, sessionId: s
 export async function loadSessionId(cpbRoot: string, agent: string, {
   maxAgeMs = DEFAULT_MAX_AGE_MS,
   now = Date.now(),
-  conversationKey: requestedConversationKey = "",
+  conversationKey: requestedConversationKey,
   dataRoot,
 }: LooseRecord = {}) {
-  const conversationKey = normalizeConversationKey(requestedConversationKey);
+  const conversationKey = requireConversationKey(requestedConversationKey);
   const cacheOptions = { dataRoot };
   const effectiveMaxAgeMs = finiteNumber(maxAgeMs, DEFAULT_MAX_AGE_MS);
   const effectiveNow = finiteNumber(now, Date.now());
@@ -1286,8 +1295,8 @@ export async function loadSessionId(cpbRoot: string, agent: string, {
 /**
  * Remove a cached session for an agent.
  */
-export async function clearSessionId(cpbRoot: string, agent: string, { conversationKey: requestedConversationKey = "", dataRoot }: LooseRecord = {}) {
-  const conversationKey = normalizeConversationKey(requestedConversationKey);
+export async function clearSessionId(cpbRoot: string, agent: string, { conversationKey: requestedConversationKey, dataRoot }: LooseRecord = {}) {
+  const conversationKey = requireConversationKey(requestedConversationKey);
   const cacheOptions = { dataRoot };
   const dir = cacheDir(cpbRoot, cacheOptions);
   if (!await safeSessionDirectoryExists(dir)) return;

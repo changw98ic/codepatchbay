@@ -74,7 +74,6 @@ type CommandOptions = {
 
 type RuntimeStorageOptions = LooseRecord & {
   dataRoot?: string;
-  includeLegacyFallback?: boolean;
 };
 
 type LeaseLockOptions = {
@@ -522,7 +521,7 @@ export async function runFakeAcpSmoke({
       { cwd: sourcePath, env: gitEnv },
     );
     const { writeProjectAgents } = await import("./agent/agent-config.js");
-    await writeProjectAgents(cpbRoot, project, {
+    await writeProjectAgents(path.join(hubRoot, "projects", project), project, {
       default: "fake-acp",
       phases: { plan: "fake-acp", execute: "fake-acp", review: "fake-acp", verify: "fake-acp" },
     });
@@ -591,7 +590,6 @@ export const LEASE_FORMAT_VERSION = 1;
 
 function leaseBase(cpbRoot: string, opts: RuntimeStorageOptions) {
   if (opts?.dataRoot) return path.resolve(opts.dataRoot);
-  if (opts?.includeLegacyFallback === true) return path.join(path.resolve(cpbRoot), "cpb-task");
   throw new Error("project runtime root required for lease storage");
 }
 
@@ -2927,7 +2925,6 @@ export async function acquireLease(
     ownerPid = process.pid,
     lockTtlMs,
     dataRoot,
-    includeLegacyFallback = false,
   }: AcquireLeaseOptions
 ) {
   validateLeaseId(leaseId);
@@ -2936,7 +2933,7 @@ export async function acquireLease(
   }
   const effectiveOwnerPid = positiveSafePid(ownerPid, "ownerPid");
   const effectiveTtlMs = leaseTtlMsFor(ttlMs);
-  const file = await leaseFileFor(cpbRoot, leaseId, { dataRoot, includeLegacyFallback });
+  const file = await leaseFileFor(cpbRoot, leaseId, { dataRoot });
   return await withLeaseLock(file, async () => {
     const lease = createLease({
       leaseId,
@@ -2961,9 +2958,9 @@ export async function acquireLease(
 export async function readLease(
   cpbRoot: string,
   leaseId: string,
-  { dataRoot, includeLegacyFallback = false, lockTtlMs }: RuntimeStorageOptions & LeaseLockOptions = {},
+  { dataRoot, lockTtlMs }: RuntimeStorageOptions & LeaseLockOptions = {},
 ) {
-  const file = await leaseFileFor(cpbRoot, leaseId, { dataRoot, includeLegacyFallback });
+  const file = await leaseFileFor(cpbRoot, leaseId, { dataRoot });
   return await withLeaseLock(file, async () => readLeaseFile(file), { lockTtlMs });
 }
 
@@ -2987,10 +2984,10 @@ export function isLeaseStale(lease: LooseRecord | null, now = new Date()) {
 export async function renewLease(
   cpbRoot: string,
   leaseId: string,
-  { ttlMs, now = new Date(), ownerToken, lockTtlMs, dataRoot, includeLegacyFallback = false }: RenewLeaseOptions
+  { ttlMs, now = new Date(), ownerToken, lockTtlMs, dataRoot }: RenewLeaseOptions
 ) {
   const effectiveTtlMs = leaseTtlMsFor(ttlMs);
-  const file = await leaseFileFor(cpbRoot, leaseId, { dataRoot, includeLegacyFallback });
+  const file = await leaseFileFor(cpbRoot, leaseId, { dataRoot });
   return await withLeaseLock(
     file,
     async () => {
@@ -3033,9 +3030,9 @@ export async function renewLease(
 export async function releaseLease(
   cpbRoot: string,
   leaseId: string,
-  { ownerToken, lockTtlMs, dataRoot, includeLegacyFallback = false }: ReleaseLeaseOptions = {}
+  { ownerToken, lockTtlMs, dataRoot }: ReleaseLeaseOptions = {}
 ) {
-  const file = await leaseFileFor(cpbRoot, leaseId, { dataRoot, includeLegacyFallback });
+  const file = await leaseFileFor(cpbRoot, leaseId, { dataRoot });
 
   const lock = await acquireLeaseFileLock(file, { lockTtlMs });
   let primaryError: unknown = null;
@@ -3124,7 +3121,7 @@ export async function readProjectConcurrencyConfig(hubRoot: string, projectId: s
   const { readProjectJsonFromRoots } = await import("./agent/agent-config.js");
   if (!projectId) return null;
   const registryProject = await (getProjectFn || defaultGetProject)(hubRoot, projectId).catch(() => null);
-  const projectJson = await readProjectJsonFromRoots([hubRoot], projectId).catch(() => ({}));
+  const projectJson = await readProjectJsonFromRoots([registryProject?.projectRuntimeRoot], projectId).catch(() => ({}));
   return mergeProjectConfig(registryProject, projectJson);
 }
 
@@ -3177,9 +3174,8 @@ function validateId(value: unknown, label: string) {
   }
 }
 
-function processBase(cpbRoot: string, { dataRoot, includeLegacyFallback = false }: RuntimeStorageOptions = {}) {
+function processBase(cpbRoot: string, { dataRoot }: RuntimeStorageOptions = {}) {
   if (dataRoot) return path.resolve(dataRoot);
-  if (includeLegacyFallback === true) return path.join(path.resolve(cpbRoot), "cpb-task");
   throw new Error("project runtime root required for process registry");
 }
 
@@ -3475,11 +3471,11 @@ async function processPublicationFailureTruth(
   };
 }
 
-export async function registerProcess(cpbRoot: string, { jobId, project, phase, runnerPid, treeId, leaseId, command, startedAt, cwd, executorRoot, dataRoot, includeLegacyFallback = false, processSystem }: RegisterProcessOptions = {}) {
+export async function registerProcess(cpbRoot: string, { jobId, project, phase, runnerPid, treeId, leaseId, command, startedAt, cwd, executorRoot, dataRoot, processSystem }: RegisterProcessOptions = {}) {
   validateId(jobId, "jobId");
   const registeredPid = runnerPid === undefined ? process.pid : positiveSafePid(runnerPid, "runnerPid");
   const processIdentity = capturedIdentity(registeredPid, processSystem);
-  const file = await processFile(cpbRoot, jobId, { dataRoot, includeLegacyFallback });
+  const file = await processFile(cpbRoot, jobId, { dataRoot });
   const entry: ProcessEntry = {
     formatVersion: PROCESS_REGISTRY_FORMAT_VERSION,
     jobId,
@@ -3524,8 +3520,8 @@ export async function updateHeartbeat(cpbRoot: string, jobId: string, options: R
   });
 }
 
-export async function markExited(cpbRoot: string, jobId: string, { exitCode, status = "exited", dataRoot, includeLegacyFallback = false }: MarkExitedOptions = {}) {
-  const file = await processFile(cpbRoot, jobId, { dataRoot, includeLegacyFallback });
+export async function markExited(cpbRoot: string, jobId: string, { exitCode, status = "exited", dataRoot }: MarkExitedOptions = {}) {
+  const file = await processFile(cpbRoot, jobId, { dataRoot });
   return await withProcessFileLock(file, async () => {
     const snapshot = await readJsonFileSnapshot(file);
     if (!snapshot) return null;
@@ -3670,14 +3666,13 @@ export function classifyLiveness(
 export async function stopProcess(cpbRoot: string, jobId: string, options: ProcessRegistryOptions = {}) {
   const {
     dataRoot,
-    includeLegacyFallback = false,
     processSystem,
     graceMs = 2_000,
     forceVerifyMs = 1_000,
   } = options;
   const effectiveGraceMs = processStopWaitMs(graceMs, "graceMs");
   const effectiveForceVerifyMs = processStopWaitMs(forceVerifyMs, "forceVerifyMs");
-  const file = await processFile(cpbRoot, jobId, { dataRoot, includeLegacyFallback });
+  const file = await processFile(cpbRoot, jobId, { dataRoot });
   return await withProcessFileLock(file, async () => {
     const snapshot = await readJsonFileSnapshot(file);
     if (!snapshot) return { stopped: false, reason: "not found" };
@@ -3899,10 +3894,9 @@ export async function stopProcess(cpbRoot: string, jobId: string, options: Proce
 export async function cleanProcesses(cpbRoot: string, {
   dryRun = false,
   dataRoot,
-  includeLegacyFallback = false,
   processSystem,
 }: ProcessRegistryOptions = {}) {
-  const storageOptions = { dataRoot, includeLegacyFallback };
+  const storageOptions = { dataRoot };
   const entries = await listProcesses(cpbRoot, storageOptions);
   const eligible: ProcessEntry[] = [];
 
@@ -3940,11 +3934,10 @@ export async function cleanProcesses(cpbRoot: string, {
 export async function removeProcess(cpbRoot: string, jobId: string, {
   dryRun = false,
   dataRoot,
-  includeLegacyFallback = false,
   lockTtlMs,
 }: ProcessRegistryOptions & LeaseLockOptions = {}) {
   validateId(jobId, "jobId");
-  const file = await processFile(cpbRoot, jobId, { dataRoot, includeLegacyFallback });
+  const file = await processFile(cpbRoot, jobId, { dataRoot });
   return await withProcessFileLock(file, async () => {
     const snapshot = await readJsonFileSnapshot(file);
     if (dryRun) {
@@ -4070,8 +4063,6 @@ export async function inspectProcess(cpbRoot: string, jobId: string) {
 export const INDEX_MANIFEST_SCHEMA_VERSION = 1;
 export const DEFAULT_INDEX_TTL_MS = 24 * 60 * 60 * 1000;
 
-const CPB_RUNTIME_PREFIXES = ["cpb-task/", ".cpb/"];
-
 function indexDir(rtRoot: string) {
   return path.join(rtRoot, "index");
 }
@@ -4095,10 +4086,7 @@ function extractPath(line: string) {
 }
 
 function filterCpbPaths(lines: string[]) {
-  return lines.filter((l: string) => {
-    const p = extractPath(l.trim());
-    return p && !CPB_RUNTIME_PREFIXES.some((pre) => p.startsWith(pre));
-  });
+  return lines.filter((l: string) => Boolean(extractPath(l.trim())));
 }
 
 async function git(args: string[], cwd: string, { timeoutMs = 10_000 }: { timeoutMs?: number } = {}) {

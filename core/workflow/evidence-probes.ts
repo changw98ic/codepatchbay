@@ -73,10 +73,8 @@ export function validateEvidenceObservation(entry: LooseRecord, checklistItem: L
 }
 
 /**
- * Wrap a legacy boolean validator result as { valid, satisfied }.
- * Preserves existing strictness for methods whose honest-zero distinction is
- * not yet modeled (satisfied === valid). Tracking this per-method is separate
- * debt and intentionally out of scope for this fix.
+ * Normalize a boolean validator result as { valid, satisfied }.
+ * Methods that do not model an honest-zero distinction use satisfied === valid.
  */
 function wrap(ok: boolean): EvidenceValidation {
   return { valid: ok, satisfied: ok };

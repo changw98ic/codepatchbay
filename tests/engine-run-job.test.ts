@@ -123,7 +123,7 @@ function phaseOutput(role: string, overrides: LooseRecord = {}) {
         {
           checklistId: "AC-001",
           result: verdictStatus,
-          evidenceRefs: verdictStatus === "pass" ? [{ ledgerId: "pending", evidenceId: "EV-001" }] : [],
+          evidenceRefs: verdictStatus === "pass" ? [{ ledgerId: "evidence-ledger-job-runjob-test", evidenceId: "EV-001" }] : [],
           actualResult: verdictStatus === "pass" ? "fixture verified" : "fixture failed",
           reason: verdictStatus === "pass" ? "fake verifier confirms the fixture" : "fake verifier reports fixture failure",
           fixScope: verdictStatus === "pass" ? [] : ["README.md"],
@@ -164,6 +164,31 @@ function mediumRiskMap(): LooseRecord {
     adversarialRequired: false,
     adversarialFocus: [],
     confidence: "high",
+  };
+}
+
+function fixtureAcceptanceChecklist(jobId = "job-runjob-test") {
+  return {
+    schemaVersion: 1,
+    jobId,
+    project: "flow",
+    status: "frozen",
+    source: { task: "runJob engine fixture", issue: null, documents: [] },
+    items: [{
+      id: "AC-001",
+      requirement: "README is updated by the runJob fixture.",
+      source: "user_task",
+      sourceRefs: [{ kind: "task_text", locator: "task:0" }],
+      predicateId: "runjob-readme-update",
+      required: true,
+      area: "test_fixture",
+      risk: "medium",
+      verificationMethod: "static",
+      expectedEvidence: "README.md is changed by the fixture execution",
+      dependsOn: [],
+      allowedFiles: ["README.md"],
+    }],
+    assumptions: [],
   };
 }
 
@@ -287,6 +312,7 @@ interface RunEngineOpts {
   onProgress?: (event: LooseRecord) => Promise<unknown> | unknown;
   sourcePath?: string;
   prepareTask?: EngineServiceOptions["prepareTask"];
+  agents?: LooseRecord;
 }
 
 async function runEngine(opts: RunEngineOpts = {}) {
@@ -310,10 +336,10 @@ async function runEngine(opts: RunEngineOpts = {}) {
     sourceContext: opts.sourceContext ?? {},
     env: opts.env,
     signal: opts.signal,
-    agents: {
+    agents: opts.agents ?? {
       planner: "fake-primary",
       executor: "fake-primary",
-      verifier: "fake-primary",
+      verifier: "fake-verifier-agent",
     },
     onProgress: opts.onProgress,
     ...services,
@@ -690,7 +716,8 @@ test("panic recovery: failJob is awaited when getPool throws after createJob", a
     agents: {
       planner: "fake-primary",
       executor: "fake-primary",
-      verifier: "fake-primary",
+      verifier: "fake-secondary",
+      adversarial_verifier: "fake-adversarial-agent",
     },
     createJob: async (_r: string, job: LooseRecord) => ({
       ...job,
@@ -987,6 +1014,10 @@ test("DAG execution: standard workflow runs plan -> execute -> verify phases in 
 
 test("DAG execution: verifier feedback repairs in the same job and executor conversation", async () => {
   const { result, calls, events } = await runEngine({
+    prepareTask: async () => ({
+      riskMap: mediumRiskMap(),
+      acceptanceChecklist: fixtureAcceptanceChecklist(),
+    }),
     poolOpts: {
       customOutput: ({ call, calls: allCalls }: { call: LooseRecord; calls: LooseRecord[] }) => {
         const meta = recordValue(call.meta);
@@ -1122,8 +1153,13 @@ test("DAG execution: verification infrastructure retry preserves the frozen cand
           critiqueRounds: 1,
         },
         execution: { agent: "fake-primary" },
-        verification: { agent: "fake-primary", required: true, blind: true, independent: true },
+        verification: { agent: "fake-secondary", required: true, blind: true, independent: true },
       },
+    },
+    agents: {
+      planner: "fake-primary",
+      executor: "fake-primary",
+      verifier: "fake-secondary",
     },
     prepareTask: async () => ({
       riskMap: mediumRiskMap(),
@@ -1739,7 +1775,8 @@ test("adversarial verify: inserted for high-risk risk map and runs fourth phase"
     agents: {
       planner: "fake-primary",
       executor: "fake-primary",
-      verifier: "fake-primary",
+      verifier: "fake-secondary",
+      adversarial_verifier: "fake-adversarial-agent",
     },
     ...services,
     getPool: () => pool,
@@ -1769,6 +1806,7 @@ test("adversarial counterexample repairs in place and replays the complete verif
         adversarialRequired: true,
         adversarialFocus: ["migration message exactness"],
       },
+      acceptanceChecklist: fixtureAcceptanceChecklist("job-adversarial-repair"),
     }),
   });
   const cpbRoot = await tempRoot("cpb-adversarial-repair-cpb");
@@ -1804,7 +1842,7 @@ test("adversarial counterexample repairs in place and replays the complete verif
     agents: {
       planner: "fake-primary",
       executor: "fake-primary",
-      verifier: "fake-primary",
+      verifier: "fake-secondary",
       adversarial_verifier: "fake-secondary",
     },
     ...services,

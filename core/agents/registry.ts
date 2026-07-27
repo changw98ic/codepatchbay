@@ -221,16 +221,7 @@ export function defaultAgentForRole(role: string) {
       return d.name;
     }
   }
-  // Legacy fallback
-  return "codex";
-}
-
-/**
- * Legacy default mapping: phase -> agent.
- * Used when no explicit --agent is specified.
- */
-export function legacyAgentForPhase(phase: string) {
-  return "codex";
+  throw new Error(`no registered ACP agent is configured for role: ${role}`);
 }
 
 // --- Squad support ---

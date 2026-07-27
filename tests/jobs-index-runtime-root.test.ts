@@ -69,28 +69,21 @@ test("jobs-index writes project state only under the explicit dataRoot", async (
   }
 });
 
-test("jobs-index legacy paths are available only through explicit opt-in", async () => {
+test("jobs-index retired paths are not available through an opt-in flag", async () => {
   const cpbRoot = await tempRoot("cpb-jobs-index-legacy-root-");
   const jobId = "job-20260611-092000-legacy";
   try {
-    await updateJobsIndexEntry(
-      cpbRoot,
-      "legacy",
-      jobId,
-      jobState("legacy", jobId, "legacy root"),
-      { legacyOnly: true },
-    );
-
-    const index = await readJobsIndex(cpbRoot, { legacyOnly: true });
-    assert.equal(index?.jobs?.[`legacy/${jobId}`]?.task, "legacy root");
-    assert.equal(
-      JSON.parse(await readFile(path.join(cpbRoot, "cpb-task", "jobs-index.json"), "utf8")).jobs[`legacy/${jobId}`].task,
-      "legacy root",
-    );
     await assert.rejects(
-      () => readJobsIndex(cpbRoot),
+      () => updateJobsIndexEntry(
+        cpbRoot,
+        "legacy",
+        jobId,
+        jobState("legacy", jobId, "retired root"),
+        { legacyOnly: true },
+      ),
       /dataRoot is required for project jobs-index paths/,
     );
+    await assertMissing(path.join(cpbRoot, "cpb-task", "jobs-index.json"));
   } finally {
     await rm(cpbRoot, { recursive: true, force: true });
   }

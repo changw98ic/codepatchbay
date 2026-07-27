@@ -4,7 +4,6 @@ import { constants, type Stats } from "node:fs";
 import { lstat, open, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { isRecord, recordValue, type LooseRecord } from "../../../core/contracts/types.js";
-import { resolveCachedProjectRuntimeRoot } from "../phase-locator.js";
 import {
   isSecretArtifact,
   isSecretContent,
@@ -259,12 +258,7 @@ async function notifyEventWritten(payload: EventWriteNotification) {
 
 function _base(cpbRoot: string, opts: EventStoreOptions) {
   if (opts?.dataRoot) return opts.dataRoot;
-  if (opts?.legacyOnly === true) return legacyRuntimeRoot(cpbRoot);
   throw new Error("dataRoot is required for project event store paths");
-}
-
-function legacyRuntimeRoot(cpbRoot: string) {
-  return path.join(path.resolve(cpbRoot), "cpb-task");
 }
 
 function validatePathComponent(name: string, value: unknown) {
@@ -760,31 +754,11 @@ async function _scanEventsDir(eventsRoot: string) {
 }
 
 export async function listEventFiles(cpbRoot: string, opts: EventStoreOptions = {}) {
-  const includeLegacyFallback = opts.includeLegacyFallback === true || opts.legacyOnly === true;
-  if (!opts.dataRoot && !includeLegacyFallback) {
+  if (!opts.dataRoot) {
     throw new Error("dataRoot is required for project event store paths");
   }
-
-  const rtRoot = opts.dataRoot && opts.legacyOnly !== true ? path.join(opts.dataRoot, "events") : null;
-  const legacyRoot = path.join(legacyRuntimeRoot(cpbRoot), "events");
-
-  const seen = new Set();
-  const allFiles = [];
-
-  if (rtRoot && rtRoot !== legacyRoot) {
-    for (const f of await _scanEventsDir(rtRoot)) {
-      const key = `${f.project}/${f.jobId}`;
-      if (!seen.has(key)) { seen.add(key); allFiles.push(f); }
-    }
-  }
-  if (includeLegacyFallback) {
-    for (const f of await _scanEventsDir(legacyRoot)) {
-      const key = `${f.project}/${f.jobId}`;
-      if (!seen.has(key)) { seen.add(key); allFiles.push(f); }
-    }
-  }
-
-  return allFiles.sort((a, b) => a.file.localeCompare(b.file));
+  return (await _scanEventsDir(path.join(opts.dataRoot, "events")))
+    .sort((a, b) => a.file.localeCompare(b.file));
 }
 
 type EventFileOperation = "append" | "recover" | "read" | "checkpoint" | "ensure";
@@ -1213,7 +1187,7 @@ export async function appendEvent(cpbRoot: string, project: string, jobId: strin
 
   const written = await withEventLock(file, async () => {
     // Terminal seal: reject business-state mutations on terminal job event logs.
-    const existing = await readEvents(cpbRoot, project, jobId, opts.dataRoot ? { ...opts, includeLegacyFallback: false } : opts);
+    const existing = await readEvents(cpbRoot, project, jobId, opts);
     if (existing.length > 0) {
       const state = materializeJob(existing);
       const eventType = text(tracedEvent.type);
@@ -1585,40 +1559,13 @@ export async function appendEventIfCursor(
 }
 
 export async function readEvents(cpbRoot: string, project: string, jobId: string, opts: EventStoreOptions = {}) {
-  const cachedDataRoot = opts.dataRoot || (opts.legacyOnly !== true ? resolveCachedProjectRuntimeRoot(cpbRoot, project) : null);
-
-  // Try runtime root first when we have one and it differs from legacy.
-  if (opts.legacyOnly !== true && cachedDataRoot && cachedDataRoot !== legacyRuntimeRoot(cpbRoot)) {
-    const rtFile = eventFileFor(cpbRoot, project, jobId, { ...opts, dataRoot: cachedDataRoot });
-    const rtEvents = await _parseEventFileReadOnly(rtFile, project, jobId);
-    if (rtEvents !== null) return rtEvents;
-  }
-  const includeLegacyFallback = opts.includeLegacyFallback === true || opts.legacyOnly === true;
-  if (!includeLegacyFallback) {
-    if (!cachedDataRoot) throw new Error("dataRoot is required for project event store paths");
-    return [];
-  }
-
-  // Legacy path
-  const file = eventFileFor(cpbRoot, project, jobId, { legacyOnly: true });
+  const file = eventFileFor(cpbRoot, project, jobId, opts);
   const result = await _parseEventFileReadOnly(file, project, jobId);
   return result ?? [];
 }
 
 export async function readEventsReadOnly(cpbRoot: string, project: string, jobId: string, opts: EventStoreOptions = {}) {
-  const cachedDataRoot = opts.dataRoot || (opts.legacyOnly !== true ? resolveCachedProjectRuntimeRoot(cpbRoot, project) : null);
-
-  if (opts.legacyOnly !== true && cachedDataRoot && cachedDataRoot !== legacyRuntimeRoot(cpbRoot)) {
-    const rtFile = eventFileFor(cpbRoot, project, jobId, { ...opts, dataRoot: cachedDataRoot });
-    const rtEvents = await _parseEventFileReadOnly(rtFile, project, jobId);
-    if (rtEvents !== null) return rtEvents;
-  }
-  const includeLegacyFallback = opts.includeLegacyFallback === true || opts.legacyOnly === true;
-  if (!includeLegacyFallback) {
-    if (!cachedDataRoot) throw new Error("dataRoot is required for project event store paths");
-    return [];
-  }
-  const file = eventFileFor(cpbRoot, project, jobId, { legacyOnly: true });
+  const file = eventFileFor(cpbRoot, project, jobId, opts);
   const result = await _parseEventFileReadOnly(file, project, jobId);
   return result ?? [];
 }
@@ -1636,16 +1583,16 @@ export async function writeCheckpoint(
   jobId: string,
   state: LooseRecord,
   opts: EventStoreOptions = {},
-  cursor: EventCheckpointCursor | null = null,
+  cursor: EventCheckpointCursor,
 ) {
   const file = checkpointFileFor(cpbRoot, project, jobId, opts);
   const checkpoint: LooseRecord = {
     _meta: {
       version: JOBS_EVENTS_FORMAT_VERSION,
       writtenAt: new Date().toISOString(),
-      cursorVersion: cursor ? CHECKPOINT_CURSOR_VERSION : null,
-      eventCount: cursor?.eventCount ?? null,
-      eventDigest: cursor?.eventDigest ?? null,
+      cursorVersion: CHECKPOINT_CURSOR_VERSION,
+      eventCount: cursor.eventCount,
+      eventDigest: cursor.eventDigest,
       stateDigest: checkpointStateDigest(state),
     },
     state,
@@ -1698,45 +1645,28 @@ async function readCheckpointFile(filePath: string, project: string, jobId: stri
   }
 
   const meta = parsed._meta;
-  const hasLegacyCursor = meta.cursorVersion === undefined || meta.cursorVersion === null;
-  const hasLegacyEventCount = meta.eventCount === undefined || meta.eventCount === null;
-  const hasLegacyEventDigest = meta.eventDigest === undefined || meta.eventDigest === null;
-  const legacy = hasLegacyCursor && hasLegacyEventCount && hasLegacyEventDigest;
-  let cursor: EventCheckpointCursor | null = null;
-  if (!legacy) {
-    if (
-      meta.cursorVersion !== CHECKPOINT_CURSOR_VERSION
-      || typeof meta.eventCount !== "number"
-      || !Number.isSafeInteger(meta.eventCount)
-      || meta.eventCount < 1
-      || typeof meta.eventDigest !== "string"
-      || !SHA256_PATTERN.test(meta.eventDigest)
-      || typeof meta.writtenAt !== "string"
-      || !meta.writtenAt
-      || typeof meta.stateDigest !== "string"
-      || !SHA256_PATTERN.test(meta.stateDigest)
-    ) {
-      throw eventStoreError(
-        `malformed checkpoint cursor contract: ${filePath}`,
-        "CHECKPOINT_INVALID",
-        filePath,
-      );
-    }
-    cursor = {
-      eventCount: meta.eventCount,
-      eventDigest: meta.eventDigest,
-    };
-  } else if (
-    meta.stateDigest !== undefined
-    && meta.stateDigest !== null
-    && (typeof meta.stateDigest !== "string" || !SHA256_PATTERN.test(meta.stateDigest))
+  if (
+    meta.cursorVersion !== CHECKPOINT_CURSOR_VERSION
+    || typeof meta.eventCount !== "number"
+    || !Number.isSafeInteger(meta.eventCount)
+    || meta.eventCount < 1
+    || typeof meta.eventDigest !== "string"
+    || !SHA256_PATTERN.test(meta.eventDigest)
+    || typeof meta.writtenAt !== "string"
+    || !meta.writtenAt
+    || typeof meta.stateDigest !== "string"
+    || !SHA256_PATTERN.test(meta.stateDigest)
   ) {
     throw eventStoreError(
-      `malformed checkpoint state digest: ${filePath}`,
+      `malformed checkpoint cursor contract: ${filePath}`,
       "CHECKPOINT_INVALID",
       filePath,
     );
   }
+  const cursor: EventCheckpointCursor = {
+    eventCount: meta.eventCount,
+    eventDigest: meta.eventDigest,
+  };
 
   if (
     typeof meta.stateDigest === "string"
@@ -1764,20 +1694,9 @@ async function readCheckpointRecord(
   jobId: string,
   opts: EventStoreOptions = {},
 ): Promise<EventCheckpointRecord | null> {
-  // Try runtime root first
-  if (opts.legacyOnly !== true && opts.dataRoot && opts.dataRoot !== legacyRuntimeRoot(cpbRoot)) {
-    const rtFile = checkpointFileFor(cpbRoot, project, jobId, opts);
-    const runtimeCheckpoint = await readCheckpointFile(rtFile, project, jobId);
-    if (runtimeCheckpoint.found) return runtimeCheckpoint.record;
-  }
-  const includeLegacyFallback = opts.includeLegacyFallback === true || opts.legacyOnly === true;
-  if (!includeLegacyFallback) {
-    if (!opts.dataRoot) throw new Error("dataRoot is required for project event store paths");
-    return null;
-  }
-  const file = checkpointFileFor(cpbRoot, project, jobId, { legacyOnly: true });
-  const legacyCheckpoint = await readCheckpointFile(file, project, jobId);
-  return legacyCheckpoint.found ? legacyCheckpoint.record : null;
+  const file = checkpointFileFor(cpbRoot, project, jobId, opts);
+  const checkpoint = await readCheckpointFile(file, project, jobId);
+  return checkpoint.found ? checkpoint.record : null;
 }
 
 export async function readCheckpoint(cpbRoot: string, project: string, jobId: string, opts: EventStoreOptions = {}): Promise<MaterializedJobState | null> {
@@ -1793,51 +1712,36 @@ function checkpointReplayError(record: EventCheckpointRecord, message: string, c
 }
 
 function checkpointPrefixEventCount(record: EventCheckpointRecord, events: EventRecord[]) {
-  if (record.cursor) {
-    if (record.cursor.eventCount > events.length) {
-      throw checkpointReplayError(
-        record,
-        `checkpoint cursor is ahead of the event stream: ${record.filePath}`,
-        "CHECKPOINT_CURSOR_AHEAD",
-        { checkpointEventCount: record.cursor.eventCount, eventCount: events.length },
-      );
-    }
-    const prefix = events.slice(0, record.cursor.eventCount);
-    const actualCursor = eventCursor(prefix);
-    if (actualCursor.eventDigest !== record.cursor.eventDigest) {
-      throw checkpointReplayError(
-        record,
-        `checkpoint event prefix identity does not match the event stream: ${record.filePath}`,
-        "CHECKPOINT_EVENT_PREFIX_MISMATCH",
-        { checkpointEventCount: record.cursor.eventCount },
-      );
-    }
-    if (!sameCheckpointState(record.state, materializeJob(prefix))) {
-      throw checkpointReplayError(
-        record,
-        `checkpoint state does not match its committed event prefix: ${record.filePath}`,
-        "CHECKPOINT_STATE_MISMATCH",
-        { checkpointEventCount: record.cursor.eventCount },
-      );
-    }
-    return record.cursor.eventCount;
+  if (!record.cursor) {
+    throw checkpointReplayError(record, `checkpoint cursor is missing: ${record.filePath}`, "CHECKPOINT_INVALID");
   }
-
-  let candidate = materializeJob([]);
-  let matchedEventCount: number | null = null;
-  for (let index = 0; index < events.length; index += 1) {
-    candidate = advanceMaterializedJob(candidate, events[index]!);
-    if (sameCheckpointState(record.state, candidate)) matchedEventCount = index + 1;
-  }
-  if (matchedEventCount === null) {
+  if (record.cursor.eventCount > events.length) {
     throw checkpointReplayError(
       record,
-      `legacy checkpoint state is not an exact prefix of the event stream: ${record.filePath}`,
-      "CHECKPOINT_STATE_MISMATCH",
-      { checkpointEventCount: null, eventCount: events.length },
+      `checkpoint cursor is ahead of the event stream: ${record.filePath}`,
+      "CHECKPOINT_CURSOR_AHEAD",
+      { checkpointEventCount: record.cursor.eventCount, eventCount: events.length },
     );
   }
-  return matchedEventCount;
+  const prefix = events.slice(0, record.cursor.eventCount);
+  const actualCursor = eventCursor(prefix);
+  if (actualCursor.eventDigest !== record.cursor.eventDigest) {
+    throw checkpointReplayError(
+      record,
+      `checkpoint event prefix identity does not match the event stream: ${record.filePath}`,
+      "CHECKPOINT_EVENT_PREFIX_MISMATCH",
+      { checkpointEventCount: record.cursor.eventCount },
+    );
+  }
+  if (!sameCheckpointState(record.state, materializeJob(prefix))) {
+    throw checkpointReplayError(
+      record,
+      `checkpoint state does not match its committed event prefix: ${record.filePath}`,
+      "CHECKPOINT_STATE_MISMATCH",
+      { checkpointEventCount: record.cursor.eventCount },
+    );
+  }
+  return record.cursor.eventCount;
 }
 
 export async function readJobProjection(

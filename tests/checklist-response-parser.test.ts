@@ -62,7 +62,7 @@ test("parseExecutorJson: defaults to empty array when checklistMapping is not an
   assert.strictEqual(result.checklistMapping.length, 0);
 });
 
-test("parseExecutorJson: accepts resolved executor file envelope", () => {
+test("parseExecutorJson: rejects non-canonical executor status", () => {
   const output = JSON.stringify({
     status: "resolved",
     summary: "Fixed the issue and verified the targeted tests.",
@@ -74,12 +74,8 @@ test("parseExecutorJson: accepts resolved executor file envelope", () => {
   });
 
   const result = parseExecutorJson(output) as any;
-  assert.ok(result.ok, `expected ok, got reason: ${result.reason}`);
-  assert.strictEqual(result.summary, "Fixed the issue and verified the targeted tests.");
-  assert.deepStrictEqual(result.tests, [
-    "fail_to_pass: mail.tests.MailTests.test_non_ascii_dns_non_unicode_email",
-    "pass_to_pass: mail.tests.PythonGlobalState.test_7bit",
-  ]);
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /non-success status: resolved/);
 });
 
 test("parseExecutorJson: preserves structured status failure reason", () => {
@@ -148,7 +144,7 @@ test("parseVerifierJson: defaults checklistVerdict to null when absent", () => {
   assert.strictEqual(result.checklistVerdict, null);
 });
 
-test("parseVerifierJson: recovers a structured checklistVerdict nested in details", () => {
+test("parseVerifierJson: does not recover a nested checklistVerdict", () => {
   const nestedChecklistVerdict = {
     schemaVersion: 1,
     jobId: "job-nested",
@@ -181,11 +177,11 @@ test("parseVerifierJson: recovers a structured checklistVerdict nested in detail
   const result = parseVerifierJson(output) as any;
   assert.ok(result.ok, `expected ok, got reason: ${result.reason}`);
   assert.strictEqual(result.status, "fail");
-  assert.deepStrictEqual(result.checklistVerdict, nestedChecklistVerdict);
+  assert.strictEqual(result.checklistVerdict, null);
   assert.strictEqual(result.details.summary, "static review passed but runtime evidence did not");
 });
 
-test("parseVerifierJson: accepts raw verifier file object with status pass", () => {
+test("parseVerifierJson: rejects raw verifier file object without the transport envelope", () => {
   const output = JSON.stringify({
     schemaVersion: 1,
     jobId: "job-raw-verdict",
@@ -206,10 +202,8 @@ test("parseVerifierJson: accepts raw verifier file object with status pass", () 
   });
 
   const result = parseVerifierJson(output) as any;
-  assert.ok(result.ok, `expected ok, got reason: ${result.reason}`);
-  assert.strictEqual(result.status, "pass");
-  assert.strictEqual(result.reason, "Verifier wrote raw JSON to VERIFIER_JSON_OUTPUT_FILE.");
-  assert.strictEqual(result.checklistVerdict.jobId, "job-raw-verdict");
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /Verifier wrote raw JSON|non-success status/);
 });
 
 test("parseVerifierJson: preserves checklistVerdict with partial/fail status", () => {

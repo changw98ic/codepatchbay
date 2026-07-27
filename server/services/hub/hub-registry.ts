@@ -315,7 +315,7 @@ function numberValue(value: unknown, fallback = 0): number {
 
 export const DEFAULT_GITHUB_TRIGGERS = [
   { event: "issues.labeled", label: "cpb", workflow: "standard" },
-  { event: "issue_comment.created", command: "/cpb run", workflow: "standard" },
+  { event: "issue_comment.created", command: "/cpb pipeline", workflow: "standard" },
 ];
 
 export function resolveHubRoot(cpbRoot = process.cwd()) {
@@ -1556,7 +1556,7 @@ export async function registerProjectWithReceipt(hubRoot: string, input: HubReco
       const inputMetadata = receiptClone(input.metadata || {});
       const capabilityMetadata = receiptClone(generatedMetadata);
       const timestamp = nowIso();
-      const projectRoot = input.projectRoot ? path.resolve(input.projectRoot) : path.join(sourcePath, "cpb-task");
+      const projectRoot = input.projectRoot ? path.resolve(input.projectRoot) : sourcePath;
 
       const projectRuntimeRoot = input.projectRuntimeRoot
         ? validateProjectRuntimeRoot(hubRoot, id, input.projectRuntimeRoot)
@@ -2013,13 +2013,11 @@ export function buildHubControlPlaneEnv(
 export function buildHubServerEnv(parentEnv = process.env, options: HubRecord = {}) {
   return buildChildEnv(parentEnv, {
     ...buildHubControlPlaneEnv(parentEnv, options),
-    CPB_HUB_BEARER_TOKEN: parentEnv.CPB_HUB_BEARER_TOKEN,
     CPB_HUB_SERVICE_TOKENS_FILE: parentEnv.CPB_HUB_SERVICE_TOKENS_FILE,
     CPB_HUB_OIDC_CONFIG_FILE: parentEnv.CPB_HUB_OIDC_CONFIG_FILE,
     CPB_HUB_ACCESS_AUDIT_MAX_BYTES: parentEnv.CPB_HUB_ACCESS_AUDIT_MAX_BYTES,
     CPB_HUB_ALLOW_INSECURE_HTTP: parentEnv.CPB_HUB_ALLOW_INSECURE_HTTP,
   }, { allowKeys: [
-    "CPB_HUB_BEARER_TOKEN",
     "CPB_HUB_SERVICE_TOKENS_FILE",
     "CPB_HUB_OIDC_CONFIG_FILE",
     "CPB_HUB_ACCESS_AUDIT_MAX_BYTES",
@@ -2693,14 +2691,13 @@ export async function cmdStart() {
     hubRoot,
   });
   const hubAuth = await loadHubAuthConfig({
-    bearerToken: process.env.CPB_HUB_BEARER_TOKEN,
     serviceTokensFile: process.env.CPB_HUB_SERVICE_TOKENS_FILE,
     hubRoot,
     requireAuthentication: hubOidc.configured,
   });
   if (!isLoopbackHost(host) && !hubAuth.required) {
     throw new Error(
-      "CPB_HUB_BEARER_TOKEN, CPB_HUB_SERVICE_TOKENS_FILE, or CPB_HUB_OIDC_CONFIG_FILE is required when CPB_HOST is non-loopback",
+      "CPB_HUB_SERVICE_TOKENS_FILE or CPB_HUB_OIDC_CONFIG_FILE is required when CPB_HOST is non-loopback",
     );
   }
   assertExplicitInsecureHttpOptIn(
@@ -3420,7 +3417,7 @@ export function buildAttentionProjection({
     if (!entry?.id) continue;
     const status = normalizeStatus(entry.status);
     const approvalStatus = normalizeStatus(entry.metadata?.approval?.status);
-    if (status === "codegraph_unavailable" || status === "index_unavailable") {
+    if (status === "codegraph_unavailable") {
       addDeduped(deduped, queueItem(entry, "codegraph_unavailable", "warning"));
     } else if (status === "agent_rate_limited" || status === "rate_limited") {
       addDeduped(deduped, queueItem(entry, "agent_rate_limited", "warning"));

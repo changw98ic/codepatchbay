@@ -30,7 +30,6 @@ const ROUTING_AGENT_ROLES = Object.freeze([
   "reviewer",
 ]);
 
-const BUILTIN_AGENT_NAMES = new Set(["codex", "claude"]);
 const CATEGORY_SET = new Set(ROUTING_TASK_CATEGORIES);
 
 type AgentSelectionOptions = {
@@ -72,11 +71,7 @@ function routingRules(routing: LooseRecord): LooseRecord {
 }
 
 function defaultAgent(role: string): string {
-  try {
-    return defaultAgentForRole(role);
-  } catch {
-    return "codex";
-  }
+  return defaultAgentForRole(role);
 }
 
 function isKnownAgent(name: string): boolean {
@@ -84,7 +79,7 @@ function isKnownAgent(name: string): boolean {
   try {
     return Boolean(getDescriptor(name));
   } catch {
-    return BUILTIN_AGENT_NAMES.has(name);
+    return false;
   }
 }
 

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { appendFile, chmod, lstat, mkdir, open, readFile, readdir, rename, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -6,12 +7,40 @@ import test from "node:test";
 
 import {
   cleanupSessionCache,
-  clearSessionId,
-  loadSessionId,
-  saveSessionId,
+  clearSessionId as clearCanonicalSessionId,
+  loadSessionId as loadCanonicalSessionId,
+  saveSessionId as saveCanonicalSessionId,
   withSessionCacheTestHooks,
 } from "../core/agents/session-cache.js";
 import { tempRoot } from "./helpers.js";
+
+const TEST_CONVERSATION_KEY = "cpb:test:session-cache";
+
+function sessionFilePath(dataRoot: string, agent = "browser-agent", conversationKey = TEST_CONVERSATION_KEY) {
+  const digest = createHash("sha256").update(conversationKey).digest("hex");
+  return path.join(dataRoot, "session-cache", `${agent}--conversation-${digest}.json`);
+}
+
+function saveSessionId(cpbRoot: string, agent: string, sessionId: string, options: Record<string, unknown> = {}) {
+  return saveCanonicalSessionId(cpbRoot, agent, sessionId, {
+    conversationKey: TEST_CONVERSATION_KEY,
+    ...options,
+  });
+}
+
+function loadSessionId(cpbRoot: string, agent: string, options: Record<string, unknown> = {}) {
+  return loadCanonicalSessionId(cpbRoot, agent, {
+    conversationKey: TEST_CONVERSATION_KEY,
+    ...options,
+  });
+}
+
+function clearSessionId(cpbRoot: string, agent: string, options: Record<string, unknown> = {}) {
+  return clearCanonicalSessionId(cpbRoot, agent, {
+    conversationKey: TEST_CONVERSATION_KEY,
+    ...options,
+  });
+}
 
 function codedError(error: unknown, code: string): (Error & {
   code?: string;
@@ -43,7 +72,7 @@ function codedError(error: unknown, code: string): (Error & {
   return visit(error);
 }
 
-test("session cache recovers an old incomplete legacy lock before writing", async () => {
+test("session cache recovers a stale incomplete lock before writing", async () => {
   const cpbRoot = await tempRoot("cpb-session-cache-legacy-root");
   const dataRoot = await tempRoot("cpb-session-cache-legacy-data");
   const cacheDir = path.join(dataRoot, "session-cache");
@@ -61,7 +90,7 @@ test("session cache fails closed on corrupt JSON instead of silently dropping co
   const dataRoot = await tempRoot("cpb-session-cache-corrupt-data");
   const cacheDir = path.join(dataRoot, "session-cache");
   await mkdir(cacheDir, { recursive: true });
-  await writeFile(path.join(cacheDir, "browser-agent.json"), "{not-json\n");
+  await writeFile(sessionFilePath(dataRoot), "{not-json\n");
 
   await assert.rejects(
     loadSessionId(cpbRoot, "browser-agent", { dataRoot }),
@@ -82,7 +111,7 @@ test("session cache rejects symlinked records without touching the target", asyn
   })}\n`;
   await mkdir(cacheDir, { recursive: true });
   await writeFile(external, content);
-  await symlink(external, path.join(cacheDir, "browser-agent.json"));
+  await symlink(external, sessionFilePath(dataRoot));
 
   await assert.rejects(
     loadSessionId(cpbRoot, "browser-agent", { dataRoot }),
@@ -97,7 +126,7 @@ test("session cache clear rejects symlinked records without unlinking the eviden
   const externalRoot = await tempRoot("cpb-session-cache-clear-link-target");
   const cacheDir = path.join(dataRoot, "session-cache");
   const external = path.join(externalRoot, "session.json");
-  const filePath = path.join(cacheDir, "browser-agent.json");
+  const filePath = sessionFilePath(dataRoot);
   const content = `${JSON.stringify({
     agent: "browser-agent",
     sessionId: "external",
@@ -139,7 +168,7 @@ test("session cache bounded reads reject growth after the descriptor is pinned",
 test("session cache bounded reads reject an already oversized record", async () => {
   const cpbRoot = await tempRoot("cpb-session-cache-oversized-root");
   const dataRoot = await tempRoot("cpb-session-cache-oversized-data");
-  const filePath = path.join(dataRoot, "session-cache", "browser-agent.json");
+  const filePath = sessionFilePath(dataRoot);
   await mkdir(path.dirname(filePath), { recursive: true });
   await writeFile(filePath, Buffer.alloc(1024 * 1024 + 1, 0x20));
 
@@ -152,7 +181,7 @@ test("session cache bounded reads reject an already oversized record", async () 
 test("session cache save refuses to publish a record that cannot be read within the bound", async () => {
   const cpbRoot = await tempRoot("cpb-session-cache-save-oversized-root");
   const dataRoot = await tempRoot("cpb-session-cache-save-oversized-data");
-  const filePath = path.join(dataRoot, "session-cache", "browser-agent.json");
+  const filePath = sessionFilePath(dataRoot);
 
   await assert.rejects(
     saveSessionId(cpbRoot, "browser-agent", "too-large", {
@@ -166,8 +195,9 @@ test("session cache save refuses to publish a record that cannot be read within 
 
 test("session cache rejects agent path traversal", async () => {
   const cpbRoot = await tempRoot("cpb-session-cache-agent-root");
+  const dataRoot = await tempRoot("cpb-session-cache-agent-data");
   await assert.rejects(
-    saveSessionId(cpbRoot, "../escape", "session"),
+    saveSessionId(cpbRoot, "../escape", "session", { dataRoot }),
     { code: "SESSION_CACHE_AGENT_INVALID" },
   );
 });
@@ -198,7 +228,7 @@ test("session cache cleanup fails closed on corrupt expired records", async () =
   const cpbRoot = await tempRoot("cpb-session-cache-cleanup-corrupt-root");
   const dataRoot = await tempRoot("cpb-session-cache-cleanup-corrupt-data");
   const cacheDir = path.join(dataRoot, "session-cache");
-  const filePath = path.join(cacheDir, "browser-agent.json");
+  const filePath = sessionFilePath(dataRoot);
   await mkdir(cacheDir, { recursive: true });
   await writeFile(filePath, "{not-json\n", "utf8");
   const old = new Date(0);
@@ -215,10 +245,13 @@ test("session cache cleanup rejects records whose owner does not match their cac
   const cpbRoot = await tempRoot("cpb-session-cache-cleanup-owner-root");
   const dataRoot = await tempRoot("cpb-session-cache-cleanup-owner-data");
   const cacheDir = path.join(dataRoot, "session-cache");
-  const filePath = path.join(cacheDir, "browser-agent.json");
+  const filePath = sessionFilePath(dataRoot);
   const content = `${JSON.stringify({
+    format: "cpb-session-cache/v1",
+    generation: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
     agent: "different-agent",
     sessionId: "foreign-session",
+    conversationKey: TEST_CONVERSATION_KEY,
     savedAt: new Date(0).toISOString(),
   })}\n`;
   await mkdir(cacheDir, { recursive: true });
@@ -234,7 +267,7 @@ test("session cache cleanup rejects records whose owner does not match their cac
 test("session cache cleanup preserves a canonical successor installed before isolation", async () => {
   const cpbRoot = await tempRoot("cpb-session-cache-cleanup-successor-root");
   const dataRoot = await tempRoot("cpb-session-cache-cleanup-successor-data");
-  const filePath = path.join(dataRoot, "session-cache", "browser-agent.json");
+  const filePath = sessionFilePath(dataRoot);
   const predecessorPath = `${filePath}.predecessor-evidence`;
   await saveSessionId(cpbRoot, "browser-agent", "expired-predecessor", { dataRoot });
   const successor = `${JSON.stringify({
@@ -242,6 +275,7 @@ test("session cache cleanup preserves a canonical successor installed before iso
     generation: "11111111-1111-4111-8111-111111111111",
     agent: "browser-agent",
     sessionId: "live-successor",
+    conversationKey: TEST_CONVERSATION_KEY,
     savedAt: new Date().toISOString(),
   }, null, 2)}\n`;
   let hookRan = false;
@@ -300,13 +334,14 @@ test("session cache cleanup preserves a same-owner quarantine successor after va
 test("session cache cleanup never pathname-deletes a canonical successor after isolation", async () => {
   const cpbRoot = await tempRoot("cpb-session-cache-cleanup-canonical-aba-root");
   const dataRoot = await tempRoot("cpb-session-cache-cleanup-canonical-aba-data");
-  const filePath = path.join(dataRoot, "session-cache", "browser-agent.json");
+  const filePath = sessionFilePath(dataRoot);
   await saveSessionId(cpbRoot, "browser-agent", "expired-predecessor", { dataRoot });
   const successor = `${JSON.stringify({
     format: "cpb-session-cache/v1",
     generation: "22222222-2222-4222-8222-222222222222",
     agent: "browser-agent",
     sessionId: "canonical-successor",
+    conversationKey: TEST_CONVERSATION_KEY,
     savedAt: new Date().toISOString(),
   }, null, 2)}\n`;
   let installed = false;
@@ -361,7 +396,7 @@ test("session cache cleanup binds the post-isolation file to its full ctime gene
 test("session cache save reports committed durability ambiguity with recovery paths", async () => {
   const cpbRoot = await tempRoot("cpb-session-cache-save-sync-root");
   const dataRoot = await tempRoot("cpb-session-cache-save-sync-data");
-  const filePath = path.join(dataRoot, "session-cache", "browser-agent.json");
+  const filePath = sessionFilePath(dataRoot);
   const syncFailure = Object.assign(new Error("session parent sync unsupported"), { code: "ENOTSUP" });
 
   await assert.rejects(
@@ -387,7 +422,7 @@ test("session cache save reports committed durability ambiguity with recovery pa
 test("session cache clear preserves isolated recovery evidence when quarantine durability is ambiguous", async () => {
   const cpbRoot = await tempRoot("cpb-session-cache-clear-isolate-sync-root");
   const dataRoot = await tempRoot("cpb-session-cache-clear-isolate-sync-data");
-  const filePath = path.join(dataRoot, "session-cache", "browser-agent.json");
+  const filePath = sessionFilePath(dataRoot);
   const syncFailure = Object.assign(new Error("session isolation parent sync failed"), { code: "EIO" });
   await saveSessionId(cpbRoot, "browser-agent", "preserve-me", { dataRoot });
   let isolatedPath = "";
@@ -415,8 +450,8 @@ test("session cache cleanup attempts every expired removal and aggregates durabi
   const cpbRoot = await tempRoot("cpb-session-cache-cleanup-sync-root");
   const dataRoot = await tempRoot("cpb-session-cache-cleanup-sync-data");
   const cacheDir = path.join(dataRoot, "session-cache");
-  const firstPath = path.join(cacheDir, "agent-a.json");
-  const secondPath = path.join(cacheDir, "agent-b.json");
+  const firstPath = sessionFilePath(dataRoot, "agent-a");
+  const secondPath = sessionFilePath(dataRoot, "agent-b");
   await saveSessionId(cpbRoot, "agent-a", "session-a", { dataRoot });
   await saveSessionId(cpbRoot, "agent-b", "session-b", { dataRoot });
   let syncAttempts = 0;
@@ -482,7 +517,7 @@ test("session cache clear preserves the isolated generation as recovery evidence
   const cpbRoot = await tempRoot("cpb-session-cache-clear-preserve-root");
   const dataRoot = await tempRoot("cpb-session-cache-clear-preserve-data");
   const directory = path.join(dataRoot, "session-cache");
-  const canonicalPath = path.join(directory, "browser-agent.json");
+  const canonicalPath = sessionFilePath(dataRoot);
   await saveSessionId(cpbRoot, "browser-agent", "preserved-clear", { dataRoot });
 
   await clearSessionId(cpbRoot, "browser-agent", { dataRoot });
@@ -491,7 +526,7 @@ test("session cache clear preserves the isolated generation as recovery evidence
   const entries = await readdir(directory);
   assert.equal(entries.some((entry) => entry.endsWith(".tmp")), false);
   const recoveryName = entries.find((entry) => (
-    entry.startsWith(".browser-agent.json.clear-remove.") && entry.endsWith(".recovery")
+    entry.startsWith(`.${path.basename(canonicalPath)}.clear-remove.`) && entry.endsWith(".recovery")
   ));
   assert.ok(recoveryName);
   assert.equal(
@@ -504,13 +539,14 @@ test("session cache hard-link publication never overwrites a canonical successor
   const cpbRoot = await tempRoot("cpb-session-cache-publish-successor-root");
   const dataRoot = await tempRoot("cpb-session-cache-publish-successor-data");
   const directory = path.join(dataRoot, "session-cache");
-  const canonicalPath = path.join(directory, "browser-agent.json");
+  const canonicalPath = sessionFilePath(dataRoot);
   await saveSessionId(cpbRoot, "browser-agent", "predecessor", { dataRoot });
   const successor = `${JSON.stringify({
     format: "cpb-session-cache/v1",
     generation: "33333333-3333-4333-8333-333333333333",
     agent: "browser-agent",
     sessionId: "canonical-successor",
+    conversationKey: TEST_CONVERSATION_KEY,
     savedAt: new Date().toISOString(),
   }, null, 2)}\n`;
   let hookRan = false;
@@ -545,13 +581,14 @@ test("session cache revalidates the published generation after directory fsync",
   const cpbRoot = await tempRoot("cpb-session-cache-post-sync-successor-root");
   const dataRoot = await tempRoot("cpb-session-cache-post-sync-successor-data");
   const directory = path.join(dataRoot, "session-cache");
-  const canonicalPath = path.join(directory, "browser-agent.json");
+  const canonicalPath = sessionFilePath(dataRoot);
   const publishedEvidence = path.join(directory, "published-before-sync.recovery");
   const successor = `${JSON.stringify({
     format: "cpb-session-cache/v1",
     generation: "44444444-4444-4444-8444-444444444444",
     agent: "browser-agent",
     sessionId: "post-sync-successor",
+    conversationKey: TEST_CONVERSATION_KEY,
     savedAt: new Date().toISOString(),
   }, null, 2)}\n`;
   let hookRan = false;
@@ -596,7 +633,7 @@ test("session cache update publishes the new generation and preserves the predec
   const entries = await readdir(directory);
   assert.equal(entries.some((entry) => entry.endsWith(".tmp")), false);
   const predecessorName = entries.find((entry) => (
-    entry.startsWith(".browser-agent.json.write-replace.") && entry.endsWith(".recovery")
+    entry.startsWith(`.${path.basename(sessionFilePath(dataRoot))}.write-replace.`) && entry.endsWith(".recovery")
   ));
   assert.ok(predecessorName);
   assert.equal(
@@ -642,7 +679,7 @@ test("session cache temp retirement preserves a competing isolated successor", a
   const cpbRoot = await tempRoot("cpb-session-cache-temp-retire-successor-root");
   const dataRoot = await tempRoot("cpb-session-cache-temp-retire-successor-data");
   const directory = path.join(dataRoot, "session-cache");
-  const canonicalPath = path.join(directory, "browser-agent.json");
+  const canonicalPath = sessionFilePath(dataRoot);
   let isolatedPath = "";
   let predecessorEvidence = "";
   const successor = `${JSON.stringify({ marker: "temp-retire-successor" })}\n`;
@@ -690,8 +727,8 @@ test("session cache temp retirement preserves a competing canonical successor", 
   const cpbRoot = await tempRoot("cpb-session-cache-temp-retire-canonical-root");
   const dataRoot = await tempRoot("cpb-session-cache-temp-retire-canonical-data");
   const directory = path.join(dataRoot, "session-cache");
-  const canonicalPath = path.join(directory, "browser-agent.json");
-  const publishedEvidence = path.join(directory, ".browser-agent.json.published-evidence");
+  const canonicalPath = sessionFilePath(dataRoot);
+  const publishedEvidence = path.join(directory, `.${path.basename(canonicalPath)}.published-evidence`);
   let isolatedPath = "";
   const successor = `${JSON.stringify({ marker: "canonical-successor" })}\n`;
 
@@ -727,7 +764,7 @@ test("session cache temp retirement preserves a competing canonical successor", 
 test("session cache reports committed ambiguity when temp isolation fsync fails", async () => {
   const cpbRoot = await tempRoot("cpb-session-cache-temp-retire-isolate-root");
   const dataRoot = await tempRoot("cpb-session-cache-temp-retire-isolate-data");
-  const canonicalPath = path.join(dataRoot, "session-cache", "browser-agent.json");
+  const canonicalPath = sessionFilePath(dataRoot);
 
   await assert.rejects(
     withSessionCacheTestHooks({
@@ -758,7 +795,7 @@ test("session cache reports committed ambiguity when temp isolation fsync fails"
   const entries = await readdir(path.dirname(canonicalPath));
   assert.equal(entries.some((entry) => entry.endsWith(".tmp")), false);
   const recoveryName = entries.find((entry) => (
-    entry.startsWith(".browser-agent.json.write-temp-retire.") && entry.endsWith(".recovery")
+    entry.startsWith(`.${path.basename(canonicalPath)}.write-temp-retire.`) && entry.endsWith(".recovery")
   ));
   assert.ok(recoveryName);
   assert.equal(
@@ -770,7 +807,7 @@ test("session cache reports committed ambiguity when temp isolation fsync fails"
 test("session cache reports committed ambiguity when temp deletion fsync fails", async () => {
   const cpbRoot = await tempRoot("cpb-session-cache-temp-retire-sync-root");
   const dataRoot = await tempRoot("cpb-session-cache-temp-retire-sync-data");
-  const canonicalPath = path.join(dataRoot, "session-cache", "browser-agent.json");
+  const canonicalPath = sessionFilePath(dataRoot);
 
   await assert.rejects(
     withSessionCacheTestHooks({

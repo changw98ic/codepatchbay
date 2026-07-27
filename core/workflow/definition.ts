@@ -1,5 +1,5 @@
 import { LooseRecord } from "../../shared/types.js";
-import { phasesToDag, validateDag } from "./dag-executor.js";
+import { validateDag } from "./dag-executor.js";
 import { resolveSquadAgent } from "../agents/registry.js";
 import {
   agentForRoutingPhase,
@@ -38,24 +38,44 @@ const WORKFLOWS: Record<string, WorkflowDefinition> = {
     phases: ["plan", "execute", "verify"],
     roleForPhase: { plan: "planner", execute: "executor", verify: "verifier" },
     dispatchForPhase: { plan: "planner", execute: "executor", verify: "verifier" },
+    nodes: [
+      { id: "plan", phase: "plan", role: "planner", dependsOn: [] },
+      { id: "execute", phase: "execute", role: "executor", dependsOn: ["plan"] },
+      { id: "verify", phase: "verify", role: "verifier", dependsOn: ["execute"] },
+    ],
+    maxConcurrentNodes: 1,
   },
   direct: {
     name: "direct",
     phases: ["execute", "verify"],
     roleForPhase: { execute: "executor", verify: "verifier" },
     dispatchForPhase: { execute: "executor", verify: "verifier" },
+    nodes: [
+      { id: "execute", phase: "execute", role: "executor", dependsOn: [] },
+      { id: "verify", phase: "verify", role: "verifier", dependsOn: ["execute"] },
+    ],
+    maxConcurrentNodes: 1,
   },
   complex: {
     name: "complex",
     phases: ["plan", "execute", "review", "verify"],
     roleForPhase: { plan: "planner", execute: "executor", review: "reviewer", verify: "verifier" },
     dispatchForPhase: { plan: "planner", execute: "executor", review: "reviewer", verify: "verifier" },
+    nodes: [
+      { id: "plan", phase: "plan", role: "planner", dependsOn: [] },
+      { id: "execute", phase: "execute", role: "executor", dependsOn: ["plan"] },
+      { id: "review", phase: "review", role: "reviewer", dependsOn: ["execute"] },
+      { id: "verify", phase: "verify", role: "verifier", dependsOn: ["review"] },
+    ],
+    maxConcurrentNodes: 1,
   },
   blocked: {
     name: "blocked",
     phases: [],
     roleForPhase: {},
     dispatchForPhase: {},
+    nodes: [],
+    maxConcurrentNodes: 1,
   },
   accelerated: {
     name: "accelerated",
@@ -63,6 +83,12 @@ const WORKFLOWS: Record<string, WorkflowDefinition> = {
     phases: ["plan", "execute", "verify"],
     roleForPhase: { plan: "planner", execute: "executor", verify: "verifier" },
     dispatchForPhase: { plan: "planner", execute: "executor", verify: "verifier" },
+    nodes: [
+      { id: "plan", phase: "plan", role: "planner", dependsOn: [] },
+      { id: "execute", phase: "execute", role: "executor", dependsOn: ["plan"] },
+      { id: "verify", phase: "verify", role: "verifier", dependsOn: ["execute"] },
+    ],
+    maxConcurrentNodes: 1,
     requireSubagents: { plan: true, execute: true, verify: true, remediate: true },
     subagentConfig: { maxConcurrency: 3 },
     verificationLayers: ["fast", "changed", "regression", "acceptance"],
@@ -117,8 +143,9 @@ export function isWorkflowName(name: string) {
 
 /**
  * Normalize a workflow into a DAG representation.
- * If workflow has explicit `nodes`, validate and use them.
- * Otherwise, convert legacy `phases` to a single-chain DAG.
+ * Every workflow owns an explicit DAG. The phase projection remains available
+ * to phase-oriented presentation and policy code, but it is never used to
+ * construct execution topology.
  */
 export function normalizeWorkflow(name: string, options: WorkflowOptions = {}) {
   const hasRouting = Boolean(options?.category || options?.routing);
@@ -128,32 +155,22 @@ export function normalizeWorkflow(name: string, options: WorkflowOptions = {}) {
 
   const wf = getWorkflow(name);
 
-  // Explicit DAG nodes defined on workflow
-  if (wf.nodes && wf.nodes.length > 0) {
-    const validation = validateDag(wf.nodes);
-    if (!validation.valid) {
-      throw new Error(`workflow ${name} has invalid DAG: ${validation.errors.join(", ")}`);
-    }
-    return {
-      name: wf.name,
-      nodes: resolveSquadsInNodes(wf.nodes),
-      edges: wf.edges || buildEdges(wf.nodes),
-      maxConcurrentNodes: wf.maxConcurrentNodes || 2,
-      isDag: true,
-    };
+  const nodes = wf.nodes;
+  if (!nodes) {
+    throw new Error(`workflow ${name} is missing its explicit DAG definition`);
   }
-
-  // Legacy: convert phases to single-chain DAG
   const cacheKey = wf.name;
   if (_dagCache.has(cacheKey)) return _dagCache.get(cacheKey);
-
-  const nodes = phasesToDag(wf.phases, wf.roleForPhase);
+  const validation = validateDag(nodes);
+  if (!validation.valid) {
+    throw new Error(`workflow ${name} has invalid DAG: ${validation.errors.join(", ")}`);
+  }
   const result = {
     name: wf.name,
     nodes: resolveSquadsInNodes(nodes),
     edges: buildEdges(nodes),
-    maxConcurrentNodes: 1, // Legacy workflows are sequential
-    isDag: wf.phases.length > 0,
+    maxConcurrentNodes: wf.maxConcurrentNodes || 1,
+    isDag: true,
   };
   _dagCache.set(cacheKey, result);
   return result;
@@ -165,29 +182,21 @@ function normalizeWorkflowWithRouting(name: string, { category, routing = null }
   const selection = resolveEffectiveRouting(category || "", routingRules, { workflow: name });
   const wf = getWorkflow(selection.workflow || name);
 
-  if (wf.nodes && wf.nodes.length > 0) {
-    const validation = validateDag(wf.nodes);
-    if (!validation.valid) {
-      throw new Error(`workflow ${wf.name} has invalid DAG: ${validation.errors.join(", ")}`);
-    }
-    const nodes = applyRoutingAgents(resolveSquadsInNodes(wf.nodes), selection);
-    return {
-      name: wf.name,
-      nodes,
-      edges: wf.edges || buildEdges(nodes),
-      maxConcurrentNodes: wf.maxConcurrentNodes || 2,
-      isDag: true,
-      routing: selection,
-    };
+  const baseNodes = wf.nodes;
+  if (!baseNodes) {
+    throw new Error(`workflow ${wf.name} is missing its explicit DAG definition`);
   }
-
-  const nodes = applyRoutingAgents(phasesToDag(wf.phases, wf.roleForPhase), selection);
+  const validation = validateDag(baseNodes);
+  if (!validation.valid) {
+    throw new Error(`workflow ${wf.name} has invalid DAG: ${validation.errors.join(", ")}`);
+  }
+  const nodes = applyRoutingAgents(resolveSquadsInNodes(baseNodes), selection);
   return {
     name: wf.name,
     nodes: resolveSquadsInNodes(nodes),
     edges: buildEdges(nodes),
-    maxConcurrentNodes: 1,
-    isDag: wf.phases.length > 0,
+    maxConcurrentNodes: wf.maxConcurrentNodes || 1,
+    isDag: true,
     routing: selection,
   };
 }

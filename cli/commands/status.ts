@@ -42,13 +42,13 @@ export async function run(args, { cpbRoot }) {
   try {
     const outputsDir = path.join(wdir, "outputs");
     const { readdir, readFile } = await import("node:fs/promises");
-    const entries = (await readdir(outputsDir)).filter((f) => f.startsWith("verdict-") && f.endsWith(".md")).sort();
-    if (entries.length > 0) {
-      const latest = entries[entries.length - 1];
-      const content = await readFile(path.join(outputsDir, latest), "utf8");
-      const match = content.match(/^VERDICT:\s*(\w+)/m);
-      console.log(`${CYAN}Latest verdict:${NC} ${latest} — ${match?.[1] || "unknown"}`);
-    }
+      const entries = (await readdir(outputsDir)).filter((f) => f.startsWith("verdict-") && f.endsWith(".md")).sort();
+      if (entries.length > 0) {
+        const latest = entries[entries.length - 1];
+        const content = await readFile(path.join(outputsDir, latest), "utf8");
+      const parsed = JSON.parse(content);
+      console.log(`${CYAN}Latest verdict:${NC} ${latest} — ${typeof parsed.status === "string" ? parsed.status : "unknown"}`);
+      }
   } catch {}
 
   // Job state

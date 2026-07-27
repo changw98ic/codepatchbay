@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // run-phase.js - Unified Node phase entrypoint (plan/execute/verify/review/repair)
-// Replaces shell bridge business logic. Shell wrappers exec this for CLI compatibility.
+// Canonical phase bridge entrypoint.
 //
 // Usage:
 //   node bridges/run-phase.js plan --executor-root <r> --cpb-root <r> --project <p> --task "<t>"
@@ -27,9 +27,9 @@ import {
 import { resolveProjectDataRoot } from "../server/services/runtime.js";
 import {
   allocateArtifactId,
-  wikiLogPath,
   dashboardPath,
 } from "../server/services/artifact-locator.js";
+import { resolveHubRoot } from "../server/services/hub/hub-registry.js";
 import { parseVerdictEnvelope } from "../core/workflow/verdict.js";
 import { applyVariant } from "../server/services/apply-variant.js";
 import { runRepair, completeRepair } from "../server/services/review/review-dispatch.js";
@@ -102,7 +102,6 @@ function parseArgs(argv: string[]): ParsedArgs {
     throw new Error(`first argument must be a phase name (plan|execute|verify|review|repair), got: ${phase}`);
   }
 
-  const positional: string[] = [];
   const options = new Map<string, string>();
   for (let i = 1; i < argv.length; i++) {
     const token = argv[i];
@@ -114,27 +113,7 @@ function parseArgs(argv: string[]): ParsedArgs {
       options.set(token, value);
       i++;
     } else {
-      positional.push(token);
-    }
-  }
-
-  // When positional args are present, map them to --flags by phase.
-  // This lets job-runner.js call: node run-phase.js <phase> <project> <id> [args...]
-  if (positional.length > 0 && !options.has("--project")) {
-    const POSITIONAL_MAP: Record<string, string[]> = {
-      plan:   ["--project", "--task"],
-      execute: ["--project", "--plan-id"],
-      verify: ["--project", "--deliverable-id"],
-      review: ["--project", "--deliverable-id"],
-      repair: ["--project"],
-    };
-    const flags = POSITIONAL_MAP[phase];
-    if (flags) {
-      for (let i = 0; i < positional.length && i < flags.length; i++) {
-        if (!options.has(flags[i])) {
-          options.set(flags[i], positional[i]);
-        }
-      }
+      throw new Error(`unexpected positional argument: ${token}; pass phase inputs with explicit flags`);
     }
   }
 
@@ -292,9 +271,8 @@ export async function appendPhaseLog(
   runtime: PhaseRuntime | null = null,
   lockOptions: DurableDirectoryLockOptions = {},
 ) {
-  const logFile = runtime?.wikiDir
-    ? path.join(runtime.wikiDir, "log.md")
-    : wikiLogPath(cpbRoot, project);
+  if (!runtime?.wikiDir) throw new Error("project runtime is required for phase logs");
+  const logFile = path.join(runtime.wikiDir, "log.md");
   await mkdir(path.dirname(logFile), { recursive: true });
   const lockDir = path.join(path.dirname(logFile), ".cpb-log.lock");
   return withDurableDirectoryLock(lockDir, async () => {
@@ -311,7 +289,7 @@ export async function appendPhaseLog(
 const logAppend = appendPhaseLog;
 
 async function dashboardUpdate(cpbRoot: string, project: string, phase: string, status: string, next: string) {
-  const dashFile = dashboardPath(cpbRoot);
+  const dashFile = dashboardPath(process.env.CPB_HUB_ROOT || resolveHubRoot(cpbRoot));
   try {
     let content = await readFile(dashFile, "utf8");
     const ts = new Date().toISOString().replace(/\.\d+Z$/, "Z");
@@ -487,7 +465,7 @@ async function handleExecute(args: ParsedArgs) {
     console.log(`Executing [${project}] job-${jobId} (locator-first)...`);
     prompt = await buildExecutorJobPrompt(executorRoot, cpbRoot, project, jobId, deliverableFile, { dataRoot: runtime.dataRoot });
   } else {
-    // Backward-compatible artifact-based path
+    // Explicit artifact-based phase path
     const planFile = path.join(runtime.inboxDir, `plan-${planId}.md`);
     try { await readFile(planFile, "utf8"); } catch {
       console.error(`Plan file not found: ${planFile}`);
@@ -639,6 +617,7 @@ async function handleRepair(args: ParsedArgs) {
   const { executorRoot, cpbRoot, project, options } = args;
   const jobId = options.get("--job-id") || "";
   if (!jobId) throw new Error("--job-id is required for repair phase");
+  const runtime = await phaseRuntime(cpbRoot, project);
 
   const { repairId, repairFile, repairArtifact, dataRoot, lockDir } = await runRepair(cpbRoot, {
     project,
@@ -651,7 +630,7 @@ async function handleRepair(args: ParsedArgs) {
 
   const { appendEvent: appendEv, checkpointJob, readEvents: readEv, materializeJob } = await import("../server/services/event/event-store.js");
   const { updateJobsIndexEntry } = await import("../server/services/job/job-store.js");
-  const eventOpts = { dataRoot, includeLegacyFallback: false };
+  const eventOpts = { dataRoot };
 
   async function recordEvent(event: LooseRecord) {
     await appendEv(cpbRoot, project, jobId, event, eventOpts);
@@ -669,7 +648,7 @@ async function handleRepair(args: ParsedArgs) {
     ts: new Date().toISOString(),
   });
 
-  const prompt = await buildRepairerPrompt(executorRoot, cpbRoot, project, jobId, repairFile);
+  const prompt = await buildRepairerPrompt(executorRoot, cpbRoot, project, jobId, repairFile, { dataRoot: runtime.dataRoot });
   const result = await runAcp("claude", prompt, process.env.CPB_ACP_CWD || process.cwd(), executorRoot);
 
   if (result.error) {
@@ -696,9 +675,9 @@ async function handleRepair(args: ParsedArgs) {
       project, jobId, repairId, repairFile, repairArtifact,
       status: "completed", error: null, executorRoot, lockDir,
     });
-    await logAppend(cpbRoot, project, `repairer | repair | repair-${repairId} for job-${jobId} | ${repairStatus}`);
+    await logAppend(cpbRoot, project, `repairer | repair | repair-${repairId} for job-${jobId} | ${repairStatus}`, runtime);
   } catch (err) {
-    await logAppend(cpbRoot, project, `repairer | repair | repair-${repairId} for job-${jobId} | FAIL: ${err.message}`);
+    await logAppend(cpbRoot, project, `repairer | repair | repair-${repairId} for job-${jobId} | FAIL: ${err.message}`, runtime);
     console.error(`Repair failed: ${err.message}`);
     return 1;
   }
@@ -740,9 +719,12 @@ async function main() {
   if (jobId) process.env.CPB_ACP_JOB_ID = jobId;
   process.env.CPB_ACP_CPB_ROOT = parsed.cpbRoot;
 
+  const runtime = await phaseRuntime(parsed.cpbRoot, parsed.project);
+  process.env.CPB_PROJECT_RUNTIME_ROOT = runtime.dataRoot;
+
   // Set ACP cwd
   if (!process.env.CPB_ACP_CWD && !process.env.CPB_PROJECT_PATH_OVERRIDE) {
-    const metaFile = path.join(parsed.cpbRoot, "wiki", "projects", parsed.project, "project.json");
+    const metaFile = path.join(runtime.wikiDir, "project.json");
     try {
       const meta = parsePhaseProjectMetaContract(await readFile(metaFile, "utf8"), metaFile, parsed.project);
       if (meta.sourcePath) process.env.CPB_ACP_CWD = meta.sourcePath;

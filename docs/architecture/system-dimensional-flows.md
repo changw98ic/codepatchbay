@@ -5,7 +5,7 @@
 > CodePatchBay 现为**纯 Node.js CLI**（入口 `cli/cpb.ts`），已移除 HTTP server /
 > Fastify / React 前端 / 多 IM 渠道路由（`server/index.js`、`server/routes/*`、
 > `web/`）。文档中凡涉及「Web UI 入口」「HTTP 路由」「Slack/Discord 渠道路由」
-> 「WebSocket 推送」「`runtime/migrate-runtime-root.js`」「`runtime/evolve/multi-evolve.js`」
+> 「WebSocket 推送」「旧 runtime 迁移入口」「`runtime/evolve/multi-evolve.js`」
 > 的图与表格**仅作历史参考**，当前不适用。
 >
 > **仍然准确的维度**：Hub 队列与调度、Worker 与 worktree 隔离、核心引擎
@@ -491,22 +491,17 @@ flowchart TD
 flowchart TD
   CpbRoot["CPB_ROOT"] --> HubRoot["resolveHubRoot"]
   HubRoot --> Registry["hub-registry：项目注册表"]
-  Registry --> ProjectRuntime{"项目有 projectRuntimeRoot？"}
-  ProjectRuntime -->|"是"| DataRoot["项目独立 runtime root"]
-  ProjectRuntime -->|"否"| LegacyRoot["legacy runtimeDataRoot(cpbRoot)"]
+  Registry --> DataRoot["注册项目独立 runtime root"]
   DataRoot --> Events["events、jobs、artifacts"]
-  LegacyRoot --> Events
   HubRoot --> Queue["Hub queue、workers、assignments、worktrees"]
-  Migration["runtime/migrate-runtime-root.js"] --> DataRoot
-  Migration --> LegacyRoot
 ```
 
 关键原则：
 
 - Hub 级状态放在 `hubRoot`：队列、worker、assignment、worktree、日志。
-- 项目 job 事件优先放在项目自己的 `projectRuntimeRoot`。
-- 当前仍有 legacy `runtimeDataRoot(cpbRoot)` 回退路径；这是迁移期残留，后续应硬切到项目 runtime root。
-- 迁移脚本负责把旧 `.omc` / `cpb-task` / `wiki/projects` 数据迁到新的 runtime roots。
+- 项目 job 事件只放在注册项目自己的 `projectRuntimeRoot`。
+- 未注册项目或缺失 runtime root 时直接失败，不创建全局回退目录。
+- 旧 `.omc` / `cpb-task` / `wiki/projects` 命名空间不属于当前运行时契约；CPB 不读取、不迁移、不删除这些路径。
 
 ## 13. 安装与发布维度
 

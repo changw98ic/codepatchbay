@@ -63,10 +63,6 @@ const ALLOWED_ASSETS = [
 const EXCLUDED_COPY_NAMES = new Set([
   "node_modules",
   ".git",
-  "cpb-task",
-  ".omx",
-  ".omc",
-  "omx_wiki",
   "providers",
 ]);
 
@@ -156,7 +152,7 @@ type ReleaseCommitMarker = {
 };
 
 type CommittedRelease = {
-  kind: "legacy-directory" | "generation-pointer";
+  kind: "generation-pointer";
   releaseId: string;
   canonicalPath: string;
   resolvedPath: string;
@@ -194,7 +190,7 @@ type ReleaseFailure = LooseRecord & {
   releaseId?: string;
 };
 
-type ReleaseCompatibility = {
+type ReleaseSelectionValidation = {
   ok: boolean;
   releaseId: string;
   releasePath: string | null;
@@ -685,32 +681,8 @@ async function resolveCommittedRelease(
   const canonicalPath = releasePath(storeAuthority.requestedPath, releaseId);
   const canonicalInfo = await lstat(canonicalPath, { bigint: true });
 
-  if (canonicalInfo.isDirectory() && !canonicalInfo.isSymbolicLink()) {
-    const canonicalAuthority = {
-      generation: pathGeneration(canonicalInfo),
-      kind: "directory",
-    } satisfies SelectionAuthority;
-    const metadata = await readReleaseMetadata(canonicalPath);
-    if (metadata.releaseId !== releaseId) {
-      throw Object.assign(new Error(`legacy release id mismatch: ${canonicalPath}`), {
-        code: "RELEASE_COMMIT_INVALID",
-      });
-    }
-    await verifyStrictDirectoryAuthority(storeAuthority, "RELEASE_STORE_CHANGED");
-    const generationAuthority = await assertSelectionAuthority(canonicalPath, canonicalAuthority);
-    return {
-      kind: "legacy-directory",
-      releaseId,
-      canonicalPath,
-      resolvedPath: canonicalPath,
-      metadata,
-      canonicalAuthority,
-      generationAuthority,
-    };
-  }
-
   if (!canonicalInfo.isSymbolicLink()) {
-    throw Object.assign(new Error(`release canonical entry is not committed: ${canonicalPath}`), {
+    throw Object.assign(new Error(`release canonical entry must be a generation pointer: ${canonicalPath}`), {
       code: "RELEASE_NOT_COMMITTED",
     });
   }
@@ -1492,7 +1464,7 @@ export async function inspectCurrentRelease({ env = process.env }: { env?: Relea
   }
 }
 
-export async function checkReleaseCompatibility({ releaseId, destRoot, env = process.env }: ReleaseStoreOptions & { releaseId?: string } = {}): Promise<ReleaseCompatibility> {
+export async function validateReleaseSelection({ releaseId, destRoot, env = process.env }: ReleaseStoreOptions & { releaseId?: string } = {}): Promise<ReleaseSelectionValidation> {
   try {
     validateReleaseId(releaseId);
   } catch (err) {
@@ -1637,13 +1609,13 @@ export async function checkReleaseCompatibility({ releaseId, destRoot, env = pro
   };
 }
 
-export class ReleaseCompatibilityError extends Error {
+export class ReleaseSelectionValidationError extends Error {
   failures: ReleaseFailure[];
   releaseId: string;
 
   constructor(failures: ReleaseFailure[], releaseId: string) {
-    super(`Release '${releaseId}' is not compatible: ${failures.map(f => f.code).join(", ")}`);
-    this.name = "ReleaseCompatibilityError";
+    super(`Release '${releaseId}' failed selection validation: ${failures.map(f => f.code).join(", ")}`);
+    this.name = "ReleaseSelectionValidationError";
     this.failures = failures;
     this.releaseId = releaseId;
   }
@@ -1952,20 +1924,20 @@ export async function selectRelease({
     try {
       committedBefore = await resolveCommittedRelease(storeRoot, releaseId);
     } catch {
-      // Compatibility below returns the stable public error shape for missing,
+      // Validation below returns the stable public error shape for missing,
       // malformed, unsafe, and not-yet-published generations.
     }
   }
-  const compat = await checkReleaseCompatibility({ releaseId, destRoot, env });
-  if (!compat.ok) {
-    throw new ReleaseCompatibilityError(compat.failures, releaseId);
+  const validation = await validateReleaseSelection({ releaseId, destRoot, env });
+  if (!validation.ok) {
+    throw new ReleaseSelectionValidationError(validation.failures, releaseId);
   }
   if (
-    !compat.releasePath
-    || !compat.canonicalPath
+    !validation.releasePath
+    || !validation.canonicalPath
     || !committedBefore
-    || path.resolve(compat.releasePath) !== committedBefore.resolvedPath
-    || path.resolve(compat.canonicalPath) !== committedBefore.canonicalPath
+    || path.resolve(validation.releasePath) !== committedBefore.resolvedPath
+    || path.resolve(validation.canonicalPath) !== committedBefore.canonicalPath
   ) {
     throw Object.assign(new Error(`release selection target authority is unavailable: ${releaseId}`), {
       code: "RELEASE_SELECTION_TARGET_CHANGED",
@@ -1975,13 +1947,13 @@ export async function selectRelease({
   const targetBefore = committedBefore.generationAuthority;
   const canonicalBefore = committedBefore.canonicalAuthority;
   try {
-    await assertSelectionAuthority(compat.releasePath, targetBefore);
-    await assertSelectionAuthority(compat.canonicalPath, canonicalBefore);
+    await assertSelectionAuthority(validation.releasePath, targetBefore);
+    await assertSelectionAuthority(validation.canonicalPath, canonicalBefore);
   } catch (cause) {
-    throw Object.assign(new Error(`release selection target changed during compatibility checks: ${compat.releasePath}`, { cause }), {
+    throw Object.assign(new Error(`release selection target changed during release selection validation: ${validation.releasePath}`, { cause }), {
       code: "RELEASE_SELECTION_TARGET_CHANGED",
       releaseId,
-      path: compat.releasePath,
+      path: validation.releasePath,
     });
   }
 
@@ -1990,9 +1962,9 @@ export async function selectRelease({
   const selector = {
     stateVersion: 1,
     releaseId,
-    releasePath: compat.releasePath,
+    releasePath: validation.releasePath,
     selectedAt,
-    compatibility: { ok: true, checkedAt: selectedAt, failures: [] },
+    validation: { ok: true, checkedAt: selectedAt, failures: [] },
   };
 
   const statePath = currentReleaseStatePath({ env });
@@ -2032,7 +2004,7 @@ export async function selectRelease({
       linkStagePath: path.join(operationDir, "next-link"),
       previousStatePath: path.join(operationDir, "previous-state.json"),
       previousLinkPath: path.join(operationDir, "previous-link"),
-      releasePath: compat.releasePath,
+      releasePath: validation.releasePath,
     };
     activeContext = context;
     let mutationCommitted = false;
@@ -2097,11 +2069,11 @@ export async function selectRelease({
     const assertTarget = async () => {
       await assertSelectionDirectories();
       try {
-        await assertSelectionAuthority(compat.releasePath!, targetBefore!);
-        await assertSelectionAuthority(compat.canonicalPath!, canonicalBefore);
+        await assertSelectionAuthority(validation.releasePath!, targetBefore!);
+        await assertSelectionAuthority(validation.canonicalPath!, canonicalBefore);
       } catch (cause) {
         throw await fail(
-          `release selection target changed before commit: ${compat.releasePath}`,
+          `release selection target changed before commit: ${validation.releasePath}`,
           "RELEASE_SELECTION_TARGET_CHANGED",
           cause,
         );
@@ -2162,9 +2134,9 @@ export async function selectRelease({
     const stateStage = await writeReleaseSelectionStateStage(context.stateStagePath, selector);
     registerRecovery(context.stateStagePath, stateStage);
     await syncReleaseSelectionDirectory(operationDir, "state-stage", hooksForTest);
-    await symlink(compat.releasePath, context.linkStagePath);
+    await symlink(validation.releasePath, context.linkStagePath);
     const linkStage = await captureSelectionAuthority(context.linkStagePath, "symlink");
-    if (!linkStage || linkStage.linkTarget !== compat.releasePath) {
+    if (!linkStage || linkStage.linkTarget !== validation.releasePath) {
       throw await fail(
         `release selection link stage does not bind the requested target: ${context.linkStagePath}`,
         "RELEASE_SELECTION_TARGET_CHANGED",
@@ -2259,7 +2231,7 @@ export async function selectRelease({
       // at the absent canonical path avoids rename-overwrite semantics, while
       // the staged symlink remains immutable recovery evidence. Hard-linking a
       // symlink is not portable (macOS rejects it with EPERM).
-      await symlink(compat.releasePath, linkPath);
+      await symlink(validation.releasePath, linkPath);
     } catch (cause) {
       if (errnoCode(cause) === "EEXIST") {
         throw await fail(
@@ -2285,7 +2257,7 @@ export async function selectRelease({
         { successorPreserved: true, stableCommittedPaths: [context.linkStagePath] },
       );
     }
-    if (!publishedLink || publishedLink.linkTarget !== compat.releasePath) {
+    if (!publishedLink || publishedLink.linkTarget !== validation.releasePath) {
       throw await fail(
         `release selection link does not bind the requested target: ${linkPath}`,
         "RELEASE_SELECTION_SUCCESSOR_PRESERVED",
@@ -2376,7 +2348,7 @@ export async function selectRelease({
         publishedSelector.releaseId !== releaseId
         || typeof publishedSelector.releasePath !== "string"
         || path.resolve(publishedSelector.releasePath) !== publishedTarget
-        || publishedTarget !== path.resolve(compat.releasePath)
+        || publishedTarget !== path.resolve(validation.releasePath)
       ) {
         throw new Error("published release selection does not bind the requested target");
       }
@@ -2413,8 +2385,8 @@ export async function selectRelease({
     callbackSucceeded = true;
     return {
       selector,
-      metadata: compat.metadata,
-      compatibility: compat,
+      metadata: validation.metadata,
+      validation,
       committed: true,
       committedPath: statePath,
       ...successEvidence,

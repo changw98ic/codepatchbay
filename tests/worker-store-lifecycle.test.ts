@@ -484,26 +484,28 @@ test("local inbox payload stays unclaimable until its write-owner fence commits"
   );
 });
 
-test("legacy local inbox lock without process identity stays closed while pid is alive", async () => {
-  const hubRoot = await tempRoot("cpb-worker-store-legacy-alive");
+test("local worker inbox lock without process identity is rejected before liveness probing", async () => {
+  const hubRoot = await tempRoot("cpb-worker-store-missing-identity-alive");
   const store = new WorkerStore(hubRoot);
   await store.init();
   const lockDir = await staleLock(store, "worker-1", "a-1", { pid: process.pid });
 
-  const candidate = await store._localInboxLockRecoveryCandidate(lockDir, path.join(lockDir, "owner.json"));
-
-  assert.equal(candidate, null);
+  await assert.rejects(
+    () => store._localInboxLockRecoveryCandidate(lockDir, path.join(lockDir, "owner.json")),
+    /worker inbox lock owner process identity is required/,
+  );
 });
 
-test("legacy local inbox lock without process identity stays closed after ESRCH", async () => {
-  const hubRoot = await tempRoot("cpb-worker-store-legacy-esrch");
+test("local worker inbox lock without process identity remains present after rejection", async () => {
+  const hubRoot = await tempRoot("cpb-worker-store-missing-identity-esrch");
   const store = new WorkerStore(hubRoot);
   await store.init();
   const lockDir = await staleLock(store, "worker-1", "a-1", { pid: 999_999_992 });
 
-  const candidate = await store._localInboxLockRecoveryCandidate(lockDir, path.join(lockDir, "owner.json"));
-
-  assert.equal(candidate, null);
+  await assert.rejects(
+    () => store._localInboxLockRecoveryCandidate(lockDir, path.join(lockDir, "owner.json")),
+    /worker inbox lock owner process identity is required/,
+  );
   assert.equal((await lstat(lockDir)).isDirectory(), true);
   assert.equal(await fileExists(path.join(lockDir, "owner.json")), true);
 });

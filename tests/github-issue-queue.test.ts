@@ -55,7 +55,7 @@ function makeCommentPayload(overrides: GithubPayloadOverrides = {}) {
       ...overrides.issue,
     },
     comment: {
-      body: "/cpb run",
+      body: "/cpb pipeline",
       author_association: "MEMBER",
       ...overrides.comment,
     },
@@ -278,14 +278,14 @@ test("getJobByQueueEntryId returns null for missing queue entry ID", async () =>
 });
 
 // Additional: issue comment command triggers queue entry with job
-test("issue comment /cpb run creates queue entry and job", async (t) => {
+test("issue comment /cpb pipeline creates queue entry and job", async (t) => {
   const { cpbRoot, hubRoot } = await makeTestRoots();
   await registerTestProject(hubRoot, "flow");
   const payload = makeCommentPayload();
   const normalized = makeNormalizedEvent(payload, "flow");
 
   const match = matchGithubTrigger(normalized);
-  assert.ok(match.matched, "comment should match /cpb run trigger");
+  assert.ok(match.matched, "comment should match /cpb pipeline trigger");
 
   const result = await createGithubIssueQueueJob(cpbRoot, normalized, match, {
     hubRoot,
@@ -296,15 +296,15 @@ test("issue comment /cpb run creates queue entry and job", async (t) => {
   assert.equal(meta.issueNumber, 7);
   assert.equal(meta.repo, "acme/app");
   assert.equal(meta.actor, "bob");
-  assert.equal(meta.commandText, "/cpb run");
+  assert.equal(meta.commandText, "/cpb pipeline");
   assert.ok(result.job, "job created for comment trigger");
   assert.equal(result.job.queueEntryId, result.queueEntry.id);
 });
 
-test("GitHub webhook rejects untrusted /cpb run comments before queue creation", async (t) => {
+test("GitHub webhook rejects untrusted /cpb pipeline comments before queue creation", async (t) => {
   const { hubRoot, deliver } = await makeWebhookHarness(t);
   const response = await deliver("issue_comment", makeCommentPayload({
-    comment: { body: "/cpb run", author_association: "NONE" },
+    comment: { body: "/cpb pipeline", author_association: "NONE" },
   }));
 
   assert.equal(response.statusCode, 403);

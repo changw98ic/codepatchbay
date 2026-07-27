@@ -136,8 +136,9 @@ This prevents forged webhook deliveries from triggering pipeline actions.
 
 CPB uses git worktrees for task isolation when enabled:
 
-- Each durable job can run in an isolated git worktree under
-  `cpb-task/worktrees/`, keeping the main working tree untouched.
+- Each durable job can run in an isolated git worktree under the registered
+  project's runtime root (`<hub>/projects/<project>/worktrees/`), keeping the
+  main working tree untouched.
 - Worktree creation is controlled by `CPB_USE_WORKTREE` or per-project
   `worktree.enabled` config. Worktrees are off by default for the `demo`
   command.

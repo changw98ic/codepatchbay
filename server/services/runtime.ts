@@ -2,8 +2,6 @@
 // Server-facing runtime path facade over core/paths.js.
 // Keep the exported surface explicit so boundary checks can reason about it.
 export {
-  runtimeDataRoot,
-  runtimeDataPath,
   cpbHome,
   defaultProjectRuntimeRoot,
   projectRuntimeRoot,
@@ -14,7 +12,6 @@ export {
 
 // ── runtime-context ──
 import path from "node:path";
-import { runtimeDataRoot } from "../../core/paths.js";
 import { getProject, listProjects, resolveHubRoot } from "./hub/hub-registry.js";
 
 type RuntimeRootEntry = { kind: string; dataRoot: string; projectId: string | null };
@@ -45,11 +42,8 @@ export async function resolveProjectDataRoot(cpbRoot: string, project: string, {
   throw new Error(`project runtime root required for project '${project}'`);
 }
 
-export async function listRuntimeDataRoots(cpbRoot: string, { hubRoot, includeHubProjects = true, includeLegacy = false }: { hubRoot?: string; includeHubProjects?: boolean; includeLegacy?: boolean } = {}) {
+export async function listRuntimeDataRoots(cpbRoot: string, { hubRoot, includeHubProjects = true }: { hubRoot?: string; includeHubProjects?: boolean } = {}) {
   const entries: RuntimeRootEntry[] = [];
-  if (includeLegacy) {
-    entries.push({ kind: "legacy", dataRoot: path.join(path.resolve(cpbRoot), "cpb-task"), projectId: null });
-  }
   if (!includeHubProjects) return uniqueRoots(entries);
   const resolvedHubRoot = hubRoot ? path.resolve(hubRoot) : resolveHubRoot(cpbRoot);
   const projects = await listProjects(resolvedHubRoot) as Array<{ id: string; projectRuntimeRoot?: string }>;
@@ -144,7 +138,7 @@ function countQueueBlockers(entries: LooseRecord[]) {
 }
 
 function runtimeOpts(dataRoot: string) {
-  return { dataRoot, includeLegacyFallback: false };
+  return { dataRoot };
 }
 
 function errorCode(error: unknown) {
@@ -211,7 +205,7 @@ function classifyLeaseHealth(lease: LooseRecord | null, now: Date) {
 }
 
 async function countJobsIndexDivergence(cpbRoot: string, hubRoot: string) {
-  const roots = await listRuntimeDataRoots(cpbRoot, { hubRoot, includeLegacy: false });
+  const roots = await listRuntimeDataRoots(cpbRoot, { hubRoot });
   let totalDiverged = 0;
   for (const root of roots) {
     totalDiverged += await countJobsIndexDivergenceForRoot(cpbRoot, root.dataRoot);
@@ -263,7 +257,7 @@ async function countJobsIndexDivergenceForRoot(cpbRoot: string, dataRoot: string
 }
 
 async function findStaleJobs(cpbRoot: string, hubRoot: string) {
-  const roots = await listRuntimeDataRoots(cpbRoot, { hubRoot, includeLegacy: false });
+  const roots = await listRuntimeDataRoots(cpbRoot, { hubRoot });
   const stale = [];
   const now = new Date();
 

@@ -20,36 +20,41 @@ async function readJsonl(filePath: string) {
   return raw.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
 }
 
-test("session cache isolates explicit conversation keys while preserving the legacy entry", async () => {
+test("session cache isolates explicit conversation keys", async () => {
   const cpbRoot = await tempRoot("cpb-session-conversation-cache");
+  const dataRoot = path.join(cpbRoot, "projects", "browser-agent");
 
-  await saveSessionId(cpbRoot, "browser-agent", "legacy-session");
   await saveSessionId(cpbRoot, "browser-agent", "attempt-one-session", {
+    dataRoot,
     conversationKey: "job-1:attempt-1",
   });
   await saveSessionId(cpbRoot, "browser-agent", "attempt-two-session", {
+    dataRoot,
     conversationKey: "job-1:attempt-2",
   });
 
-  assert.equal((await loadSessionId(cpbRoot, "browser-agent"))?.sessionId, "legacy-session");
   assert.equal((await loadSessionId(cpbRoot, "browser-agent", {
+    dataRoot,
     conversationKey: "job-1:attempt-1",
   }))?.sessionId, "attempt-one-session");
   assert.equal((await loadSessionId(cpbRoot, "browser-agent", {
+    dataRoot,
     conversationKey: "job-1:attempt-2",
   }))?.sessionId, "attempt-two-session");
   assert.equal(await loadSessionId(cpbRoot, "browser-agent", {
+    dataRoot,
     conversationKey: "job-1:attempt-3",
   }), null);
 
-  await clearSessionId(cpbRoot, "browser-agent", { conversationKey: "job-1:attempt-1" });
+  await clearSessionId(cpbRoot, "browser-agent", { dataRoot, conversationKey: "job-1:attempt-1" });
   assert.equal(await loadSessionId(cpbRoot, "browser-agent", {
+    dataRoot,
     conversationKey: "job-1:attempt-1",
   }), null);
   assert.equal((await loadSessionId(cpbRoot, "browser-agent", {
+    dataRoot,
     conversationKey: "job-1:attempt-2",
   }))?.sessionId, "attempt-two-session");
-  assert.equal((await loadSessionId(cpbRoot, "browser-agent"))?.sessionId, "legacy-session");
 });
 
 test("session cache isolates explicit data roots under one cpbRoot without persisting dataRoot", async () => {
@@ -75,9 +80,10 @@ test("session cache isolates explicit data roots under one cpbRoot without persi
     dataRoot: dataRootB,
     conversationKey: "same-conversation",
   }))?.sessionId, "session-b");
-  assert.equal(await loadSessionId(cpbRoot, "browser-agent", {
-    conversationKey: "same-conversation",
-  }), null);
+  await assert.rejects(
+    loadSessionId(cpbRoot, "browser-agent", { conversationKey: "same-conversation" }),
+    /dataRoot is required/,
+  );
 
   const cacheFiles = await readdir(path.join(dataRootA, "session-cache"));
   const cacheJson = cacheFiles.find((file) => file.endsWith(".json"));
@@ -117,16 +123,7 @@ test("session cache isolates explicit data roots under one cpbRoot without persi
   }))?.sessionId, "session-b");
 });
 
-test("pool client keys preserve legacy reuse and isolate explicit conversations", () => {
-  const legacy = poolClientKey("fake-acp", { projectId: "proj", workspaceId: "workspace" });
-  assert.equal(
-    legacy,
-    poolClientKey("fake-acp", {
-      projectId: "proj",
-      workspaceId: "workspace",
-      conversationKey: "",
-    }),
-  );
+test("pool client keys isolate explicit conversations and data roots", () => {
   assert.notEqual(
     poolClientKey("fake-acp", { projectId: "proj", conversationKey: "job-1:attempt-1" }),
     poolClientKey("fake-acp", { projectId: "proj", conversationKey: "job-1:attempt-2" }),
@@ -144,8 +141,8 @@ test("pool client keys preserve legacy reuse and isolate explicit conversations"
     }),
   );
   assert.notEqual(
-    poolClientKey("fake-acp", { projectId: "proj", dataRoot: "/tmp/cpb-runtime-a" }),
-    poolClientKey("fake-acp", { projectId: "proj", dataRoot: "/tmp/cpb-runtime-b" }),
+    poolClientKey("fake-acp", { projectId: "proj", dataRoot: "/tmp/cpb-runtime-a", conversationKey: "same-conversation" }),
+    poolClientKey("fake-acp", { projectId: "proj", dataRoot: "/tmp/cpb-runtime-b", conversationKey: "same-conversation" }),
   );
 });
 

@@ -293,6 +293,23 @@ export function selectOutcomeAwareAgent({
     };
   }
 
+  if (excludedFamily && preferred) {
+    return {
+      preferredAgent: preferred,
+      selectedAgent: preferred,
+      applied: false,
+      independenceApplied: true,
+      independenceConflict: false,
+      agentPolicyApplied: false,
+      agentPolicyConflict: false,
+      allowedAgents: normalizedAllowedAgents,
+      excludedProviderFamily: excludedFamily,
+      reason: `configured verifier is already outside provider family ${excludedFamily}`,
+      candidates,
+      thresholds: routingThresholds(),
+    };
+  }
+
   if (locked) {
     return {
       preferredAgent: preferred,

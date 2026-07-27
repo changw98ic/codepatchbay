@@ -144,8 +144,6 @@ export type EventRecord = LooseRecord & {
 
 export type EventStoreOptions = LooseRecord & {
   dataRoot?: string;
-  legacyOnly?: boolean;
-  includeLegacyFallback?: boolean;
   externalJournal?: boolean;
 };
 

@@ -7,10 +7,9 @@ const RED = "\x1b[0;31m";
 const BOLD = "\x1b[1m";
 const NC = "\x1b[0m";
 
-export function resolveReviewWikiDir(cpbRoot: string, project: string, runtimeRoot = process.env.CPB_PROJECT_RUNTIME_ROOT) {
-  return runtimeRoot
-    ? path.join(runtimeRoot, "wiki")
-    : path.join(cpbRoot, "wiki", "projects", project);
+export function resolveReviewWikiDir(_cpbRoot: string, _project: string, runtimeRoot = process.env.CPB_PROJECT_RUNTIME_ROOT) {
+  if (!runtimeRoot) throw new Error("project runtime root required");
+  return path.join(runtimeRoot, "wiki");
 }
 
 export async function run(args, { cpbRoot, executorRoot }) {
@@ -20,7 +19,13 @@ export async function run(args, { cpbRoot, executorRoot }) {
     process.exit(1);
   }
   const { readdir, readFile, access, constants } = await import("node:fs/promises");
-  const wdir = resolveReviewWikiDir(cpbRoot, project);
+  const { getProject, resolveHubRoot } = await import("../../server/services/hub/hub-registry.js");
+  const hubRoot = resolveHubRoot(cpbRoot);
+  const registered = await getProject(hubRoot, project);
+  if (!registered?.projectRuntimeRoot) {
+    throw new Error(`project runtime root required for project '${project}'`);
+  }
+  const wdir = resolveReviewWikiDir(cpbRoot, project, registered.projectRuntimeRoot);
 
   let agentName = "";
   let mode = "";
@@ -99,16 +104,15 @@ export async function run(args, { cpbRoot, executorRoot }) {
 
   try {
     const vContent = await readFile(verdict, "utf8");
-    const vMatch = vContent.match(/^VERDICT:\s*(\w+)/m);
-    const vStatus = vMatch?.[1] || "unknown";
+    const parsedVerdict = JSON.parse(vContent);
+    const vStatus = typeof parsedVerdict.status === "string" ? parsedVerdict.status.toUpperCase() : "UNKNOWN";
     let vColor = YELLOW;
     if (vStatus === "PASS") vColor = GREEN;
     if (vStatus === "FAIL") vColor = RED;
     console.log(`Verdict: ${vColor}${vStatus}${NC}`);
     console.log("");
     console.log(`${CYAN}Evidence (first 10 lines):${NC}`);
-    const lines = vContent.split("\n").filter((l) => !l.startsWith("VERDICT:"));
-    console.log(lines.slice(0, 10).join("\n"));
+    console.log(JSON.stringify(parsedVerdict, null, 2).split("\n").slice(0, 10).join("\n"));
     console.log("");
   } catch {
     console.log(`${YELLOW}No verdict yet.${NC}`);
@@ -120,9 +124,6 @@ export async function run(args, { cpbRoot, executorRoot }) {
   console.log(dContent.split("\n").slice(0, 20).join("\n"));
   console.log("");
 
-  const { getProject, resolveHubRoot } = await import("../../server/services/hub/hub-registry.js");
-  const hubRoot = resolveHubRoot(cpbRoot);
-  const registered = await getProject(hubRoot, project);
   const src = registered?.sourcePath;
   if (src) {
     try {

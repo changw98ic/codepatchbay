@@ -15,7 +15,6 @@ async function appendCreatedJob(
   dataRoot: string | undefined,
   second: number,
   task = "snapshot cache",
-  includeLegacyFallback = true
 ) {
   const suffix = String(second).padStart(2, "0");
   await appendEvent(
@@ -30,7 +29,7 @@ async function appendCreatedJob(
       workflow: "standard",
       ts: `2026-06-11T04:00:${suffix}.000Z`,
     },
-    dataRoot ? { dataRoot, includeLegacyFallback } : { legacyOnly: true }
+    { dataRoot }
   );
 }
 
@@ -68,7 +67,7 @@ test("listJobsAcrossRuntimeRoots invalidates short-lived snapshots after event w
   }
 });
 
-test("listJobsAcrossRuntimeRoots ignores duplicate legacy jobs by default", async () => {
+test("listJobsAcrossRuntimeRoots returns the registered project runtime job", async () => {
   const cpbRoot = await mkdtemp(path.join(tmpdir(), "cpb-jobs-root-collision-"));
   const hubRoot = await mkdtemp(path.join(tmpdir(), "cpb-jobs-root-collision-hub-"));
   const sourcePath = await mkdtemp(path.join(tmpdir(), "cpb-jobs-root-collision-source-"));
@@ -82,7 +81,7 @@ test("listJobsAcrossRuntimeRoots ignores duplicate legacy jobs by default", asyn
       skipCodeGraphGate: true,
     });
 
-    await appendCreatedJob(cpbRoot, "flow", jobId, undefined, 10, "legacy copy");
+    await appendCreatedJob(cpbRoot, "flow", jobId, dataRoot, 10, "canonical copy");
     await appendEvent(
       cpbRoot,
       "flow",
@@ -93,16 +92,15 @@ test("listJobsAcrossRuntimeRoots ignores duplicate legacy jobs by default", asyn
         project: "flow",
         ts: "2026-06-11T04:00:11.000Z",
       },
-      { legacyOnly: true }
+      { dataRoot }
     );
-    await appendCreatedJob(cpbRoot, "flow", jobId, dataRoot, 12, "project copy", false);
 
     const jobs = await listJobsAcrossRuntimeRoots(cpbRoot, { hubRoot });
 
     assert.equal(jobs.filter((job) => job.project === "flow" && job.jobId === jobId).length, 1);
     const job = jobs.find((entry) => entry.project === "flow" && entry.jobId === jobId);
-    assert.equal(job?.task, "project copy 12");
-    assert.equal(job?.status, "running");
+    assert.equal(job?.task, "canonical copy 10");
+    assert.equal(job?.status, "completed");
   } finally {
     await rm(cpbRoot, { recursive: true, force: true });
     await rm(hubRoot, { recursive: true, force: true });
@@ -110,12 +108,12 @@ test("listJobsAcrossRuntimeRoots ignores duplicate legacy jobs by default", asyn
   }
 });
 
-test("project runtime job creation is not blocked by a terminal legacy duplicate", async () => {
+test("project runtime job creation rejects a terminal canonical duplicate", async () => {
   const cpbRoot = await mkdtemp(path.join(tmpdir(), "cpb-jobs-create-collision-"));
   const dataRoot = path.join(cpbRoot, "hub", "projects", "flow");
   const jobId = "job-20260611-040200-collision";
   try {
-    await appendCreatedJob(cpbRoot, "flow", jobId, undefined, 20, "legacy terminal");
+    await appendCreatedJob(cpbRoot, "flow", jobId, dataRoot, 20, "canonical terminal");
     await appendEvent(
       cpbRoot,
       "flow",
@@ -126,21 +124,20 @@ test("project runtime job creation is not blocked by a terminal legacy duplicate
         project: "flow",
         ts: "2026-06-11T04:00:21.000Z",
       },
-      { legacyOnly: true }
+      { dataRoot }
     );
 
-    const job = await createJob(cpbRoot, {
-      project: "flow",
-      jobId,
-      task: "project root job",
-      workflow: "standard",
-      ts: "2026-06-11T04:00:22.000Z",
-      dataRoot,
-    });
-
-    assert.equal(job.jobId, jobId);
-    assert.equal(job.task, "project root job");
-    assert.equal(job.status, "running");
+    await assert.rejects(
+      () => createJob(cpbRoot, {
+        project: "flow",
+        jobId,
+        task: "duplicate job",
+        workflow: "standard",
+        ts: "2026-06-11T04:00:22.000Z",
+        dataRoot,
+      }),
+      /job is terminal/,
+    );
   } finally {
     await rm(cpbRoot, { recursive: true, force: true });
   }

@@ -40,7 +40,8 @@ async function setupResearchFixture(root: string, acpClientSource: string) {
   const cpbRoot = path.join(root, "cpb");
   const executorRoot = path.join(root, "executor");
   const sourcePath = path.join(root, "project-source");
-  const wikiDir = path.join(cpbRoot, "wiki", "projects", "flow");
+  const dataRoot = path.join(cpbRoot, "projects", "flow");
+  const wikiDir = path.join(dataRoot, "wiki");
   const inboxDir = path.join(wikiDir, "inbox");
   const acpDir = path.join(executorRoot, "server", "services", "acp");
   await mkdir(inboxDir, { recursive: true });
@@ -66,7 +67,7 @@ await writeFile(valueAfter("--output"), [
   "",
 ].join("\\n"), "utf8");
 `, "utf8");
-  return { cpbRoot, executorRoot, wikiDir, inboxDir };
+  return { cpbRoot, executorRoot, dataRoot, wikiDir, inboxDir };
 }
 
 async function waitForPidReports(pidFile: string, expected: number) {
@@ -255,7 +256,7 @@ test("evolve history appends are serialized without lost records", async () => {
 
 test("runResearch writes merged research artifact and log on success", async () => {
   const root = await tempRoot("cpb-evolve-research-success");
-  const { cpbRoot, executorRoot, wikiDir, inboxDir } = await setupResearchFixture(root, `
+  const { cpbRoot, executorRoot, dataRoot, wikiDir, inboxDir } = await setupResearchFixture(root, `
 const agent = process.argv[process.argv.indexOf("--agent") + 1];
 let input = "";
 process.stdin.setEncoding("utf8");
@@ -265,7 +266,7 @@ process.stdin.on("end", () => {
 });
 `);
 
-  await runResearch({ project: "flow", task: "map cancellation behavior", executorRoot, cpbRoot });
+  await runResearch({ project: "flow", task: "map cancellation behavior", executorRoot, cpbRoot, dataRoot });
 
   const artifacts = (await readdir(inboxDir)).filter((file) => file.startsWith("research-") && file.endsWith(".md"));
   assert.deepEqual(artifacts, ["research-001.md"]);
@@ -282,7 +283,7 @@ process.stdin.on("end", () => {
 test("runResearch abort tears down ACP child trees before artifact or log", async () => {
   const root = await tempRoot("cpb-evolve-research-abort");
   const pidFile = path.join(root, "pids.jsonl");
-  const { cpbRoot, executorRoot, wikiDir, inboxDir } = await setupResearchFixture(root, `
+  const { cpbRoot, executorRoot, dataRoot, wikiDir, inboxDir } = await setupResearchFixture(root, `
 const { spawn } = require("node:child_process");
 const { appendFileSync } = require("node:fs");
 
@@ -298,7 +299,7 @@ setInterval(() => {}, 1000);
 `);
   const ac = new AbortController();
 
-  const pending = runResearch({ project: "flow", task: "abort hanging providers", executorRoot, cpbRoot, signal: ac.signal });
+  const pending = runResearch({ project: "flow", task: "abort hanging providers", executorRoot, cpbRoot, dataRoot, signal: ac.signal });
   const reports = await waitForPidReports(pidFile, 2);
   ac.abort();
   await assert.rejects(pending, { name: "AbortError" });
@@ -313,7 +314,7 @@ setInterval(() => {}, 1000);
 
 test("runResearch abort after publication preserves the research artifact and existing log", async () => {
   const root = await tempRoot("cpb-evolve-research-post-merge-abort");
-  const { cpbRoot, executorRoot, wikiDir, inboxDir } = await setupResearchFixture(root, `
+  const { cpbRoot, executorRoot, dataRoot, wikiDir, inboxDir } = await setupResearchFixture(root, `
 const agent = process.argv[process.argv.indexOf("--agent") + 1];
 process.stdin.resume();
 process.stdin.on("end", () => {
@@ -335,7 +336,7 @@ process.stdin.on("end", () => {
   await lockEntered;
   const ac = new AbortController();
 
-  const pending = runResearch({ project: "flow", task: "abort after merge", executorRoot, cpbRoot, signal: ac.signal });
+  const pending = runResearch({ project: "flow", task: "abort after merge", executorRoot, cpbRoot, dataRoot, signal: ac.signal });
   const artifactPath = path.join(inboxDir, "research-001.md");
   await waitForFileContaining(artifactPath, /Codex:/);
   ac.abort();

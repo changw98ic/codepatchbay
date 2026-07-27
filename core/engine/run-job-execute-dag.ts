@@ -3,7 +3,6 @@ import { runPhase } from "./run-phase.js";
 import type { PhaseResult } from "../../shared/types.js";
 import { isPhasePassed, phaseFailed } from "../contracts/phase-result.js";
 import { FailureKind, failure } from "../contracts/failure.js";
-import { legacyAgentForPhase } from "../agents/registry.js";
 import { generateHandoffBundle } from "../handoff/handoff-bundle.js";
 import { normalizeProviderServices, type ProviderAgents } from "./provider-handoff.js";
 import { runQuotaFallbackRetry } from "./provider-quota-fallback.js";
@@ -535,7 +534,7 @@ async function finalizeDagNodeOutcome(
     agent: ctx.agent || null, providerServices, hubRoot, pool, job, phaseSourceContext,
     handoffState, providerAttempts,
     appendEvent: ctx.appendEvent, onProgress: ctx.onProgress || null, completePhase,
-    now: ts, legacyAgentForPhase, phaseRoutingDecision: routing.phaseRoutingDecision, readArtifactFile: ctx.readArtifactFile,
+    now: ts, phaseRoutingDecision: routing.phaseRoutingDecision, readArtifactFile: ctx.readArtifactFile,
   });
 
   if (!isPhasePassed(result)) {

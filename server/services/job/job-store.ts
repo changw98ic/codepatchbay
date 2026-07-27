@@ -23,7 +23,7 @@ import {
   selectAgentWithFallback,
 } from "../../../core/agents/routing.js";
 import { validatePolicy } from "../../../core/policy/team-policy.js";
-import { runtimeDataPath, runtimeDataRoot, resolveProjectDataRoot } from "../runtime.js";
+import { resolveProjectDataRoot } from "../runtime.js";
 import { isRecord, type LooseRecord } from "../../../core/contracts/types.js";
 import { AssignmentStore } from "../../../shared/orchestrator/assignment-store.js";
 import type { ProcessIdentity } from "../../../core/runtime/process-tree.js";
@@ -77,8 +77,6 @@ function lockErrno(error: unknown) {
 type RuntimePathOptions = LooseRecord & {
   dataRoot?: string;
   hubRoot?: string;
-  legacyOnly?: boolean;
-  includeLegacyFallback?: boolean;
 };
 
 type ExecutorRefState = LooseRecord & {
@@ -244,7 +242,6 @@ function enqueueWrite<T>(cpbRoot: string, opts: IndexOpts, fn: () => Promise<T>)
 
 function _base(cpbRoot: string, opts: IndexOpts) {
   if (opts?.dataRoot) return path.resolve(opts.dataRoot);
-  if (opts?.legacyOnly === true) return runtimeDataRoot(cpbRoot);
   throw new Error("dataRoot is required for project jobs-index paths");
 }
 
@@ -1365,12 +1362,12 @@ export async function getJob(cpbRoot: string, project: string, jobId: string, { 
 }
 
 export async function listJobs(cpbRoot: string, options: RuntimePathOptions & { project?: string } = {}): Promise<JobState[]> {
-  const { dataRoot, legacyOnly, ...rest } = options;
-  if (!dataRoot && legacyOnly !== true) {
+  const { dataRoot, ...rest } = options;
+  if (!dataRoot) {
     const jobs = await listJobsAcrossRuntimeRoots(cpbRoot, rest);
     return rest.project ? jobs.filter((job: JobState) => job.project === rest.project) : jobs;
   }
-  const jobs: JobState[] = await listJobsFromIndex(cpbRoot, { ...rest, dataRoot, legacyOnly });
+  const jobs: JobState[] = await listJobsFromIndex(cpbRoot, { ...rest, dataRoot });
   return rest.project ? jobs.filter((job: JobState) => job.project === rest.project) : jobs;
 }
 
@@ -1386,9 +1383,7 @@ export async function listJobsAcrossRuntimeRoots(cpbRoot: string, options: Runti
   const seen = new Set();
   const jobs = [];
   for (const root of roots) {
-    const runtimeOptions = root.kind === "legacy"
-      ? { legacyOnly: true, includeLegacyFallback: true }
-      : { dataRoot: root.dataRoot, includeLegacyFallback: false };
+    const runtimeOptions = { dataRoot: root.dataRoot };
     const batch = await listJobs(cpbRoot, runtimeOptions);
     for (const job of batch) {
       const key = `${job.project}/${job.jobId}`;
@@ -1420,17 +1415,11 @@ export function isRecoverable(job: TerminalStatusProbe | null | undefined) {
 }
 
 async function resolveRecoveryRuntimeOptions(cpbRoot: string, project: string, options: RuntimePathOptions & { hubRoot?: string } = {}) {
-  if (options.dataRoot) {
-    return { dataRoot: options.dataRoot, includeLegacyFallback: false };
-  }
-  if (options.hubRoot || process.env.CPB_HUB_ROOT) {
-    const dataRoot = await resolveProjectDataRoot(cpbRoot, project, {
-      hubRoot: options.hubRoot || process.env.CPB_HUB_ROOT,
-      dataRoot: process.env.CPB_PROJECT_RUNTIME_ROOT,
-    });
-    return { dataRoot, includeLegacyFallback: false };
-  }
-  return {};
+  const dataRoot = await resolveProjectDataRoot(cpbRoot, project, {
+    hubRoot: options.hubRoot || process.env.CPB_HUB_ROOT,
+    dataRoot: options.dataRoot || process.env.CPB_PROJECT_RUNTIME_ROOT,
+  });
+  return { dataRoot };
 }
 
 export async function recoverAsNewJob(cpbRoot: string, project: string, jobId: string, options: RuntimePathOptions & {

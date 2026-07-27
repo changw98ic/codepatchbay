@@ -622,14 +622,9 @@ existing event names
 existing materialized shape
 ```
 
-Optional read-only migration support:
-
-```text
-cpb migrate-runtime-root
-```
-
-This command may copy existing `.omc/events` into `cpb-task/events`, then stop.
-Runtime code should not dual-write.
+Legacy data cutover is outside the CPB runtime. CPB must not ship a migration
+command or dual-write path; deployment is responsible for preparing the
+canonical runtime namespace before the new process starts.
 
 Acceptance:
 
@@ -870,36 +865,10 @@ for tests — let the source modules own their paths.
 
 Existing CodePatchbay-created data may exist under `.omc/`.
 
-MVP should provide an explicit command:
-
-```text
-cpb migrate-runtime-root
-```
-
-Behavior:
-
-1. Detect `.omc/events`, `.omc/state`, and `.omc/worktrees`.
-2. Copy CodePatchbay-owned durable data into `cpb-task/`.
-3. Do not copy `.omc/leases` or lock directories. Leases are liveness hints and
-   must be recreated by the new runtime.
-4. Do not merge conflicting files automatically.
-5. Verify copied event/state/worktree data before cleanup.
-6. Delete or quarantine migrated CodePatchbay-owned legacy paths after verification.
-7. Delete the project-local `.omc/` directory only if it is empty or contains
-   only migrated CodePatchbay-owned legacy paths.
-8. Delete the project-local `.omx/` directory only if it exists and is empty or
-   contains only CodePatchbay-owned legacy paths. Otherwise leave it untouched and report
-   why it was retained.
-9. Report copied, skipped, conflicted, deleted, quarantined, and retained paths.
-
-Note: `.omc/state/pipeline-*.json` files are the most likely to have real user
-data (written by every `cpb pipeline` run). Events are populated by the durable
-job system which may not have been used yet. Leases must not be migrated because
-old lease files can create false liveness, stale owner-token failures, or delayed
-recovery.
-
-This command is a one-time migration and cleanup aid, not part of normal runtime
-reads.
+No CPB migration command is provided. Existing `.omc/`, `.omx/`, or `cpb-task/`
+data is outside the canonical runtime contract and must be handled by the
+deployment owner before cutover. The new runtime starts only with a registered
+project runtime root and never reads those retired namespaces.
 
 ## Performance Contract
 

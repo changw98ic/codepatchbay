@@ -1,5 +1,4 @@
 import type { LooseRecord } from "../../shared/types.js";
-import { legacyAgentForPhase } from "../agents/registry.js";
 import { recordValue } from "../contracts/types.js";
 import { normalizeAllowedAgentNames, providerFamilyFor } from "../agents/outcome-routing.js";
 
@@ -134,14 +133,24 @@ export function resolveRawAgent(
   role: string,
   phase: string,
 ): { agent: string; variant: string | null } {
-  const raw = agents?.[role] || agent || legacyAgentForPhase(phase);
+  const raw = agents?.[role] || agent;
+  if (!raw) {
+    throw new Error(`agent is required for phase ${phase} (${role})`);
+  }
   if (typeof raw === "object" && raw !== null) {
+    const resolvedAgent = raw.agent || raw.name;
+    if (!resolvedAgent) {
+      throw new Error(`agent name is required for phase ${phase} (${role})`);
+    }
     return {
-      agent: raw.agent || raw.name || legacyAgentForPhase(phase),
+      agent: resolvedAgent,
       variant: raw.variant || null,
     };
   }
-  return { agent: typeof raw === "string" ? raw : legacyAgentForPhase(phase), variant: null };
+  if (typeof raw !== "string" || !raw) {
+    throw new Error(`agent name is required for phase ${phase} (${role})`);
+  }
+  return { agent: raw, variant: null };
 }
 
 export function resolveProviderKey(

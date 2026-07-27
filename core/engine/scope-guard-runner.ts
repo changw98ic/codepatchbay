@@ -50,8 +50,8 @@ function retryFixScope(sourceContext: unknown) {
   // Verification feedback distinguishes the narrow requested repair target
   // (fixScope) from the frozen boundary within which that repair may add
   // supporting changes such as regression tests (allowedFixScope). Enforce the
-  // frozen boundary when present, and retain the requested scope as the legacy
-  // fallback when no explicit allowed boundary exists.
+  // frozen boundary when present. A retry without either explicit scope is
+  // rejected below rather than being widened implicitly.
   const allowedFixScope = firstNonEmptyScope([
     retryContext.allowedFixScope,
     retry.allowedFixScope,

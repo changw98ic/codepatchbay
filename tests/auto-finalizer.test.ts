@@ -57,16 +57,12 @@ async function writePassVerdict(root: string, status = "pass") {
   const verdictPath = path.join(root, `verdict-${status}.json`);
   await writeFile(
     verdictPath,
-    [
-      "```json",
-      JSON.stringify({
-        status,
-        reason: `${status} verdict for finalizer test`,
-        tests: ["node --test tests/auto-finalizer.test.ts"],
-      }, null, 2),
-      "```",
-      "",
-    ].join("\n"),
+    `${JSON.stringify({
+      schemaVersion: 2,
+      status,
+      reason: `${status} verdict for finalizer test`,
+      summary: "Finalizer fixture verdict.",
+    }, null, 2)}\n`,
     "utf8",
   );
   return verdictPath;

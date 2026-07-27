@@ -48,12 +48,12 @@ export function canonicalReviewBundlePath(
     && project !== ".."
     && jobId !== "."
     && jobId !== "..";
-  const legacySlug = `${project}-${jobId}`.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 192);
+  const readableSlug = `${project}-${jobId}`.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 192);
   const combinedDigest = createHash("sha256")
     .update(JSON.stringify([project, jobId]), "utf8")
     .digest("hex")
     .slice(0, 16);
-  const filename = `${legacySlug || "review-bundle"}${safeIdentity ? "" : `-${combinedDigest}`}-review-bundle.json`;
+  const filename = `${readableSlug || "review-bundle"}${safeIdentity ? "" : `-${combinedDigest}`}-review-bundle.json`;
   const candidate = path.resolve(directory, filename);
   assertStrictChild(directory, candidate);
   return candidate;

@@ -85,11 +85,11 @@ async function writeRegistry(
 }
 
 async function writeProjectAgents(
-  cpbRoot: string,
+  dataRoot: string,
   project: string,
   agents: unknown,
 ): Promise<void> {
-  await writeJson(path.join(cpbRoot, "wiki", "projects", project, "project.json"), {
+  await writeJson(path.join(dataRoot, "wiki", "project.json"), {
     agents,
   });
 }
@@ -172,13 +172,13 @@ test("empty registry -> needs_setup (project absent, not just file missing)", as
 // ─── step 2: missing runtime root -> runtime_unavailable ─────────────────────
 
 test("missing runtime root -> runtime_unavailable with a user-facing nextAction", async () => {
-  const { cpbRoot, hubRoot, sourcePath } = await freshFixture("missing-runtime-root");
+  const { cpbRoot, hubRoot, runtimeRoot, sourcePath } = await freshFixture("missing-runtime-root");
   await writeRegistry(hubRoot, {
     myproj: { id: "myproj", sourcePath }, // no projectRuntimeRoot
   });
   // Set up later steps (agent + live hub) so the ONLY remaining failure is
   // step 2 — proving the runtime-root gate is what rejects the request.
-  await writeProjectAgents(cpbRoot, "myproj", { default: { agent: "claude" } });
+  await writeProjectAgents(runtimeRoot, "myproj", { default: { agent: "claude" } });
   await writeLiveHub(cpbRoot, hubRoot);
 
   const before = await queueEntryCount(hubRoot);
@@ -197,7 +197,7 @@ test("unconfigured agent executable -> runtime_unavailable", async () => {
     myproj: { id: "myproj", sourcePath, projectRuntimeRoot: runtimeRoot },
   });
   // An agent name with no PATH entry and no npx fallback must fail.
-  await writeProjectAgents(cpbRoot, "myproj", {
+  await writeProjectAgents(runtimeRoot, "myproj", {
     default: { agent: "definitely-not-a-real-coding-agent-xyz" },
   });
   // Persist a live hub so step 4 would pass — the ONLY failure must be step 3.
@@ -220,7 +220,7 @@ test("hub not running -> runtime_unavailable with a cpb hub start nextAction", a
   });
   // A resolvable agent (claude resolves via primary binary or npx fallback) so
   // the agent step passes and the hub step is the one that fails.
-  await writeProjectAgents(cpbRoot, "myproj", { default: { agent: "claude" } });
+  await writeProjectAgents(runtimeRoot, "myproj", { default: { agent: "claude" } });
   // Intentionally do NOT persist hub state -> readHubLiveness -> alive:false.
 
   const before = await queueEntryCount(hubRoot);
@@ -239,7 +239,7 @@ test("hub in unsafe-state (corrupt hub.json) -> runtime_unavailable", async () =
   await writeRegistry(hubRoot, {
     myproj: { id: "myproj", sourcePath, projectRuntimeRoot: runtimeRoot },
   });
-  await writeProjectAgents(cpbRoot, "myproj", { default: { agent: "claude" } });
+  await writeProjectAgents(runtimeRoot, "myproj", { default: { agent: "claude" } });
   // A CORRUPT hub.json: present on disk but invalid JSON, so readHubLiveness
   // returns alive:true + reason "unsafe-state". Readiness MUST treat an
   // unsafe-state hub as unreachable (plan §阶段1: "unsafe state ... treat as
@@ -262,7 +262,7 @@ test("fully initialized fixture -> { ok: true } with no queue write", async () =
   await writeRegistry(hubRoot, {
     myproj: { id: "myproj", sourcePath, projectRuntimeRoot: runtimeRoot },
   });
-  await writeProjectAgents(cpbRoot, "myproj", { default: { agent: "claude" } });
+  await writeProjectAgents(runtimeRoot, "myproj", { default: { agent: "claude" } });
   await writeLiveHub(cpbRoot, hubRoot);
 
   const before = await queueEntryCount(hubRoot);
@@ -280,7 +280,7 @@ test("ok result never carries a forbidden TaskView field", async () => {
   await writeRegistry(hubRoot, {
     myproj: { id: "myproj", sourcePath, projectRuntimeRoot: runtimeRoot },
   });
-  await writeProjectAgents(cpbRoot, "myproj", { default: { agent: "claude" } });
+  await writeProjectAgents(runtimeRoot, "myproj", { default: { agent: "claude" } });
   await writeLiveHub(cpbRoot, hubRoot);
 
   const result = await assertFixReadiness({ cpbRoot, project: "myproj" }) as Record<string, unknown>;

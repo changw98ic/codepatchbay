@@ -148,10 +148,11 @@ export async function writeHubConfig(hubRoot: string, data: AgentConfigRecord) {
   await writeJson(path.join(hubRoot, HUB_CONFIG_FILE), normalizeHubConfig(data));
 }
 
-// -- Project config (wiki/projects/{id}/project.json -> agents) --
+// -- Project config ({projectRuntimeRoot}/wiki/project.json -> agents) --
 
-function projectConfigPath(root: string, project: string) {
-  return path.join(root, "wiki", "projects", project, "project.json");
+function projectConfigPath(dataRoot: string) {
+  if (!dataRoot) throw new Error("project runtime root required for project config");
+  return path.join(path.resolve(dataRoot), "wiki", "project.json");
 }
 
 function uniqueRoots(roots: (string | null | undefined)[]) {
@@ -167,8 +168,8 @@ function uniqueRoots(roots: (string | null | undefined)[]) {
   return result;
 }
 
-export async function readProjectJson(cpbRoot: string, project: string) {
-  return readJson(projectConfigPath(cpbRoot, project));
+export async function readProjectJson(dataRoot: string, _project: string) {
+  return readJson(projectConfigPath(dataRoot));
 }
 
 export async function readProjectJsonFromRoots(roots: (string | null | undefined)[], project: string) {
@@ -179,12 +180,12 @@ export async function readProjectJsonFromRoots(roots: (string | null | undefined
   return {};
 }
 
-export async function writeProjectJson(cpbRoot: string, project: string, data: AgentConfigRecord) {
-  await writeJson(projectConfigPath(cpbRoot, project), data);
+export async function writeProjectJson(dataRoot: string, project: string, data: AgentConfigRecord) {
+  await writeJson(projectConfigPath(dataRoot), data);
 }
 
-export async function readProjectConfig(cpbRoot: string, project: string) {
-  const data = await readProjectJson(cpbRoot, project);
+export async function readProjectConfig(dataRoot: string, project: string) {
+  const data = await readProjectJson(dataRoot, project);
   return data.agents || null;
 }
 
@@ -196,14 +197,14 @@ export async function readProjectConfigFromRoots(roots: (string | null | undefin
   return null;
 }
 
-export async function writeProjectAgents(cpbRoot: string, project: string, agents: AgentConfigRecord | null) {
-  const data = await readProjectJson(cpbRoot, project);
+export async function writeProjectAgents(dataRoot: string, project: string, agents: AgentConfigRecord | null) {
+  const data = await readProjectJson(dataRoot, project);
   if (agents && Object.keys(agents).length > 0) {
     data.agents = agents;
   } else {
     delete data.agents;
   }
-  await writeProjectJson(cpbRoot, project, data);
+  await writeProjectJson(dataRoot, project, data);
 }
 
 // -- Merge: resolve effective agents config --
@@ -237,15 +238,16 @@ export function normalizeAgentSpec(raw: unknown) {
   if (!raw) return null;
   if (isStringRecord(raw)) {
     const obj = raw;
-    if (obj.agent === null && obj.variant) {
+    if ((obj.agent === null || obj.agent === undefined) && obj.variant) {
       return { agent: null, variant: obj.variant };
     }
+    if (obj.agent === null || obj.agent === undefined) return null;
     const agentStr = String(obj.agent || "");
     if (agentStr.includes(":")) {
       const [agent, variant] = agentStr.split(":", 2);
       return { agent, variant: variant || obj.variant || null };
     }
-    return { agent: agentStr || "claude", variant: obj.variant || null };
+    return agentStr ? { agent: agentStr, variant: obj.variant || null } : null;
   }
   const colonIdx = String(raw).indexOf(":");
   if (colonIdx >= 0) {
@@ -366,8 +368,10 @@ export function mergeAgentConfig(hubAgents: AgentConfigRecord | null | undefined
 export async function resolveAgentsForEntry(hubRoot: string, cpbRoot: string, project: string, metadata: AgentConfigRecord = {}) {
   const metadataRecord: AgentConfigRecord = metadata;
   const hubConfig = await readHubConfig(hubRoot);
+  const { getProject } = await import("../hub/hub-registry.js");
+  const projectRecord = await getProject(hubRoot, project);
   const projectAgents = await readProjectConfigFromRoots(
-    [hubRoot, process.env.CPB_ROOT, cpbRoot],
+    [projectRecord?.projectRuntimeRoot],
     project,
   );
 

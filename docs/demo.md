@@ -39,7 +39,7 @@ cd codepatchbay
 sh scripts/install.sh
 cpb demo           # mock pipeline, no keys needed
 cpb init .         # register current project
-cpb run "add a README section describing the public API"
+cpb pipeline target-demo "add a README section describing the public API"
 ```
 
 From a checkout or release tarball, the quick install shell path is:
@@ -102,7 +102,7 @@ Run a small, low-risk task:
 
 ```bash
 cpb init /absolute/path/to/target-project target-demo
-cpb run --project target-demo "Make a tiny documentation-only change"
+cpb pipeline target-demo "Make a tiny documentation-only change"
 ```
 
 Or from inside the project directory:
@@ -110,33 +110,33 @@ Or from inside the project directory:
 ```bash
 cd /absolute/path/to/target-project
 cpb init .
-cpb run "Make a tiny documentation-only change"
+cpb pipeline target-demo "Make a tiny documentation-only change"
 ```
 
 Inspect the handoff artifacts:
 
 ```bash
-ls wiki/projects/target-demo/inbox
-ls wiki/projects/target-demo/outputs
-find cpb-task/events/target-demo -name 'job-*.jsonl' -print
+ls "$CPB_HUB_ROOT/projects/target-demo/wiki/inbox"
+ls "$CPB_HUB_ROOT/projects/target-demo/wiki/outputs"
+find "$CPB_HUB_ROOT/projects/target-demo/events" -name 'job-*.jsonl' -print
 ```
 
 The useful demo moment is not just that agents ran. It is that each handoff remains inspectable as local files:
 
-- `wiki/projects/target-demo/inbox/plan-001.md`
-- `wiki/projects/target-demo/outputs/deliverable-001.md`
-- `wiki/projects/target-demo/outputs/diff-001.patch`
-- `wiki/projects/target-demo/outputs/tests-001.txt`
-- `wiki/projects/target-demo/outputs/verdict-001.md`
-- `wiki/projects/target-demo/outputs/risk-001.md`
-- `cpb-task/events/target-demo/job-*.jsonl`
+- `$CPB_HUB_ROOT/projects/target-demo/wiki/inbox/plan-001.md`
+- `$CPB_HUB_ROOT/projects/target-demo/wiki/outputs/deliverable-001.md`
+- `$CPB_HUB_ROOT/projects/target-demo/wiki/outputs/diff-001.patch`
+- `$CPB_HUB_ROOT/projects/target-demo/wiki/outputs/tests-001.txt`
+- `$CPB_HUB_ROOT/projects/target-demo/wiki/outputs/verdict-001.md`
+- `$CPB_HUB_ROOT/projects/target-demo/wiki/outputs/risk-001.md`
+- `$CPB_HUB_ROOT/projects/target-demo/events/job-*.jsonl`
 
 ## Demo script for a short video
 
 1. Show the target repo before the task.
 2. Run `cpb demo --json` and open the generated event log plus the plan, diff, tests, verdict, and risk artifacts.
 3. Run `cpb init .` from the target project.
-4. Run `cpb run "add a contributing guide"` and show the pipeline executing.
+4. Run `cpb pipeline target-demo "add a contributing guide"` and show the pipeline executing.
 5. Show the event log file and explain that CodePatchBay is local-first and inspectable.
 6. End with the boundary: alpha, local-first, mock demo works without provider keys, real-agent demo requires authenticated adapters.
 

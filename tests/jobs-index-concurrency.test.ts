@@ -211,26 +211,11 @@ test("concurrent jobs-index readers can merge missing event streams without tmp-
   }
 });
 
-test("jobs-index readers ignore stale legacy entries already written into a project index", async () => {
-  const cpbRoot = await mkdtemp(path.join(tmpdir(), "cpb-jobs-index-legacy-pollution-"));
+test("jobs-index readers return entries from the canonical project index", async () => {
+  const cpbRoot = await mkdtemp(path.join(tmpdir(), "cpb-jobs-index-canonical-"));
   const dataRoot = path.join(cpbRoot, "hub", "projects", "flow", "jobs");
   const projectJobId = "job-20260611-040100-project";
-  const legacyJobId = "job-20260611-040000-legacy";
   try {
-    await appendEvent(
-      cpbRoot,
-      "legacy",
-      legacyJobId,
-      {
-        type: "job_created",
-        jobId: legacyJobId,
-        project: "legacy",
-        task: "old fallback job",
-        workflow: "standard",
-        ts: "2026-06-11T04:00:00.000Z",
-      },
-      { legacyOnly: true }
-    );
     await appendEvent(
       cpbRoot,
       "flow",
@@ -253,7 +238,7 @@ test("jobs-index readers ignore stale legacy entries already written into a proj
         _meta: {
           version: 1,
           updatedAt: "2026-06-11T04:02:00.000Z",
-          jobCount: 2,
+          jobCount: 1,
         },
         jobs: {
           [`flow/${projectJobId}`]: {
@@ -264,25 +249,14 @@ test("jobs-index readers ignore stale legacy entries already written into a proj
             createdAt: "2026-06-11T04:01:00.000Z",
             updatedAt: "2026-06-11T04:01:00.000Z",
           },
-          [`legacy/${legacyJobId}`]: {
-            project: "legacy",
-            jobId: legacyJobId,
-            task: "old fallback job",
-            status: "running",
-            createdAt: "2026-06-11T04:00:00.000Z",
-            updatedAt: "2026-06-11T04:00:00.000Z",
-          },
         },
       })}\n`,
       "utf8"
     );
     const pollutedIndex = await readJobsIndex(cpbRoot, { dataRoot });
-    assert.deepEqual(Object.keys(pollutedIndex?.jobs ?? {}).sort(), [
-      `flow/${projectJobId}`,
-      `legacy/${legacyJobId}`,
-    ]);
+    assert.deepEqual(Object.keys(pollutedIndex?.jobs ?? {}).sort(), [`flow/${projectJobId}`]);
 
-    const jobs = await listJobsFromIndex(cpbRoot, { dataRoot, includeLegacyFallback: false });
+    const jobs = await listJobsFromIndex(cpbRoot, { dataRoot });
 
     assert.deepEqual(jobs.map((job) => `${job.project}/${job.jobId}`), [`flow/${projectJobId}`]);
   } finally {

@@ -4,7 +4,7 @@ Date: 2026-06-08
 
 ## Summary
 
-This runbook documents the DW-08 operational migration from the legacy workflow queue to CodeGraph-gated dynamic workflows. It includes the `index_unavailable` to `codegraph_unavailable` rename, the `WORKCPBS` to `WORKFLOWS` definition rename, and the new acceptance path for CodeGraph capability maps, RiskMap generation, workflow DAG materialization, dynamic verifier planning, and adversarial verification.
+This runbook documents the DW-08 operational migration from the retired workflow queue contract to CodeGraph-gated dynamic workflows. The live queue accepts only `codegraph_unavailable`; `index_unavailable` is a historical source value handled before cutover. It also covers the `WORKCPBS` to `WORKFLOWS` definition rename and the acceptance path for CodeGraph capability maps, RiskMap generation, workflow DAG materialization, dynamic verifier planning, and adversarial verification.
 
 ## What Changed
 
@@ -76,7 +76,7 @@ the effective provider connection limit during agent execution.
 
 ## Handling Stale Queue Entries
 
-Existing runtime queue entries with status `index_unavailable` are pre-migration state. New writes use `codegraph_unavailable`, while queue counters and retry-window recovery accept both values during the migration window. Preserve queue evidence before any one-time runtime cleanup or migration.
+The live queue contract is canonical-only: entries with status `index_unavailable` are not readable, counted, or retryable. Before cutover, convert those entries to `codegraph_unavailable` only when their stored failure evidence proves the CodeGraph blocker; otherwise re-enqueue them with the current queue schema. Preserve queue evidence before any one-time cleanup or migration. The runtime contains no dual-status compatibility branch.
 
 If a pending entry is blocked as `codegraph_unavailable`, do not force it to `pending` until CodeGraph readiness and project capability map generation are healthy. The correct recovery path is:
 
@@ -105,7 +105,7 @@ If `adversarial_verify` fails, treat the failure as a verifier failure with a ti
 - `cd web && npm test -- --run` should pass.
 - `./cpb dw-status` should print the DAG readiness keys and may exit non-zero only for explicit runtime health blockers.
 - `rg 'INDEX_UNAVAILABLE|WORKCPBS|recoverIndexUnavailable' core server scripts` should return no production references.
-- `rg 'index_unavailable' core server scripts` should only find the legacy compatibility alias that accepts pre-migration queue rows.
+- `rg 'index_unavailable' core server scripts` should return no production references.
 - `node --test dist/tests/dw-codegraph-gate.test.js dist/tests/riskmap-service.test.js dist/tests/engine-prepare-task.test.js` should pass.
 - `node --test dist/tests/queue-orchestrator.test.js dist/tests/scheduler-dag-provider.test.js` should pass.
 - `node --test dist/tests/dw08-acceptance.test.js` should pass.

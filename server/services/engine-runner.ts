@@ -100,7 +100,7 @@ export function buildServices(cpbRoot: string, {
         if (typeof jobId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(jobId)) {
           throw new Error(`invalid jobId for appendEvent: ${JSON.stringify(jobId)}`);
         }
-        return appendEvent(root, project, jobId, event, { ...opts, dataRoot: runtimeDataRoot, includeLegacyFallback: false });
+        return appendEvent(root, project, jobId, event, { ...opts, dataRoot: runtimeDataRoot });
       }
       : appendEvent,
     prepareTask: prepareTaskForEnv(runtimeEnv),

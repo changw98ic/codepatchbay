@@ -130,7 +130,7 @@ test("verification feedback is bound to frozen checklist scope before mutation",
   if (!outside.ok) assert.match(outside.reason, /outside the frozen acceptance contract/);
 });
 
-test("legacy checklists without a declared file scope do not create a false scope expansion", () => {
+test("checklists without a declared file scope fail closed instead of expanding scope", () => {
   const feedback = {
     schemaVersion: 1 as const,
     iteration: 1,
@@ -150,11 +150,8 @@ test("legacy checklists without a declared file scope do not create a false scop
     acceptanceChecklist: { items: [{ id: "AC-001", allowedFiles: [] }] },
   }, feedback);
 
-  assert.equal(bound.ok, true);
-  if (bound.ok) {
-    assert.deepEqual(bound.feedback.fixScope, ["README.md"]);
-    assert.deepEqual(bound.feedback.allowedFixScope, []);
-  }
+  assert.equal(bound.ok, false);
+  if (!bound.ok) assert.match(bound.reason, /outside the frozen acceptance contract/);
 });
 
 test("non-verification and explicitly non-retryable failures do not enter semantic repair", () => {

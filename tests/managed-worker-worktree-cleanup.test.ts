@@ -92,9 +92,10 @@ async function initializedFixture(name: string) {
   return {
     root,
     hubRoot,
+    projectRuntimeRoot: path.join(hubRoot, "projects", "proj"),
     sourcePath,
-    worktreesRoot: path.join(hubRoot, "worktrees"),
-    worktreePath: path.join(hubRoot, "worktrees", "job-entry1-pipeline"),
+    worktreesRoot: path.join(hubRoot, "projects", "proj", "worktrees"),
+    worktreePath: path.join(hubRoot, "projects", "proj", "worktrees", "job-entry1-pipeline"),
     branch: "cpb/job-entry1-pipeline",
   };
 }
@@ -102,7 +103,7 @@ async function initializedFixture(name: string) {
 async function fixture(name: string) {
   const paths = await initializedFixture(name);
   const managedWorktree = await createIsolatedWorktreeWithRetry({
-    hubRoot: paths.hubRoot,
+    projectRuntimeRoot: paths.projectRuntimeRoot,
     sourcePath: paths.sourcePath,
     entryId: "entry1",
     maxAttempts: 1,
@@ -115,7 +116,7 @@ async function fixture(name: string) {
 
 function cleanupOptions(paths: Awaited<ReturnType<typeof fixture>>) {
   return {
-    hubRoot: paths.hubRoot,
+    projectRuntimeRoot: paths.projectRuntimeRoot,
     sourcePath: paths.sourcePath,
     entryId: "entry1",
     managedWorktree: paths.managedWorktree,
@@ -153,7 +154,7 @@ test("plain-directory producer self-report is rejected and the unverified target
 
   await assert.rejects(
     createIsolatedWorktreeWithRetry({
-      hubRoot: paths.hubRoot,
+      projectRuntimeRoot: paths.projectRuntimeRoot,
       sourcePath: paths.sourcePath,
       entryId: "entry1",
       maxAttempts: 1,
@@ -197,7 +198,7 @@ test("forged producer path is never touched", async () => {
 
   await assert.rejects(
     createIsolatedWorktreeWithRetry({
-      hubRoot: paths.hubRoot,
+      projectRuntimeRoot: paths.projectRuntimeRoot,
       sourcePath: paths.sourcePath,
       entryId: "entry1",
       maxAttempts: 1,
@@ -807,7 +808,7 @@ test("create waits on the same durable namespace fence held by cleanup", async (
   });
   await cleanupEntered;
   const create = createIsolatedWorktreeWithRetry({
-    hubRoot: paths.hubRoot,
+    projectRuntimeRoot: paths.projectRuntimeRoot,
     sourcePath: paths.sourcePath,
     entryId: "entry1",
     maxAttempts: 1,

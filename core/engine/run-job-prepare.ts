@@ -109,7 +109,7 @@ export async function createJobAndHandleBlocked(ctx: RunJobPrepareContext): Prom
   setJobId(ctx, jobId);
 
   // Derive attemptId from assignment context for checklist-aware attempt scoping.
-  // Direct runs without managed assignments use jobId as the compatibility attempt id.
+  // Direct runs use their job identity as the attempt identity.
   const source = recordValue(sourceContext);
   const assignment = recordValue(source.assignment);
   const activeAttempt = assignment.attemptToken

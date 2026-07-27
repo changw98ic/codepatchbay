@@ -343,6 +343,9 @@ interface VerifierVerdict {
   reason: string;
   details?: string;
   confidence?: number;
+  layers?: LooseRecord;
+  blocking?: unknown[];
+  fix_scope?: unknown[];
   checklistVerdict?: LooseRecord | null;
   [key: string]: unknown;
 }
@@ -889,7 +892,6 @@ const OUTPUT_TAIL_CHARS = 4000;
 const PROMPT_PLAN_CHARS = 12_000;
 const PROMPT_DIFF_CHARS = 16_000;
 const PROMPT_DIFF_STAT_CHARS = 40_000;
-const VERDICT_LINE_PREFIX = "VERDICT:";
 
 const JSON_INSTRUCTION = `
 
@@ -1496,7 +1498,7 @@ export async function runVerify(ctx: VerifyContext) {
       project,
       jobId,
       kind: "verdict",
-      content: renderVerdictMarkdown(verdict),
+      content: renderVerdictJson(verdict),
       dataRoot,
       metadata: verdict,
     });
@@ -1795,8 +1797,7 @@ export async function runVerify(ctx: VerifyContext) {
     });
   }
 
-  // Persist evidence ledger only for checklist-aware jobs.
-  // Legacy jobs don't need the evidence-ledger artifact.
+  // Persist the evidence ledger for checklist-aware jobs.
   let evidenceLedgerArtifact: LooseRecord | null = null;
   if (acceptanceChecklist) {
     throwIfPhaseAborted(ctx.signal);
@@ -1875,21 +1876,19 @@ export async function runVerify(ctx: VerifyContext) {
       });
     }
 
-    // Checklist verdict is valid; still write legacy verdict for compatibility
-    const verdictMarkdown = renderVerdictMarkdown(verdict);
+    // Checklist verdict is valid; persist the canonical structured verdict.
     throwIfPhaseAborted(ctx.signal);
     const artifact = await writeArtifact(cpbRoot, {
       signal: ctx.signal as AbortSignal | undefined,
       project,
       jobId,
       kind: "verdict",
-      content: verdictMarkdown,
+      content: renderVerdictJson(verdict),
       dataRoot,
       metadata: verdict,
     });
 
-    // A valid checklist verdict with status "fail" must fail the verify phase,
-    // mirroring the legacy path (verdict.status !== "pass" -> VERIFICATION_FAILED).
+    // A valid checklist verdict with status "fail" must fail the verify phase.
     // Otherwise a verifier that returns a failing checklist would be recorded as
     // passing just because its verdict shape validated.
     if (finalChecklistVerdict.status === "fail") {
@@ -2124,15 +2123,14 @@ export async function runVerify(ctx: VerifyContext) {
     });
   }
 
-  // ── Legacy (non-checklist-aware) path ───────────────────────────────
-  const verdictMarkdown = renderVerdictMarkdown(verdict);
+  // ── Canonical verdict path for workflows without a checklist ─────────
   throwIfPhaseAborted(ctx.signal);
   const artifact = await writeArtifact(cpbRoot, {
     signal: ctx.signal as AbortSignal | undefined,
     project,
     jobId,
     kind: "verdict",
-    content: verdictMarkdown,
+    content: renderVerdictJson(verdict),
     dataRoot,
     metadata: verdict,
   });
@@ -2437,29 +2435,28 @@ function getRequiredArtifact(previousResults: PhaseResultRecord[] = [], kind: st
   return null;
 }
 
-function renderVerdictMarkdown(verdict: VerifierVerdict) {
-  const statusUpper = verdict.status.toUpperCase();
-  return `# Verdict
-
-${VERDICT_LINE_PREFIX} ${statusUpper}
-
-## Status
-${statusUpper}
-
-## Reason
-${verdict.reason}
-
-## Details
-${verdict.details || "N/A"}
-
-## Confidence
-${verdict.confidence || "N/A"}
-`;
+function renderVerdictJson(verdict: VerifierVerdict) {
+  const status = verdict.status === "partial" ? "fail" : verdict.status;
+  const envelope: LooseRecord = {
+    schemaVersion: 2,
+    status,
+    reason: verdict.reason,
+    summary: verdict.details || "",
+  };
+  if (typeof verdict.confidence === "number") envelope.confidence = verdict.confidence;
+  if (verdict.layers && typeof verdict.layers === "object") envelope.layers = verdict.layers;
+  if (Array.isArray(verdict.blocking)) envelope.blocking = verdict.blocking;
+  if (Array.isArray(verdict.fix_scope)) envelope.fix_scope = verdict.fix_scope;
+  if (verdict.checklistVerdict && typeof verdict.checklistVerdict === "object") {
+    envelope.checklistVerdict = verdict.checklistVerdict;
+  }
+  return JSON.stringify(envelope, null, 2);
 }
 
 export function verifyPhaseOutputContract() {
   return {
-    verdictLinePrefix: VERDICT_LINE_PREFIX,
+    schemaVersion: 2,
+    format: "canonical-json",
   };
 }
 

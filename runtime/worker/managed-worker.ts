@@ -1096,6 +1096,7 @@ type AssignmentPayload = LooseRecord & {
   attempt: number;
   attemptToken: string;
   projectId: string;
+  projectRuntimeRoot: string;
   sourcePath?: string;
   task?: string;
   workflow?: string;
@@ -2212,6 +2213,11 @@ export async function main({
         await workerStore.completeInboxClaim(workerId, inboxAssignmentId, claim.claimToken);
         continue;
       }
+      if (!path.isAbsolute(assignment.projectRuntimeRoot) || path.resolve(assignment.projectRuntimeRoot) !== assignment.projectRuntimeRoot) {
+        log.warn(`missing or non-canonical projectRuntimeRoot in assignment`);
+        await workerStore.completeInboxClaim(workerId, inboxAssignmentId, claim.claimToken);
+        continue;
+      }
 
       const assignmentId = assignment.assignmentId;
       const attemptNum = assignment.attempt;
@@ -2597,7 +2603,7 @@ export async function main({
         await pollCancel();
         if (worktreeRequired) {
           worktreeInfo = await createIsolatedWorktreeWithRetry({
-            hubRoot,
+            projectRuntimeRoot: assignment.projectRuntimeRoot,
             sourcePath: assignment.sourcePath,
             entryId: assignment.entryId,
             log: jobLog,
@@ -2806,7 +2812,7 @@ export async function main({
           managedWorktree: worktreeInfo,
           cleanupWorktree: worktreeInfo && assignment.sourcePath
             ? async () => await cleanupManagedWorkerWorktree({
-                hubRoot,
+                projectRuntimeRoot: assignment.projectRuntimeRoot,
                 sourcePath: assignment.sourcePath,
                 entryId: assignment.entryId,
                 managedWorktree: worktreeInfo!,
@@ -2814,7 +2820,7 @@ export async function main({
             : null,
           retainWorktree: worktreeInfo && assignment.sourcePath
             ? async () => await verifyRetainedManagedWorkerWorktree({
-                hubRoot,
+                projectRuntimeRoot: assignment.projectRuntimeRoot,
                 sourcePath: assignment.sourcePath,
                 entryId: assignment.entryId,
                 managedWorktree: worktreeInfo!,

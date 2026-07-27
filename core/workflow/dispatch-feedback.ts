@@ -8,15 +8,11 @@ export const DISPATCH_FEEDBACK_SCHEMA_VERSION = 1;
 const WORKFLOWS = new Set(["standard", "complex"]);
 const PLAN_MODES = new Set(["light", "full", "parent"]);
 
-export function dispatchFeedbackPath(cpbRoot: string, project: string, jobId: string): string {
-  return path.join(
-    path.resolve(cpbRoot),
-    "wiki",
-    "projects",
-    project,
-    "outputs",
-    `dispatch-feedback-${jobId}.json`,
-  );
+export function dispatchFeedbackPath(_cpbRoot: string, _project: string, jobId: string, { dataRoot }: LooseRecord = {}): string {
+  if (typeof dataRoot !== "string" || !dataRoot) {
+    throw new Error("dataRoot is required for dispatch feedback paths");
+  }
+  return path.join(path.resolve(dataRoot), "wiki", "outputs", `dispatch-feedback-${jobId}.json`);
 }
 
 export function normalizeDispatchFeedback(input: LooseRecord = {}, defaults: LooseRecord = {}) {
@@ -54,8 +50,9 @@ export function normalizeDispatchFeedback(input: LooseRecord = {}, defaults: Loo
   };
 }
 
-export async function readDispatchFeedbackFile(cpbRoot: string, project: string, jobId: string, { phase = "execute" }: LooseRecord = {}) {
-  const file = dispatchFeedbackPath(cpbRoot, project, jobId);
+export async function readDispatchFeedbackFile(cpbRoot: string, project: string, jobId: string, options: LooseRecord = {}) {
+  const { phase = "execute" } = options;
+  const file = dispatchFeedbackPath(cpbRoot, project, jobId, options);
   let raw: string;
   try {
     raw = await readFile(file, "utf8");

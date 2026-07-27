@@ -2415,7 +2415,7 @@ Current stabilization metrics after this checkpoint:
 | Metric | Current |
 | --- | ---: |
 | strict-engine legacy exclusions | 0 |
-| `core/engine/run-job.ts` line count | 204 |
+| `core/engine/run-job.ts` line count | 201 |
 | type-debt allowlist entries | 0 |
 
 Release remains blocked after this checkpoint until a fresh zero-retry,

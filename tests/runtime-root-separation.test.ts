@@ -86,12 +86,10 @@ describe('AC3: root-resolution primitives are distinct', () => {
     );
   });
 
-  it('resolveDataRoot prefers hub+project over legacy cpbRoot', () => {
-    const legacy = resolveDataRoot('/legacy/root');
+  it('resolveDataRoot requires an explicit Hub project', () => {
+    assert.throws(() => resolveDataRoot('/legacy/root'), /hubRoot and projectId are required/);
     const modern = resolveDataRoot('/legacy/root', { hubRoot: '/hub', projectId: 'p' });
-    assert.equal(legacy, path.resolve('/legacy/root/cpb-task'));
     assert.equal(modern, path.resolve('/hub/projects/p'));
-    assert.notEqual(legacy, modern);
   });
 
   it('resolveProjectDataRoot rejects env roots that do not match the Hub registry', async () => {
@@ -123,11 +121,11 @@ describe('AC3: root-resolution primitives are distinct', () => {
     try {
       await fs.writeFile(path.join(hubRoot, 'projects.json'), '{broken json', 'utf8');
       await assert.rejects(
-        listRuntimeDataRoots(cpbRoot, { hubRoot, includeLegacy: false }),
+        listRuntimeDataRoots(cpbRoot, { hubRoot }),
         /Unexpected token|JSON/,
       );
       assert.deepEqual(
-        await listRuntimeDataRoots(cpbRoot, { hubRoot, includeHubProjects: false, includeLegacy: false }),
+        await listRuntimeDataRoots(cpbRoot, { hubRoot, includeHubProjects: false }),
         [],
       );
     } finally {
@@ -162,15 +160,11 @@ describe('AC4: listProjects reads from Hub registry', () => {
 // ── AC5: artifact-locator hard-cuts hub runtime roots ──
 
 describe('AC5: artifact-locator hub runtime root hard cut', () => {
-  it('uses runtime wiki paths when hubRoot is present and only uses legacy without hubRoot', async () => {
+  it('uses runtime wiki paths and rejects calls without a Hub root', async () => {
     const cpbRoot = await mkdtemp(path.join(tmpdir(), 'cpb-ac5-'));
     const hubRoot = await mkdtemp(path.join(tmpdir(), 'cpb-ac5-hub-'));
     try {
       await registerProject(hubRoot, { skipCodeGraphGate: true, name: 'legacy-proj', sourcePath: cpbRoot, id: 'legacy-proj' });
-      const legacyWiki = path.join(cpbRoot, 'wiki/projects/legacy-proj');
-      await fs.mkdir(path.join(legacyWiki, 'inbox'), { recursive: true });
-      await fs.writeFile(path.join(legacyWiki, 'context.md'), '# legacy');
-
       const wikiDir = await resolveWikiDir(hubRoot, cpbRoot, 'legacy-proj');
       assert.equal(wikiDir, path.join(hubRoot, 'projects', 'legacy-proj', 'wiki'));
 
@@ -180,9 +174,10 @@ describe('AC5: artifact-locator hub runtime root hard cut', () => {
       const artifact = await resolveArtifactPath(hubRoot, cpbRoot, 'legacy-proj', 'context.md');
       assert.equal(artifact, path.join(hubRoot, 'projects', 'legacy-proj', 'wiki', 'context.md'));
 
-      const legacyArtifact = await resolveArtifactPath('', cpbRoot, 'legacy-proj', 'context.md');
-      const content = await fs.readFile(legacyArtifact, 'utf8');
-      assert.equal(content, '# legacy');
+      await assert.rejects(
+        resolveArtifactPath('', cpbRoot, 'legacy-proj', 'context.md'),
+        /hubRoot is required/,
+      );
     } finally {
       await rm(cpbRoot, { recursive: true, force: true });
       await rm(hubRoot, { recursive: true, force: true });

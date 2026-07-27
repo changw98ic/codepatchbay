@@ -167,11 +167,8 @@ async function runJobInner(ctx: RunJobContext): Promise<JobRunResult> {
   // 2.5. Clear session cache if forceFreshSession is requested (rerun vs retry)
   if (recordValue(sourceContext?.retry).forceFreshSession && cpbRoot) {
     try {
-      const { clearSessionId } = await import("../agents/session-cache.js");
-      await Promise.allSettled([
-        clearSessionId(cpbRoot, "codex", { dataRoot }),
-        clearSessionId(cpbRoot, "claude", { dataRoot }),
-      ]);
+      const { cleanupSessionCache } = await import("../agents/session-cache.js");
+      await cleanupSessionCache(cpbRoot, { dataRoot, maxAgeMs: -1 });
     } catch {
       // Session cache clearing is best-effort.
     }

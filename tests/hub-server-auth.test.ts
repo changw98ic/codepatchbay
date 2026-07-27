@@ -103,13 +103,20 @@ test("Hub refuses a non-loopback bind without a bearer token", async () => {
 
 test("Hub refuses cleartext non-loopback HTTP without an explicit network opt-in", async () => {
   const cpbRoot = await tempRoot("cpb-hub-insecure-http-required");
+  const token = "hub-test-token-with-at-least-32-bytes";
+  const serviceTokensFile = await writeServiceTokensFile(cpbRoot, [{
+    id: "test-admin",
+    tokenSha256: tokenDigest(token),
+    scopes: ["hub:admin"],
+    projects: "*",
+  }]);
   await assert.rejects(
     startHubServer({
       cpbRoot,
       hubRoot: `${cpbRoot}/hub`,
       host: "0.0.0.0",
       port: 0,
-      bearerToken: "hub-test-token-with-at-least-32-bytes",
+      serviceTokensFile,
     }),
     /refuses cleartext HTTP on non-loopback hosts/,
   );
@@ -150,12 +157,18 @@ test("loopback anonymous administrator requires explicit development opt-in", as
 test("configured Hub bearer token protects every endpoint", async () => {
   const cpbRoot = await tempRoot("cpb-hub-auth-endpoints");
   const token = "hub-test-token-with-at-least-32-bytes";
+  const serviceTokensFile = await writeServiceTokensFile(cpbRoot, [{
+    id: "test-admin",
+    tokenSha256: tokenDigest(token),
+    scopes: ["hub:admin"],
+    projects: "*",
+  }]);
   const hub = await startHubServer({
     cpbRoot,
     hubRoot: `${cpbRoot}/hub`,
     host: "127.0.0.1",
     port: 0,
-    bearerToken: token,
+    serviceTokensFile,
   });
   try {
     const unauthorizedHealth = await fetch(`${hub.url}/api/health`);
@@ -533,12 +546,18 @@ test("local break-glass service tokens remain usable during an OIDC JWKS outage"
 test("Hub fails requests closed when the durable access-audit capacity is exhausted", async () => {
   const cpbRoot = await tempRoot("cpb-hub-access-audit-full");
   const token = "audit-capacity-token-with-at-least-32-bytes";
+  const serviceTokensFile = await writeServiceTokensFile(cpbRoot, [{
+    id: "test-admin",
+    tokenSha256: tokenDigest(token),
+    scopes: ["hub:admin"],
+    projects: "*",
+  }]);
   const hub = await startHubServer({
     cpbRoot,
     hubRoot: path.join(cpbRoot, "hub"),
     host: "127.0.0.1",
     port: 0,
-    bearerToken: token,
+    serviceTokensFile,
     accessAuditMaxBytes: 64 * 1024,
   });
   let unavailable: Response | null = null;
@@ -561,21 +580,11 @@ test("Hub fails requests closed when the durable access-audit capacity is exhaus
   }
 });
 
-test("Hub rejects weak configured bearer tokens", async () => {
-  const cpbRoot = await tempRoot("cpb-hub-auth-weak-token");
-  await assert.rejects(
-    startHubServer({ cpbRoot, host: "127.0.0.1", port: 0, bearerToken: "short" }),
-    /at least 32 non-whitespace bytes/,
-  );
-});
-
 test("Hub child environment receives only explicitly scoped authentication configuration", () => {
-  const token = "hub-child-token-with-at-least-32-bytes";
   const serviceTokensFile = "/secure/cpb/hub-service-tokens.json";
   const oidcConfigFile = "/secure/cpb/hub-oidc.json";
   const env = buildHubServerEnv({
     PATH: process.env.PATH,
-    CPB_HUB_BEARER_TOKEN: token,
     CPB_HUB_SERVICE_TOKENS_FILE: serviceTokensFile,
     CPB_HUB_OIDC_CONFIG_FILE: oidcConfigFile,
     CPB_HUB_ACCESS_AUDIT_MAX_BYTES: "536870912",
@@ -590,7 +599,7 @@ test("Hub child environment receives only explicitly scoped authentication confi
     port: "3456",
   });
 
-  assert.equal(env.CPB_HUB_BEARER_TOKEN, token);
+  assert.equal(env.CPB_HUB_BEARER_TOKEN, undefined);
   assert.equal(env.CPB_HUB_SERVICE_TOKENS_FILE, serviceTokensFile);
   assert.equal(env.CPB_HUB_OIDC_CONFIG_FILE, oidcConfigFile);
   assert.equal(env.CPB_HUB_ACCESS_AUDIT_MAX_BYTES, "536870912");
@@ -600,7 +609,6 @@ test("Hub child environment receives only explicitly scoped authentication confi
 
   const controlPlaneEnv = buildHubControlPlaneEnv({
     PATH: process.env.PATH,
-    CPB_HUB_BEARER_TOKEN: token,
     UNRELATED_APPLICATION_SECRET: "must-not-leak",
   }, {
     cpbRoot: "/tmp/cpb",

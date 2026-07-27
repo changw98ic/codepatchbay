@@ -1,4 +1,4 @@
-import { readFile, mkdir, writeFile, rename, readdir, stat } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -7,29 +7,16 @@ import { loadRegistry, mutateRegistry } from "./hub/hub-registry.js";
 
 const VALID_STATES = new Set(["indexed", "stale", "failed", "indexing", "unmerged"]);
 
-const STATE_NORMALIZE = {
-  completed_unmerged: "unmerged",
-  merged_indexing: "indexing",
-  merged_indexed: "indexed",
-  merged_index_stale: "stale",
-  merge_failed: "failed",
-};
-
 export function normalizeProjectIndex(raw: unknown) {
   if (!raw || typeof raw !== "object") return null;
   const obj = raw as LooseRecord; // retain: dynamic JSON record shape (object guard → indexable)
 
-  const stateCandidate = obj.state || obj.status || "";
-  // Narrow dynamic JSON input: non-string falls through to "" (→ null via STATE_NORMALIZE/VALID_STATES).
-  const rawState = typeof stateCandidate === "string" ? stateCandidate : "";
-  const state =
-    STATE_NORMALIZE[rawState] ||
-    (VALID_STATES.has(rawState) ? rawState : null);
+  const rawState = typeof obj.state === "string" ? obj.state : "";
+  const state = VALID_STATES.has(rawState) ? rawState : null;
 
   if (!state) return null;
 
-  const timestamp =
-    obj.timestamp || obj.indexedAt || obj.updatedAt || obj.failedAt || null;
+  const timestamp = obj.timestamp || null;
   // Narrow dynamic JSON input: non-string gitHead treated as absent (null).
   const gitHeadRaw = obj.gitHead;
   const gitHead = typeof gitHeadRaw === "string" ? gitHeadRaw : null;
@@ -41,7 +28,6 @@ export function normalizeProjectIndex(raw: unknown) {
 
   return {
     state,
-    raw: rawState !== state ? rawState : null,
     branch: obj.branch || null,
     gitHead: gitHead || null,
     gitHeadShort: shortHead,
@@ -52,46 +38,26 @@ export function normalizeProjectIndex(raw: unknown) {
 }
 
 export async function readProjectIndex(hubRoot: string | null, cpbRoot: string | null, projectId: string) {
-  // Primary: Hub registry metadata
-  if (hubRoot) {
-    try {
-      const registry = await loadRegistry(hubRoot);
-      const project = registry.projects[projectId];
-      if (project?.metadata?.projectIndex) {
-        return normalizeProjectIndex(project.metadata.projectIndex);
-      }
-    } catch {}
-  }
-
-  // Fallback: legacy wiki project.json
-  if (cpbRoot) {
-    try {
-      const metaPath = path.join(
-        cpbRoot,
-        "wiki",
-        "projects",
-        projectId,
-        "project.json"
-      );
-      const raw = JSON.parse(await readFile(metaPath, "utf8"));
-      if (raw.projectIndex) {
-        return normalizeProjectIndex(raw.projectIndex);
-      }
-    } catch {}
-  }
-
+  if (!hubRoot) throw new Error("hubRoot is required for project index reads");
+  try {
+    const registry = await loadRegistry(hubRoot);
+    const project = registry.projects[projectId];
+    if (project?.metadata?.projectIndex) {
+      return normalizeProjectIndex(project.metadata.projectIndex);
+    }
+  } catch {}
   return null;
 }
 
 export async function writeProjectIndex(hubRoot: string | null, cpbRoot: string | null, projectId: string, data: LooseRecord) {
+  if (!hubRoot) throw new Error("hubRoot is required for project index writes");
   const normalized = normalizeProjectIndex(data);
   if (!normalized) {
     throw new Error("Invalid project index data: cannot normalize");
   }
 
   const persistable = {
-    // Store the raw state so readers can normalize with the raw facet intact
-    state: data.state || data.status || normalized.state,
+    state: data.state || normalized.state,
     branch: data.branch || null,
     gitHead: data.gitHead || null,
     indexedFrom: data.indexedFrom || null,
@@ -101,40 +67,15 @@ export async function writeProjectIndex(hubRoot: string | null, cpbRoot: string 
 
   const returned = { ...normalized, timestamp: persistable.timestamp };
 
-  // Write to Hub registry if available
-  if (hubRoot) {
-    const persisted = await mutateRegistry(hubRoot, (registry) => {
-      const project = registry.projects[projectId];
-      if (!project) return false;
-      project.metadata = project.metadata || {};
-      project.metadata.projectIndex = persistable;
-      return true;
-    });
-    if (persisted) return returned;
-  }
-
-  // Fallback: legacy wiki project.json
-  if (cpbRoot) {
-    const metaPath = path.join(
-      cpbRoot,
-      "wiki",
-      "projects",
-      projectId,
-      "project.json"
-    );
-    let existing: LooseRecord = {};
-    try {
-      existing = JSON.parse(await readFile(metaPath, "utf8"));
-    } catch {}
-    existing.projectIndex = persistable;
-    await mkdir(path.dirname(metaPath), { recursive: true });
-    const tmp = `${metaPath}.tmp-${process.pid}-${Date.now()}`;
-    await writeFile(tmp, JSON.stringify(existing, null, 2) + "\n", "utf8");
-    await rename(tmp, metaPath);
-    return returned;
-  }
-
-  throw new Error("No writable storage: hubRoot or cpbRoot required");
+  const persisted = await mutateRegistry(hubRoot, (registry) => {
+    const project = registry.projects[projectId];
+    if (!project) return false;
+    project.metadata = project.metadata || {};
+    project.metadata.projectIndex = persistable;
+    return true;
+  });
+  if (!persisted) throw new Error(`registered project not found: ${projectId}`);
+  return returned;
 }
 
 export function formatProjectIndexLine(idx: LooseRecord | null) {
@@ -147,7 +88,6 @@ export function formatProjectIndexLine(idx: LooseRecord | null) {
     `timestamp:${idx.timestamp || "-"}`,
   ];
   if (idx.error) parts.push(`error:${idx.error}`);
-  if (idx.raw) parts.push(`raw:${idx.raw}`);
   return parts.join(" ");
 }
 

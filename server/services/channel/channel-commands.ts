@@ -2,7 +2,6 @@ import { detectSecretInput, redactSecrets } from "../secret-policy.js";
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { recordValue, type LooseRecord } from "../../../shared/types.js";
-import { runtimeDataRoot } from "../runtime.js";
 import { resolveHubRoot } from "../hub/hub-registry.js";
 
 // ============================================================
@@ -11,7 +10,7 @@ import { resolveHubRoot } from "../hub/hub-registry.js";
 
 export const CHANNEL_COMMAND_HELP = [
   "CodePatchBay channel commands:",
-  "/cpb run <project> <task> [--workflow <name>] [--plan-mode <mode>] [--triage <auto|rules|none>]",
+  "/cpb pipeline <project> <task> [--workflow <name>] [--plan-mode <mode>] [--triage <auto|rules|none>]",
   "/cpb issue <project> <number> [--workflow <name>] [--plan-mode <mode>] [--triage <auto|rules|none>]",
   "/cpb status <job>",
   "/cpb approve <job>",
@@ -228,7 +227,7 @@ function okResult(type: string, fields: LooseRecord) {
   };
 }
 
-function parseRun(command: string, tokens: string[]) {
+function parsePipeline(command: string, tokens: string[]) {
   const {
     positional,
     workflow,
@@ -244,7 +243,7 @@ function parseRun(command: string, tokens: string[]) {
   const [project, ...taskParts] = positional;
   const task = taskParts.join(" ").trim();
   if (!validProject(project) || !task) {
-    return errorResult("INVALID_COMMAND", "run requires project and task", { command });
+    return errorResult("INVALID_COMMAND", "pipeline requires project and task", { command });
   }
 
   return okResult("run", {
@@ -317,7 +316,7 @@ export function parseChannelCommand(input: string) {
     return errorResult("INVALID_COMMAND", "missing command");
   }
 
-  if (command === "run") return parseRun(command, tokens);
+  if (command === "pipeline") return parsePipeline(command, tokens);
   if (command === "issue") return parseIssue(command, tokens);
   if (command === "status" || command === "approve" || command === "cancel" || command === "retry" || command === "logs") {
     return parseJobCommand(command, tokens);
@@ -333,8 +332,7 @@ export function parseChannelCommand(input: string) {
 
 function channelPolicyRoot(cpbRoot: string, options: LooseRecord = {}) {
   if (options.controlRoot) return path.resolve(options.controlRoot);
-  if (options.hubRoot) return path.resolve(options.hubRoot);
-  return process.env.CPB_HUB_ROOT ? resolveHubRoot(cpbRoot) : runtimeDataRoot(cpbRoot);
+  return path.resolve(options.hubRoot || process.env.CPB_HUB_ROOT || resolveHubRoot(cpbRoot));
 }
 
 function channelPolicyEventsPath(cpbRoot: string, options: LooseRecord = {}) {

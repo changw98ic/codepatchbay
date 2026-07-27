@@ -23,12 +23,10 @@ const DELETED_RUNTIME_ENTRIES = [
 
 const FORBIDDEN_RUNTIME_IMPORTS = new Set(["server"]);
 const BRIDGE_ENTRY_FILES = [
-  "bridges/common.sh",
   "bridges/engine-bridge.js",
   "bridges/job-runner.js",
   "bridges/run-phase.js",
   "bridges/runtime-services.js",
-  "bridges/verifier.sh",
 ];
 
 async function listFiles(dir) {
