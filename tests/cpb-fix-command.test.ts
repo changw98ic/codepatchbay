@@ -15,9 +15,12 @@
  *       (no new entry, same taskId);
  *   (d) `--idempotency-key` with only a TERMINAL same-key entry creates a NEW
  *       entry (and persists the hashed key on it);
- *   (e) `--follow` exits `FollowCompletedVerified` on a succeeded task and
- *       `FollowFailed` on a failed task (plus the remaining follow exit-code
- *       map is covered by the pure `exitCodeForFollowState` unit tests).
+ *   (e) `--follow` exits `FollowCompletedVerified` ONLY when a succeeded task
+ *       is actually verified (checks.verified=pass); a succeeded-but-not-
+ *       verified task exits `FollowFailed`. The remaining follow exit-code map
+ *       is covered by the pure `exitCodeForFollowView` unit tests, and the
+ *       rendered distinction (verified / not-verified / ready-to-deliver) is
+ *       asserted on the captured `--follow` output.
  *
  * The integration cases (a, b, c, d) drive the REAL services against temp hub
  * roots (the same pattern `tests/fix-readiness.test.ts` uses), so the
@@ -34,7 +37,7 @@ import { after, afterEach, before, test } from "node:test";
 import {
   autoDetectProject,
   buildFixEnqueueInput,
-  exitCodeForFollowState,
+  exitCodeForFollowView,
   followTask,
   parseFixArgs,
   run,
@@ -54,6 +57,7 @@ import {
   TaskState,
   type TaskStateValue,
   type TaskView,
+  type TaskViewCheck,
 } from "../core/contracts/task-view.js";
 import { tempRoot, writeJson } from "./helpers.js";
 
@@ -151,15 +155,40 @@ async function seedQueue(hubRoot: string, entries: unknown[]): Promise<void> {
   await writeJson(path.join(hubRoot, "queue", "queue.json"), { version: 1, entries });
 }
 
-/** Minimal valid TaskView for the injected projectTaskView in --follow tests. */
-function makeView(taskId: string, state: TaskStateValue): TaskView {
+/**
+ * Minimal valid TaskView for the injected projectTaskView in --follow tests.
+ *
+ * `checks` defaults to a projection-consistent shape for `state`: a `succeeded`
+ * task carries `verified=pass` (matching the projection's invariant that
+ * `succeeded` requires verification to have passed). Tests that need to assert
+ * the NOT-verified path pass an explicit `checks` override. `requirement` text
+ * is neutral (never rendered, never carries a forbidden token).
+ */
+function defaultChecksForState(state: TaskStateValue): TaskViewCheck[] {
+  const terminal =
+    state === TaskState.Succeeded || state === TaskState.Failed || state === TaskState.Canceled;
+  const gateStatus: TaskViewCheck["status"] =
+    state === TaskState.Succeeded ? "pass" : terminal ? "fail" : "unchecked";
+  return [
+    { id: "completed", requirement: "reached terminal", status: terminal ? "pass" : "unchecked", required: true },
+    { id: "verified", requirement: "verification gate", status: gateStatus, required: true },
+    { id: "deliveryReady", requirement: "delivery state", status: "unchecked", required: false },
+    { id: "evidence", requirement: "issue summary", status: gateStatus, required: true },
+  ];
+}
+
+function makeView(
+  taskId: string,
+  state: TaskStateValue,
+  checks?: TaskViewCheck[],
+): TaskView {
   return {
     schemaVersion: TASK_VIEW_SCHEMA_VERSION,
     taskId,
     state,
     summary: "",
     progress: { ratio: null, label: "" },
-    checks: [],
+    checks: checks ?? defaultChecksForState(state),
     changedFiles: [],
     nextAction: { kind: null, message: "" },
     createdAt: "2026-07-27T00:00:00.000Z",
@@ -590,6 +619,53 @@ test("(e4) --follow on a canceled task exits FollowCanceled", async () => {
   assert.equal(code, ExitCode.FollowCanceled, "canceled -> 2");
 });
 
+// ─── (e5/e6) --follow surfaces the distinction AND the matching exit code ────
+//
+// The verified-gated exit code and the rendered distinction line must agree:
+// FollowCompletedVerified (0) goes with a "verified" Result line; a succeeded-
+// but-not-verified task gets FollowFailed (1) and a "Completed but not
+// verified." line. Output stays free of internal terms / forbidden fields.
+
+test("(e5) --follow on a verified + deliveryReady task prints the distinction and exits 0", async () => {
+  const checks: TaskViewCheck[] = [
+    { id: "completed", requirement: "reached terminal", status: "pass", required: true },
+    { id: "verified", requirement: "verification gate", status: "pass", required: true },
+    { id: "deliveryReady", requirement: "delivery state", status: "pass", required: false },
+    { id: "evidence", requirement: "issue summary", status: "pass", required: true },
+  ];
+  const { deps } = makeFollowDeps(makeView("q-follow-target", TaskState.Succeeded, checks));
+  const { ctx, captured } = captureOut();
+  const code = await run(
+    ["fix it", "--project", "p", "--follow"],
+    { cpbRoot: "/tmp", deps, followHooks: FOLLOW_HOOKS, ...ctx },
+  );
+  assert.equal(code, ExitCode.FollowCompletedVerified, "verified -> 0");
+  const text = captured.all.join("\n");
+  assert.match(text, /Verified - ready to deliver\./, "must surface the verified+deliveryReady distinction");
+  assertNoInternalTerms(captured.all, "verified follow output");
+  assertNoForbiddenNames(captured.all);
+});
+
+test("(e6) --follow on a succeeded-but-not-verified task prints 'Completed but not verified' and exits FollowFailed", async () => {
+  const unverified: TaskViewCheck[] = [
+    { id: "completed", requirement: "reached terminal", status: "pass", required: true },
+    { id: "verified", requirement: "verification gate", status: "fail", required: true },
+    { id: "deliveryReady", requirement: "delivery state", status: "unchecked", required: false },
+    { id: "evidence", requirement: "issue summary", status: "fail", required: true },
+  ];
+  const { deps } = makeFollowDeps(makeView("q-follow-target", TaskState.Succeeded, unverified));
+  const { ctx, captured } = captureOut();
+  const code = await run(
+    ["fix it", "--project", "p", "--follow"],
+    { cpbRoot: "/tmp", deps, followHooks: FOLLOW_HOOKS, ...ctx },
+  );
+  assert.equal(code, ExitCode.FollowFailed, "succeeded-but-not-verified -> FollowFailed (1), never 0");
+  const text = captured.all.join("\n");
+  assert.match(text, /Completed but not verified\./, "must surface the not-verified distinction");
+  assertNoInternalTerms(captured.all, "unverified follow output");
+  assertNoForbiddenNames(captured.all);
+});
+
 // ─── unit: parseFixArgs ─────────────────────────────────────────────────────
 
 test("parseFixArgs: problem is the first positional; flags parsed correctly", () => {
@@ -627,24 +703,56 @@ test("parseFixArgs: quoted-style single positional is preserved verbatim", () =>
   assert.equal(parsed.problem, "fix the login page goes blank");
 });
 
-// ─── unit: exitCodeForFollowState covers the full Follow map ────────────────
+// ─── unit: exitCodeForFollowView covers the full Follow map (verified-gated) ──
 
-test("exitCodeForFollowState: succeeded -> FollowCompletedVerified", () => {
-  assert.equal(exitCodeForFollowState(TaskState.Succeeded), ExitCode.FollowCompletedVerified);
+test("exitCodeForFollowView: succeeded + verified -> FollowCompletedVerified", () => {
+  // defaultChecksForState(Succeeded) sets verified=pass (matches the projection
+  // invariant that `succeeded` requires verification to have passed).
+  const view = makeView("t", TaskState.Succeeded);
+  assert.equal(
+    view.checks.find((c) => c.id === "verified")?.status,
+    "pass",
+    "fixture precondition: default Succeeded view is verified",
+  );
+  assert.equal(exitCodeForFollowView(view), ExitCode.FollowCompletedVerified);
 });
 
-test("exitCodeForFollowState: failed/blocked/needs_input/canceled map distinctly", () => {
-  assert.equal(exitCodeForFollowState(TaskState.Failed), ExitCode.FollowFailed);
-  assert.equal(exitCodeForFollowState(TaskState.Blocked), ExitCode.FollowBlocked);
-  assert.equal(exitCodeForFollowState(TaskState.NeedsInput), ExitCode.FollowNeedsInput);
-  assert.equal(exitCodeForFollowState(TaskState.Canceled), ExitCode.FollowCanceled);
+test("exitCodeForFollowView: succeeded but NOT verified -> FollowFailed (never 0)", () => {
+  // Succeeded state with NO passing verification gate — the queue-only fallback
+  // shape. The exit code MUST NOT be 0; exit 0 means verified.
+  const unverified = makeView("t", TaskState.Succeeded, [
+    { id: "completed", requirement: "reached terminal", status: "pass", required: true },
+    { id: "verified", requirement: "verification gate", status: "fail", required: true },
+    { id: "deliveryReady", requirement: "delivery state", status: "unchecked", required: false },
+    { id: "evidence", requirement: "issue summary", status: "fail", required: true },
+  ]);
+  assert.equal(exitCodeForFollowView(unverified), ExitCode.FollowFailed);
 });
 
-test("exitCodeForFollowState: non-terminal states return null (keep polling)", () => {
-  assert.equal(exitCodeForFollowState(TaskState.Running), null);
-  assert.equal(exitCodeForFollowState(TaskState.Queued), null);
-  assert.equal(exitCodeForFollowState(TaskState.Verifying), null);
-  assert.equal(exitCodeForFollowState(TaskState.Accepted), null);
+test("exitCodeForFollowView: succeeded with no checks at all -> FollowFailed (no proof of verification)", () => {
+  assert.equal(
+    exitCodeForFollowView(makeView("t", TaskState.Succeeded, [])),
+    ExitCode.FollowFailed,
+    "a missing verified dimension is never treated as pass",
+  );
+});
+
+test("exitCodeForFollowView: failed/blocked/needs_input/canceled map distinctly", () => {
+  assert.equal(exitCodeForFollowView(makeView("t", TaskState.Failed)), ExitCode.FollowFailed);
+  assert.equal(exitCodeForFollowView(makeView("t", TaskState.Blocked)), ExitCode.FollowBlocked);
+  assert.equal(exitCodeForFollowView(makeView("t", TaskState.NeedsInput)), ExitCode.FollowNeedsInput);
+  assert.equal(exitCodeForFollowView(makeView("t", TaskState.Canceled)), ExitCode.FollowCanceled);
+});
+
+test("exitCodeForFollowView: non-terminal states return null (keep polling)", () => {
+  assert.equal(exitCodeForFollowView(makeView("t", TaskState.Running)), null);
+  assert.equal(exitCodeForFollowView(makeView("t", TaskState.Queued)), null);
+  assert.equal(exitCodeForFollowView(makeView("t", TaskState.Verifying)), null);
+  assert.equal(exitCodeForFollowView(makeView("t", TaskState.Accepted)), null);
+});
+
+test("exitCodeForFollowView: null view returns null (a missed sample — keep polling)", () => {
+  assert.equal(exitCodeForFollowView(null), null);
 });
 
 // ─── unit: buildFixEnqueueInput mirrors the pipeline shape ──────────────────

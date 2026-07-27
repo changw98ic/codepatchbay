@@ -22,10 +22,22 @@
  */
 
 import assert from "node:assert/strict";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 
-import { run as runTaskCommand } from "../cli/commands/task.js";
+import {
+  run as runTaskCommand,
+  humanResultLine,
+  checkStatusById,
+} from "../cli/commands/task.js";
+import {
+  TASK_VIEW_SCHEMA_VERSION,
+  TaskState,
+  type TaskStateValue,
+  type TaskView,
+  type TaskViewCheck,
+} from "../core/contracts/task-view.js";
 import { FORBIDDEN_TASKVIEW_FIELDS } from "../core/contracts/task-view-fields.js";
 import { tempRoot, writeJson } from "./helpers.js";
 
@@ -259,4 +271,272 @@ test("(5) rendered output never contains a forbidden internal term or field, acr
       `${label}: rendered output must not echo any seeded LEAK value. Output was:\n${rendered}`,
     );
   }
+});
+
+// ─── (6) humanResultLine / checkStatusById: pure distinction unit tests ──────
+//
+// The Result line is the load-bearing Phase 2 output. These pure tests pin the
+// three-way distinction (verified / not-verified / deliveryReady) and the
+// absence of every forbidden internal term, independent of the projection.
+
+function check(
+  id: string,
+  status: TaskViewCheck["status"],
+  required = true,
+): TaskViewCheck {
+  return { id, requirement: `${id} dimension`, status, required };
+}
+
+function viewWith(state: TaskStateValue, checks: TaskViewCheck[]): TaskView {
+  return {
+    schemaVersion: TASK_VIEW_SCHEMA_VERSION,
+    taskId: "t",
+    state,
+    summary: "",
+    progress: { ratio: null, label: "" },
+    checks,
+    changedFiles: [],
+    nextAction: { kind: null, message: "" },
+    createdAt: "2026-07-27T00:00:00.000Z",
+    updatedAt: "2026-07-27T00:00:00.000Z",
+  };
+}
+
+test("(6a) humanResultLine: verified + deliveryReady -> 'Verified - ready to deliver.'", () => {
+  const line = humanResultLine(
+    viewWith(TaskState.Succeeded, [
+      check("completed", "pass"),
+      check("verified", "pass"),
+      check("deliveryReady", "pass", false),
+      check("evidence", "pass"),
+    ]),
+  );
+  assert.equal(line, "Verified - ready to deliver.");
+});
+
+test("(6b) humanResultLine: verified but not deliveryReady -> 'Done and verified, not yet delivered.'", () => {
+  const line = humanResultLine(
+    viewWith(TaskState.Succeeded, [
+      check("completed", "pass"),
+      check("verified", "pass"),
+      check("deliveryReady", "unchecked", false),
+      check("evidence", "pass"),
+    ]),
+  );
+  assert.equal(line, "Done and verified, not yet delivered.");
+});
+
+test("(6c) humanResultLine: succeeded state but not verified -> 'Completed but not verified.'", () => {
+  const line = humanResultLine(
+    viewWith(TaskState.Succeeded, [
+      check("completed", "pass"),
+      check("verified", "fail"),
+      check("deliveryReady", "unchecked", false),
+      check("evidence", "fail"),
+    ]),
+  );
+  assert.equal(line, "Completed but not verified.");
+});
+
+test("(6d) humanResultLine: non-terminal states render no result line", () => {
+  for (const state of [
+    TaskState.Queued,
+    TaskState.Running,
+    TaskState.Verifying,
+    TaskState.NeedsInput,
+    TaskState.Blocked,
+  ]) {
+    const line = humanResultLine(
+      viewWith(state, [
+        check("completed", "unchecked"),
+        check("verified", "unchecked"),
+        check("deliveryReady", "unchecked", false),
+        check("evidence", "unchecked"),
+      ]),
+    );
+    assert.equal(line, "", `${state}: no result line while the task is in flight`);
+  }
+});
+
+test("(6e) humanResultLine: failed/canceled render no result line (the State line already signals the outcome)", () => {
+  for (const state of [TaskState.Failed, TaskState.Canceled]) {
+    const line = humanResultLine(
+      viewWith(state, [
+        check("completed", "pass"),
+        check("verified", "fail"),
+        check("deliveryReady", "unchecked", false),
+        check("evidence", "fail"),
+      ]),
+    );
+    assert.equal(
+      line,
+      "",
+      `${state}: no result line — avoids contradicting the "Did not succeed" / "Canceled" State line`,
+    );
+  }
+});
+
+test("(6f) humanResultLine never emits a forbidden internal term or field name", () => {
+  const cases = [
+    viewWith(TaskState.Succeeded, [
+      check("completed", "pass"),
+      check("verified", "pass"),
+      check("deliveryReady", "pass", false),
+      check("evidence", "pass"),
+    ]),
+    viewWith(TaskState.Succeeded, [
+      check("completed", "pass"),
+      check("verified", "pass"),
+      check("deliveryReady", "unchecked", false),
+      check("evidence", "pass"),
+    ]),
+    viewWith(TaskState.Succeeded, [
+      check("completed", "pass"),
+      check("verified", "fail"),
+      check("deliveryReady", "unchecked", false),
+      check("evidence", "fail"),
+    ]),
+  ];
+  for (const v of cases) {
+    const line = humanResultLine(v);
+    // The line may be non-empty or empty; either way it must carry no token.
+    assertNoForbiddenTerms(line, `state=${v.state}`);
+  }
+});
+
+test("(6g) checkStatusById returns the status for a known dimension and '' when absent", () => {
+  const v = viewWith(TaskState.Succeeded, [
+    check("verified", "pass"),
+    check("deliveryReady", "unchecked", false),
+  ]);
+  assert.equal(checkStatusById(v, "verified"), "pass");
+  assert.equal(checkStatusById(v, "deliveryReady"), "unchecked");
+  // A missing dimension is NEVER treated as pass — it is "" (not evaluated).
+  assert.equal(checkStatusById(v, "completed"), "", "missing dimension -> '' (never pass)");
+  assert.equal(checkStatusById(v, "nonexistent"), "");
+});
+
+// ─── job-seeded fixtures (mirror tests/task-view-evidence.test.ts) ────────────
+
+/**
+ * Write the hub registry with one project whose `projectRuntimeRoot` is
+ * `dataRoot`. Registering the project is what lets the command's data-root
+ * resolution (`listRuntimeDataRoots`) discover a seeded job in `dataRoot`.
+ */
+async function writeRegistry(hubRoot: string, dataRoot: string): Promise<void> {
+  await writeJson(path.join(hubRoot, "projects.json"), {
+    version: 1,
+    revision: 1,
+    updatedAt: "2026-07-27T00:00:00.000Z",
+    projects: { [PROJECT]: { id: PROJECT, projectRuntimeRoot: dataRoot } },
+    projectRevisions: { [PROJECT]: 1 },
+    mutationId: "task-cmd-test",
+  });
+}
+
+/** Seed a materialized job at `dataRoot` (the same shape `getJobByQueueEntryId` reads). */
+async function seedJob(
+  dataRoot: string,
+  jobId: string,
+  job: Record<string, unknown>,
+): Promise<void> {
+  const eventFile = path.join(dataRoot, "events", PROJECT, `${jobId}.jsonl`);
+  await mkdir(path.dirname(eventFile), { recursive: true });
+  await writeFile(
+    eventFile,
+    `${JSON.stringify({
+      type: "job_created",
+      jobId,
+      project: PROJECT,
+      ts: "2026-07-27T00:00:00.000Z",
+    })}\n`,
+    "utf8",
+  );
+  const key = `${PROJECT}/${jobId}`;
+  await writeJson(path.join(dataRoot, "jobs-index.json"), {
+    _meta: { version: 1, updatedAt: "2026-07-27T00:00:00.000Z", jobCount: 1 },
+    jobs: { [key]: { createdAt: "2026-07-27T00:00:01.000Z", project: PROJECT, jobId, ...job } },
+  });
+}
+
+// ─── (7) command renders the distinction via the REAL projection ─────────────
+
+test("(7a) cpb task renders 'Verified - ready to deliver.' for a verified job with a finalizer receipt", async () => {
+  const root = await tempRoot("cpb-task-cmd-verified-delivered");
+  const hubRoot = path.join(root, "hub");
+  const dataRoot = path.join(root, "data");
+  await writeRegistry(hubRoot, dataRoot);
+  await seedQueue(hubRoot, [queueEntry({ status: "completed" })]);
+  await seedJob(dataRoot, "job-verified-delivered", {
+    queueEntryId: TASK_ID,
+    status: "completed",
+    phase: "verify",
+    task: "Add a --json flag to cpb status",
+    verdict: "PASS",
+    completionGate: {
+      outcome: "complete",
+      reason: "all gates passed",
+      missingGates: [],
+      failedChecklistIds: [],
+      uncheckedChecklistIds: [],
+    },
+    finalizer: {
+      ok: true,
+      status: "ok",
+      code: null,
+      commit: "abc123",
+      closed: null,
+      mode: "local",
+      ts: "2026-07-27T00:31:00.000Z",
+    },
+    createdAt: "2026-07-27T00:00:01.000Z",
+    updatedAt: "2026-07-27T00:31:00.000Z",
+  });
+
+  const { exit, out } = await runWithCapture([TASK_ID, "--project", PROJECT], root, hubRoot);
+  assert.equal(exit, 0);
+  const text = out.join("\n");
+  assert.match(text, /State:\s+Done/, "verified -> Succeeded -> 'Done' state line");
+  assert.match(text, /Result:\s+Verified - ready to deliver\./, "must surface the verified+deliveryReady distinction");
+  assertNoForbiddenTerms(text, "verified-delivered");
+});
+
+test("(7b) cpb task renders 'Done and verified, not yet delivered.' for a verified job with no finalizer", async () => {
+  const root = await tempRoot("cpb-task-cmd-verified-not-delivered");
+  const hubRoot = path.join(root, "hub");
+  const dataRoot = path.join(root, "data");
+  await writeRegistry(hubRoot, dataRoot);
+  await seedQueue(hubRoot, [queueEntry({ status: "completed" })]);
+  await seedJob(dataRoot, "job-verified-not-delivered", {
+    queueEntryId: TASK_ID,
+    status: "completed",
+    phase: "verify",
+    task: "Add a --json flag to cpb status",
+    verdict: "PASS",
+    completionGate: { outcome: "complete", reason: "all gates passed" },
+    createdAt: "2026-07-27T00:00:01.000Z",
+    updatedAt: "2026-07-27T00:30:00.000Z",
+  });
+
+  const { exit, out } = await runWithCapture([TASK_ID, "--project", PROJECT], root, hubRoot);
+  assert.equal(exit, 0);
+  const text = out.join("\n");
+  assert.match(text, /Result:\s+Done and verified, not yet delivered\./);
+  assertNoForbiddenTerms(text, "verified-not-delivered");
+});
+
+test("(7c) cpb task renders 'Completed but not verified.' when a queue entry is completed with no verifying job", async () => {
+  const root = await tempRoot("cpb-task-cmd-unverified");
+  const hubRoot = path.join(root, "hub");
+  // No registered project, no job — the queue-only fallback. The projection
+  // surfaces Succeeded + verified=fail; the renderer must call that gap out
+  // rather than letting the "Done" State line mask an unverified outcome.
+  await seedQueue(hubRoot, [queueEntry({ status: "completed" })]);
+
+  const { exit, out } = await runWithCapture([TASK_ID, "--project", PROJECT], root, hubRoot);
+  assert.equal(exit, 0);
+  const text = out.join("\n");
+  assert.match(text, /State:\s+Done/, "the State line still reads Done — the gap the Result line exposes");
+  assert.match(text, /Result:\s+Completed but not verified\./);
+  assertNoForbiddenTerms(text, "unverified");
 });

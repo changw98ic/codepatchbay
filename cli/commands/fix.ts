@@ -49,7 +49,6 @@ import { ExitCode, exitCodeForPreSubmitFailure } from "../../core/contracts/exit
 import type { FixReadinessResult, FixReadinessFailure } from "../../server/services/task/readiness.js";
 import {
   TaskState,
-  type TaskStateValue,
   type TaskView,
 } from "../../core/contracts/task-view.js";
 import {
@@ -57,6 +56,10 @@ import {
   selectIdempotentEntry,
   type IdempotencyQueueEntry,
 } from "../../core/contracts/idempotency.js";
+import {
+  checkStatusById,
+  humanResultLine,
+} from "./task.js";
 
 // ─── public types ───────────────────────────────────────────────────────────
 
@@ -231,25 +234,35 @@ export function buildFixEnqueueInput(
   };
 }
 
-// ─── pure: --follow state → exit code ───────────────────────────────────────
+// ─── pure: --follow view → exit code (verified-gated) ───────────────────────
 
 /**
- * Map a projected TaskState to a `--follow` exit code, or `null` when the
- * state is non-terminal-and-actionable (polling should continue).
+ * Map a projected TaskView to a `--follow` exit code, or `null` when polling
+ * should continue (non-terminal-and-actionable state).
  *
- * Terminal states always resolve: succeeded requires evidence-driven
- * verification (enforced by the projection, which only emits `succeeded` when
- * the completion gate passed); everything else is a distinct non-zero code so
- * CI/scripts can distinguish "failed" from "needs input" from "timed out".
+ * Phase 2 gating (plan §四 阶段2 + exit-code.ts contract): `FollowCompletedVerified`
+ * (0) is returned ONLY when the task is in the `succeeded` state AND the
+ * evidence-driven `verified` check actually passed. A `succeeded` state WITHOUT
+ * a passing verification gate — the queue-only fallback where a queue entry is
+ * marked completed with no verifying job — resolves to `FollowFailed`, never 0.
+ * This is the load-bearing honesty invariant: exit 0 means verified, not just
+ * "the state label said succeeded".
  *
  * `blocked` and `needs_input` are surfaced as STOP states (not polled through)
- * because waiting cannot progress them — the user must act, so we hand control
- * back with the matching code.
+ * because waiting cannot progress them — the user must act, so control is
+ * handed back with the matching code.
+ *
+ * `succeeded`'s verification gate is read from the SAME `checks.verified`
+ * dimension `cpb task` renders (via the shared `checkStatusById` helper), so
+ * the exit code and the rendered distinction can never disagree.
  */
-export function exitCodeForFollowState(state: TaskStateValue | string | undefined): number | null {
-  switch (state) {
+export function exitCodeForFollowView(view: TaskView | null): number | null {
+  if (!view) return null;
+  switch (view.state) {
     case TaskState.Succeeded:
-      return ExitCode.FollowCompletedVerified;
+      return checkStatusById(view, "verified") === "pass"
+        ? ExitCode.FollowCompletedVerified
+        : ExitCode.FollowFailed;
     case TaskState.Failed:
       return ExitCode.FollowFailed;
     case TaskState.Canceled:
@@ -262,11 +275,6 @@ export function exitCodeForFollowState(state: TaskStateValue | string | undefine
       // accepted / queued / running / verifying — keep polling.
       return null;
   }
-}
-
-/** States at which `--follow` stops polling (terminal or needs-user-action). */
-export function isFollowStopState(state: TaskStateValue | string | undefined): boolean {
-  return exitCodeForFollowState(state) !== null;
 }
 
 // ─── --follow poll loop ─────────────────────────────────────────────────────
@@ -294,6 +302,7 @@ export async function followTask(
     pollIntervalMs?: number;
     hooks?: FollowHooks;
     onState?: (view: TaskView | null) => void;
+    out?: OutSink;
   } = {},
 ): Promise<number> {
   const now = opts.hooks?.now ?? (() => Date.now());
@@ -302,6 +311,10 @@ export async function followTask(
   const injectedSignal = opts.hooks?.signal ?? null;
   const timeoutMs = opts.timeoutMs ?? DEFAULT_FOLLOW_TIMEOUT_MS;
   const pollIntervalMs = opts.pollIntervalMs ?? DEFAULT_FOLLOW_POLL_INTERVAL_MS;
+  const out = opts.out ?? {
+    log: (line: string) => console.log(line),
+    err: (line: string) => console.error(line),
+  };
   const deadline = now() + timeoutMs;
 
   // Only install a real SIGINT handler when no signal was injected (production).
@@ -329,8 +342,17 @@ export async function followTask(
       }
       opts.onState?.(view);
       if (view) {
-        const exit = exitCodeForFollowState(view.state);
-        if (exit !== null) return exit;
+        const exit = exitCodeForFollowView(view);
+        if (exit !== null) {
+          // Surface the evidence-driven distinction on the terminal sample so
+          // a `--follow` consumer sees the SAME honest status `cpb task` shows
+          // (verified / not-verified / ready-to-deliver), then propagate the
+          // verdict-driven exit code. Empty for non-succeeded stop states —
+          // the exit code is their signal, matching `cpb task`'s State line.
+          const resultLine = humanResultLine(view);
+          if (resultLine) out.log(resultLine);
+          return exit;
+        }
       }
 
       if (now() >= deadline) return ExitCode.FollowTimeout;
@@ -512,6 +534,7 @@ export async function run(args: string[], ctx: FixCtx = {}): Promise<number> {
           timeoutMs: ctx.followTimeoutMs,
           pollIntervalMs: ctx.followPollIntervalMs,
           hooks: ctx.followHooks,
+          out,
         });
       }
       return ExitCode.FixAccepted;
@@ -574,6 +597,7 @@ export async function run(args: string[], ctx: FixCtx = {}): Promise<number> {
       timeoutMs: ctx.followTimeoutMs,
       pollIntervalMs: ctx.followPollIntervalMs,
       hooks: ctx.followHooks,
+      out,
     });
   }
 

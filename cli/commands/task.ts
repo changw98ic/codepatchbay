@@ -31,6 +31,7 @@ import {
   TaskState,
   type TaskStateValue,
   type TaskView,
+  type TaskViewCheck,
   type TaskViewNextAction,
 } from "../../core/contracts/task-view.js";
 
@@ -94,12 +95,70 @@ function humanNextStep(next: TaskViewNextAction | null | undefined): string {
   }
 }
 
+// ─── evidence-driven distinction (Phase 2 §四 阶段2) ──────────────────────────
+
+/**
+ * Look up a check's status by id from the projected TaskView. Returns `""`
+ * when the dimension is absent — a missing check is treated as "not
+ * evaluated", never as a pass. Pure and total so the renderer stays readable
+ * even if a future projection omits a dimension.
+ */
+export function checkStatusById(
+  view: TaskView,
+  id: string,
+): TaskViewCheck["status"] | "" {
+  const checks = view.checks;
+  if (!Array.isArray(checks)) return "";
+  for (const c of checks) {
+    if (c && c.id === id) return c.status;
+  }
+  return "";
+}
+
+/**
+ * One-line, plain-language distinction drawn from the evidence-driven checks
+ * (`completed` / `verified` / `deliveryReady`). Returns `""` while the task is
+ * still in flight — the State line already says "Working on it" / "Checking
+ * the change" and the distinction is not yet meaningful.
+ *
+ *   verified + deliveryReady    -> "Verified - ready to deliver."
+ *   verified, not deliveryReady -> "Done and verified, not yet delivered."
+ *   succeeded state, not verified -> "Completed but not verified."
+ *
+ * The not-verified line is scoped to the `succeeded` STATE because that is the
+ * only label that could otherwise mask an unverified outcome — the queue-only
+ * fallback where a queue entry is marked completed with no verifying job. For
+ * `failed` / `canceled` the State line already signals the outcome, so echoing
+ * "not verified" there would read as contradiction ("Did not succeed" vs
+ * "Completed ..."). This keeps the renderer honest without being redundant.
+ *
+ * The wording avoids every forbidden internal term (hub / worker / acp /
+ * evidence / lease / session / ...) and every forbidden field name, so the
+ * frozen forbidden-token assertion in the command tests holds regardless of
+ * projection input. `cli/commands/fix.ts` `--follow` imports this helper so
+ * the two commands render the SAME distinction and never drift on wording.
+ */
+export function humanResultLine(view: TaskView): string {
+  if (checkStatusById(view, "verified") === "pass") {
+    return checkStatusById(view, "deliveryReady") === "pass"
+      ? "Verified - ready to deliver."
+      : "Done and verified, not yet delivered.";
+  }
+  if (
+    view.state === TaskState.Succeeded
+    && checkStatusById(view, "completed") === "pass"
+  ) {
+    return "Completed but not verified.";
+  }
+  return "";
+}
+
 // ─── rendering ───────────────────────────────────────────────────────────────
 
 /**
  * Render the public TaskView as plain text on stdout. Deliberately does NOT
  * emit taskId/jobId/attemptId/provider/agent/lease/session/prompt/env/abs paths
- * — only the four product-facing fields (summary, state, progress, next step).
+ * — only the product-facing fields (summary, state, result, progress, next).
  */
 function renderTaskView(view: TaskView): void {
   const rawSummary = typeof view.summary === "string" ? view.summary.trim() : "";
@@ -110,11 +169,13 @@ function renderTaskView(view: TaskView): void {
       ? view.progress.label.trim()
       : "";
   const nextStep = humanNextStep(view.nextAction);
+  const resultLine = humanResultLine(view);
 
   const lines: string[] = [];
   lines.push(summary);
   lines.push("");
   lines.push(`State:    ${stateLine}`);
+  if (resultLine) lines.push(`Result:   ${resultLine}`);
   if (progressLabel) lines.push(`Progress: ${progressLabel}`);
   lines.push(`Next:     ${nextStep}`);
   console.log(lines.join("\n"));
