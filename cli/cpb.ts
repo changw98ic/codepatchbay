@@ -46,6 +46,8 @@ async function usage() {
   console.log(`  ${CYAN}hub${NC} [status|start|stop|projects|...]  Hub management`);
   console.log(`  ${CYAN}pipeline${NC} <project> "<task>" [--retries <n>]  Full pipeline`);
   console.log(`  ${CYAN}run${NC} "<task>" [--project <id>]         Run task (pipeline alias)`);
+  console.log(`  ${CYAN}fix${NC} "<problem>" [--project id] [--follow] [--idempotency-key k]  Submit a fix request (user entry)`);
+  console.log(`  ${CYAN}task${NC} <task-id> [--project id]              Show task status (user entry)`);
   console.log(`  ${CYAN}retry${NC} <project> <job-id> [--agent <name>]  Retry job phase`);
   console.log(`  ${CYAN}status${NC} <project>                       Project status`);
   console.log(`  ${CYAN}list${NC}                                   List projects`);
@@ -88,6 +90,8 @@ const COMMANDS = {
   hub: "hub.js",
   pipeline: "pipeline.js",
   run: "pipeline.js",
+  fix: "fix.js",
+  task: "task.js",
   status: "status.js",
   list: "list.js",
   jobs: "jobs.js",
@@ -109,7 +113,10 @@ const COMMANDS = {
 // --- Main ---
 
 export function projectArgForCommand(cmd: string, cmdArgs: string[]) {
-  let projectArg = cmd === "run" ? null : cmdArgs.find((a) => !a.startsWith("-"));
+  // `run`/`fix`/`task` take a non-project positional (task text / problem / task-id),
+  // so the positional must not be treated as a project name; project comes from
+  // --project or auto-detection inside the command (mirrors pipeline.ts).
+  let projectArg = cmd === "run" || cmd === "fix" || cmd === "task" ? null : cmdArgs.find((a) => !a.startsWith("-"));
   const projectFlagIdx = cmdArgs.indexOf("--project");
   if (projectFlagIdx >= 0 && cmdArgs[projectFlagIdx + 1]) {
     projectArg = cmdArgs[projectFlagIdx + 1];
@@ -160,7 +167,7 @@ async function main() {
 
   if (!process.env.CPB_PROJECT_RUNTIME_ROOT) {
     // Resolve per-project runtime root from hub registry for project-scoped commands
-    const PROJECT_COMMANDS = new Set(["pipeline", "run", "status", "retry", "diff", "review", "inbox", "outputs", "cancel", "redirect"]);
+    const PROJECT_COMMANDS = new Set(["pipeline", "run", "fix", "task", "status", "retry", "diff", "review", "inbox", "outputs", "cancel", "redirect"]);
     if (PROJECT_COMMANDS.has(cmd)) {
       // `run` resolves an omitted project from cwd/package.json inside the
       // pipeline command. Treating the task text as a positional project here
