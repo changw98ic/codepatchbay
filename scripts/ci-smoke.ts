@@ -2,7 +2,8 @@
 import { isRecord, recordValue, type LooseRecord } from "../shared/types.js";
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
@@ -20,10 +21,26 @@ import {
 const ROOT = path.resolve(import.meta.dirname, "..");
 const CPB = path.join(ROOT, "cli", "cpb.js");
 const HUB_SERVER = path.join(ROOT, "server", "index.js");
-const CI_HUB_BEARER_TOKEN = "ci-hub-bearer-token-with-at-least-32-bytes";
+const CI_HUB_SERVICE_TOKEN = "ci-hub-service-token-with-at-least-32-bytes";
 
 const PASS = "\x1b[0;32mPASS\x1b[0m";
 const FAIL = "\x1b[0;31mFAIL\x1b[0m";
+
+async function writeCiHubServiceTokens(root: string) {
+  const filePath = path.join(root, "hub-service-tokens.json");
+  const tokenSha256 = createHash("sha256").update(CI_HUB_SERVICE_TOKEN, "utf8").digest("hex");
+  await writeFile(filePath, `${JSON.stringify({
+    format: "cpb-hub-service-tokens/v1",
+    tokens: [{
+      id: "ci-smoke",
+      tokenSha256,
+      scopes: ["hub:admin"],
+      projects: "*",
+    }],
+  }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  await chmod(filePath, 0o600);
+  return filePath;
+}
 
 type SmokeRunResult = {
   code: number;
@@ -297,6 +314,7 @@ type HubProcess = {
 
 type StartHubProcessOptions = {
   serverPath?: string;
+  serviceTokensFile?: string;
   startupTimeoutMs?: number;
   processTreeSystem?: ProcessTreeSystem;
 };
@@ -312,7 +330,7 @@ export function startHubProcess(hubRoot: string, options: StartHubProcessOptions
         CPB_HUB_ROOT: hubRoot,
         CPB_HOST: "127.0.0.1",
         CPB_PORT: "0",
-        CPB_HUB_BEARER_TOKEN: CI_HUB_BEARER_TOKEN,
+        ...(options.serviceTokensFile ? { CPB_HUB_SERVICE_TOKENS_FILE: options.serviceTokensFile } : {}),
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -426,10 +444,11 @@ async function smokeHubLifecycle() {
     return await runCiTemporaryWorkspace("cpb-ci-hub-", async (tempRoot) => {
       const hubRoot = path.join(tempRoot, "hub");
       return runCleanupBoundTask(async () => {
-        hub = await startHubProcess(hubRoot);
+        const serviceTokensFile = await writeCiHubServiceTokens(tempRoot);
+        hub = await startHubProcess(hubRoot, { serviceTokensFile });
 
         const requestOptions = () => ({
-          headers: { authorization: `Bearer ${CI_HUB_BEARER_TOKEN}` },
+          headers: { authorization: `Bearer ${CI_HUB_SERVICE_TOKEN}` },
           signal: AbortSignal.timeout(5_000),
         });
         const response = await fetch(`${hub.url}/api/health`, requestOptions());
@@ -445,7 +464,7 @@ async function smokeHubLifecycle() {
         }
 
         const running = await run(CPB, ["hub", "status", "--json"], {
-          env: { CPB_HUB_ROOT: hubRoot, CPB_HUB_BEARER_TOKEN: CI_HUB_BEARER_TOKEN },
+          env: { CPB_HUB_ROOT: hubRoot, CPB_HUB_SERVICE_TOKENS_FILE: serviceTokensFile },
         });
         if (running.code !== 0) {
           throw new Error(`cpb hub status failed: ${snippet(running.stderr)}`);
@@ -458,7 +477,7 @@ async function smokeHubLifecycle() {
         await teardownScriptChildProcess(hub.child, { identity: hub.identity });
 
         const stopped = await run(CPB, ["hub", "status", "--json"], {
-          env: { CPB_HUB_ROOT: hubRoot, CPB_HUB_BEARER_TOKEN: CI_HUB_BEARER_TOKEN },
+          env: { CPB_HUB_ROOT: hubRoot, CPB_HUB_SERVICE_TOKENS_FILE: serviceTokensFile },
         });
         const stoppedStatus = recordValue(JSON.parse(stopped.stdout));
         if (stopped.code !== 0 || recordValue(stoppedStatus.liveness).alive !== false) {
@@ -488,11 +507,12 @@ async function smokeHubCliLifecycle() {
   try {
     return await runCiTemporaryWorkspace("cpb-ci-hub-cli-", async (tempRoot) => {
       const hubRoot = path.join(tempRoot, "hub");
+      const serviceTokensFile = await writeCiHubServiceTokens(tempRoot);
       const env = {
         CPB_HUB_ROOT: hubRoot,
         CPB_HOST: "0.0.0.0",
         CPB_PORT: "0",
-        CPB_HUB_BEARER_TOKEN: CI_HUB_BEARER_TOKEN,
+        CPB_HUB_SERVICE_TOKENS_FILE: serviceTokensFile,
         CPB_HUB_ALLOW_INSECURE_HTTP: "1",
       };
       let stopVerified = false;
