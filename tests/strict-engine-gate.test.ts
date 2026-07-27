@@ -58,6 +58,7 @@ test("strict engine gate is wired to package scripts, CI, and TypeScript", async
     "core/engine/phase-artifact-tracker.ts",
     "core/engine/phase-retry.ts",
     "core/engine/run-job-assurance.ts",
+    "core/engine/run-job-bookkeeping.ts",
     "core/engine/run-job-checklist-dag.ts",
     "core/engine/run-job-execute-dag.ts",
     "core/engine/run-job-planning.ts",
