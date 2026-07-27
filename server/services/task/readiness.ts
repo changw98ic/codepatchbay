@@ -286,10 +286,14 @@ export async function assertFixReadiness(
     );
   }
 
-  // Step 4 — hub reachable. Fail-closed: we never auto-start. If the control
-  // plane were remote/unknown we would connect-only (never start); today every
-  // plane is local, so the nextAction points at the local start command. When
-  // in doubt (unsafe state, unknown liveness), treat as unreachable.
+  // Step 4 — hub reachable AND in a safe state. Fail-closed: we never auto-start.
+  // If the control plane were remote/unknown we would connect-only (never start);
+  // today every plane is local, so the nextAction points at the local start
+  // command. readHubLiveness returns alive:true with a `reason` only for
+  // non-canonical states ("unsafe-state" = hub.json unreadable/corrupt,
+  // "liveness-unknown" = leader identity check threw) — per the plan these MUST
+  // be treated as unreachable, not as a green hub. Only alive:true with NO reason
+  // is a clean, safe, identity-verified control plane.
   const localPlane = isLocalControlPlane(hubRoot);
   let liveness: Awaited<ReturnType<typeof readHubLiveness>>;
   try {
@@ -297,7 +301,7 @@ export async function assertFixReadiness(
   } catch {
     liveness = { alive: false, reason: "liveness-error" };
   }
-  if (!liveness.alive) {
+  if (!liveness.alive || liveness.reason) {
     const nextAction = localPlane
       ? `The local service is not running. Start it with \`cpb hub start\`, then retry.`
       : `Could not reach the configured service. Verify the connection, then retry.`;

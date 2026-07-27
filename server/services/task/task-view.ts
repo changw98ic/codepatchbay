@@ -645,12 +645,13 @@ export async function projectTaskView(
   const entryList: LooseRecord[] = Array.isArray(entries)
     ? entries.filter((e) => isRecord(e))
     : [];
-  // Match by id within this project first; fall back to id-only match so a
-  // caller who omits the project still resolves. The project-scoped match is
-  // authoritative when both are present.
+  // Match by id WITHIN THIS PROJECT ONLY. A cross-project id-only fallback
+  // would let a caller scoped to project A read project B's task by supplying
+  // B's task id — a project-isolation / authorization boundary violation
+  // (plan §3.2: taskId is the project-scoped opaque queue entry id). If the id
+  // is not found in this project, return null rather than searching others.
   const entry =
     entryList.find((e) => stringValue(e.id) === taskId && stringValue(e.projectId) === project)
-    || entryList.find((e) => stringValue(e.id) === taskId)
     || null;
   if (!entry) return null;
 

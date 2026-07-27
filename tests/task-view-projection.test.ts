@@ -137,6 +137,23 @@ test("(e) projectTaskView returns null when taskId matches no queue entry", asyn
   assert.equal(view, null, "unknown taskId must project to null");
 });
 
+// ─── (isolation) cross-project taskId must NOT resolve ───────────────────────
+
+test("(isolation) projectTaskView never returns another project's task by id", async () => {
+  const root = await tempRoot("cpb-task-view-xproject");
+  const hubRoot = path.join(root, "hub");
+  const dataRoot = path.join(root, "data");
+  // TASK_ID exists in the queue but is owned by a DIFFERENT project. A
+  // cross-project id-only fallback would leak it across the project boundary;
+  // the projection must return null instead (plan §3.2: taskId is project-scoped).
+  await seedQueue(hubRoot, [
+    queueEntry({ id: TASK_ID, projectId: "other-project", status: "pending" }),
+  ]);
+
+  const view = await projectTaskView(root, PROJECT, TASK_ID, { hubRoot, dataRoot });
+  assert.equal(view, null, "a task id owned by another project must not resolve (no cross-project fallback)");
+});
+
 // ─── (a) queue-only projection: entry exists, job absent ─────────────────────
 
 test("(a) queue-only pending entry projects to queued with no forbidden fields", async () => {

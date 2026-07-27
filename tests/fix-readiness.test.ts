@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { after, afterEach, before, test } from "node:test";
 
@@ -229,6 +229,29 @@ test("hub not running -> runtime_unavailable with a cpb hub start nextAction", a
 
   assertFailure(result, "runtime_unavailable");
   assert.match(result.nextAction, /cpb hub start/i);
+  assert.equal(after, before, "a failed readiness check must not append a queue entry");
+});
+
+// ─── step 4 (unsafe-state): corrupt hub.json -> runtime_unavailable ──────────
+
+test("hub in unsafe-state (corrupt hub.json) -> runtime_unavailable", async () => {
+  const { cpbRoot, hubRoot, runtimeRoot, sourcePath } = await freshFixture("hub-unsafe-state");
+  await writeRegistry(hubRoot, {
+    myproj: { id: "myproj", sourcePath, projectRuntimeRoot: runtimeRoot },
+  });
+  await writeProjectAgents(cpbRoot, "myproj", { default: { agent: "claude" } });
+  // A CORRUPT hub.json: present on disk but invalid JSON, so readHubLiveness
+  // returns alive:true + reason "unsafe-state". Readiness MUST treat an
+  // unsafe-state hub as unreachable (plan §阶段1: "unsafe state ... treat as
+  // unreachable"), NOT as a green hub — this is the gap the fix closes.
+  await mkdir(path.join(hubRoot, "state"), { recursive: true });
+  await writeFile(path.join(hubRoot, "state", "hub.json"), "{ not valid runtime state {{{");
+
+  const before = await queueEntryCount(hubRoot);
+  const result = await assertFixReadiness({ cpbRoot, project: "myproj" });
+  const after = await queueEntryCount(hubRoot);
+
+  assertFailure(result, "runtime_unavailable");
   assert.equal(after, before, "a failed readiness check must not append a queue entry");
 });
 
