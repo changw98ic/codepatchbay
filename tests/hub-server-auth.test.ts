@@ -599,7 +599,6 @@ test("Hub child environment receives only explicitly scoped authentication confi
     port: "3456",
   });
 
-  assert.equal(env.CPB_HUB_BEARER_TOKEN, undefined);
   assert.equal(env.CPB_HUB_SERVICE_TOKENS_FILE, serviceTokensFile);
   assert.equal(env.CPB_HUB_OIDC_CONFIG_FILE, oidcConfigFile);
   assert.equal(env.CPB_HUB_ACCESS_AUDIT_MAX_BYTES, "536870912");
@@ -615,7 +614,6 @@ test("Hub child environment receives only explicitly scoped authentication confi
     executorRoot: "/tmp/cpb",
     hubRoot: "/tmp/cpb-hub",
   });
-  assert.equal(controlPlaneEnv.CPB_HUB_BEARER_TOKEN, undefined);
   assert.equal(controlPlaneEnv.UNRELATED_APPLICATION_SECRET, undefined);
 
   const agentEnv = buildChildEnv({

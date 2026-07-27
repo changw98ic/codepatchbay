@@ -6,6 +6,9 @@
 > 已删除。本文仅作历史方案参考；当前执行入口是 `cpb hub-orch start`，
 > 执行内核是 Hub queue worker 调用 `runJob` / `runJobWithServices`。
 
+> **当前硬切状态（2026-07-28）：** 本文仅作历史方案参考。当前 CPB 只使用已注册的项目运行时根，
+> 不提供迁移命令、双写路径或旧命名空间兼容读取；旧数据由部署方在 CPB 外部处理。
+
 > Single-system migration plan for CodePatchbay's 24h unattended task runtime.
 > This supersedes the v2 plan by avoiding a parallel runtime and by making the
 > first milestone a root migration, not a schema rewrite.
@@ -71,18 +74,10 @@ cpb-task/ belongs to CodePatchbay
 
 New CodePatchbay runtime writes must not target `.omc/` or `.omx/`.
 
-Existing project-local `.omc/` data may be read only by an explicit migration
-command or a temporary read-only compatibility path. There must be no dual-write
-period.
-
-After migration verification succeeds, project-local legacy CodePatchbay runtime data
-under `.omc/` must be removed or quarantined. The expected end state for this
-repository is that no project-local `.omc/` or `.omx/` directory remains.
-
-Deletion must be conservative: because `.omc/` and `.omx/` are owned by other
-tools, the migration command may delete only paths it can prove are legacy CodePatchbay
-runtime data. If non-CodePatchbay data is detected, cleanup must stop and report the
-paths for manual review instead of blindly deleting another tool's state.
+Existing project-local `.omc/` and `.omx/` data is outside the CPB runtime contract.
+CPB does not read, migrate, or delete those namespaces. Because they are owned by
+other tools, the deployment owner must handle any required pre-cutover cleanup
+outside CPB.
 
 ## Runtime Directory Layout
 

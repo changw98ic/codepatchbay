@@ -6,6 +6,9 @@
 > 已删除。本文仅作历史方案参考；当前执行入口是 `cpb hub-orch start`，
 > 执行内核是 Hub queue worker 调用 `runJob` / `runJobWithServices`。
 
+> **当前硬切状态（2026-07-28）：** 本文仅作历史方案参考。当前 CPB 只使用已注册的项目运行时根，
+> 不提供迁移命令、双写路径或旧命名空间兼容读取；旧数据由部署方在 CPB 外部处理。
+
 > Replacement plan for CodePatchbay's 24h unattended fixed-role task runtime.
 > This plan intentionally keeps CodePatchbay runtime state out of `.omc/` and `.omx/`.
 
@@ -657,7 +660,7 @@ MVP is complete only when:
 
 - Existing docs that mention `.omc/state`, `.omc/events`, or wiki YAML task
   records should be updated after this plan is accepted.
-- Existing runtime code may continue to exist during migration, but new CodePatchbay
-  task runtime code should target `cpb-task/`.
+- The current hard-cut runtime does not retain compatibility code during cutover;
+  CodePatchbay task runtime code targets the registered `cpb-task/` root only.
 - Use explicit names: `taskId`, `phaseId`, and `materializeTask`, not `jobId`
   or `materializeJob`, for the v2 task runtime.

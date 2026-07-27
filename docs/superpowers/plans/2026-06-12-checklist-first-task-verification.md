@@ -1,10 +1,13 @@
 # Checklist-First Task Verification Implementation Plan
 
+> **当前硬切状态（2026-07-28）：** 本文仅作历史方案参考。当前完成门只接受当前版本的
+> checklist、verdict 和证据合同；不保留 legacy verdict-only 兼容路径。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make CPB task completion auditable by turning task requirements into a prepare-time frozen checklist, requiring itemized evidence-backed verification, and gating completion on checklist, evidence, DAG, and scope state.
 
-**Architecture:** V1 generates, validates, persists, and event-indexes the frozen `acceptance-checklist` before workflow DAG and dynamic agent plan materialization, stores checklist artifacts through first-class artifact events, binds grouped checklist ids to existing execute/verify DAG nodes as coverage metadata, and keeps legacy verdict-only completion as a compatibility path for jobs without checklist artifacts. Retry separates logical `targetChecklistIds` from file-only `fixScope`.
+**Architecture:** V1 generated, validated, persisted, and event-indexed the frozen `acceptance-checklist` before workflow DAG and dynamic agent plan materialization, stored checklist artifacts through first-class artifact events, bound grouped checklist ids to existing execute/verify DAG nodes as coverage metadata, and required checklist evidence for completion. The current hard-cut contract rejects jobs without the current checklist/verdict/evidence artifacts. Retry separates logical `targetChecklistIds` from file-only `fixScope`.
 
 **Tech Stack:** Node.js ESM, TypeScript, existing `node:test` runner, CPB artifact store, JSONL event store, artifact index, workflow DAG, current failure-router and reconciler modules.
 

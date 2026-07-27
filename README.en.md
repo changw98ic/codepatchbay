@@ -59,14 +59,14 @@ npm package: [`codepatchbay`](https://www.npmjs.com/package/codepatchbay)
 npm install -g codepatchbay
 cpb setup --recommended        # detect tools, install agents, run health checks
 cd your-project
-cpb quickstart --demo --project-path . --project-name your-project  # initialize local demo, no API keys needed
-cpb run "fix failing tests" --project your-project                # enqueue the full workflow
+cpb setup --quickstart --demo --project-path . --project-name your-project  # initialize local demo, no API keys needed
+cpb pipeline your-project "fix failing tests"                              # enqueue the full workflow
 ```
 
 Try without installing:
 
 ```bash
-npx codepatchbay quickstart --demo --project-path . --project-name cpb-demo
+npx codepatchbay setup --quickstart --demo --project-path . --project-name cpb-demo
 ```
 
 ### Install from source
@@ -84,7 +84,7 @@ sh scripts/install.sh
 cpb init . myproj
 
 # Submit a task
-cpb run "add dark mode toggle to the settings page" --project myproj
+cpb pipeline myproj "add dark mode toggle to the settings page"
 ```
 
 CodePatchBay will:
@@ -116,21 +116,21 @@ cpb hub start                    # start Hub scheduler
 
 Note: `cpb hub start` does not by itself expose a generic GitHub webhook route. An already-wired transport or external webhook entrypoint is required before issue labels can trigger the flow above.
 
-The Hub binds to loopback by default, but loopback is not an identity boundary. Startup always requires
-`CPB_HUB_BEARER_TOKEN`, `CPB_HUB_SERVICE_TOKENS_FILE`, or `CPB_HUB_OIDC_CONFIG_FILE`.
-Local development may explicitly set `CPB_HUB_ALLOW_ANONYMOUS_DEV=1`; that mode is loopback-only and never enterprise-ready.
+The Hub binds to loopback by default, but loopback is not an identity boundary. Production and
+non-loopback deployments require `CPB_HUB_SERVICE_TOKENS_FILE` or
+`CPB_HUB_OIDC_CONFIG_FILE`. Local development may explicitly set
+`CPB_HUB_ALLOW_ANONYMOUS_DEV=1`; that mode is loopback-only and never enterprise-ready.
 A non-loopback `CPB_HOST` should be deployed behind a TLS reverse proxy.
 Only explicitly secured networks should combine a non-loopback bind with `CPB_HUB_ALLOW_INSECURE_HTTP=1`.
-GitHub comment-triggered `/cpb run` is accepted only from repository owners,
+GitHub comment-triggered `/cpb pipeline` is accepted only from repository owners,
 members, or collaborators.
 
 Enterprise deployments can set the absolute `CPB_HUB_SERVICE_TOKENS_FILE` path
 to use named service tokens stored only as SHA-256 digests and authorize them by
-`hub:health`, `hub:read`, or `hub:admin` scope plus project allowlists. The old
-`CPB_HUB_BEARER_TOKEN` remains a global `legacy-admin` compatibility credential.
+`hub:health`, `hub:read`, or `hub:admin` scope plus project allowlists.
 The authorization file must be a private, non-symlink file (`0600` on POSIX),
 and Hub reloads an atomically replaced file on the next request without a
-restart. The legacy bearer environment token still requires a restart to change.
+restart.
 See
 [`docs/security/cpb-hub-service-tokens.md`](docs/security/cpb-hub-service-tokens.md)
 for the schema, error contract, and rotation guidance.
@@ -214,7 +214,7 @@ Planner, executor, verifier, and reviewer are mapped to phases via `core/agents/
 
 ```bash
 # Use per-phase agents; all phases share one model profile
-cpb run "add unit tests for auth" \
+cpb pipeline myproj "add unit tests for auth" \
   --plan-agent claude --execute-agent claude \
   --verify-agent claude --model mimo
 ```
@@ -238,7 +238,6 @@ cpb list                           # List projects
 cpb status <project>               # Project status
 
 # Submit tasks
-cpb run "<task>" [--project <id>]  # Submit task (full workflow)
 cpb pipeline <project> "<task>" [--retries <n>]  # Full workflow (explicit project)
                                   #   add --plan-agent/--execute-agent/--verify-agent
                                   #   and --model
@@ -269,7 +268,6 @@ cpb setup [--recommended|--interactive|--json]
 cpb agents [list|detect|install|upgrade|test]
 cpb stream [args]                  # Streaming data server
 cpb doctor [--json]
-cpb health-check                   # health check via the quickstart alias entry
 cpb version
 ```
 
