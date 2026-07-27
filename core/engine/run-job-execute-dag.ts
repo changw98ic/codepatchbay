@@ -1071,7 +1071,7 @@ const PARALLEL_START_EVENT_TYPES = new Set([
   "agent_routing_decision",
 ]);
 
-function isParallelNodeCandidate(
+export function isParallelNodeCandidate(
   node: WorkflowDagNode,
   resumeCompletedNodes: Set<string>,
 ): boolean {
@@ -1085,7 +1085,7 @@ function isParallelNodeCandidate(
   return true;
 }
 
-function parallelConflictKeys(node: WorkflowDagNode): string[] {
+export function parallelConflictKeys(node: WorkflowDagNode): string[] {
   const keys = Array.isArray(node.conflictKeys)
     ? node.conflictKeys.map(String).filter(Boolean)
     : [];
@@ -1101,7 +1101,7 @@ function executionIndexById(executionNodes: WorkflowDagNode[]) {
   return indexById;
 }
 
-function stableReadyNodes(
+export function stableReadyNodes(
   executionNodes: WorkflowDagNode[],
   completedNodeIds: Set<string>,
   executedNodeIds: Set<string>,
@@ -1117,7 +1117,7 @@ function stableReadyNodes(
   return ready;
 }
 
-function pickExecutionBatch(
+export function pickExecutionBatch(
   ready: WorkflowDagNode[],
   maxConcurrentNodes: number,
   resumeCompletedNodes: Set<string>,
@@ -1142,7 +1142,7 @@ function pickExecutionBatch(
   return batch;
 }
 
-function maxConcurrentFromDag(workflowDag: WorkflowDag): number {
+export function maxConcurrentFromDag(workflowDag: WorkflowDag): number {
   const maxFromPlan = Number((workflowDag as { maxConcurrentNodes?: unknown }).maxConcurrentNodes);
   if (Number.isFinite(maxFromPlan)) return Math.max(1, Math.floor(maxFromPlan));
   return 1;
@@ -1515,7 +1515,7 @@ function completionGateArgs(
   };
 }
 
-async function rerunDagFromPhase(
+export async function rerunDagFromPhase(
   session: DagRunSession,
   executionNodes: WorkflowDagNode[],
   retryPhase: string,
