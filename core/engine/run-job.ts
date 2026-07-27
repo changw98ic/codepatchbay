@@ -9,6 +9,7 @@
  */
 
 import type { RunJobContext } from "./run-job-ports.js";
+import { setJobId, setCurrentPhase } from "./run-job-bookkeeping.js";
 import { finalizeAuditTrail, handleRunJobPanic } from "./run-job-lifecycle.js";
 import { freezeChecklistAndMaterializeDag } from "./run-job-checklist-dag.js";
 import { createJobAndHandleBlocked, prepareTaskAndRiskMap } from "./run-job-prepare.js";
@@ -68,8 +69,8 @@ export async function runJob(ctxInput: unknown): Promise<JobRunResult> {
   // retain: dynamic JSON boundary — isRecord narrows to LooseRecord, but RunJobContext
   // requires typed service members (createJob/appendEvent/getPool/...) the guard cannot verify.
   const ctx = ctxInput as RunJobContext;
-  ctx._jobId = "unknown";
-  ctx._currentPhase = null;
+  setJobId(ctx, "unknown");
+  setCurrentPhase(ctx, null);
   try {
     const result = await runJobInner(ctx);
     // Exit-handler-style finalization: emit runtime context and audit closure.

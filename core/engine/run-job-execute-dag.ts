@@ -50,6 +50,7 @@ import {
 
 import { recordValue, type LooseRecord } from "../contracts/types.js";
 import type { RunJobPorts, RunJobState } from "./run-job-ports.js";
+import { setCurrentPhase } from "./run-job-bookkeeping.js";
 import {
   reportProgress,
   ts,
@@ -461,7 +462,7 @@ async function runDagNode(
 ): Promise<DagNodeRunOutcome> {
   const { ctx, jobId, attemptId, phaseSourceContext, dynamicAgentPlan, phaseRoleMap } = session;
   const phase = dagNode.phase;
-  ctx._currentPhase = phase;
+  setCurrentPhase(ctx, phase);
   const fallbackRole = phaseRoleMap[phase] || phase;
   const nodeId = dagNode.id || phase;
   const role = stringValue(dagNode.role) || fallbackRole;
