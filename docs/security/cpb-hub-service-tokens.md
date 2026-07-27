@@ -1,7 +1,7 @@
 # Hub service-token authorization
 
 The Hub supports named, scoped service tokens for deployments that must not
-share one global bearer secret. This is a service-account foundation, not an
+rely on one global credential. This is a service-account foundation, not an
 interactive human-session implementation. Enterprise JWT access-token
 validation is documented separately in [Hub OIDC authorization](cpb-hub-oidc.md).
 
@@ -24,7 +24,7 @@ validation is documented separately in [Hub OIDC authorization](cpb-hub-oidc.md)
 
 ## File format
 
-Store only SHA-256 digests in the file. Source bearer tokens must still be
+Store only SHA-256 digests in the file. Source service tokens must still be
 cryptographically random and contain at least 32 non-whitespace bytes; hashing
 does not make a weak token strong.
 
@@ -89,8 +89,8 @@ tokens use their declared authorization immediately.
 If the configured service-token file is missing, malformed, unsafe, expired in
 full, or changes while being read, requests receive HTTP `503` with
 `Retry-After: 5` and code `HUB_AUTH_CONFIGURATION_UNAVAILABLE`. The Hub does not
-fall back to its previous snapshot or to the legacy token while a configured
-file is invalid. Repairing or atomically replacing the file restores service on
+fall back to its previous snapshot or to an alternate credential while a
+configured file is invalid. Repairing or atomically replacing the file restores service on
 the next request without a restart.
 
 ## Scopes and project boundaries

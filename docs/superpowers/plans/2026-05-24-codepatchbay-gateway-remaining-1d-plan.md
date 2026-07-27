@@ -443,7 +443,7 @@ Each task below is scoped to one focused developer day:
 
 **Acceptance:**
 - `issues.labeled` with label `cpb` queues standard workflow.
-- `issue_comment.created` with `/cpb run` queues standard workflow.
+- `issue_comment.created` with `/cpb pipeline` queues standard workflow.
 - Non-matching labels/comments do not queue jobs.
 
 **Dependencies:** D23.
@@ -547,7 +547,7 @@ Each task below is scoped to one focused developer day:
 
 ### D31: Channel Command Parser
 
-**Scope:** Parse `/cpb run`, `/cpb issue`, `/cpb status`, `/cpb approve`, and `/cpb cancel` independent of Slack/Discord transport.
+**Scope:** Parse `/cpb pipeline`, `/cpb issue`, `/cpb status`, `/cpb approve`, and `/cpb cancel` independent of Slack/Discord transport.
 
 **Files:**
 - Create: `server/services/channel-commands.js`
@@ -578,7 +578,7 @@ Each task below is scoped to one focused developer day:
 
 ### D33: Slack Run And Status Commands
 
-**Scope:** Wire Slack `/cpb run` and `/cpb status` to queue/job services.
+**Scope:** Wire Slack `/cpb pipeline` and `/cpb status` to queue/job services.
 
 **Files:**
 - Modify: `server/services/channel-slack.js`
@@ -586,7 +586,7 @@ Each task below is scoped to one focused developer day:
 - Test: `tests/channel-commands.test.mjs`
 
 **Acceptance:**
-- `/cpb run frontend "task"` creates queue entry and job.
+- `/cpb pipeline frontend "task"` creates queue entry and job.
 - `/cpb status job-id` returns current projection.
 - Slack response includes View Run and Cancel action metadata.
 
@@ -619,7 +619,7 @@ Each task below is scoped to one focused developer day:
 
 **Acceptance:**
 - Discord signature verification passes known test vector.
-- `/cpb run` and `/cpb status` map to the shared command parser.
+- `/cpb pipeline` and `/cpb status` map to the shared command parser.
 - No Discord token is stored in project directories.
 
 **Dependencies:** D31.
@@ -735,7 +735,7 @@ Each task below is scoped to one focused developer day:
 
 **Acceptance:**
 - First screen states gateway positioning.
-- Quickstart installs from a trusted checkout or release tarball, then includes `cpb setup`, `cpb demo`, `cpb init .`, `cpb run`.
+- Quickstart installs from a trusted checkout or release tarball, then includes `cpb setup --quickstart`, `cpb init .`, and `cpb pipeline`.
 - Unimplemented commands are not presented as ready paths.
 
 **Dependencies:** D16.
