@@ -1483,6 +1483,7 @@ async function writeValidAssignment({
     assignmentId,
     entryId,
     projectId: "proj",
+    projectRuntimeRoot: project.projectRuntimeRoot,
     task,
     sourcePath,
     workflow,
@@ -1519,6 +1520,7 @@ async function writeValidAssignment({
     assignmentId,
     entryId,
     projectId: "proj",
+    projectRuntimeRoot: project.projectRuntimeRoot,
     task,
     sourcePath,
     workflow,
@@ -1546,11 +1548,10 @@ test("createIsolatedWorktreeWithRetry refuses an unverified source checkout with
   const hubRoot = await tempRoot("cpb-managed-worktree");
   const sourcePath = await tempRoot("cpb-managed-source");
   const gitCalls = [];
-  const removedPaths = [];
 
   await assert.rejects(
     createIsolatedWorktreeWithRetry({
-      hubRoot,
+      projectRuntimeRoot: hubRoot,
       sourcePath,
       entryId: "entry1",
       maxAttempts: 1,
@@ -1559,9 +1560,6 @@ test("createIsolatedWorktreeWithRetry refuses an unverified source checkout with
       runGit: async (command, args, opts) => {
         gitCalls.push({ command, args, cwd: opts.cwd });
         return { stdout: "", stderr: "" };
-      },
-      removePath: async (target, opts) => {
-        removedPaths.push({ target, opts });
       },
     }),
     (err: any) => {
@@ -1572,7 +1570,6 @@ test("createIsolatedWorktreeWithRetry refuses an unverified source checkout with
   );
 
   assert.equal(gitCalls.length, 0, "target cleanup must not run repository-wide Git maintenance");
-  assert.equal(removedPaths.length, 0, "preserve-only cleanup must never call recursive pathname removal");
 });
 
 test("finalizeAndWriteSuccessfulResult persists attempt token and job result", async () => {
@@ -1748,7 +1745,7 @@ test("managed worker writes accepted, heartbeat, result, and cleans worktree and
   assert.equal(heartbeat.managedWorktree.baseCommit, worktree.managedWorktree.baseCommit);
   assert.deepEqual(heartbeat.worktreeVerification, worktree.worktreeVerification);
   assert.match(
-    path.relative(path.join(await realpath(hubRoot), "worktrees"), path.resolve(worktree.worktreePath)),
+    path.relative(path.join(await realpath(project.projectRuntimeRoot), "worktrees"), path.resolve(worktree.worktreePath)),
     /^job-managed-success-pipeline/,
   );
 
@@ -2419,7 +2416,7 @@ test("managed worker completes blocked workflow without creating a worktree", as
     assert.equal(result.jobResult.status, "blocked");
     assert.equal(result.jobResult.failure.cause.code, "workflow_blocked");
     assert.equal(existsSync(path.join(attemptDir, "worktree.json")), false);
-    assert.equal(existsSync(path.join(hubRoot, "worktrees")), false);
+    assert.equal(existsSync(path.join(hubRoot, "projects", "proj", "worktrees")), false);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

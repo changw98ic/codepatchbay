@@ -23,6 +23,10 @@ async function runClient({ env, prompt, cwd }) {
   if (!env.CPB_PROJECT_PATH_OVERRIDE) delete cleanEnv.CPB_PROJECT_PATH_OVERRIDE;
   if (!env.CPB_WORKER_ID) delete cleanEnv.CPB_WORKER_ID;
   if (!env.CPB_SESSION_ID) delete cleanEnv.CPB_SESSION_ID;
+  if (!env.CPB_PROJECT_RUNTIME_ROOT) {
+    delete cleanEnv.CPB_PROJECT_RUNTIME_ROOT;
+    cleanEnv.CPB_PROJECT_RUNTIME_ROOT = path.join(cwd, ".cpb-runtime");
+  }
   // Spawn in its own process group so a hung client can be killed together
   // with its fake-agent + terminal children. Without detached + group kill,
   // a stuck request() (ACP stdio handshake race) hangs the whole test runner.
@@ -293,8 +297,8 @@ test("writeAllowPaths allows write to matched path", async () => {
   assert.match(stdout, /done/);
 });
 
-// --- null writeAllowPaths allows all writes (backward compatible) ---
-test("null writeAllowPaths allows all writes (backward compatible)", async () => {
+// --- null writeAllowPaths allows all writes by default ---
+test("null writeAllowPaths allows all writes by default", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-write-norestrict-"));
   const outputFile = path.join(tempDir, "anywhere", "output.txt");
 
@@ -664,8 +668,8 @@ test("Policy file with array instead of object: fail closed", async () => {
   assert.match(stderr, /expected a JSON object/);
 });
 
-// --- Backward compat: CPB_ACP_TERMINAL=deny still works ---
-test("Backward compat: CPB_ACP_TERMINAL=deny still works", async () => {
+// --- terminal policy deny blocks terminal creation ---
+test("terminal policy deny blocks terminal creation", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-terminal-backcompat-"));
 
   const { exitCode, stdout, stderr } = await runClient({
@@ -682,8 +686,8 @@ test("Backward compat: CPB_ACP_TERMINAL=deny still works", async () => {
   assert.match(stdout, /done/);
 });
 
-// --- Backward compat: CPB_ACP_TERMINAL=deny does NOT block fs/write_text_file ---
-test("Backward compat: CPB_ACP_TERMINAL=deny does NOT block fs/write_text_file", async () => {
+// --- terminal policy deny does not block fs/write_text_file ---
+test("terminal policy deny does not block fs/write_text_file", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "cpb-acp-terminal-write-ok-"));
   const outputFile = path.join(tempDir, "output.txt");
 
@@ -747,7 +751,7 @@ test("Priority: DENY_TOOLS overrides CPB_ACP_TERMINAL", async () => {
     prompt: `ACTION: terminal\n`,
   });
 
-  // terminal/create should be allowed (ALLOW_TOOLS overrides legacy TERMINAL=deny)
+  // terminal/create should be allowed (ALLOW_TOOLS overrides the terminal policy)
   assert.equal(exitCode, 0, stderr);
   assert.match(stdout, /done/);
 });

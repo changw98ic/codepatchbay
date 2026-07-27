@@ -63,14 +63,14 @@ npm 包名：[`codepatchbay`](https://www.npmjs.com/package/codepatchbay)
 npm install -g codepatchbay
 cpb setup --recommended        # 检测工具、安装 agents、运行健康检查
 cd your-project
-cpb quickstart --demo --project-path . --project-name your-project  # 初始化本地演示，无需 API 密钥
-cpb run "fix failing tests" --project your-project                # 提交到完整流程队列
+cpb setup --quickstart --demo --project-path . --project-name your-project  # 初始化本地演示，无需 API 密钥
+cpb pipeline your-project "fix failing tests"                              # 提交到完整流程队列
 ```
 
 免安装试用：
 
 ```bash
-npx codepatchbay quickstart --demo --project-path . --project-name cpb-demo
+npx codepatchbay setup --quickstart --demo --project-path . --project-name cpb-demo
 ```
 
 ### 从源码安装
@@ -88,7 +88,7 @@ sh scripts/install.sh
 cpb init . myproj
 
 # 提交一个任务
-cpb run "add dark mode toggle to the settings page" --project myproj
+cpb pipeline myproj "add dark mode toggle to the settings page"
 ```
 
 CodePatchBay 会：
@@ -120,16 +120,15 @@ cpb hub start                    # 启动 Hub 调度器
 
 注意：当前 Hub HTTP server 不会仅因 `cpb hub start` 就暴露通用 GitHub webhook 路由；必须使用已经接线的 transport/外部 webhook 入口，才能让 Issue 标签触发上述流程。
 
-Hub 默认只监听回环地址，但回环地址也不是身份边界：启动时必须配置至少 32 字节的
-`CPB_HUB_BEARER_TOKEN`、`CPB_HUB_SERVICE_TOKENS_FILE` 或 `CPB_HUB_OIDC_CONFIG_FILE`。
+Hub 默认只监听回环地址，但回环地址也不是身份边界：生产或非回环部署必须配置
+`CPB_HUB_SERVICE_TOKENS_FILE` 或 `CPB_HUB_OIDC_CONFIG_FILE`。
 仅本地开发可显式设置 `CPB_HUB_ALLOW_ANONYMOUS_DEV=1`；该模式只接受回环绑定，且 readiness 不会判定为商用就绪。
 若设置非回环 `CPB_HOST`，应在 TLS 反向代理之后部署。只有明确位于受保护网络时，才可同时设置
 `CPB_HUB_ALLOW_INSECURE_HTTP=1` 允许非回环明文 HTTP。GitHub 评论触发的
-`/cpb run` 只接受仓库 `OWNER`、`MEMBER` 或 `COLLABORATOR`。
+`/cpb pipeline` 只接受仓库 `OWNER`、`MEMBER` 或 `COLLABORATOR`。
 
 企业部署可设置绝对路径 `CPB_HUB_SERVICE_TOKENS_FILE`，使用只保存 SHA-256 的具名服务令牌，
-并按 `hub:health`、`hub:read`、`hub:admin` scope 和项目白名单授权。旧
-`CPB_HUB_BEARER_TOKEN` 继续作为全局 `legacy-admin` 兼容凭证。权限文件必须是非符号链接的私有文件
+并按 `hub:health`、`hub:read`、`hub:admin` scope 和项目白名单授权。权限文件必须是非符号链接的私有文件
 （POSIX 下不得向组或其他用户开放，例如 `0600`）。通过原子替换该文件可在下一次请求时热加载撤销、轮换和
 授权变更，无需重启；文件缺失、损坏或不安全时请求会以 `503 HUB_AUTH_CONFIGURATION_UNAVAILABLE`
 失败关闭，修复后自动恢复。完整格式、错误合同和轮换说明见
@@ -206,7 +205,7 @@ planner、executor、verifier、reviewer 通过 `core/agents/routing.ts` 映射�
 
 ```bash
 # 为不同阶段指定 agent；所有阶段共用一个模型 profile
-cpb run "add unit tests for auth" \
+cpb pipeline myproj "add unit tests for auth" \
   --plan-agent claude --execute-agent claude \
   --verify-agent claude --model mimo
 ```
@@ -230,7 +229,6 @@ cpb list                           # 列出项目
 cpb status <project>               # 项目状态
 
 # 提交任务
-cpb run "<task>" [--project <id>]  # 提交任务（完整流程）
 cpb pipeline <project> "<task>" [--retries <n>]  # 完整流程（显式项目）
                                   #   可加 --plan-agent/--execute-agent/--verify-agent
                                   #   及 --model
@@ -261,7 +259,6 @@ cpb setup [--recommended|--interactive|--json]
 cpb agents [list|detect|install|upgrade|test]
 cpb stream [args]                  # 流式数据服务
 cpb doctor [--json]
-cpb health-check                   # quickstart 别名入口的健康检查
 cpb version
 ```
 

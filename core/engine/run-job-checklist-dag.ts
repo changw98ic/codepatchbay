@@ -103,6 +103,18 @@ function throwIfChecklistAborted(signal?: AbortSignal) {
   if (signal?.aborted) throw checklistAbortError(signal);
 }
 
+function configuredAgentForRole(agents: LooseRecord | null | undefined, role: string) {
+  const raw = recordValue(agents)[role];
+  if (typeof raw === "string" && raw.trim()) return raw.trim();
+  const entry = recordValue(raw);
+  if (typeof entry.agent === "string" && entry.agent.trim()) {
+    return entry.variant
+      ? { agent: entry.agent.trim(), variant: entry.variant }
+      : entry.agent.trim();
+  }
+  return null;
+}
+
 /**
  * Freeze the acceptance checklist (validate + coverage-check + persist),
  * materialize the workflow DAG, and generate + fail-closed validate the dynamic
@@ -373,6 +385,8 @@ export async function freezeChecklistAndMaterializeDag(
       workflow,
       planMode,
       independentVerifierRequired: assuranceRequiresIndependentVerifier,
+      verifierAgent: configuredAgentForRole(ctx.agents, "verifier"),
+      adversarialVerifierAgent: configuredAgentForRole(ctx.agents, "adversarial_verifier"),
     });
   } else if (assuranceRequiresIndependentVerifier && recordValue(dynamicAgentPlan).independentVerifierRequired !== true) {
     dynamicAgentPlan = {

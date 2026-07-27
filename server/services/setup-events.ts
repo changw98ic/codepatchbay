@@ -4,6 +4,7 @@ import path from "node:path";
 
 import { executeInstallPlan } from "../../core/setup/install-plan.js";
 import { recordValue, type LooseRecord } from "../../shared/types.js";
+import { resolveHubRoot } from "./hub/hub-registry.js";
 
 const SECRET_PATTERNS = [
   /\bsk-[A-Za-z0-9_-]{8,}\b/g,
@@ -13,7 +14,7 @@ const SECRET_PATTERNS = [
 ];
 
 function setupEventsPath(cpbRoot: string) {
-  return path.join(path.resolve(cpbRoot || process.env.CPB_ROOT || process.cwd()), "cpb-task", "setup-events.jsonl");
+  return path.join(resolveHubRoot(path.resolve(cpbRoot || process.env.CPB_ROOT || process.cwd())), "state", "setup-events.jsonl");
 }
 
 function redact(value: unknown): string {

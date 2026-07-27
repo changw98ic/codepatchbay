@@ -7,12 +7,13 @@ import {
   validatePhaseResult,
 } from "../core/engine/run-phase.js";
 
-test("runPhase rejects unsafe phase identifiers with contract diagnostics and still releases resources", async () => {
+test("runPhase rejects unsafe phase identifiers with contract diagnostics", async () => {
   const releases: Array<{ cwd: string; reason: string }> = [];
 
   const result = await runPhase({
     phase: "../unit_unknown_phase",
     cwd: "/tmp/cpb-unknown-phase",
+    conversationKey: "cpb:project:job:attempt:executor",
     pool: {
       releaseWorktree: async (cwd: string, reason: string) => {
         releases.push({ cwd, reason });
@@ -28,10 +29,7 @@ test("runPhase rejects unsafe phase identifiers with contract diagnostics and st
     phase: "../unit_unknown_phase",
     boundary: "phase-adapter",
   });
-  assert.deepEqual(releases, [{
-    cwd: "/tmp/cpb-unknown-phase",
-    reason: "phase_../unit_unknown_phase_complete",
-  }]);
+  assert.deepEqual(releases, []);
 });
 
 test("resolvePhaseAdapterExport requires the registered named export to be callable", () => {

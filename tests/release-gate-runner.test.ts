@@ -87,7 +87,6 @@ test("test build copies runtime registry assets required by dist-tests", async (
     "package.json",
     "core/agents/descriptors/codex.json",
     "core/agents/squads.json",
-    "bridges/common.sh",
     "tests/fixtures/acp-client-stub.sh",
   ]) {
     assert.equal(

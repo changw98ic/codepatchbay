@@ -10,13 +10,12 @@ const READ_ALLOWED_PATHS = Object.freeze(["*"]);
 
 export const INFRA_FAILURE = "INFRA_FAILURE";
 
-type ScopeResolver = (cpbRoot: string, project: string, sourcePath: string | null, dataRoot: string | null, legacyOnly: boolean) => string | null;
+type ScopeResolver = (cpbRoot: string, project: string, sourcePath: string | null, dataRoot: string | null) => string | null;
 type RoleScopeMap = Record<string, { allowed: ScopeResolver[]; denied: ScopeResolver[] }>;
 type RoleResolverMap = Record<string, ScopeResolver[]>;
 type ScopeOptions = LooseRecord & {
   sourcePath?: string | null;
   dataRoot?: string | null;
-  legacyOnly?: boolean;
 };
 type PhasePolicyOptions = ScopeOptions & {
   profileConfig?: LooseRecord | null;
@@ -45,19 +44,19 @@ type DeleteRiskOptions = LooseRecord & {
 const WRITE_SCOPES: RoleScopeMap = {
   planner: {
     allowed: [
-      (cpbRoot: string, project: string, _sourcePath: string | null, dataRoot: string | null, legacyOnly: boolean) => wikiBoundary(cpbRoot, project, dataRoot, legacyOnly, "inbox"),
+      (cpbRoot: string, project: string, _sourcePath: string | null, dataRoot: string | null) => wikiBoundary(cpbRoot, project, dataRoot, "inbox"),
     ],
     denied: [
-      (cpbRoot: string, project: string, _sourcePath: string | null, dataRoot: string | null, legacyOnly: boolean) => wikiBoundary(cpbRoot, project, dataRoot, legacyOnly, "outputs"),
+      (cpbRoot: string, project: string, _sourcePath: string | null, dataRoot: string | null) => wikiBoundary(cpbRoot, project, dataRoot, "outputs"),
     ],
   },
   executor: {
     allowed: [
-      (cpbRoot: string, project: string, _sourcePath: string | null, dataRoot: string | null, legacyOnly: boolean) => wikiBoundary(cpbRoot, project, dataRoot, legacyOnly, "outputs"),
+      (cpbRoot: string, project: string, _sourcePath: string | null, dataRoot: string | null) => wikiBoundary(cpbRoot, project, dataRoot, "outputs"),
       (_cpbRoot: string, _project: string, sourcePath: string | null) => sourcePath ? path.resolve(sourcePath) : null,
     ],
     denied: [
-      (cpbRoot: string, project: string, _sourcePath: string | null, dataRoot: string | null, legacyOnly: boolean) => wikiBoundary(cpbRoot, project, dataRoot, legacyOnly, "inbox"),
+      (cpbRoot: string, project: string, _sourcePath: string | null, dataRoot: string | null) => wikiBoundary(cpbRoot, project, dataRoot, "inbox"),
       (cpbRoot: string) => path.resolve(cpbRoot, "wiki", "system"),
       (cpbRoot: string) => path.resolve(cpbRoot, "profiles"),
       (cpbRoot: string) => path.resolve(cpbRoot, "bridges"),
@@ -65,10 +64,10 @@ const WRITE_SCOPES: RoleScopeMap = {
   },
   verifier: {
     allowed: [
-      (cpbRoot: string, project: string, _sourcePath: string | null, dataRoot: string | null, legacyOnly: boolean) => wikiBoundary(cpbRoot, project, dataRoot, legacyOnly, "outputs"),
+      (cpbRoot: string, project: string, _sourcePath: string | null, dataRoot: string | null) => wikiBoundary(cpbRoot, project, dataRoot, "outputs"),
     ],
     denied: [
-      (cpbRoot: string, project: string, _sourcePath: string | null, dataRoot: string | null, legacyOnly: boolean) => wikiBoundary(cpbRoot, project, dataRoot, legacyOnly, "inbox"),
+      (cpbRoot: string, project: string, _sourcePath: string | null, dataRoot: string | null) => wikiBoundary(cpbRoot, project, dataRoot, "inbox"),
       (_cpbRoot: string, _project: string, sourcePath: string | null) => sourcePath ? path.resolve(sourcePath) : null,
     ],
   },
@@ -80,7 +79,7 @@ const WRITE_SCOPES: RoleScopeMap = {
   },
   reviewer: {
     allowed: [
-      (cpbRoot: string, project: string, _sourcePath: string | null, dataRoot: string | null, legacyOnly: boolean) => wikiBoundary(cpbRoot, project, dataRoot, legacyOnly, "outputs"),
+      (cpbRoot: string, project: string, _sourcePath: string | null, dataRoot: string | null) => wikiBoundary(cpbRoot, project, dataRoot, "outputs"),
     ],
     denied: [],
   },
@@ -88,23 +87,23 @@ const WRITE_SCOPES: RoleScopeMap = {
 
 const OBSERVATION_PATHS: RoleResolverMap = {
   planner: [
-    (cpbRoot: string, project: string, _sourcePath: string | null, dataRoot: string | null, legacyOnly: boolean) => wikiBoundary(cpbRoot, project, dataRoot, legacyOnly),
+    (cpbRoot: string, project: string, _sourcePath: string | null, dataRoot: string | null) => wikiBoundary(cpbRoot, project, dataRoot),
     (cpbRoot: string) => path.resolve(cpbRoot, "wiki", "system"),
     (cpbRoot: string) => path.resolve(cpbRoot, "templates"),
     (cpbRoot: string) => path.resolve(cpbRoot, "profiles"),
     (_cpbRoot: string, _project: string, sourcePath: string | null) => sourcePath ? path.resolve(sourcePath) : null,
   ],
   verifier: [
-    (cpbRoot: string, project: string, _sourcePath: string | null, dataRoot: string | null, legacyOnly: boolean) => wikiBoundary(cpbRoot, project, dataRoot, legacyOnly),
+    (cpbRoot: string, project: string, _sourcePath: string | null, dataRoot: string | null) => wikiBoundary(cpbRoot, project, dataRoot),
     (cpbRoot: string) => path.resolve(cpbRoot, "wiki", "system"),
     (cpbRoot: string) => path.resolve(cpbRoot, "templates"),
     (_cpbRoot: string, _project: string, sourcePath: string | null) => sourcePath ? path.resolve(sourcePath) : null,
-    (cpbRoot: string, project: string, _sourcePath: string | null, dataRoot: string | null, legacyOnly: boolean) => dataBoundary(cpbRoot, dataRoot, legacyOnly, "events", project),
-    (cpbRoot: string, _project: string, _sourcePath: string | null, dataRoot: string | null, legacyOnly: boolean) => dataBoundary(cpbRoot, dataRoot, legacyOnly, "state"),
-    (cpbRoot: string, _project: string, _sourcePath: string | null, dataRoot: string | null, legacyOnly: boolean) => dataBoundary(cpbRoot, dataRoot, legacyOnly, "checkpoints"),
+    (cpbRoot: string, project: string, _sourcePath: string | null, dataRoot: string | null) => dataBoundary(cpbRoot, dataRoot, "events", project),
+    (cpbRoot: string, _project: string, _sourcePath: string | null, dataRoot: string | null) => dataBoundary(cpbRoot, dataRoot, "state"),
+    (cpbRoot: string, _project: string, _sourcePath: string | null, dataRoot: string | null) => dataBoundary(cpbRoot, dataRoot, "checkpoints"),
   ],
   executor: [
-    (cpbRoot: string, project: string, _sourcePath: string | null, dataRoot: string | null, legacyOnly: boolean) => wikiBoundary(cpbRoot, project, dataRoot, legacyOnly),
+    (cpbRoot: string, project: string, _sourcePath: string | null, dataRoot: string | null) => wikiBoundary(cpbRoot, project, dataRoot),
     (cpbRoot: string) => path.resolve(cpbRoot, "wiki", "system"),
     (cpbRoot: string) => path.resolve(cpbRoot, "templates"),
     (cpbRoot: string) => path.resolve(cpbRoot, "profiles"),
@@ -115,28 +114,18 @@ const OBSERVATION_PATHS: RoleResolverMap = {
     (_cpbRoot: string, _project: string, sourcePath: string | null) => sourcePath ? path.resolve(sourcePath) : null,
   ],
   reviewer: [
-    (cpbRoot: string, project: string, _sourcePath: string | null, dataRoot: string | null, legacyOnly: boolean) => wikiBoundary(cpbRoot, project, dataRoot, legacyOnly),
+    (cpbRoot: string, project: string, _sourcePath: string | null, dataRoot: string | null) => wikiBoundary(cpbRoot, project, dataRoot),
     (cpbRoot: string) => path.resolve(cpbRoot, "wiki", "system"),
     (_cpbRoot: string, _project: string, sourcePath: string | null) => sourcePath ? path.resolve(sourcePath) : null,
   ],
 };
 
-function legacyWikiPath(cpbRoot: string, project: string, ...parts: string[]) {
-  return path.resolve(cpbRoot, "wiki", "projects", project, ...parts);
+function wikiBoundary(_cpbRoot: string, _project: string, dataRoot: string | null | undefined, ...parts: string[]) {
+  return dataRoot ? path.resolve(dataRoot, "wiki", ...parts) : null;
 }
 
-function legacyDataPath(cpbRoot: string, ...parts: string[]) {
-  return path.resolve(cpbRoot, "cpb-task", ...parts);
-}
-
-function wikiBoundary(cpbRoot: string, project: string, dataRoot: string | null | undefined, legacyOnly = false, ...parts: string[]) {
-  if (dataRoot) return path.resolve(dataRoot, "wiki", ...parts);
-  return legacyOnly ? legacyWikiPath(cpbRoot, project, ...parts) : null;
-}
-
-function dataBoundary(cpbRoot: string, dataRoot: string | null | undefined, legacyOnly = false, ...parts: string[]) {
-  if (dataRoot) return path.resolve(dataRoot, ...parts);
-  return legacyOnly ? legacyDataPath(cpbRoot, ...parts) : null;
+function dataBoundary(_cpbRoot: string, dataRoot: string | null | undefined, ...parts: string[]) {
+  return dataRoot ? path.resolve(dataRoot, ...parts) : null;
 }
 
 export function validateRole(role: string) {
@@ -162,9 +151,9 @@ function matchesPath(targetPath: string, boundaryPath: string) {
   return null;
 }
 
-function resolveScopeMatches(resolvers: Array<(cpbRoot: string, project: string, sourcePath: string | null, dataRoot: string | null, legacyOnly: boolean) => string | null>, targetPath: string, cpbRoot: string, project: string, sourcePath: string | null, dataRoot: string | null, legacyOnly: boolean, effect: string) {
+function resolveScopeMatches(resolvers: ScopeResolver[], targetPath: string, cpbRoot: string, project: string, sourcePath: string | null, dataRoot: string | null, effect: string) {
   return resolvers
-    .map((resolver) => resolver(cpbRoot, project, sourcePath, dataRoot, legacyOnly))
+    .map((resolver) => resolver(cpbRoot, project, sourcePath, dataRoot))
     .filter(presentPath)
     .map((boundaryPath) => {
       const match = matchesPath(targetPath, boundaryPath);
@@ -177,7 +166,7 @@ function presentPath(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
 }
 
-export function canWrite(role: string, targetPath: string, cpbRoot: string, project: string, sourcePath: string | null = null, { dataRoot = null, legacyOnly = false }: ScopeOptions = {}) {
+export function canWrite(role: string, targetPath: string, cpbRoot: string, project: string, sourcePath: string | null = null, { dataRoot = null }: ScopeOptions = {}) {
   const canonicalRole = validateRole(role);
   const scope = WRITE_SCOPES[canonicalRole];
   if (!scope) return { allowed: false, reason: `unknown role: ${role}` };
@@ -185,8 +174,8 @@ export function canWrite(role: string, targetPath: string, cpbRoot: string, proj
   const resolved = path.resolve(targetPath);
 
   const matches = [
-    ...resolveScopeMatches(scope.allowed, targetPath, cpbRoot, project, sourcePath, dataRoot, legacyOnly, "allow"),
-    ...resolveScopeMatches(scope.denied, targetPath, cpbRoot, project, sourcePath, dataRoot, legacyOnly, "deny"),
+    ...resolveScopeMatches(scope.allowed, targetPath, cpbRoot, project, sourcePath, dataRoot, "allow"),
+    ...resolveScopeMatches(scope.denied, targetPath, cpbRoot, project, sourcePath, dataRoot, "deny"),
   ].sort((a, b) => {
     if (b.specificity !== a.specificity) return b.specificity - a.specificity;
     return a.effect === "deny" ? -1 : 1;
@@ -198,7 +187,7 @@ export function canWrite(role: string, targetPath: string, cpbRoot: string, proj
   }
 
   const allowedDirs = scope.allowed
-    .map((r) => r(cpbRoot, project, sourcePath, dataRoot, legacyOnly))
+    .map((r) => r(cpbRoot, project, sourcePath, dataRoot))
     .filter(presentPath)
     .map((d) => path.resolve(d));
 
@@ -482,7 +471,7 @@ export function canExecute(role: string, commandLine: string, _cpbRoot: string, 
   };
 }
 
-export function checkPermission(role: string, action: string, targetPath: string, cpbRoot: string, project: string, { sourcePath = null, jobId = null, dataRoot = null, legacyOnly = false }: PermissionCheckOptions = {}) {
+export function checkPermission(role: string, action: string, targetPath: string, cpbRoot: string, project: string, { sourcePath = null, jobId = null, dataRoot = null }: PermissionCheckOptions = {}) {
   const canonicalRole = validateRole(role);
 
   if (action === "read") {
@@ -490,7 +479,7 @@ export function checkPermission(role: string, action: string, targetPath: string
   }
 
   if (action === "write") {
-    return canWrite(canonicalRole, targetPath, cpbRoot, project, sourcePath, { dataRoot, legacyOnly });
+    return canWrite(canonicalRole, targetPath, cpbRoot, project, sourcePath, { dataRoot });
   }
 
   if (action === "execute") {
@@ -514,10 +503,9 @@ export async function recordPermissionDenial(
     recoveryGuidance,
     tool,
     dataRoot,
-    legacyOnly = false,
   }: LooseRecord
 ) {
-  if (!dataRoot && !legacyOnly) {
+  if (!dataRoot) {
     throw new Error("project runtime root required to record permission denial");
   }
   const eventRole = role ? validateRole(role) : null;
@@ -537,15 +525,15 @@ export async function recordPermissionDenial(
     ts: new Date().toISOString(),
   };
   if (tool) event.tool = tool;
-  await appendEvent(cpbRoot, project, jobId, event, dataRoot ? { dataRoot, includeLegacyFallback: false } : { includeLegacyFallback: true });
+  await appendEvent(cpbRoot, project, jobId, event, { dataRoot });
 }
 
-export function getObservablePaths(role: string, cpbRoot: string, project: string, { sourcePath = null, dataRoot = null, legacyOnly = false }: ScopeOptions = {}) {
+export function getObservablePaths(role: string, cpbRoot: string, project: string, { sourcePath = null, dataRoot = null }: ScopeOptions = {}) {
   const canonicalRole = validateRole(role);
   const resolvers = OBSERVATION_PATHS[canonicalRole];
   if (!resolvers) return [];
   return resolvers
-    .map((r) => r(cpbRoot, project, sourcePath, dataRoot, legacyOnly))
+    .map((r) => r(cpbRoot, project, sourcePath, dataRoot))
     .filter(presentPath);
 }
 
@@ -553,17 +541,17 @@ export function isInfraDenial(event: LooseRecord) {
   return event?.type === "permission_denied" && event?.category === "infra";
 }
 
-export function getPhasePolicy(role: string, cpbRoot: string, project: string, { sourcePath = null, profileConfig = null, dataRoot = null, legacyOnly = false }: PhasePolicyOptions = {}): PhasePolicy {
+export function getPhasePolicy(role: string, cpbRoot: string, project: string, { sourcePath = null, profileConfig = null, dataRoot = null }: PhasePolicyOptions = {}): PhasePolicy {
   const canonicalRole = validateRole(role);
   const scope = WRITE_SCOPES[canonicalRole];
-  const observable = getObservablePaths(canonicalRole, cpbRoot, project, { sourcePath, dataRoot, legacyOnly });
+  const observable = getObservablePaths(canonicalRole, cpbRoot, project, { sourcePath, dataRoot });
 
   const basePolicy: PhasePolicy = {
     role: canonicalRole,
     readScope: "unrestricted",
     readAllowed: getReadAllowedPaths(canonicalRole),
-    writeAllowed: scope.allowed.map((r) => r(cpbRoot, project, sourcePath, dataRoot, legacyOnly)).filter(presentPath),
-    writeDenied: scope.denied.map((r) => r(cpbRoot, project, sourcePath, dataRoot, legacyOnly)).filter(presentPath),
+    writeAllowed: scope.allowed.map((r) => r(cpbRoot, project, sourcePath, dataRoot)).filter(presentPath),
+    writeDenied: scope.denied.map((r) => r(cpbRoot, project, sourcePath, dataRoot)).filter(presentPath),
     observablePaths: observable,
     executionBoundary: REQUIRED_EXECUTION_BOUNDARY,
   };
@@ -620,7 +608,7 @@ function isSecretPath(targetPath: string) {
   return SECRET_PATH_PATTERNS.some((pattern) => pattern.test(resolved));
 }
 
-export function evaluatePermissionDecision(role: string, phase: string, action: string, targetPath: string, cpbRoot: string, project: string, { sourcePath = null, dataRoot = null, legacyOnly = false }: ScopeOptions = {}) {
+export function evaluatePermissionDecision(role: string, phase: string, action: string, targetPath: string, cpbRoot: string, project: string, { sourcePath = null, dataRoot = null }: ScopeOptions = {}) {
   // Action validation
   if (!["read", "write", "execute"].includes(action)) {
     return {
@@ -663,7 +651,7 @@ export function evaluatePermissionDecision(role: string, phase: string, action: 
 
   // Write: delegate to existing canWrite logic
   if (action === "write") {
-    const result = canWrite(role, targetPath, cpbRoot, project, sourcePath, { dataRoot, legacyOnly });
+    const result = canWrite(role, targetPath, cpbRoot, project, sourcePath, { dataRoot });
     if (result.allowed) {
       return {
         allowed: true,

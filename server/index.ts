@@ -31,7 +31,6 @@ type HubServerOptions = {
   hubRoot?: string;
   host?: string;
   port?: number;
-  bearerToken?: string;
   serviceTokensFile?: string;
   oidcConfigFile?: string;
   oidcFetcher?: typeof fetch;
@@ -160,7 +159,6 @@ export async function startHubServer(options: HubServerOptions = {}): Promise<Ru
     now: options.oidcNow,
   });
   const authProvider = await openHubAuthProvider({
-    bearerToken: options.bearerToken ?? process.env.CPB_HUB_BEARER_TOKEN,
     serviceTokensFile: options.serviceTokensFile ?? process.env.CPB_HUB_SERVICE_TOKENS_FILE,
     hubRoot,
     requireAuthentication: oidcProvider.configured || !allowAnonymousDev,
@@ -170,7 +168,7 @@ export async function startHubServer(options: HubServerOptions = {}): Promise<Ru
   if (initialAuthConfig.credentialCount === 0 && !oidcProvider.configured && !allowAnonymousDev) {
     throw new Error(
       "CPB Hub authentication is required; "
-      + "configure CPB_HUB_BEARER_TOKEN, CPB_HUB_SERVICE_TOKENS_FILE, or CPB_HUB_OIDC_CONFIG_FILE",
+      + "configure CPB_HUB_SERVICE_TOKENS_FILE or CPB_HUB_OIDC_CONFIG_FILE",
     );
   }
   assertExplicitInsecureHttpOptIn(

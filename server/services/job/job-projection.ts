@@ -148,8 +148,8 @@ const KNOWN_KINDS = new Set([
 ]);
 
 function wikiProjectDir(cpbRoot: string, project: string, wikiDir?: string | null) {
-  if (wikiDir) return path.resolve(wikiDir);
-  return path.join(path.resolve(cpbRoot), "wiki", "projects", project);
+  if (!wikiDir) throw new Error(`project wiki root required for '${project}'`);
+  return path.resolve(wikiDir);
 }
 
 function runtimeWikiDir(dataRoot: string) {
@@ -306,7 +306,8 @@ function artifactReferences(events: ProjectionRecord[]) {
 
 export async function buildArtifactIndex(cpbRoot: string, project: string, jobId: string, { events, dataRoot, wikiDir, restrictToWiki = false }: ArtifactIndexOptions = {}): Promise<BrokerArtifactIndex> {
   const sourceEvents = (events || await readEvents(cpbRoot, project, jobId, { dataRoot })).filter(isRecord);
-  const effectiveWikiDir = wikiDir || (dataRoot ? runtimeWikiDir(dataRoot) : undefined);
+  const effectiveWikiDir = wikiDir || (dataRoot ? runtimeWikiDir(dataRoot) : null);
+  if (!effectiveWikiDir) throw new Error(`dataRoot is required for artifact index: ${project}/${jobId}`);
   const entries: BrokerArtifactEntry[] = [];
   const seen = new Set();
 
@@ -544,7 +545,7 @@ export async function buildJobRunReport({ cpbRoot, anomalyLimit = 10, hubRoot }:
   const seenPaths = new Set();
   const eventFiles = [];
   for (const root of roots) {
-    const dataRoot = root.kind === "legacy" ? undefined : root.dataRoot;
+    const dataRoot = root.dataRoot;
     const batch = await listEventFiles(cpbRoot, { dataRoot });
     for (const f of batch) {
       if (seenPaths.has(f.file)) continue;
@@ -555,7 +556,7 @@ export async function buildJobRunReport({ cpbRoot, anomalyLimit = 10, hubRoot }:
 
   const jobs: ProjectionRecord[] = [];
   for (const { project, jobId, file, dataRoot } of eventFiles) {
-    const events = await readEventsReadOnly(cpbRoot, project, jobId, dataRoot ? { dataRoot } : {});
+    const events = await readEventsReadOnly(cpbRoot, project, jobId, { dataRoot });
     if (!events || events.length === 0) continue;
     const job = recordValue(materializeJob(events));
     if (!job.jobId || !job.project || !job.createdAt) continue;

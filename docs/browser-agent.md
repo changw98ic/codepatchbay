@@ -62,7 +62,7 @@ cpb config --hub --verify-agent browser-agent:deepseek
 ### 5. Run a task
 
 ```bash
-cpb run "Add dark mode" --project my-project
+cpb pipeline my-project "Add dark mode"
 ```
 
 ## CLI Reference
@@ -125,7 +125,7 @@ cpb config my-project --verify-agent browser-agent:deepseek
 ### Single-task override
 
 ```bash
-cpb run "Refactor auth" --project my-project \
+cpb pipeline my-project "Refactor auth" \
   --plan-agent browser-agent:chatgpt \
   --execute-agent claude \
   --verify-agent browser-agent:deepseek

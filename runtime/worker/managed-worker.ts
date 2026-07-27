@@ -221,6 +221,77 @@ export function finalizerFailureEvidenceFromError(error: unknown): LooseRecord |
   };
 }
 
+// Seam: execution-failure routing boundary for the assignment lifecycle.
+//
+// Concerns 1 (execution lease renewal/loss) and 6 (cancellation / lease-loss /
+// process-exit recovery) share a common decision point: given an error thrown
+// during assignment execution, decide which lifecycle path applies — pool
+// exhaustion, worktree unavailability, execution-lease loss, mutation-lease
+// loss, cancellation, or worker crash — and whether the failure leaves
+// finalizer evidence in an ambiguous (committed-but-unknown) state. The
+// decision is a pure function of the error and the current cancel-request
+// flag; lifting it here names the boundary without altering any statement,
+// condition, or recovery semantic.
+type AssignmentExecutionFailureClassification = {
+  errObj: Error & LooseRecord;
+  safeErrorMessage: string;
+  finalizerEvidence: LooseRecord | null;
+  finalizerMutationAmbiguous: boolean;
+  cleanupEvidence: LooseRecord | null;
+  isPoolExhausted: boolean;
+  isWorktreeUnavailable: boolean;
+  isExecutionLeaseLost: boolean;
+  isMutationLeaseLost: boolean;
+  isCancelled: boolean;
+  mutationOwnershipLost: boolean;
+  failureKind: string;
+};
+
+export function classifyAssignmentExecutionFailure(
+  err: unknown,
+  cancelRequested: CancelRequest | null,
+): AssignmentExecutionFailureClassification {
+  const errObj = err instanceof Error ? err as Error & LooseRecord : { message: String(err) } as Error & LooseRecord;
+  const safeErrorMessage = redactedWorkerErrorMessage(errObj);
+  const finalizerEvidence = finalizerFailureEvidenceFromError(errObj);
+  const finalizerMutationAmbiguous = Boolean(finalizerEvidence) && (
+    finalizerEvidence?.committed !== false
+    || Object.keys(recordValue(finalizerEvidence?.remoteIntent)).length > 0
+    || Object.keys(recordValue(finalizerEvidence?.remoteWrites)).length > 0
+  );
+  const isPoolExhausted = errObj.code === "POOL_EXHAUSTED" || errObj.name === "PoolExhaustedError";
+  const isWorktreeUnavailable = errObj.code === "WORKTREE_UNAVAILABLE"
+    || errObj.code === "WORKTREE_CLEANUP_DEFERRED";
+  const isExecutionLeaseLost = errObj.code === "WORKER_EXECUTION_LEASE_LOST";
+  const isMutationLeaseLost = errObj.code === "MUTATION_LEASE_LOST"
+    || errObj.code === "STALE_ATTEMPT"
+    || errObj.code === "STALE_INBOX_CLAIM";
+  const isCancelled = errObj.code === "ASSIGNMENT_CANCELLED" || Boolean(cancelRequested);
+  const mutationOwnershipLost = isExecutionLeaseLost || isMutationLeaseLost;
+  const cleanupEvidence = worktreeCleanupFailureEvidence(errObj);
+  const failureKind = isPoolExhausted
+    ? "pool_exhausted"
+    : isWorktreeUnavailable
+      ? "worktree_unavailable"
+      : isExecutionLeaseLost || isMutationLeaseLost || isCancelled
+        ? FailureKind.RUNTIME_INTERRUPTED
+        : FailureKind.WORKER_CRASHED;
+  return {
+    errObj,
+    safeErrorMessage,
+    finalizerEvidence,
+    finalizerMutationAmbiguous,
+    cleanupEvidence,
+    isPoolExhausted,
+    isWorktreeUnavailable,
+    isExecutionLeaseLost,
+    isMutationLeaseLost,
+    isCancelled,
+    mutationOwnershipLost,
+    failureKind,
+  };
+}
+
 async function closeWatcherBounded(
   watcher: { close: () => Promise<unknown> },
   log: ReturnType<typeof createLogger>,
@@ -1025,6 +1096,7 @@ type AssignmentPayload = LooseRecord & {
   attempt: number;
   attemptToken: string;
   projectId: string;
+  projectRuntimeRoot: string;
   sourcePath?: string;
   task?: string;
   workflow?: string;
@@ -2141,6 +2213,11 @@ export async function main({
         await workerStore.completeInboxClaim(workerId, inboxAssignmentId, claim.claimToken);
         continue;
       }
+      if (!path.isAbsolute(assignment.projectRuntimeRoot) || path.resolve(assignment.projectRuntimeRoot) !== assignment.projectRuntimeRoot) {
+        log.warn(`missing or non-canonical projectRuntimeRoot in assignment`);
+        await workerStore.completeInboxClaim(workerId, inboxAssignmentId, claim.claimToken);
+        continue;
+      }
 
       const assignmentId = assignment.assignmentId;
       const attemptNum = assignment.attempt;
@@ -2526,7 +2603,7 @@ export async function main({
         await pollCancel();
         if (worktreeRequired) {
           worktreeInfo = await createIsolatedWorktreeWithRetry({
-            hubRoot,
+            projectRuntimeRoot: assignment.projectRuntimeRoot,
             sourcePath: assignment.sourcePath,
             entryId: assignment.entryId,
             log: jobLog,
@@ -2735,7 +2812,7 @@ export async function main({
           managedWorktree: worktreeInfo,
           cleanupWorktree: worktreeInfo && assignment.sourcePath
             ? async () => await cleanupManagedWorkerWorktree({
-                hubRoot,
+                projectRuntimeRoot: assignment.projectRuntimeRoot,
                 sourcePath: assignment.sourcePath,
                 entryId: assignment.entryId,
                 managedWorktree: worktreeInfo!,
@@ -2743,7 +2820,7 @@ export async function main({
             : null,
           retainWorktree: worktreeInfo && assignment.sourcePath
             ? async () => await verifyRetainedManagedWorkerWorktree({
-                hubRoot,
+                projectRuntimeRoot: assignment.projectRuntimeRoot,
                 sourcePath: assignment.sourcePath,
                 entryId: assignment.entryId,
                 managedWorktree: worktreeInfo!,
@@ -2816,31 +2893,18 @@ export async function main({
         clearInterval(assignmentHeartbeat);
         clearInterval(cancelTimer);
       } catch (err: unknown) {
-        const errObj = err instanceof Error ? err as Error & LooseRecord : { message: String(err) } as Error & LooseRecord;
-        const safeErrorMessage = redactedWorkerErrorMessage(errObj);
-        const finalizerEvidence = finalizerFailureEvidenceFromError(errObj);
-        const finalizerMutationAmbiguous = Boolean(finalizerEvidence) && (
-          finalizerEvidence?.committed !== false
-          || Object.keys(recordValue(finalizerEvidence?.remoteIntent)).length > 0
-          || Object.keys(recordValue(finalizerEvidence?.remoteWrites)).length > 0
-        );
-        const isPoolExhausted = errObj.code === "POOL_EXHAUSTED" || errObj.name === "PoolExhaustedError";
-        const isWorktreeUnavailable = errObj.code === "WORKTREE_UNAVAILABLE"
-          || errObj.code === "WORKTREE_CLEANUP_DEFERRED";
-        const isExecutionLeaseLost = errObj.code === "WORKER_EXECUTION_LEASE_LOST";
-        const isMutationLeaseLost = errObj.code === "MUTATION_LEASE_LOST"
-          || errObj.code === "STALE_ATTEMPT"
-          || errObj.code === "STALE_INBOX_CLAIM";
-        const isCancelled = errObj.code === "ASSIGNMENT_CANCELLED" || Boolean(cancelRequested);
-        mutationOwnershipLost = isExecutionLeaseLost || isMutationLeaseLost;
-        const cleanupEvidence = worktreeCleanupFailureEvidence(errObj);
-        const failureKind = isPoolExhausted
-          ? "pool_exhausted"
-          : isWorktreeUnavailable
-            ? "worktree_unavailable"
-            : isExecutionLeaseLost || isMutationLeaseLost || isCancelled
-              ? FailureKind.RUNTIME_INTERRUPTED
-              : FailureKind.WORKER_CRASHED;
+        const classification = classifyAssignmentExecutionFailure(err, cancelRequested);
+        const {
+          errObj,
+          safeErrorMessage,
+          finalizerEvidence,
+          finalizerMutationAmbiguous,
+          cleanupEvidence,
+          isPoolExhausted,
+          isCancelled,
+          failureKind,
+        } = classification;
+        mutationOwnershipLost = classification.mutationOwnershipLost;
         jobLog.error(`job failed (${failureKind}): ${safeErrorMessage}`);
         if (isPoolExhausted) {
           try {

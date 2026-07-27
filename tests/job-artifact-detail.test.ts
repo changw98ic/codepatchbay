@@ -47,7 +47,11 @@ test("job artifact detail parses pass and fail verdict artifacts", async () => {
   const cpbRoot = await tempRoot("cpb-job-verdict");
   const dataRoot = path.join(cpbRoot, "runtime", "projects", "proj");
   const project = "proj";
-  await writeArtifact(dataRoot, "outputs", "verdict-pass.md", "VERDICT: PASS\nAll checks passed.\n");
+  await writeArtifact(dataRoot, "outputs", "verdict-pass.md", JSON.stringify({
+    schemaVersion: 2,
+    status: "pass",
+    reason: "All checks passed.",
+  }) + "\n");
   await writeEvents(dataRoot, project, "job-pass", [
     { type: "phase_completed", phase: "verify", artifact: "verdict-pass.md", ts: "2026-06-04T10:00:00Z" },
   ]);
@@ -55,7 +59,11 @@ test("job artifact detail parses pass and fail verdict artifacts", async () => {
   assert.equal(pass.verdict.status, "pass");
   assert.equal(pass.verdict.path, path.join(dataRoot, "wiki", "outputs", "verdict-pass.md"));
 
-  await writeArtifact(dataRoot, "outputs", "verdict-fail.md", "VERDICT: FAIL\nTwo blocking issues found.\n");
+  await writeArtifact(dataRoot, "outputs", "verdict-fail.md", JSON.stringify({
+    schemaVersion: 2,
+    status: "fail",
+    reason: "Two blocking issues found.",
+  }) + "\n");
   await writeEvents(dataRoot, project, "job-fail", [
     { type: "phase_completed", phase: "verify", artifact: "verdict-fail.md", ts: "2026-06-04T10:01:00Z" },
   ]);

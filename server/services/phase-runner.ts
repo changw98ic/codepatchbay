@@ -1708,9 +1708,6 @@ function selectedAgentForPhase(phase: string, scriptPath: string, env: NodeJS.Pr
     return agent;
   };
   if (override) return scopedClaudeAgent(override);
-  const bridgeRole = roleForBridge(scriptPath);
-  if (bridgeRole === "executor" || bridgeRole === "repairer") return scopedClaudeAgent("claude");
-  if (bridgeRole) return "codex";
   const normalized = phase.toLowerCase();
   if (normalized.startsWith("execute") || normalized.startsWith("repair") || normalized.startsWith("review-fix")) {
     return scopedClaudeAgent("claude");
@@ -1771,16 +1768,6 @@ function minimalRunnerEnv(
     }
   }
   return { initialEnv: result, credentials };
-}
-
-export function roleForBridge(scriptPath: string) {
-  const base = path.basename(scriptPath);
-  if (base === "planner.sh") return "planner";
-  if (base === "executor.sh") return "executor";
-  if (base === "repairer.sh") return "repairer";
-  if (base === "verifier.sh") return "verifier";
-  if (base === "reviewer.sh") return "reviewer";
-  return null;
 }
 
 export function phaseRole(phase: string) {

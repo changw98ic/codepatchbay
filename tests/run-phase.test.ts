@@ -30,7 +30,7 @@ async function writePhaseAdapter(body: string) {
   return phase;
 }
 
-test("runPhase loads an adapter, returns its result, and releases worktree resources", async () => {
+test("runPhase loads an adapter and returns its result", async () => {
   const phase = await writePhaseAdapter(`
     return {
       schemaVersion: 1,
@@ -46,6 +46,7 @@ test("runPhase loads an adapter, returns its result, and releases worktree resou
   const result = await runPhase({
     phase,
     sourcePath: "/tmp/cpb-worktree",
+    conversationKey: "cpb:project:job:attempt:executor",
     pool: {
       releaseWorktree: async (cwd: string, reason: string, options: Record<string, unknown>) => {
         releases.push({ cwd, reason, options });
@@ -55,11 +56,7 @@ test("runPhase loads an adapter, returns its result, and releases worktree resou
 
   assert.equal(result.status, "passed");
   assert.equal(result.phase, phase);
-  assert.deepEqual(releases, [{
-    cwd: "/tmp/cpb-worktree",
-    reason: `phase_${phase}_complete`,
-    options: { closeProvider: true },
-  }]);
+  assert.deepEqual(releases, []);
 });
 
 test("runPhase preserves attempt-scoped conversations until job cleanup", async () => {
@@ -95,6 +92,7 @@ test("runPhase converts adapter errors to failed phase results and still release
   const result = await runPhase({
     phase,
     cpbRoot: "/tmp/cpb-root",
+    conversationKey: "cpb:project:job:attempt:executor",
     pool: {
       releaseWorktree: async (cwd: string) => {
         releases.push(cwd);
@@ -106,7 +104,7 @@ test("runPhase converts adapter errors to failed phase results and still release
   assert.equal(result.phase, phase);
   assert.equal(result.failure?.kind, "unknown");
   assert.equal(result.failure?.reason, "adapter exploded");
-  assert.deepEqual(releases, ["/tmp/cpb-root"]);
+  assert.deepEqual(releases, []);
 });
 
 test("runPhase rethrows pool exhaustion while still releasing resources", async () => {
@@ -122,6 +120,7 @@ test("runPhase rethrows pool exhaustion while still releasing resources", async 
     runPhase({
       phase,
       cwd: "/tmp/cpb-cwd",
+      conversationKey: "cpb:project:job:attempt:executor",
       pool: {
         releaseWorktree: async (cwd: string) => {
           releases.push(cwd);
@@ -130,5 +129,5 @@ test("runPhase rethrows pool exhaustion while still releasing resources", async 
     }),
     /pool empty/,
   );
-  assert.deepEqual(releases, ["/tmp/cpb-cwd"]);
+  assert.deepEqual(releases, []);
 });

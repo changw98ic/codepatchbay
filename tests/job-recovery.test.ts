@@ -30,10 +30,11 @@ import { registerProject } from "../server/services/hub/hub-registry.js";
 let root = "";
 const project = "recovery-test";
 let dataRoot = "";
+let hubRoot = "";
 
 before(async () => {
   root = await mkdtemp(path.join(tmpdir(), "cpb-job-recovery-"));
-  const hubRoot = path.join(root, "hub");
+  hubRoot = path.join(root, "hub");
   const sourcePath = path.join(root, "source");
   await mkdir(sourcePath, { recursive: true });
   const registeredProject = await registerProject(hubRoot, {
@@ -88,6 +89,7 @@ test("recoverAsNewJob preserves the failed parent and records lineage", async ()
     ts: "2026-05-20T00:10:00.000Z",
     reason: "automated recovery",
     dataRoot,
+    hubRoot,
   });
   assert.ok(recovered.jobId);
   assert.notEqual(recovered.jobId, failedJob.jobId, "recovery creates a new job");
@@ -126,6 +128,7 @@ test("retryAsNewJob handles blocked and cancelled jobs and rejects invalid state
   const retried = await retryAsNewJob(root, project, blockedJob.jobId, {
     ts: "2026-05-20T01:05:00.000Z",
     dataRoot,
+    hubRoot,
   });
   assert.ok(retried.jobId);
   assert.notEqual(retried.jobId, blockedJob.jobId);
@@ -146,7 +149,7 @@ test("retryAsNewJob handles blocked and cancelled jobs and rejects invalid state
     dataRoot,
   });
   await assert.rejects(
-    () => recoverAsNewJob(root, project, runningJob.jobId, { dataRoot }),
+    () => recoverAsNewJob(root, project, runningJob.jobId, { dataRoot, hubRoot }),
     /not terminal/,
   );
 
@@ -158,11 +161,11 @@ test("retryAsNewJob handles blocked and cancelled jobs and rejects invalid state
   });
   await completeJob(root, project, completedJob.jobId, { ts: "2026-05-20T02:01:00.000Z", dataRoot });
   await assert.rejects(
-    () => recoverAsNewJob(root, project, completedJob.jobId, { dataRoot }),
+    () => recoverAsNewJob(root, project, completedJob.jobId, { dataRoot, hubRoot }),
     /completed job does not need recovery/,
   );
   await assert.rejects(
-    () => retryAsNewJob(root, project, completedJob.jobId, { dataRoot }),
+    () => retryAsNewJob(root, project, completedJob.jobId, { dataRoot, hubRoot }),
     /not recoverable/,
   );
 
@@ -173,7 +176,7 @@ test("retryAsNewJob handles blocked and cancelled jobs and rejects invalid state
     dataRoot,
   });
   await requestCancelJob(root, project, cancelledJob.jobId, { reason: "user cancel", dataRoot });
-  const cancelledRetry = await retryAsNewJob(root, project, cancelledJob.jobId, { dataRoot });
+  const cancelledRetry = await retryAsNewJob(root, project, cancelledJob.jobId, { dataRoot, hubRoot });
   assert.notEqual(cancelledRetry.jobId, cancelledJob.jobId);
   assert.equal(cancelledRetry.task, "Test fresh retry for cancelled");
 });
@@ -193,11 +196,11 @@ test("terminal immutability and lineage helpers report safe results", async () =
     dataRoot,
   });
 
-  const immutableResult = await verifyTerminalImmutability(root, project, completedJob.jobId, { dataRoot });
+  const immutableResult = await verifyTerminalImmutability(root, project, completedJob.jobId, { dataRoot, hubRoot });
   assert.equal(immutableResult.immutable, true);
-  const notFound = await verifyTerminalImmutability(root, project, "nonexistent", { dataRoot });
+  const notFound = await verifyTerminalImmutability(root, project, "nonexistent", { dataRoot, hubRoot });
   assert.equal(notFound.immutable, false);
-  const runningImmutable = await verifyTerminalImmutability(root, project, runningJob.jobId, { dataRoot });
+  const runningImmutable = await verifyTerminalImmutability(root, project, runningJob.jobId, { dataRoot, hubRoot });
   assert.equal(runningImmutable.immutable, false);
 
   const failedJob = await createJob(root, {
@@ -212,7 +215,7 @@ test("terminal immutability and lineage helpers report safe results", async () =
     phase: "execute",
     dataRoot,
   });
-  const recovered = await recoverAsNewJob(root, project, failedJob.jobId, { dataRoot });
+  const recovered = await recoverAsNewJob(root, project, failedJob.jobId, { dataRoot, hubRoot });
   const lineage = getLineage(await getJob(root, project, recovered.jobId, { dataRoot }));
   assert.equal(lineage.parentJobId, failedJob.jobId);
   assert.equal(lineage.parentStatus, "failed");
@@ -253,6 +256,7 @@ test("recovery and retry preserve or explicitly override executor pins", async (
 
   const preservedRecovery = await recoverAsNewJob(root, project, parentWithExecutor.jobId, {
     ts: "2026-05-20T10:05:00.000Z", dataRoot,
+    hubRoot,
   });
   assert.deepEqual(preservedRecovery.executor, oldExecutor,
     "recoverAsNewJob preserves parent executor by default");
@@ -261,6 +265,7 @@ test("recovery and retry preserve or explicitly override executor pins", async (
     useCurrentExecutor: true,
     currentExecutor,
     dataRoot,
+    hubRoot,
   });
   assert.deepEqual(overrideRecovery.executor, currentExecutor,
     "recoverAsNewJob uses current executor when override is explicit");
@@ -296,6 +301,7 @@ test("recovery and retry preserve or explicitly override executor pins", async (
   });
   const preservedRetry = await retryAsNewJob(root, project, blockedWithExecutor.jobId, {
     ts: "2026-05-20T11:05:00.000Z", dataRoot,
+    hubRoot,
   });
   assert.deepEqual(preservedRetry.executor, oldExecutor,
     "retryAsNewJob preserves parent executor by default");
@@ -304,6 +310,7 @@ test("recovery and retry preserve or explicitly override executor pins", async (
     useCurrentExecutor: true,
     currentExecutor,
     dataRoot,
+    hubRoot,
   });
   assert.deepEqual(overrideRetry.executor, currentExecutor,
     "retryAsNewJob uses current executor when override is explicit");
@@ -349,6 +356,7 @@ test("node-aware recovery resumes the failed DAG node", async () => {
 
   const nodeAwareRetry = await retryAsNewJob(root, project, nodeAwareParent.jobId, {
     ts: "2026-05-20T12:05:00.000Z", dataRoot,
+    hubRoot,
   });
   assert.equal(nodeAwareRetry.sourceContext.dagResume.failedNodeId, "execute_b");
   assert.deepEqual(nodeAwareRetry.sourceContext.dagResume.resumeTarget, {

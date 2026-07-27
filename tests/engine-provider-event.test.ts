@@ -27,8 +27,8 @@ process.env.CPB_PHASE_FEEDBACK_RETRY_MAX = "1";
 process.env.CPB_DELEGATE_ACK_POLL_MS = "10";
 process.env.CPB_DELEGATE_ACK_TIMEOUT_MS = "80";
 
-test("readProviderQuotas only falls back to legacy rate-limits when quotas file is missing", async () => {
-  const hubRoot = await tempRoot("cpb-provider-quota-fallback");
+test("readProviderQuotas reads only canonical quotas", async () => {
+  const hubRoot = await tempRoot("cpb-provider-quota-canonical");
   await mkdir(path.join(hubRoot, "providers"), { recursive: true });
   const untilTs = "2027-01-02T03:04:05.000Z";
   await writeFile(
@@ -37,18 +37,7 @@ test("readProviderQuotas only falls back to legacy rate-limits when quotas file 
     "utf8",
   );
 
-  assert.deepEqual(await readProviderQuotas(hubRoot), {
-    legacy: {
-      untilTs,
-      reason: "old",
-      providerKey: "legacy",
-      agent: "legacy",
-      status: "rate_limited",
-      nextEligibleAt: Date.parse(untilTs),
-      source: "legacy-rate-limits",
-      confidence: 1,
-    },
-  });
+  assert.deepEqual(await readProviderQuotas(hubRoot), {});
 
   await writeFile(path.join(hubRoot, "providers", "quotas.json"), "{bad json", "utf8");
   await assert.rejects(readProviderQuotas(hubRoot), {
@@ -617,7 +606,7 @@ test("high-risk production routing keeps verifier provider family independent fr
       },
     },
     pool: makePool({ calls }),
-    agents: { planner: "codex", executor: "codex", verifier: "codex", adversarial_verifier: "codex" },
+    agents: { planner: "codex", executor: "codex", verifier: "fake-secondary", adversarial_verifier: "fake-secondary" },
     providerServices: null,
   });
 
@@ -625,7 +614,7 @@ test("high-risk production routing keeps verifier provider family independent fr
   assert.equal(calls.find((call) => call.meta.role === "executor")?.agent, "codex");
   const verifierCalls = calls.filter((call) => call.meta.role === "verifier" || call.meta.role === "adversarial_verifier");
   assert.ok(verifierCalls.length >= 1);
-  assert.ok(verifierCalls.every((call) => call.agent === "claude"));
+  assert.ok(verifierCalls.every((call) => call.agent === "fake-secondary"));
   const independentDecisions = events.filter((event) =>
     event.type === "agent_routing_decision" && (event.role === "verifier" || event.role === "adversarial_verifier"),
   );

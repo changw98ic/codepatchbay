@@ -18,19 +18,22 @@ export async function run(_args: string[], { cpbRoot }: { cpbRoot: string }) {
 
   for (const project of projects) {
     const tag = project.enabled === false ? "-" : " ";
-    const src = project.sourcePath || "?";
+    const projectId = typeof project.id === "string" ? project.id : "?";
+    const src = typeof project.sourcePath === "string" ? project.sourcePath : "?";
     let verdict = "";
     try {
       const { readFile, readdir } = await import("node:fs/promises");
-      const outDir = path.join(src, "wiki/projects", project.id, "outputs");
+      const runtimeRoot = typeof project.projectRuntimeRoot === "string" ? project.projectRuntimeRoot : "";
+      if (!runtimeRoot) throw new Error("project runtime root missing");
+      const outDir = path.join(runtimeRoot, "wiki", "outputs");
       const files = await readdir(outDir);
       const v = files.filter((f) => f.startsWith("verdict-") && f.endsWith(".md")).sort().pop();
       if (v) {
         const content = await readFile(path.join(outDir, v), "utf8");
-        const match = content.match(/^VERDICT:\s*(\w+)/m);
-        verdict = match?.[1] || "";
+        const parsed = JSON.parse(content);
+        verdict = typeof parsed.status === "string" ? parsed.status.toUpperCase() : "";
       }
     } catch {}
-    console.log(` ${tag} ${CYAN}${project.id.padEnd(20)}${NC} ${src} ${verdict}`);
+    console.log(` ${tag} ${CYAN}${projectId.padEnd(20)}${NC} ${src} ${verdict}`);
   }
 }

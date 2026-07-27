@@ -151,6 +151,7 @@ test("checkpoint deletion preserves a same-path successor installed at the final
     "job-successor",
     { jobId: "job-successor", project: "flow", status: "completed" },
     { dataRoot },
+    { eventCount: 1, eventDigest: "0".repeat(64) },
   );
   const predecessorPath = `${filePath}.predecessor`;
   const successor = `${JSON.stringify({ sentinel: "checkpoint-successor" })}\n`;
@@ -179,6 +180,7 @@ test("checkpoint deletion isolates the exact cache generation with recovery evid
     "job-owned",
     { jobId: "job-owned", project: "flow", status: "completed" },
     { dataRoot },
+    { eventCount: 1, eventDigest: "0".repeat(64) },
   );
 
   const evidence = await deleteCheckpoint(cpbRoot, "flow", "job-owned", { dataRoot });

@@ -4,7 +4,7 @@ import { isRecord, recordValue, type LooseRecord } from "../contracts/types.js";
 
 export { isRecord, recordValue };
 
-// Re-exported by acceptance-checklist.ts for backwards-compatible API.
+// Re-exported by acceptance-checklist.ts as the canonical shared surface.
 export { normalizeRepoRelativePaths };
 
 export type RoutingContext = LooseRecord & {

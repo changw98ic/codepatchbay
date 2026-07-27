@@ -1,6 +1,6 @@
 import path from "node:path";
 
-import { resolveArtifactPath, resolveArtifactPathForRoot } from "../artifacts/artifact-paths.js";
+import { resolveArtifactPathForRoot } from "../artifacts/artifact-paths.js";
 import { isRecord, recordValue, type LooseRecord } from "../contracts/types.js";
 
 export type WorkflowDagNode = LooseRecord & {
@@ -138,9 +138,8 @@ function artifactPathFromName({
   const base = value.endsWith(".md") ? value.slice(0, -3) : value;
   const prefix = `${kind}-`;
   if (!base.startsWith(prefix)) return null;
-  return dataRoot
-    ? resolveArtifactPathForRoot(dataRoot, kind, base.slice(prefix.length))
-    : resolveArtifactPath(String(cpbRoot || ""), String(project || ""), kind, base.slice(prefix.length));
+  if (!dataRoot) throw new Error(`dataRoot is required to resolve ${kind} artifact '${value}'`);
+  return resolveArtifactPathForRoot(dataRoot, kind, base.slice(prefix.length));
 }
 
 export function recoveredArtifactForPhase(

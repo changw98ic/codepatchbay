@@ -8,7 +8,6 @@
 
 import { evaluateChecklistCompletion } from "../workflow/acceptance-checklist.js";
 
-const VERDICT_RE = /^VERDICT:\s*(PASS|FAIL|PARTIAL)\b/i
 type ParsedVerdict = { status: "pass" | "fail"; raw?: string } | null;
 import { recordValue, type LooseRecord } from "../contracts/types.js";
 type CompletionGateJob = {
@@ -68,46 +67,33 @@ type CompletionGateEventOptions = {
 };
 
 /**
- * Parse a verdict string looking for the canonical `VERDICT: <STATUS>` line.
- * Falls back to JSON extraction: { "verdict": "pass"|"fail" }.
+ * Parse the canonical persisted verdict envelope. Transport prose and
+ * historical text markers are intentionally rejected.
  *
  * @param {string|null|undefined} verdictText
  * @returns {{ status: "pass"|"fail", raw: string }|null}
  */
 export function parseVerdict(verdictText: unknown): ParsedVerdict {
+  let obj: LooseRecord;
   if (verdictText && typeof verdictText === "object") {
-    const obj = recordValue(verdictText);
-    const raw = String(obj.verdict || obj.status || "").toUpperCase()
-    if (raw === "PASS") return { status: "pass", raw }
-    if (raw === "FAIL" || raw === "PARTIAL") return { status: "fail", raw }
-  }
-
-  if (typeof verdictText !== "string" || !verdictText.trim()) return null
-
-  // 1. Canonical VERDICT: <STATUS> line (first 10 lines)
-  const lines = verdictText.split(/\r?\n/).slice(0, 10)
-  for (const line of lines) {
-    const match = line.match(VERDICT_RE)
-    if (!match) continue
-    const raw = match[1].toUpperCase()
-    return {
-      status: raw === "PASS" ? "pass" : "fail",
-      raw,
+    obj = recordValue(verdictText);
+  } else if (typeof verdictText === "string" && verdictText.trim()) {
+    try {
+      obj = recordValue(JSON.parse(verdictText));
+    } catch {
+      return null;
     }
+  } else {
+    return null;
   }
 
-  // 2. JSON fallback — extract { "verdict": "pass"|"fail" } from envelope
-  try {
-    const obj = JSON.parse(verdictText)
-    const v = (obj.verdict || "").toString().toLowerCase()
-    if (v === "pass" || v === "fail") {
-      return { status: v, raw: v.toUpperCase() }
-    }
-  } catch {
-    // not JSON — give up
+  if (obj.schemaVersion !== 2) return null;
+  const raw = typeof obj.status === "string" ? obj.status : "";
+  if (raw === "pass") return { status: "pass", raw: "PASS" };
+  if (["fail", "inconclusive", "infra_error"].includes(raw)) {
+    return { status: "fail", raw: raw.toUpperCase() };
   }
-
-  return null
+  return null;
 }
 
 /**
@@ -192,8 +178,7 @@ export function evaluateCompletionGate({
     adversarialRequired: Boolean(riskMap?.adversarialRequired),
   }
 
-  // Checklist gate — evaluate before legacy verdict gates when checklist artifacts exist.
-  // Legacy verdict fallback is only for jobs without an acceptance-checklist artifact.
+  // Checklist gate — evaluate before the verdict gates when checklist artifacts exist.
   if (checklist) {
     const checklistResult = evaluateChecklistCompletion({
       checklist,

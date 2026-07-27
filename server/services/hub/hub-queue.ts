@@ -215,7 +215,7 @@ type QueueClaimOptions = QueueEntryInput & {
   requireIssueLink?: boolean;
   getProjectFn?: ((hubRoot: string, projectId: string) => Promise<QueueProjectRecord | null | undefined>) | null;
   cpbRoot?: string | null;
-  indexUnavailableRetryMs?: number;
+  codegraphUnavailableRetryMs?: number;
   assignmentStore?: AssignmentStoreLike | null;
 };
 
@@ -227,7 +227,6 @@ type ProjectQueueStatus = {
   failed: number;
   blocked: number;
   cancelled: number;
-  indexUnavailable: number;
   codegraphUnavailable: number;
   activeMutating: number;
   busy: boolean;
@@ -256,7 +255,6 @@ type QueueStatusSummary = {
   blocked: number;
   cancelled: number;
   needsIssueLink: number;
-  indexUnavailable: number;
   codegraphUnavailable: number;
   failedEntries: number;
   failedTargets: number;
@@ -340,6 +338,11 @@ type InboxMessageFilters = LooseRecord & {
 
 type InboxAckOptions = {
   owner?: string;
+  dataRoot?: string;
+};
+
+type InboxStorageOptions = {
+  dataRoot?: string;
 };
 
 function isRecord(value: unknown): value is LooseRecord {
@@ -402,7 +405,7 @@ function nowIso(nowMs = Date.now()) {
 }
 
 export function isCodegraphUnavailableStatus(status: string) {
-  return status === "codegraph_unavailable" || status === "index_unavailable";
+  return status === "codegraph_unavailable";
 }
 
 /**
@@ -1717,7 +1720,6 @@ export async function queueStatus(hubRoot: string) {
     blocked: 0,
     cancelled: 0,
     needsIssueLink: 0,
-    indexUnavailable: 0,
     codegraphUnavailable: 0,
     ...failedTargetStatus,
     activeMutatingTotal: 0,
@@ -1736,7 +1738,6 @@ export async function queueStatus(hubRoot: string) {
     else if (e.status === "cancelled") counts.cancelled++;
     else if (e.status === "needs_issue_link") counts.needsIssueLink++;
     else if (isCodegraphUnavailableStatus(e.status)) {
-      counts.indexUnavailable++;
       counts.codegraphUnavailable++;
     }
   }
@@ -1839,7 +1840,7 @@ export function buildProjectQueueStatus(entries: QueueEntry[], {
     if (!byProject[e.projectId]) {
       const limit = limitForProject(projectLimits, e.projectId, maxActivePerProject);
       byProject[e.projectId] = {
-        pending: 0, scheduled: 0, inProgress: 0, completed: 0, failed: 0, blocked: 0, cancelled: 0, indexUnavailable: 0, codegraphUnavailable: 0,
+        pending: 0, scheduled: 0, inProgress: 0, completed: 0, failed: 0, blocked: 0, cancelled: 0, codegraphUnavailable: 0,
         activeMutating: 0, busy: false, busyReason: null,
         maxActivePerProject: limit,
         claimedBy: null, claimedAt: null, workerId: null,
@@ -1856,7 +1857,6 @@ export function buildProjectQueueStatus(entries: QueueEntry[], {
     else if (e.status === "blocked") ps.blocked++;
     else if (e.status === "cancelled") ps.cancelled++;
     else if (isCodegraphUnavailableStatus(e.status)) {
-      ps.indexUnavailable++;
       ps.codegraphUnavailable++;
     }
     if (isActiveEntry(e) && isMutatingEntry(e)) {
@@ -1905,7 +1905,7 @@ export async function claimEligible(hubRoot: string, opts: QueueClaimOptions = {
     requireIssueLink = false,
     getProjectFn = null,
     cpbRoot = null,
-    indexUnavailableRetryMs = 300_000,
+    codegraphUnavailableRetryMs = 300_000,
     assignmentStore = null,
   } = opts;
 
@@ -1919,9 +1919,9 @@ export async function claimEligible(hubRoot: string, opts: QueueClaimOptions = {
       assignmentStore,
       nowMs: authorityNowMs,
     });
-    const { recovered: recoveredIdx } = recoverCodegraphUnavailable(queue.entries, indexUnavailableRetryMs, authorityNowMs);
-    if (recoveredIdx.length > 0) {
-      recovered.push(...recoveredIdx);
+    const { recovered: recoveredCodegraph } = recoverCodegraphUnavailable(queue.entries, codegraphUnavailableRetryMs, authorityNowMs);
+    if (recoveredCodegraph.length > 0) {
+      recovered.push(...recoveredCodegraph);
     }
 
     const hubLimits = await resolveHubConcurrencyLimits(hubRoot, {
@@ -1958,7 +1958,6 @@ export async function claimEligible(hubRoot: string, opts: QueueClaimOptions = {
     let chosen: QueueEntry | null = null;
     let reason: string | null = null;
     const skippedBusy: string[] = [];
-    const indexUnavailableIds: string[] = [];
 
     for (const candidate of pending) {
       if (isMutatingEntry(candidate)) {
@@ -1986,7 +1985,6 @@ export async function claimEligible(hubRoot: string, opts: QueueClaimOptions = {
               dirtyReasons: ["missing_source_or_runtime_root"],
             },
           };
-          indexUnavailableIds.push(candidate.id);
           continue;
         }
         if (project?.sourcePath && project.projectRuntimeRoot) {
@@ -2005,7 +2003,6 @@ export async function claimEligible(hubRoot: string, opts: QueueClaimOptions = {
                 dirtyReasons: [capabilityGate.reason],
               },
             };
-            indexUnavailableIds.push(candidate.id);
             continue;
           }
 
@@ -2034,7 +2031,6 @@ export async function claimEligible(hubRoot: string, opts: QueueClaimOptions = {
                 dirtyReasons: [reason],
               },
             };
-            indexUnavailableIds.push(candidate.id);
             continue;
           }
 
@@ -2052,7 +2048,6 @@ export async function claimEligible(hubRoot: string, opts: QueueClaimOptions = {
                 dirtyReasons: fresh.dirtyReasons ?? ["codegraph_unavailable"],
               },
             };
-            indexUnavailableIds.push(candidate.id);
             continue;
           }
           candidate.indexSnapshotId = fresh.indexSnapshotId;
@@ -2318,8 +2313,9 @@ const VALID_TRANSITIONS: Record<string, string> = {
   acknowledged: "completed",
 };
 
-function inboxDir(cpbRoot: string, project: string) {
-  return path.join(cpbRoot, "wiki", "projects", project, "inbox");
+function inboxDir(_cpbRoot: string, _project: string, { dataRoot }: InboxStorageOptions = {}) {
+  if (!dataRoot) throw new Error("project runtime root required for inbox storage");
+  return path.join(path.resolve(dataRoot), "wiki", "inbox");
 }
 
 function safeId(id: string | null | undefined) {
@@ -2329,8 +2325,8 @@ function safeId(id: string | null | undefined) {
   return true;
 }
 
-function safeMessagePath(cpbRoot: string, project: string, id: string) {
-  const dir = inboxDir(cpbRoot, project);
+function safeMessagePath(cpbRoot: string, project: string, id: string, options: InboxStorageOptions = {}) {
+  const dir = inboxDir(cpbRoot, project, options);
   const resolved = path.resolve(dir, `${id}.md`);
   if (resolved !== dir && !resolved.startsWith(dir + path.sep)) {
     throw new Error("invalid message id: path escape");
@@ -2391,8 +2387,8 @@ function parseFrontmatter(raw: string) {
   return { meta, content };
 }
 
-async function withInboxLock<T>(cpbRoot: string, project: string, callback: () => Promise<T>): Promise<T> {
-  const dir = inboxDir(cpbRoot, project);
+async function withInboxLock<T>(cpbRoot: string, project: string, options: InboxStorageOptions, callback: () => Promise<T>): Promise<T> {
+  const dir = inboxDir(cpbRoot, project, options);
   const lockDir = `${dir}.lock`;
   await mkdir(dir, { recursive: true });
   return withDurableDirectoryLock(lockDir, callback, {
@@ -2422,7 +2418,7 @@ function messageToOutput(meta: LooseRecord): InboxMessageOutput {
   return { ...meta } as InboxMessageOutput;
 }
 
-export async function writeInboxMessage(cpbRoot: string, project: string, input: InboxMessageInput) {
+export async function writeInboxMessage(cpbRoot: string, project: string, input: InboxMessageInput, options: InboxStorageOptions = {}) {
   const id = generateMessageId();
   const ts = nowIso();
 
@@ -2444,17 +2440,17 @@ export async function writeInboxMessage(cpbRoot: string, project: string, input:
 
   const content = input.content || "";
   const fileContent = `${serializeFrontmatter(meta)}\n${content}\n`;
-  const filePath = safeMessagePath(cpbRoot, project, id);
+  const filePath = safeMessagePath(cpbRoot, project, id, options);
 
-  await withInboxLock(cpbRoot, project, async () => {
+  await withInboxLock(cpbRoot, project, options, async () => {
     await writeAtomic(filePath, fileContent);
   });
 
   return messageToOutput(meta);
 }
 
-export async function listInboxMessages(cpbRoot: string, project: string, filters: InboxMessageFilters = {}) {
-  const dir = inboxDir(cpbRoot, project);
+export async function listInboxMessages(cpbRoot: string, project: string, filters: InboxMessageFilters = {}, options: InboxStorageOptions = {}) {
+  const dir = inboxDir(cpbRoot, project, options);
   let files;
   try {
     files = (await readdir(dir))
@@ -2490,9 +2486,9 @@ export async function listInboxMessages(cpbRoot: string, project: string, filter
   return messages;
 }
 
-export async function readInboxMessage(cpbRoot: string, project: string, id: string) {
+export async function readInboxMessage(cpbRoot: string, project: string, id: string, options: InboxStorageOptions = {}) {
   if (!safeId(id)) return null;
-  const filePath = safeMessagePath(cpbRoot, project, id);
+  const filePath = safeMessagePath(cpbRoot, project, id, options);
   try {
     const raw = await readFile(filePath, "utf8");
     const parsed = parseFrontmatter(raw);
@@ -2503,10 +2499,11 @@ export async function readInboxMessage(cpbRoot: string, project: string, id: str
   }
 }
 
-export async function ackInboxMessage(cpbRoot: string, project: string, id: string, { owner }: InboxAckOptions = {}) {
+export async function ackInboxMessage(cpbRoot: string, project: string, id: string, { owner, dataRoot }: InboxAckOptions = {}) {
   if (!safeId(id)) return null;
-  return withInboxLock(cpbRoot, project, async () => {
-    const filePath = safeMessagePath(cpbRoot, project, id);
+  const options = { dataRoot };
+  return withInboxLock(cpbRoot, project, options, async () => {
+    const filePath = safeMessagePath(cpbRoot, project, id, options);
     let raw;
     try {
       raw = await readFile(filePath, "utf8");
@@ -2534,10 +2531,10 @@ export async function ackInboxMessage(cpbRoot: string, project: string, id: stri
   });
 }
 
-export async function completeInboxMessage(cpbRoot: string, project: string, id: string) {
+export async function completeInboxMessage(cpbRoot: string, project: string, id: string, options: InboxStorageOptions = {}) {
   if (!safeId(id)) return null;
-  return withInboxLock(cpbRoot, project, async () => {
-    const filePath = safeMessagePath(cpbRoot, project, id);
+  return withInboxLock(cpbRoot, project, options, async () => {
+    const filePath = safeMessagePath(cpbRoot, project, id, options);
     let raw;
     try {
       raw = await readFile(filePath, "utf8");

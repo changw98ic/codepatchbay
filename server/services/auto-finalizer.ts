@@ -128,9 +128,7 @@ type FinalizerRecord = LooseRecord & {
   layers?: Record<string, FinalizerRecord>;
   detail?: string;
   tests?: unknown;
-  basis?: FinalizerRecord;
   blocking?: unknown[];
-  blockingMissingInputs?: unknown[];
   blockingCount?: number;
   ok?: boolean;
   stdout?: string;
@@ -1142,7 +1140,6 @@ function pushEvidenceLine(lines: string[], value: unknown): void {
 function testEvidenceFromVerdict(verdict: FinalizerRecord): string[] {
   const lines: string[] = [];
   pushEvidenceLine(lines, verdict?.tests);
-  pushEvidenceLine(lines, verdict?.basis?.tests);
   if (verdict?.layers && typeof verdict.layers === "object") {
     for (const [name, layer] of Object.entries(verdict.layers) as Array<[string, FinalizerRecord]>) {
       if (!layer?.detail) continue;
@@ -1157,10 +1154,9 @@ function verdictEvidenceForBody(verdict: LooseRecord | null): FinalizerRecord {
     return { status: "pass", reason: "No structured verdict evidence was found" };
   }
   const blocking = Array.isArray(verdict.blocking) ? verdict.blocking : undefined;
-  const blockingMissing = Array.isArray(verdict.blockingMissingInputs) ? verdict.blockingMissingInputs : undefined;
   const blockingCount = typeof verdict.blockingCount === "number"
     ? verdict.blockingCount
-    : blocking?.length ?? blockingMissing?.length ?? undefined;
+    : blocking?.length ?? undefined;
   const out: FinalizerRecord = {};
   Object.assign(out, verdict);
   out.status = String(verdict.status || verdict.verdict || "unavailable");

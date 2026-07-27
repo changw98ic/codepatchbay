@@ -304,7 +304,6 @@ export async function buildPhaseContextPacket(
   const locators = locatorEnvelope(locator);
   const events = await readEvents(cpbRoot, project, jobId, {
     dataRoot: stringValue(locator.stateRoot),
-    includeLegacyFallback: false,
   });
   const job = materializeJob(events);
   const jobRecord = recordValue(job);

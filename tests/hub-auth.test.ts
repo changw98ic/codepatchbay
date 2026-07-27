@@ -142,9 +142,9 @@ test("Hub service-token config fails closed for unsafe files and schemas", async
   const reservedPrincipal = path.join(root, "reserved-principal.json");
   await writeFile(reservedPrincipal, `${JSON.stringify({
     format: "cpb-hub-service-tokens/v1",
-    tokens: [{ ...validEntry, id: "legacy-admin" }],
+    tokens: [{ ...validEntry, id: "local-anonymous" }],
   })}\n`, { mode: 0o600 });
-  await assert.rejects(loadHubAuthConfig({ serviceTokensFile: reservedPrincipal }), /invalid or duplicate.*legacy-admin/);
+  await assert.rejects(loadHubAuthConfig({ serviceTokensFile: reservedPrincipal }), /invalid or duplicate.*local-anonymous/);
 
   const ambiguousExpiry = path.join(root, "ambiguous-expiry.json");
   await writeFile(ambiguousExpiry, `${JSON.stringify({
@@ -169,28 +169,6 @@ test("Hub service-token config fails closed for unsafe files and schemas", async
   const oversized = path.join(root, "oversized-token-file.json");
   await writeFile(oversized, Buffer.alloc(1024 * 1024 + 1, 0x20), { mode: 0o600 });
   await assert.rejects(loadHubAuthConfig({ serviceTokensFile: oversized }), /exceeds 1048576 bytes/);
-});
-
-test("legacy Hub bearer token remains a global administrator and duplicate credentials fail startup", async () => {
-  const legacyToken = "legacy-admin-token-with-at-least-32-bytes";
-  const config = await loadHubAuthConfig({ bearerToken: legacyToken });
-  const principal = authenticateHubRequest(`Bearer ${legacyToken}`, config);
-
-  assert.equal(principal?.id, "legacy-admin");
-  assert.equal(principal && hubPrincipalHasScope(principal, "hub:admin"), true);
-  assert.equal(principal && hubPrincipalCanAccessProject(principal, "anything"), true);
-
-  const root = await tempRoot("cpb-hub-service-auth-duplicate");
-  const filePath = await writeTokenFile(root, [{
-    id: "same-token",
-    tokenSha256: digest(legacyToken),
-    scopes: ["hub:read"],
-    projects: "*",
-  }]);
-  await assert.rejects(
-    loadHubAuthConfig({ bearerToken: legacyToken, serviceTokensFile: filePath }),
-    /duplicates a token/,
-  );
 });
 
 test("Hub refuses to start with only expired service credentials", async () => {

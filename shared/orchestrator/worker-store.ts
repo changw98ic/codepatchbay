@@ -935,18 +935,9 @@ export class WorkerStore {
             || new Date(Date.parse(owner.releasedAt)).toISOString() !== owner.releasedAt))) {
         throw lockConflict(`worker inbox lock owner is malformed: ${ownerFile}`);
       }
-      const hasProcessIdentity = Object.prototype.hasOwnProperty.call(owner, "processIdentity");
       const identity = processIdentityFromOwner(owner);
-      if (hasProcessIdentity) {
-        if (!identity) {
-          throw lockConflict(`worker inbox lock owner process identity is malformed: ${ownerFile}`);
-        }
-        owner.processIdentity = identity;
-      } else {
-        // Legacy records remain readable for diagnostics, but recovery treats
-        // a missing exact identity as live and preserves the lock evidence.
-        delete owner.processIdentity;
-      }
+      if (!identity) throw lockConflict(`worker inbox lock owner process identity is required: ${ownerFile}`);
+      owner.processIdentity = identity;
       return owner;
     } catch (error) {
       if (errorCode(error) === "ENOENT") return null;
@@ -962,7 +953,7 @@ export class WorkerStore {
     const host = typeof owner.host === "string" ? owner.host : "";
     if (host && host !== os.hostname()) return true;
     const identity = processIdentityFromOwner(owner);
-    if (!identity) return true;
+    if (!identity) throw lockConflict(`worker inbox lock owner process identity is required for pid ${pid}`);
     try {
       return (workerStoreTestHooks().isLocalInboxProcessIdentityAlive || isProcessIdentityAlive)(identity);
     } catch (error) {

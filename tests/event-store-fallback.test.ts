@@ -6,7 +6,7 @@ import { test } from "node:test";
 
 import { appendEvent, listEventFiles, readEvents, readEventsReadOnly } from "../server/services/event/event-store.js";
 
-test("readEvents keeps project runtime roots strict unless legacy fallback is explicit", async () => {
+test("readEvents ignores retired runtime roots and reads only the explicit project root", async () => {
   const cpbRoot = await mkdtemp(path.join(tmpdir(), "cpb-event-read-fallback-"));
   const dataRoot = path.join(cpbRoot, "hub", "projects", "flow", "jobs");
   const jobId = "job-20260611-050000-legacy";
@@ -23,8 +23,6 @@ test("readEvents keeps project runtime roots strict unless legacy fallback is ex
 
     assert.deepEqual(await readEvents(cpbRoot, "flow", jobId, { dataRoot }), []);
     assert.deepEqual(await readEventsReadOnly(cpbRoot, "flow", jobId, { dataRoot }), []);
-    assert.equal((await readEvents(cpbRoot, "flow", jobId, { dataRoot, includeLegacyFallback: true })).length, 1);
-    assert.equal((await readEvents(cpbRoot, "flow", jobId, { includeLegacyFallback: true })).length, 1);
   } finally {
     await rm(cpbRoot, { recursive: true, force: true });
   }
@@ -140,7 +138,7 @@ test("appendEvent with a project runtime root seals only the target event stream
     }, { dataRoot });
 
     assert.equal((written as any)?.task, "project root job");
-    const projectEvents = await readEvents(cpbRoot, "flow", jobId, { dataRoot, includeLegacyFallback: false });
+    const projectEvents = await readEvents(cpbRoot, "flow", jobId, { dataRoot });
     assert.equal(projectEvents.length, 1);
     assert.equal(projectEvents[0].task, "project root job");
   } finally {

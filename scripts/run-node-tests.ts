@@ -200,6 +200,18 @@ const isolatedUnitFiles = new Set([
   // process and turn the assertion into a harness timeout.
   "tests/patch-integrity.test.js",
   "tests/product-gate.test.js",
+  // Builds isolated package-like trees and spawns concurrent build/publish
+  // processes. Keep it out of the parallel slow batch so timing assertions
+  // measure the build fence rather than unrelated test-process pressure.
+  "tests/cli-runtime-contracts.test.js",
+  // These suites spawn ACP/registry/release publisher children. Running them
+  // beside the parallel slow batch can starve short-lived process fences and
+  // turn successful cleanup into timing failures.
+  "tests/evolve-service.test.js",
+  "tests/hub-registry-receipt.test.js",
+  "tests/promote-live-release-evidence.test.js",
+  "tests/queue-orchestrator.test.js",
+  "tests/swebench-batch-queue.test.js",
   // Spawns the quota delegate as a real Node child process and waits for a lock
   // file. Under the parallel unit suite, other process-heavy tests can starve
   // child startup long enough to look like a delegate readiness failure.

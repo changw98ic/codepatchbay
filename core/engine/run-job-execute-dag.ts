@@ -3,7 +3,6 @@ import { runPhase } from "./run-phase.js";
 import type { PhaseResult } from "../../shared/types.js";
 import { isPhasePassed, phaseFailed } from "../contracts/phase-result.js";
 import { FailureKind, failure } from "../contracts/failure.js";
-import { legacyAgentForPhase } from "../agents/registry.js";
 import { generateHandoffBundle } from "../handoff/handoff-bundle.js";
 import { normalizeProviderServices, type ProviderAgents } from "./provider-handoff.js";
 import { runQuotaFallbackRetry } from "./provider-quota-fallback.js";
@@ -50,6 +49,7 @@ import {
 
 import { recordValue, type LooseRecord } from "../contracts/types.js";
 import type { RunJobPorts, RunJobState } from "./run-job-ports.js";
+import { setCurrentPhase } from "./run-job-bookkeeping.js";
 import {
   reportProgress,
   ts,
@@ -453,33 +453,103 @@ async function applyPhaseRetryLoops(
   });
 }
 
-/** Execute a single DAG node end-to-end. Returns a terminal JobRunResult on scope-guard/finalize failure, else null. */
-async function runDagNode(
+type DagNodeRouting = {
+  taskCategory: ReturnType<typeof classifyRoutingTaskCategory>;
+  outcomeMetrics: unknown;
+  excludeProviderFamily: string | null;
+  phaseAgents: ProviderAgents;
+  dynamicAgent: unknown;
+  phaseRoutingDecision: LooseRecord | null;
+  effectiveSelectedAgent: unknown;
+  allowedAgents: string[] | null;
+};
+
+type DagNodeDecision = {
+  phase: string;
+  role: string;
+  nodeId: string;
+  aborted: boolean;
+  shouldResume: boolean;
+  routing: DagNodeRouting | null;
+};
+
+type DagNodeAttempt = {
+  result: PhaseResult;
+  handoffState: HandoffState;
+  providerAttempts: ProviderAttempt[];
+};
+
+/**
+ * Finalize a DAG node's outcome: scope-guard the attempt's PhaseResult, then
+ * run artifact/phase-result finalization (events + completion), then land the
+ * pass / deferred-verification / fail branches.
+ *
+ * Failure landing reuses the existing `handleDagNodeFailure` terminal helper
+ * verbatim — no new failure path is introduced. Statement order, conditions,
+ * and event emissions mirror the original inline tail of runDagNode exactly.
+ * Returns the same `DagNodeRunOutcome` shape runDagNode has always returned.
+ */
+async function finalizeDagNodeOutcome(
   session: DagRunSession,
   dagNode: WorkflowDagNode,
-  options: RunDagNodeOptions = {},
+  decision: DagNodeDecision,
+  attempt: DagNodeAttempt,
+  options: RunDagNodeOptions,
 ): Promise<DagNodeRunOutcome> {
-  const { ctx, jobId, attemptId, phaseSourceContext, dynamicAgentPlan, phaseRoleMap } = session;
-  const phase = dagNode.phase;
-  ctx._currentPhase = phase;
-  const fallbackRole = phaseRoleMap[phase] || phase;
-  const nodeId = dagNode.id || phase;
-  const role = stringValue(dagNode.role) || fallbackRole;
+  const routing = decision.routing;
+  if (!routing) throw new Error("invariant: outcome requires routing decision");
+  const { ctx, jobId, attemptId, phaseSourceContext } = session;
+  const { phase, role, nodeId } = decision;
+  const { handoffState, providerAttempts } = attempt;
+  let result: PhaseResult = attempt.result;
+  const { cpbRoot, project } = session;
+  const { failJob } = ctx;
 
-  if (ctx.signal?.aborted === true) {
-    const result = phaseFailed({
-      phase,
-      failure: failure({
-        kind: FailureKind.RUNTIME_INTERRUPTED,
-        phase,
-        reason: "execution signal aborted",
-        retryable: false,
-        cause: { reason: "abort_signal", role, nodeId },
-      }),
-    });
+  const scopeGuardFailure = await evaluateExecuteScopeGuard({
+    cpbRoot,
+    project,
+    jobId,
+    nodeId,
+    phase,
+    role,
+    attemptId,
+    dagNode,
+    phaseSourceContext,
+    phaseResult: result,
+    phaseResults: session.phaseResults,
+    appendEvent: ctx.appendEvent,
+    failJob,
+    onProgress: ctx.onProgress || null,
+    now: ts,
+  });
+  if (scopeGuardFailure) {
+    return { terminal: scopeGuardFailure, result, deferredVerificationFailure: false, phase, role, nodeId, dagNode };
+  }
+
+  const { hubRoot, pool, providerServices, state, phaseResults, job, dataRoot } = session;
+  const { completePhase } = ctx;
+  result = await finalizePhaseResult({
+    cpbRoot, project, jobId, task: session.task, phase, role, nodeId, dagNode, attemptId,
+    phaseResults, state, phaseAgents: routing.phaseAgents, result,
+    agent: ctx.agent || null, providerServices, hubRoot, pool, job, phaseSourceContext,
+    handoffState, providerAttempts,
+    appendEvent: ctx.appendEvent, onProgress: ctx.onProgress || null, completePhase,
+    now: ts, phaseRoutingDecision: routing.phaseRoutingDecision, readArtifactFile: ctx.readArtifactFile,
+  });
+
+  if (!isPhasePassed(result)) {
+    if (
+      options.deferVerificationFailure
+      && (
+        isRepairableVerificationFailure(result)
+        || isRecoverableVerificationInfrastructureFailure(result)
+      )
+    ) {
+      return { terminal: null, result, deferredVerificationFailure: true, phase, role, nodeId, dagNode };
+    }
     const terminal = await handleDagNodeFailure({
-      cpbRoot: session.cpbRoot,
-      project: session.project,
+      cpbRoot,
+      project,
       jobId,
       nodeId,
       phase,
@@ -487,17 +557,84 @@ async function runDagNode(
       attemptId,
       dagNode,
       phaseResult: result,
-      phaseResults: session.phaseResults,
+      phaseResults,
       appendEvent: ctx.appendEvent,
-      failJob: ctx.failJob,
+      failJob,
       onProgress: ctx.onProgress || null,
       now: ts,
     });
     return { terminal, result, deferredVerificationFailure: false, phase, role, nodeId, dagNode };
   }
 
-  if (!options.ignoreResume && await tryResumeCompletedNode(session, dagNode, { phase, nodeId, role })) {
-    return { terminal: null, result: null, deferredVerificationFailure: false, phase, role, nodeId, dagNode };
+  return { terminal: null, result, deferredVerificationFailure: false, phase, role, nodeId, dagNode };
+}
+
+/**
+ * Run the attempt body of a DAG node: provider preflight, the phase itself,
+ * quota-driven provider fallback (handoff/retry across providers), and the
+ * retry/feedback-retry loops for the resulting PhaseResult.
+ *
+ * Returns the attempt's terminal PhaseResult plus the handoff/provider-attempt
+ * bookkeeping that finalizePhaseResult needs to stamp onto any failure cause.
+ * Behavior matches the original inline sequence exactly — same call order, same
+ * inputs — only relocated so runDagNode can compose it as decision → attempt.
+ */
+async function runDagNodeAttempt(
+  session: DagRunSession,
+  dagNode: WorkflowDagNode,
+  decision: DagNodeDecision,
+): Promise<DagNodeAttempt> {
+  const routing = decision.routing;
+  if (!routing) throw new Error("invariant: attempt requires routing decision");
+  const { phase, role, nodeId } = decision;
+  const { phaseAgents, dynamicAgent, excludeProviderFamily, allowedAgents } = routing;
+
+  const handoffState: HandoffState = { count: 0, from: null, to: null, reason: null };
+  const providerAttempts: ProviderAttempt[] = [];
+
+  let result: PhaseResult = await preflightAndRunPhase(session, {
+    phase, role, nodeId, dagNode, phaseAgents, dynamicAgent, excludeProviderFamily, allowedAgents, handoffState,
+  });
+
+  result = await applyQuotaFallback(session, {
+    phase, role, nodeId, dagNode, phaseAgents, handoffState, providerAttempts, result, excludeProviderFamily, allowedAgents,
+  });
+
+  result = await applyPhaseRetryLoops(session, {
+    phase, role, nodeId, dagNode, phaseAgents, pool: session.pool, result,
+  });
+
+  return { result, handoffState, providerAttempts };
+}
+
+/**
+ * Resolve a DAG node's identity, early-exit conditions, and routing decision.
+ * PURE: performs no event emissions and mutates no session state. The abort
+ * short-circuit and resume replay remain side-effecting concerns owned by
+ * runDagNode; this helper only reports `aborted` / `shouldResume` so the
+ * coordinator can decide whether to skip routing and act on them.
+ *
+ * When neither early-exit is set, the routing decision (task category,
+ * outcome-routing metrics, independent-verification provider exclusion, and
+ * resolvePhaseAgentRouting output) is computed exactly as the original inline
+ * sequence did, so downstream phase-start emission and conflict detection
+ * observe identical values.
+ */
+async function resolveDagNodeDecision(
+  session: DagRunSession,
+  dagNode: WorkflowDagNode,
+  options: RunDagNodeOptions,
+): Promise<DagNodeDecision> {
+  const { ctx, phaseSourceContext, dynamicAgentPlan, phaseRoleMap } = session;
+  const phase = dagNode.phase;
+  const fallbackRole = phaseRoleMap[phase] || phase;
+  const nodeId = dagNode.id || phase;
+  const role = stringValue(dagNode.role) || fallbackRole;
+  const aborted = ctx.signal?.aborted === true;
+  const shouldResume = !options.ignoreResume && session.resumeCompletedNodes.has(nodeId);
+
+  if (aborted || shouldResume) {
+    return { phase, role, nodeId, aborted, shouldResume, routing: null };
   }
 
   const taskCategory = classifyRoutingTaskCategory(session.task, phaseSourceContext);
@@ -534,6 +671,82 @@ async function runDagNode(
   // entry to ProviderAgent would be speculative since the runtime shape is
   // string | AgentObject | null determined by external config.
   const phaseAgents = rawPhaseAgents as ProviderAgents;
+
+  return {
+    phase,
+    role,
+    nodeId,
+    aborted,
+    shouldResume,
+    routing: {
+      taskCategory,
+      outcomeMetrics,
+      excludeProviderFamily,
+      phaseAgents,
+      dynamicAgent,
+      phaseRoutingDecision,
+      effectiveSelectedAgent,
+      allowedAgents,
+    },
+  };
+}
+
+/** Execute a single DAG node end-to-end. Returns a terminal JobRunResult on scope-guard/finalize failure, else null. */
+async function runDagNode(
+  session: DagRunSession,
+  dagNode: WorkflowDagNode,
+  options: RunDagNodeOptions = {},
+): Promise<DagNodeRunOutcome> {
+  const { ctx, jobId, attemptId } = session;
+  setCurrentPhase(ctx, dagNode.phase);
+  const decision = await resolveDagNodeDecision(session, dagNode, options);
+  const { phase, role, nodeId } = decision;
+
+  if (decision.aborted) {
+    const result = phaseFailed({
+      phase,
+      failure: failure({
+        kind: FailureKind.RUNTIME_INTERRUPTED,
+        phase,
+        reason: "execution signal aborted",
+        retryable: false,
+        cause: { reason: "abort_signal", role, nodeId },
+      }),
+    });
+    const terminal = await handleDagNodeFailure({
+      cpbRoot: session.cpbRoot,
+      project: session.project,
+      jobId,
+      nodeId,
+      phase,
+      role,
+      attemptId,
+      dagNode,
+      phaseResult: result,
+      phaseResults: session.phaseResults,
+      appendEvent: ctx.appendEvent,
+      failJob: ctx.failJob,
+      onProgress: ctx.onProgress || null,
+      now: ts,
+    });
+    return { terminal, result, deferredVerificationFailure: false, phase, role, nodeId, dagNode };
+  }
+
+  if (decision.shouldResume) {
+    await tryResumeCompletedNode(session, dagNode, { phase, nodeId, role });
+    return { terminal: null, result: null, deferredVerificationFailure: false, phase, role, nodeId, dagNode };
+  }
+
+  const routing = decision.routing;
+  if (!routing) throw new Error("invariant: routing decision is required when not aborted or resuming");
+  const {
+    phaseRoutingDecision,
+    effectiveSelectedAgent,
+    allowedAgents,
+    excludeProviderFamily,
+    phaseAgents,
+    dynamicAgent,
+  } = routing;
 
   const { cpbRoot, project } = session;
   await emitPhaseStartEvents({
@@ -591,84 +804,8 @@ async function runDagNode(
     return { terminal, result, deferredVerificationFailure: false, phase, role, nodeId, dagNode };
   }
 
-  const handoffState: HandoffState = { count: 0, from: null, to: null, reason: null };
-  const providerAttempts: ProviderAttempt[] = [];
-
-  let result: PhaseResult = await preflightAndRunPhase(session, {
-    phase, role, nodeId, dagNode, phaseAgents, dynamicAgent, excludeProviderFamily, allowedAgents, handoffState,
-  });
-
-  result = await applyQuotaFallback(session, {
-    phase, role, nodeId, dagNode, phaseAgents, handoffState, providerAttempts, result, excludeProviderFamily, allowedAgents,
-  });
-
-  result = await applyPhaseRetryLoops(session, {
-    phase, role, nodeId, dagNode, phaseAgents, pool: session.pool, result,
-  });
-
-  const { failJob } = ctx;
-  const scopeGuardFailure = await evaluateExecuteScopeGuard({
-    cpbRoot,
-    project,
-    jobId,
-    nodeId,
-    phase,
-    role,
-    attemptId,
-    dagNode,
-    phaseSourceContext,
-    phaseResult: result,
-    phaseResults: session.phaseResults,
-    appendEvent: ctx.appendEvent,
-    failJob,
-    onProgress: ctx.onProgress || null,
-    now: ts,
-  });
-  if (scopeGuardFailure) {
-    return { terminal: scopeGuardFailure, result, deferredVerificationFailure: false, phase, role, nodeId, dagNode };
-  }
-
-  const { hubRoot, pool, providerServices, state, phaseResults, job, dataRoot } = session;
-  const { completePhase } = ctx;
-  result = await finalizePhaseResult({
-    cpbRoot, project, jobId, task: session.task, phase, role, nodeId, dagNode, attemptId,
-    phaseResults, state, phaseAgents, result,
-    agent: ctx.agent || null, providerServices, hubRoot, pool, job, phaseSourceContext,
-    handoffState, providerAttempts,
-    appendEvent: ctx.appendEvent, onProgress: ctx.onProgress || null, completePhase,
-    now: ts, legacyAgentForPhase, phaseRoutingDecision, readArtifactFile: ctx.readArtifactFile,
-  });
-
-  if (!isPhasePassed(result)) {
-    if (
-      options.deferVerificationFailure
-      && (
-        isRepairableVerificationFailure(result)
-        || isRecoverableVerificationInfrastructureFailure(result)
-      )
-    ) {
-      return { terminal: null, result, deferredVerificationFailure: true, phase, role, nodeId, dagNode };
-    }
-    const terminal = await handleDagNodeFailure({
-      cpbRoot,
-      project,
-      jobId,
-      nodeId,
-      phase,
-      role,
-      attemptId,
-      dagNode,
-      phaseResult: result,
-      phaseResults,
-      appendEvent: ctx.appendEvent,
-      failJob,
-      onProgress: ctx.onProgress || null,
-      now: ts,
-    });
-    return { terminal, result, deferredVerificationFailure: false, phase, role, nodeId, dagNode };
-  }
-
-  return { terminal: null, result, deferredVerificationFailure: false, phase, role, nodeId, dagNode };
+  const attempt = await runDagNodeAttempt(session, dagNode, decision);
+  return await finalizeDagNodeOutcome(session, dagNode, decision, attempt, options);
 }
 
 async function finishDeferredVerificationFailure(
@@ -1071,7 +1208,7 @@ const PARALLEL_START_EVENT_TYPES = new Set([
   "agent_routing_decision",
 ]);
 
-function isParallelNodeCandidate(
+export function isParallelNodeCandidate(
   node: WorkflowDagNode,
   resumeCompletedNodes: Set<string>,
 ): boolean {
@@ -1085,7 +1222,7 @@ function isParallelNodeCandidate(
   return true;
 }
 
-function parallelConflictKeys(node: WorkflowDagNode): string[] {
+export function parallelConflictKeys(node: WorkflowDagNode): string[] {
   const keys = Array.isArray(node.conflictKeys)
     ? node.conflictKeys.map(String).filter(Boolean)
     : [];
@@ -1101,7 +1238,7 @@ function executionIndexById(executionNodes: WorkflowDagNode[]) {
   return indexById;
 }
 
-function stableReadyNodes(
+export function stableReadyNodes(
   executionNodes: WorkflowDagNode[],
   completedNodeIds: Set<string>,
   executedNodeIds: Set<string>,
@@ -1117,7 +1254,7 @@ function stableReadyNodes(
   return ready;
 }
 
-function pickExecutionBatch(
+export function pickExecutionBatch(
   ready: WorkflowDagNode[],
   maxConcurrentNodes: number,
   resumeCompletedNodes: Set<string>,
@@ -1142,7 +1279,7 @@ function pickExecutionBatch(
   return batch;
 }
 
-function maxConcurrentFromDag(workflowDag: WorkflowDag): number {
+export function maxConcurrentFromDag(workflowDag: WorkflowDag): number {
   const maxFromPlan = Number((workflowDag as { maxConcurrentNodes?: unknown }).maxConcurrentNodes);
   if (Number.isFinite(maxFromPlan)) return Math.max(1, Math.floor(maxFromPlan));
   return 1;
@@ -1515,7 +1652,7 @@ function completionGateArgs(
   };
 }
 
-async function rerunDagFromPhase(
+export async function rerunDagFromPhase(
   session: DagRunSession,
   executionNodes: WorkflowDagNode[],
   retryPhase: string,

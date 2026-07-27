@@ -77,7 +77,6 @@ function jsonObjectCandidates(output: string) {
 }
 
 const AGENT_SUCCESS_STATUSES = new Set(["ok"]);
-const EXECUTOR_SUCCESS_STATUSES = new Set(["ok", "resolved", "success", "completed", "done"]);
 
 function isStructuredJsonFailure(reason: unknown) {
   return typeof reason === "string" && reason !== "parse failed";
@@ -93,7 +92,7 @@ function tryParseJsonObjectWithStatuses(str: string, successStatuses: Set<string
     if (!parsed || typeof parsed !== "object") {
       return { ok: false, reason: "agent output is not a JSON object" };
     }
-    const status = typeof parsed.status === "string" ? parsed.status.toLowerCase() : "";
+    const status = typeof parsed.status === "string" ? parsed.status : "";
     if (!successStatuses.has(status)) {
       return {
         ok: false,
@@ -119,8 +118,8 @@ export function parsePlannerJson(output: string) {
 
 export function parseExecutorJson(output: string) {
   const result = parseAgentJson(output);
-  const data = result.ok ? result.data : parseExecutorJsonObject(output);
-  if (!data) return result;
+  if (!result.ok) return result;
+  const data = result.data;
   return {
     ok: true,
     summary: data.summary || data.message || "",
@@ -128,20 +127,6 @@ export function parseExecutorJson(output: string) {
     risks: Array.isArray(data.risks) ? data.risks : [],
     checklistMapping: Array.isArray(data.checklistMapping) ? data.checklistMapping : [],
   };
-}
-
-function parseExecutorJsonObject(output: string) {
-  if (!output || typeof output !== "string") return null;
-  const candidates = [
-    ...markdownCodeBlockCandidates(output).reverse(),
-    output.trim(),
-    ...jsonObjectCandidates(output).reverse(),
-  ];
-  for (const candidate of candidates) {
-    const result = tryParseJsonObjectWithStatuses(candidate, EXECUTOR_SUCCESS_STATUSES);
-    if (result.ok) return result.data;
-  }
-  return null;
 }
 
 function normalizeExecutorTests(data: Record<string, unknown>) {
@@ -158,19 +143,14 @@ function normalizeExecutorTests(data: Record<string, unknown>) {
 
 export function parseVerifierJson(output: string) {
   const result = parseAgentJson(output);
-  const data = result.ok ? result.data : parseVerifierJsonObject(output);
-  if (!data) return result;
-  // Verifier envelope: { status: "ok", verdict: "pass"|"fail"|"partial", reason, details }
-  const verdict = data.verdict || data.status;
+  if (!result.ok) return result;
+  const data = result.data;
+  // Verifier transport: { status: "ok", verdict: "pass"|"fail"|"partial", reason, details }
+  const verdict = data.verdict;
   if (!verdict || !["pass", "fail", "partial"].includes(verdict)) {
     return { ok: false, reason: `invalid verdict: expected pass|fail|partial, got "${verdict}"` };
   }
   const details = data.details;
-  const nestedChecklistVerdict = details
-    && typeof details === "object"
-    && !Array.isArray(details)
-    ? (details as Record<string, unknown>).checklistVerdict
-    : null;
   return {
     ...data,
     ok: true,
@@ -178,30 +158,6 @@ export function parseVerifierJson(output: string) {
     reason: data.reason || "",
     details: details || "",
     confidence: data.confidence,
-    // The protocol requires a top-level checklistVerdict. Recover the fully
-    // structured nested form defensively because otherwise a semantically
-    // complete verifier result is misclassified as a transport/schema error.
-    // Downstream checklist validation remains fail-closed.
-    checklistVerdict: data.checklistVerdict || nestedChecklistVerdict || null,
+    checklistVerdict: data.checklistVerdict || null,
   };
-}
-
-function parseVerifierJsonObject(output: string) {
-  if (!output || typeof output !== "string") return null;
-  const candidates = [
-    ...markdownCodeBlockCandidates(output).reverse(),
-    output.trim(),
-    ...jsonObjectCandidates(output).reverse(),
-  ];
-  for (const candidate of candidates) {
-    try {
-      const parsed = JSON.parse(candidate);
-      if (!parsed || typeof parsed !== "object") continue;
-      const verdict = parsed.verdict || parsed.status;
-      if (["pass", "fail", "partial"].includes(verdict)) return parsed;
-    } catch {
-      // keep scanning later candidates
-    }
-  }
-  return null;
 }

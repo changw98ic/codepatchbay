@@ -5,6 +5,7 @@ import { derivePhaseBudgetPolicy } from "../policy/phase-budget.js";
 import { isRecord, recordValue, type LooseRecord } from "../contracts/types.js";
 import { parseManagedWorktreeContext } from "../contracts/worktree-ownership.js";
 import type { RunJobPorts, RunJobState } from "./run-job-ports.js";
+import { setJobId, setAttemptId } from "./run-job-bookkeeping.js";
 import {
   blockPreparedJob,
   reportProgress,
@@ -105,10 +106,10 @@ export async function createJobAndHandleBlocked(ctx: RunJobPrepareContext): Prom
     sourceContext: sourceContext || {},
   });
   const jobId = job.jobId;
-  ctx._jobId = jobId;
+  setJobId(ctx, jobId);
 
   // Derive attemptId from assignment context for checklist-aware attempt scoping.
-  // Direct runs without managed assignments use jobId as the compatibility attempt id.
+  // Direct runs use their job identity as the attempt identity.
   const source = recordValue(sourceContext);
   const assignment = recordValue(source.assignment);
   const activeAttempt = assignment.attemptToken
@@ -116,7 +117,7 @@ export async function createJobAndHandleBlocked(ctx: RunJobPrepareContext): Prom
     || source.attemptToken
     || source.attempt;
   const attemptId = activeAttempt ? String(activeAttempt) : jobId;
-  ctx._attemptId = attemptId;
+  setAttemptId(ctx, attemptId);
 
   await appendEvent(cpbRoot, project, jobId, {
     type: "job_started",

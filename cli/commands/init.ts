@@ -2,7 +2,7 @@
 import type { LooseRecord } from "../../shared/types.js";
 // init-project.js — Initialize project integration (Node.js, replaces init-project.sh)
 
-import { mkdir, cp, writeFile, readFile, symlink, access, constants } from "node:fs/promises";
+import { mkdir, cp, writeFile, readFile, access, constants } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -122,7 +122,18 @@ export async function initProject(args: string[], { cpbRoot, executorRoot }: Loo
     process.exit(1);
   }
 
-  const wikiDir = path.join(cpbRoot, "wiki/projects", projectName);
+  const { registerProject, resolveHubRoot } = await import("../../server/services/hub/hub-registry.js");
+  const hubRoot = resolveHubRoot(cpbRoot);
+  const registered = await registerProject(hubRoot, {
+    name: projectName,
+    sourcePath: resolvedPath,
+    skipCodeGraphGate: true,
+  });
+  if (!registered?.projectRuntimeRoot) {
+    throw new Error(`Hub registration did not assign a runtime root for '${projectName}'`);
+  }
+  const dataRoot = path.resolve(registered.projectRuntimeRoot);
+  const wikiDir = path.join(dataRoot, "wiki");
   try {
     await access(wikiDir, constants.F_OK);
     console.error(`${RED}Error: '${projectName}' already exists${NC}`);
@@ -189,25 +200,13 @@ export async function initProject(args: string[], { cpbRoot, executorRoot }: Loo
     await writeFile(ctxPath, ctxLines.join("\n") + "\n");
   }
 
-  // 4. Relative symlink
-  const omcWiki = path.join(resolvedPath, ".omc/wiki");
-  await mkdir(omcWiki, { recursive: true });
-  const relPath = path.relative(omcWiki, wikiDir);
-  const linkPath = path.join(omcWiki, "cpb");
-  try {
-    await access(linkPath, constants.F_OK);
-  } catch {
-    await symlink(relPath, linkPath);
-    console.log(`Symlink: ${linkPath} -> ${relPath}`);
-  }
-
-  // 5. CPB.md
+  // 4. CPB.md
   const cpbMd = `# CodePatchbay Configuration
 cpb:
   project: ${projectName}
   codex_agent: planner
   claude_agent: executor
-  wiki_root: .omc/wiki/cpb/
+  wiki_root: ${wikiDir}/
   phases:
     plan: { agent: planner, model: auto }
     execute: { agent: executor, model: auto }
@@ -219,18 +218,10 @@ cpb:
   console.log(`Project '${projectName}' ready.`);
   console.log(`Wiki: ${wikiDir}`);
 
-  // 6. Auto-register with Hub (if hub root exists)
-  try {
-    const { registerProject, resolveHubRoot } = await import("../../server/services/hub/hub-registry.js");
-    const hubRoot = resolveHubRoot(cpbRoot);
-    await registerProject(hubRoot, { name: projectName, sourcePath: resolvedPath, skipCodeGraphGate: true });
-    console.log(`Registered with Hub.`);
-  } catch (err) {
-    console.log(`Hub registration skipped (${err.message}). Re-run: cpb init ${resolvedPath} ${projectName}`);
-  }
+  console.log(`Registered with Hub: ${hubRoot}`);
 
   console.log("");
-  console.log(`Next: cpb run "<task>" --project ${projectName}`);
+  console.log(`Next: cpb pipeline ${projectName} "<task>"`);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

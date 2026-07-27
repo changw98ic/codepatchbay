@@ -199,6 +199,9 @@ async function loadAdapter(phase: string): Promise<PhaseAdapter> {
 }
 
 export async function runPhase(ctx: PhaseContext): Promise<PhaseResult> {
+  if (typeof ctx.conversationKey !== "string" || !ctx.conversationKey) {
+    throw new Error(`conversationKey is required for phase ${ctx.phase}`);
+  }
   try {
     const adapter = await loadAdapter(ctx.phase);
     const result = await adapter(ctx);
@@ -286,24 +289,6 @@ export async function runPhase(ctx: PhaseContext): Promise<PhaseResult> {
 async function releasePhaseAcpResources(ctx: PhaseContext) {
   // Attempt-scoped conversations are owned by the job/worktree lifecycle.
   // Closing them after each phase destroys the executor context that semantic
-  // repair needs. The managed worker releases the whole worktree at terminal
-  // job cleanup; legacy phase calls without a conversation key keep the old
-  // eager cleanup behavior.
-  if (typeof ctx.conversationKey === "string" && ctx.conversationKey) return;
-  const pool = ctx.pool;
-  // retain: dynamic caller-injected pool shape — verify releaseWorktree at runtime before invoking
-  const releaseWorktree = pool?.releaseWorktree;
-  if (typeof releaseWorktree !== "function") return;
-  const cwd = ctx.sourcePath || ctx.cwd || ctx.cpbRoot;
-  if (!cwd) return;
-  try {
-    await releaseWorktree.call(
-      pool,
-      cwd,
-      `phase_${ctx.phase || "unknown"}_complete`,
-      { closeProvider: true },
-    );
-  } catch {
-    // Phase results must not be masked by best-effort resource cleanup.
-  }
+  // needs. The managed worker releases the whole worktree at terminal job
+  // cleanup.
 }

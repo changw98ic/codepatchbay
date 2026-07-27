@@ -90,15 +90,9 @@ export function bindVerificationFeedbackToFrozenScope(
   const allowedFixScope = selectedItems
     .flatMap((item) => stringArray(item.allowedFiles))
     .filter((value, index, all) => all.indexOf(value) === index);
-  // An empty legacy scope is not an explicit deny-all contract. The normal
-  // execute scope guard still constrains mutations, but there is no frozen
-  // path boundary here against which a counterexample can be classified as a
-  // scope expansion.
-  const outsideScope = allowedFixScope.length > 0
-    ? feedback.fixScope.filter(
-        (candidate) => !allowedFixScope.some((allowed) => scopePathMatches(candidate, allowed)),
-      )
-    : [];
+  const outsideScope = feedback.fixScope.filter(
+    (candidate) => !allowedFixScope.some((allowed) => scopePathMatches(candidate, allowed)),
+  );
   if (outsideScope.length > 0) {
     return {
       ok: false,

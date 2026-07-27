@@ -5,7 +5,7 @@ import { constants as fsConstants, fstatSync, lstatSync, mkdirSync, renameSync, 
 import { lstat, mkdir, open, readFile, readdir, realpath, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { isRecord, recordValue, type LooseRecord } from "../../../core/contracts/types.js";
-import { listRuntimeDataRoots, resolveProjectDataRoot, runtimeDataPath, runtimeDataRoot } from "../runtime.js";
+import { listRuntimeDataRoots, resolveProjectDataRoot } from "../runtime.js";
 import { eventFileFor, listEventFiles, readEvents, materializeJob, recoverEventFile } from "../event/event-store.js";
 import { appendEvent } from "../event/event-store.js";
 import { readLease, releaseLease, isLeaseStale } from "../infra.js";
@@ -43,8 +43,6 @@ type CleanupOptions = LooseRecord & {
   hubRoot?: string;
   dataRoot?: string;
   project?: string | null;
-  legacyOnly?: boolean;
-  includeLegacyFallback?: boolean;
   cleanupPollution?: boolean;
 };
 
@@ -567,14 +565,9 @@ async function cleanupRuntimeRoots(cpbRoot: string, options: CleanupOptions = {}
   if (options.dataRoot) {
     return [{ kind: "project", dataRoot: path.resolve(options.dataRoot), projectId: options.project || null }];
   }
-  if (options.legacyOnly === true) {
-    return [{ kind: "legacy", dataRoot: runtimeDataRoot(cpbRoot), projectId: null }];
-  }
-
-  const includeLegacy = options.includeLegacyFallback === true;
   const hubRoot = resolvedHubRoot(cpbRoot, options);
   try {
-    return await listRuntimeDataRoots(cpbRoot, { hubRoot, includeLegacy });
+    return await listRuntimeDataRoots(cpbRoot, { hubRoot });
   } catch {
     return [];
   }
@@ -585,7 +578,7 @@ async function listJobsForCleanup(cpbRoot: string, options: CleanupOptions = {})
   const jobs: CleanupJob[] = [];
   const seen = new Set<string>();
   for (const root of roots) {
-    const batch = await listJobs(cpbRoot, { dataRoot: root.dataRoot, includeLegacyFallback: false });
+    const batch = await listJobs(cpbRoot, { dataRoot: root.dataRoot });
     for (const job of batch) {
       const key = `${job.project}/${job.jobId}`;
       if (seen.has(key)) continue;
@@ -613,17 +606,11 @@ async function listProcessesForCleanup(cpbRoot: string, options: CleanupOptions 
 }
 
 async function eventOptionsForProject(cpbRoot: string, project: string, options: CleanupOptions = {}) {
-  if (options.legacyOnly === true) {
-    return { ...options, legacyOnly: true };
-  }
   if (options.dataRoot) {
-    return { ...options, dataRoot: path.resolve(options.dataRoot), includeLegacyFallback: false };
+    return { ...options, dataRoot: path.resolve(options.dataRoot) };
   }
-  if (options.hubRoot) {
-    const dataRoot = await resolveProjectDataRoot(cpbRoot, project, { hubRoot: options.hubRoot });
-    return { ...options, dataRoot, includeLegacyFallback: false };
-  }
-  throw new Error("dataRoot is required for project event store paths");
+  const dataRoot = await resolveProjectDataRoot(cpbRoot, project, { hubRoot: options.hubRoot });
+  return { ...options, dataRoot };
 }
 
 export async function validateEventStream(cpbRoot: string, project: string, jobId: string, { dryRun = false, ...options }: CleanupOptions & { dryRun?: boolean } = {}): Promise<EventValidationResult> {
@@ -929,7 +916,6 @@ export async function reconcileJobs(cpbRoot: string, { dryRun = false, ...option
       try {
         lease = await readLease(cpbRoot, leaseId, {
           dataRoot: root.dataRoot,
-          includeLegacyFallback: false,
         });
       } catch (error) {
         strictReadError = error;
@@ -1085,7 +1071,7 @@ export async function reconcileJobs(cpbRoot: string, { dryRun = false, ...option
 
   // 4. Validate and recover JSONL event streams
   for (const root of roots) {
-    const eventFiles = await listEventFiles(cpbRoot, { dataRoot: root.dataRoot, includeLegacyFallback: false });
+    const eventFiles = await listEventFiles(cpbRoot, { dataRoot: root.dataRoot });
     for (const { project, jobId } of eventFiles) {
       const result = await validateEventStream(cpbRoot, project, jobId, { dryRun, dataRoot: root.dataRoot });
       if (result.error) {
@@ -1111,7 +1097,7 @@ export async function reconcileJobs(cpbRoot: string, { dryRun = false, ...option
   // 5. Rebuild jobs-index from authoritative state (only when no stream errors)
   if (!dryRun && report.streamErrors.length === 0) {
     for (const root of roots) {
-      await rebuildJobsIndex(cpbRoot, { dataRoot: root.dataRoot, includeLegacyFallback: false });
+      await rebuildJobsIndex(cpbRoot, { dataRoot: root.dataRoot });
       report.indexRebuilt = true;
     }
   }
@@ -1181,7 +1167,6 @@ export async function cleanupDryRun(cpbRoot: string, options: CleanupOptions = {
       try {
         const lease = await readLease(cpbRoot, leaseId, {
           dataRoot: root.dataRoot,
-          includeLegacyFallback: false,
         });
         leaseJobId = typeof lease?.jobId === "string" ? lease.jobId : null;
       } catch {
@@ -1252,7 +1237,6 @@ export async function cleanupJobs(cpbRoot: string, options: CleanupOptions = {})
       try {
         const lease = await readLease(cpbRoot, leaseId, {
           dataRoot: root.dataRoot,
-          includeLegacyFallback: false,
         });
         leaseJobId = lease?.jobId || null;
         leaseOwnerToken = typeof lease?.ownerToken === "string" ? lease.ownerToken : undefined;
@@ -1264,7 +1248,6 @@ export async function cleanupJobs(cpbRoot: string, options: CleanupOptions = {})
         await releaseLease(cpbRoot, leaseId, {
           dataRoot: root.dataRoot,
           ownerToken: leaseOwnerToken,
-          includeLegacyFallback: false,
         });
         cleaned++;
       }
@@ -2168,7 +2151,9 @@ function normalizePolicy(cpbRoot: string, policy: WorktreeRetentionPolicy = {}):
     : null;
   return {
     completed,
-    archiveRoot: path.resolve(typeof policy.archiveRoot === "string" ? policy.archiveRoot : runtimeDataPath(cpbRoot, "worktree-archive")),
+    archiveRoot: path.resolve(typeof policy.archiveRoot === "string"
+      ? policy.archiveRoot
+      : path.join(resolvedHubRoot(cpbRoot), "worktree-archive")),
   };
 }
 
@@ -2176,12 +2161,9 @@ function archivePathFor(policy: NormalizedWorktreeRetentionPolicy, worktree: str
   return path.join(policy.archiveRoot, path.basename(worktree));
 }
 
-function managedWorktreeRoots(cpbRoot: string, options: CleanupOptions) {
-  return [...new Set([
-    path.resolve(resolvedHubRoot(cpbRoot, options), "worktrees"),
-    path.resolve(cpbRoot, "worktrees"),
-    path.resolve(cpbRoot, "cpb-task", "worktrees"),
-  ])];
+async function managedWorktreeRoots(cpbRoot: string, options: CleanupOptions) {
+  const runtimeRoots = await cleanupRuntimeRoots(cpbRoot, options);
+  return [...new Set(runtimeRoots.map((root) => path.resolve(root.dataRoot, "worktrees")))];
 }
 
 function directManagedWorktreeRoot(worktree: string, roots: string[]) {
@@ -2309,7 +2291,7 @@ function entryForJob(
 export async function buildWorktreeRetentionPlan(cpbRoot: string, { policy = {}, dryRun = true, ...options }: WorktreeRetentionOptions = {}): Promise<WorktreeRetentionPlan> {
   const normalizedPolicy = normalizePolicy(cpbRoot, policy);
   const jobs = await listJobsForCleanup(cpbRoot, options);
-  const managedRoots = managedWorktreeRoots(cpbRoot, options);
+  const managedRoots = await managedWorktreeRoots(cpbRoot, options);
 
   // Build a set of worktree paths that have associated jobs
   const worktreeByPath = new Map<string, CleanupJob>();
@@ -2403,7 +2385,7 @@ export async function cleanupWorktrees(cpbRoot: string, { policy = {}, dryRun = 
   const plan = await buildWorktreeRetentionPlan(cpbRoot, { policy, dryRun, ...options });
   if (plan.dryRun) return plan;
 
-  const managedRoots = managedWorktreeRoots(cpbRoot, options);
+  const managedRoots = await managedWorktreeRoots(cpbRoot, options);
   let hubRootValidationError: string | null = null;
   try {
     await assertDeclaredHubRootLineage(cpbRoot, resolvedHubRoot(cpbRoot, options));
@@ -2661,7 +2643,7 @@ export function buildSupersededIssueCloseComment({ queueEntryId, supersededByQue
     supersededByQueueEntryId ? `- Replacement queue entry: \`${supersededByQueueEntryId}\`` : null,
     queueEntryId ? `- Original queue entry: \`${queueEntryId}\`` : null,
     "",
-    "Closing to reduce backlog noise. If this was closed in error, re-open with a new `/cpb run` command.",
+    "Closing to reduce backlog noise. If this was closed in error, re-open with a new `/cpb pipeline` command.",
     "",
   ].filter((line) => line !== null).join("\n");
 }

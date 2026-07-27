@@ -301,7 +301,7 @@ async function runPrepareEngine({ prepareTask, includePrepareTask = true }: RunP
     agents: {
       planner: "fake-primary",
       executor: "fake-primary",
-      verifier: "fake-primary",
+      verifier: "fake-verifier-agent",
     },
     ...services,
     getPool: () => makePool({ calls }),

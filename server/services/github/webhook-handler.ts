@@ -99,7 +99,7 @@ function hasTrustedGithubAssociation(value: unknown): boolean {
 function isGithubCommentExecutionTrigger(event: LooseRecord): boolean {
   if (event.type !== "github_issue_comment" || event.action !== "created" || !event.commandText) return false;
   const commandText = String(event.commandText).trim();
-  return commandText === "/cpb run" || commandText.startsWith("/cpb run ");
+  return commandText === "/cpb pipeline" || commandText.startsWith("/cpb pipeline ");
 }
 
 function headerValue(headers: LooseRecord, name: string): string | undefined {

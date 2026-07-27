@@ -116,7 +116,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
 
   if (results.errors.length > 0) result.summary.success = false;
 
-  // Smoke test (migrated from health-check.ts)
+  // Optional end-to-end smoke test.
   if (smoke) {
     try {
       const { runFakeAcpSmoke } = await import("../../server/services/infra.js");

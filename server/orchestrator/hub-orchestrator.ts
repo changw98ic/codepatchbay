@@ -356,9 +356,15 @@ export class HubOrchestrator {
           continue;
         }
 
+        const registeredProject = await getProject(this.hubRoot, candidate.projectId);
+        if (!registeredProject?.projectRuntimeRoot) {
+          throw new Error(`project runtime root required for dispatch: ${candidate.projectId}`);
+        }
+
         const assignment = await this.assignmentStore.getOrCreateAssignmentForEntry({
           entryId: candidate.id,
           projectId: candidate.projectId,
+          projectRuntimeRoot: registeredProject.projectRuntimeRoot,
           task: candidate.description || candidate.metadata?.task || "",
           sourcePath: candidate.sourcePath || candidate.metadata?.sourcePath,
           workflow: candidate.metadata?.workflow || "standard",
@@ -412,6 +418,7 @@ export class HubOrchestrator {
           assignmentId: assignment.assignmentId,
           entryId: assignment.entryId,
           projectId: assignment.projectId,
+          projectRuntimeRoot: assignment.projectRuntimeRoot,
           task: assignment.task,
           sourcePath: assignment.sourcePath,
           workflow: assignment.workflow,

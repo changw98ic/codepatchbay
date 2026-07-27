@@ -48,7 +48,7 @@ test("known commands resolve and help lists them", async () => {
   assert.equal(help.code, 0);
   const plain = help.stdout.replace(/\x1B\[[0-9;]*m/g, "");
   assert.match(plain, /\bpipeline\b/);
-  assert.match(plain, /\brun\b/);
+  assert.doesNotMatch(plain, /^\s+run(?:\s|$)/m);
   assert.match(plain, /\binbox\b/);
   assert.doesNotMatch(plain, /\bartifacts\b/);
   assert.doesNotMatch(plain, /\bverdict\b/);
@@ -70,18 +70,17 @@ test("internal orchestrator route is not exposed as a top-level command", async 
   assert.match(result.stderr, /Unknown command: hub-orch/);
 });
 
-test("alias relationships resolve to the same exit behavior", async () => {
-  // `run`/`pipeline` and `cancel`/`redirect` resolve to the same module, so
-  // invoking either alias with no required args produces the same usage error
-  // (proving they share a command module) rather than "Unknown command".
+test("removed run command is not retained beside canonical pipeline", async () => {
   const run = await runCli(["run"]);
   assert.equal(run.code, 1);
-  assert.doesNotMatch(run.stderr, /Unknown command: run/);
+  assert.match(run.stderr, /Unknown command: run/);
 
   const pipeline = await runCli(["pipeline"]);
   assert.equal(pipeline.code, 1);
   assert.doesNotMatch(pipeline.stderr, /Unknown command: pipeline/);
 
+  // These are current commands that share the cancel/redirect module, not
+  // compatibility aliases for the removed `run` entrypoint.
   const cancel = await runCli(["cancel"]);
   assert.equal(cancel.code, 1);
   assert.doesNotMatch(cancel.stderr, /Unknown command: cancel/);

@@ -169,10 +169,6 @@ function quotasFilePath(hubRoot: string) {
   return path.join(hubRoot, "providers", "quotas.json");
 }
 
-function legacyRateLimitsFilePath(hubRoot: string) {
-  return path.join(hubRoot, "providers", "rate-limits.json");
-}
-
 function invalidQuotaEntry(filePath: string, providerKey: string, detail: string): never {
   throw new ProviderQuotaContractError(
     "PROVIDER_QUOTA_ENTRY_CONTRACT_INVALID",
@@ -285,60 +281,6 @@ function parseProviderQuotaJson(raw: string, filePath: string): unknown {
 
 function parseProviderQuotas(raw: string, filePath: string): ProviderQuotaMap {
   return validateProviderQuotas(parseProviderQuotaJson(raw, filePath), filePath);
-}
-
-function validateAndNormalizeLegacyProviderQuotaEntry(
-  value: unknown,
-  providerKey: string,
-  filePath: string,
-): ProviderQuotaEntry {
-  if (!isRecord(value)) invalidQuotaEntry(filePath, providerKey, "legacy entry must be an object");
-  if (typeof value.untilTs !== "string" || !value.untilTs.trim()) {
-    invalidQuotaEntry(filePath, providerKey, "legacy untilTs must be a non-empty timestamp string");
-  }
-  const nextEligibleAt = Date.parse(value.untilTs);
-  if (!Number.isFinite(nextEligibleAt) || nextEligibleAt < 0) {
-    invalidQuotaEntry(filePath, providerKey, "legacy untilTs must be a valid timestamp");
-  }
-  if (value.reason !== undefined && typeof value.reason !== "string") {
-    invalidQuotaEntry(filePath, providerKey, "legacy reason must be a string when present");
-  }
-
-  return {
-    ...value,
-    providerKey,
-    agent: providerKey,
-    status: QuotaStatus.RATE_LIMITED,
-    nextEligibleAt,
-    source: "legacy-rate-limits",
-    confidence: 1,
-    reason: typeof value.reason === "string" ? value.reason : "",
-  } as ProviderQuotaEntry;
-}
-
-function validateAndNormalizeLegacyProviderQuotas(value: unknown, filePath: string): ProviderQuotaMap {
-  if (!isRecord(value)) {
-    throw new ProviderQuotaContractError(
-      "PROVIDER_QUOTAS_CONTRACT_INVALID",
-      `legacy provider quotas in ${filePath} must be a keyed object`,
-    );
-  }
-
-  const quotas: ProviderQuotaMap = {};
-  for (const [providerKey, entry] of Object.entries(value)) {
-    if (!providerKey.trim()) {
-      throw new ProviderQuotaContractError(
-        "PROVIDER_QUOTAS_CONTRACT_INVALID",
-        `legacy provider quotas in ${filePath} contain an empty provider key`,
-      );
-    }
-    quotas[providerKey] = validateAndNormalizeLegacyProviderQuotaEntry(entry, providerKey, filePath);
-  }
-  return quotas;
-}
-
-function parseLegacyProviderQuotas(raw: string, filePath: string): ProviderQuotaMap {
-  return validateAndNormalizeLegacyProviderQuotas(parseProviderQuotaJson(raw, filePath), filePath);
 }
 
 function isMissingFileError(err: unknown): err is NodeJS.ErrnoException {
@@ -527,26 +469,12 @@ async function readProviderQuotasForWrite(hubRoot: string): Promise<ProviderQuot
     };
   } catch (err) {
     if (!isMissingFileError(err)) throw err;
-    const legacyPath = legacyRateLimitsFilePath(hubRoot);
-    try {
-      const { quotas, generation } = await readProviderQuotaFile(legacyPath, parseLegacyProviderQuotas);
-      return {
-        quotas,
-        sourcePath: legacyPath,
-        sourceGeneration: generation,
-        canonicalGeneration: null,
-      };
-    } catch (legacyErr) {
-      if (isMissingFileError(legacyErr)) {
-        return {
-          quotas: {},
-          sourcePath: null,
-          sourceGeneration: null,
-          canonicalGeneration: null,
-        };
-      }
-      throw legacyErr;
-    }
+    return {
+      quotas: {},
+      sourcePath: null,
+      sourceGeneration: null,
+      canonicalGeneration: null,
+    };
   }
 }
 
@@ -806,7 +734,7 @@ export function parseResetTime(message: string, timezone: string | null, fallbac
       const parsed = parseNaiveTimestamp(normalized, timezone);
       if (Number.isFinite(parsed)) return parsed;
     } else {
-      // No timezone, no zone hint — treat as UTC (legacy behavior)
+      // No timezone and no zone hint: interpret the timestamp as UTC.
       const parsed = Date.parse(`${normalized}Z`);
       if (Number.isFinite(parsed)) return parsed;
     }

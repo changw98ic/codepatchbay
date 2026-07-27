@@ -13,15 +13,14 @@ test("ACP agent environment prefixes canonicalize legal agent ids without readin
   assert.equal(resolveAgentEnvPrefix("custom.agent_v2"), "CPB_ACP_CUSTOM_AGENT_V2");
   assert.throws(() => resolveAgentEnvPrefix("../../PATH"), /invalid ACP agent name/i);
 
-  const resolved = await resolveAgentCommand("custom-agent", {
-    CPB_ACP_CUSTOM_AGENT_COMMAND: process.execPath,
-    CPB_ACP_CUSTOM_AGENT_ARGS: JSON.stringify(["--version"]),
-    "CPB_ACP_CUSTOM-AGENT_COMMAND": "must-not-be-read",
-  });
-  assert.deepEqual(resolved, {
-    command: process.execPath,
-    args: ["--version"],
-  });
+  await assert.rejects(
+    () => resolveAgentCommand("custom-agent", {
+      CPB_ACP_CUSTOM_AGENT_COMMAND: process.execPath,
+      CPB_ACP_CUSTOM_AGENT_ARGS: JSON.stringify(["--version"]),
+      "CPB_ACP_CUSTOM-AGENT_COMMAND": "must-not-be-read",
+    }),
+    /Unknown agent.*Register a descriptor first/,
+  );
 });
 
 test("ACP session MCP injection follows explicit adapter capability", async () => {

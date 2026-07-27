@@ -409,7 +409,7 @@ function sortSpans(spans: TraceSpan[]) {
 }
 
 export async function buildJobTrace({ cpbRoot, project, jobId, dataRoot = null }: BuildJobTraceInput): Promise<JobTrace> {
-  const readOptions = dataRoot ? { dataRoot, includeLegacyFallback: false } : {};
+  const readOptions = { dataRoot };
   const rawEvents = await readEvents(cpbRoot, project, jobId, readOptions);
   const spansById = new Map<string, TraceSpan>();
   const auditReferences = new Map<string, AuditReference>();

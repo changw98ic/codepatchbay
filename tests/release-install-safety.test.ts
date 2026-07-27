@@ -7,7 +7,7 @@ import { REQUIRED_EXECUTOR_FILES } from "../server/services/executor-root.js";
 import {
   _quarantineReleaseDirectoryForTests,
   buildReleaseGcPlan,
-  checkReleaseCompatibility,
+  validateReleaseSelection,
   executeReleaseGc,
   installRelease,
   listReleases,
@@ -65,13 +65,13 @@ test("release installation publishes a complete exclusive stage", async () => {
   const generationPath = path.resolve(path.dirname(installedPath), await readlink(installedPath));
   assert.equal((await lstat(generationPath)).isDirectory(), true);
   assert.equal(JSON.parse(await readFile(path.join(generationPath, ".cpb-release-commit.json"), "utf8")).releaseId, "release-success");
-  const compatibility = await checkReleaseCompatibility({
+  const validation = await validateReleaseSelection({
     releaseId: "release-success",
     destRoot: fixture.destRoot,
   });
-  assert.equal(compatibility.ok, true);
-  assert.equal(compatibility.canonicalPath, installedPath);
-  assert.equal(compatibility.releasePath, generationPath);
+  assert.equal(validation.ok, true);
+  assert.equal(validation.canonicalPath, installedPath);
+  assert.equal(validation.releasePath, generationPath);
   const selected = await selectRelease({
     releaseId: "release-success",
     destRoot: fixture.destRoot,
@@ -223,7 +223,7 @@ test("a committed hidden generation is invisible until its canonical pointer is 
   await stagedPromise;
   assert.equal(JSON.parse(await readFile(path.join(generationPath, ".cpb-release-commit.json"), "utf8")).releaseId, "release-visibility");
   assert.deepEqual((await listReleases({ destRoot: fixture.destRoot })).releases, []);
-  assert.equal((await checkReleaseCompatibility({ releaseId: "release-visibility", destRoot: fixture.destRoot })).ok, false);
+  assert.equal((await validateReleaseSelection({ releaseId: "release-visibility", destRoot: fixture.destRoot })).ok, false);
   publish();
   await installing;
   assert.deepEqual((await listReleases({ destRoot: fixture.destRoot })).releases.map((release) => release.releaseId), ["release-visibility"]);
@@ -276,12 +276,12 @@ test("release readers reject a canonical pointer whose generation commit marker 
   assert.equal(listed.releases[0].installedPath, installedPath);
   assert.equal(listed.releases[0].status, "invalid");
   assert.match(listed.releases[0].error || "", /commit marker/i);
-  const compatibility = await checkReleaseCompatibility({
+  const validation = await validateReleaseSelection({
     releaseId: "release-invalid-commit",
     destRoot: fixture.destRoot,
   });
-  assert.equal(compatibility.ok, false);
-  assert.deepEqual(compatibility.failures.map((failure) => failure.code), ["release_not_committed"]);
+  assert.equal(validation.ok, false);
+  assert.deepEqual(validation.failures.map((failure) => failure.code), ["release_not_committed"]);
 });
 
 test("release inventory retains a damaged canonical entry and GC classifies it as unsafe", async () => {

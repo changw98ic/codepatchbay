@@ -10,7 +10,6 @@ import {
   getNode,
   deriveDagResumeState,
   validateDag,
-  phasesToDag,
   scheduleReadyNodes,
   executeDag,
 } from "../core/workflow/dag-executor.js";
@@ -276,38 +275,6 @@ describe("validateDag", () => {
     const result = validateDag([{ id: "x", dependsOn: [] }]);
     assert.equal(result.valid, false);
     assert.ok(result.errors.some((e: string) => /missing phase/.test(e)));
-  });
-});
-
-// ---------------------------------------------------------------------------
-// phasesToDag
-// ---------------------------------------------------------------------------
-
-describe("phasesToDag", () => {
-  it("converts linear phases to single-chain DAG", () => {
-    const dag = phasesToDag(["plan", "execute", "verify"]);
-    assert.equal(dag.length, 3);
-    assert.deepEqual(dag[0].dependsOn, []);
-    assert.deepEqual(dag[1].dependsOn, ["plan"]);
-    assert.deepEqual(dag[2].dependsOn, ["execute"]);
-  });
-
-  it("assigns roles from roleForPhase map", () => {
-    const dag = phasesToDag(["plan", "exec"], { plan: "codex" });
-    assert.equal(dag[0].role, "codex");
-    assert.equal(dag[1].role, null);
-  });
-
-  it("sets agent on every node when provided", () => {
-    const dag = phasesToDag(["a", "b"], {}, "my-agent");
-    assert.equal(dag[0].agent, "my-agent");
-    assert.equal(dag[1].agent, "my-agent");
-  });
-
-  it("handles single phase", () => {
-    const dag = phasesToDag(["solo"]);
-    assert.equal(dag.length, 1);
-    assert.deepEqual(dag[0].dependsOn, []);
   });
 });
 

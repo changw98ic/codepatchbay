@@ -35,18 +35,22 @@ export async function run(args: string[], { cpbRoot }: LooseRecord) {
 
   const subcommand = positional[1] || null;
   const targetId = positional[2] || null;
+  const { resolveHubRoot, getProject } = await import("../../server/services/hub/hub-registry.js");
+  const projectRecord = await getProject(resolveHubRoot(cpbRoot), project);
+  const dataRoot = projectRecord?.projectRuntimeRoot || process.env.CPB_PROJECT_RUNTIME_ROOT;
+  if (!dataRoot) throw new Error(`project runtime root required for project '${project}'`);
 
   if (!subcommand) {
-    return listMessages(cpbRoot, project, flags);
+    return listMessages(cpbRoot, project, flags, dataRoot);
   }
 
   switch (subcommand) {
     case "read":
-      return readMessage(cpbRoot, project, targetId);
+      return readMessage(cpbRoot, project, targetId, dataRoot);
     case "ack":
-      return ackMessage(cpbRoot, project, targetId, flags);
+      return ackMessage(cpbRoot, project, targetId, flags, dataRoot);
     case "done":
-      return doneMessage(cpbRoot, project, targetId);
+      return doneMessage(cpbRoot, project, targetId, dataRoot);
     case "outputs":
       return listOutputs(cpbRoot, project);
     default:
@@ -56,10 +60,10 @@ export async function run(args: string[], { cpbRoot }: LooseRecord) {
   }
 }
 
-async function listMessages(cpbRoot: string, project: string, flags: LooseRecord) {
+async function listMessages(cpbRoot: string, project: string, flags: LooseRecord, dataRoot: string) {
   const { listInboxMessages } = await import("../../server/services/hub/hub-queue.js");
 
-  const messages = await listInboxMessages(cpbRoot, project);
+  const messages = await listInboxMessages(cpbRoot, project, {}, { dataRoot });
 
   if (flags.json) {
     console.log(JSON.stringify(messages, null, 2));
@@ -82,14 +86,14 @@ async function listMessages(cpbRoot: string, project: string, flags: LooseRecord
   }
 }
 
-async function readMessage(cpbRoot: string, project: string, id: string) {
+async function readMessage(cpbRoot: string, project: string, id: string, dataRoot: string) {
   if (!id) {
     console.error("Usage: cpb inbox <project> read <id>");
     process.exit(1);
   }
 
   const { readInboxMessage } = await import("../../server/services/hub/hub-queue.js");
-  const msg = await readInboxMessage(cpbRoot, project, id);
+  const msg = await readInboxMessage(cpbRoot, project, id, { dataRoot });
 
   if (!msg) {
     console.error(`Message not found: ${id}`);
@@ -112,7 +116,7 @@ async function readMessage(cpbRoot: string, project: string, id: string) {
   }
 }
 
-async function ackMessage(cpbRoot: string, project: string, id: string, flags: LooseRecord) {
+async function ackMessage(cpbRoot: string, project: string, id: string, flags: LooseRecord, dataRoot: string) {
   if (!id) {
     console.error("Usage: cpb inbox <project> ack <id> --owner <role>");
     process.exit(1);
@@ -127,7 +131,7 @@ async function ackMessage(cpbRoot: string, project: string, id: string, flags: L
   const { ackInboxMessage } = await import("../../server/services/hub/hub-queue.js");
 
   try {
-    const result = await ackInboxMessage(cpbRoot, project, id, { owner });
+    const result = await ackInboxMessage(cpbRoot, project, id, { owner, dataRoot });
     if (!result) {
       console.error(`Message not found: ${id}`);
       process.exit(1);
@@ -139,7 +143,7 @@ async function ackMessage(cpbRoot: string, project: string, id: string, flags: L
   }
 }
 
-async function doneMessage(cpbRoot: string, project: string, id: string) {
+async function doneMessage(cpbRoot: string, project: string, id: string, dataRoot: string) {
   if (!id) {
     console.error("Usage: cpb inbox <project> done <id>");
     process.exit(1);
@@ -148,7 +152,7 @@ async function doneMessage(cpbRoot: string, project: string, id: string) {
   const { completeInboxMessage } = await import("../../server/services/hub/hub-queue.js");
 
   try {
-    const result = await completeInboxMessage(cpbRoot, project, id);
+    const result = await completeInboxMessage(cpbRoot, project, id, { dataRoot });
     if (!result) {
       console.error(`Message not found: ${id}`);
       process.exit(1);
@@ -160,10 +164,9 @@ async function doneMessage(cpbRoot: string, project: string, id: string) {
   }
 }
 
-export function resolveOutputsDir(cpbRoot: string, project: string, runtimeRoot = process.env.CPB_PROJECT_RUNTIME_ROOT) {
-  return runtimeRoot
-    ? path.join(runtimeRoot, "wiki", "outputs")
-    : path.join(cpbRoot, "wiki", "projects", project, "outputs");
+export function resolveOutputsDir(_cpbRoot: string, _project: string, runtimeRoot = process.env.CPB_PROJECT_RUNTIME_ROOT) {
+  if (!runtimeRoot) throw new Error("project runtime root required");
+  return path.join(runtimeRoot, "wiki", "outputs");
 }
 
 async function listOutputs(cpbRoot: string, project: string) {
@@ -180,8 +183,8 @@ async function listOutputs(cpbRoot: string, project: string) {
       let verdict = "";
       if (type === "verdict") {
         const content = await readFile(path.join(dir, f), "utf8");
-        const match = content.match(/^VERDICT:\s*(\w+)/m);
-        verdict = match?.[1] || "";
+        const parsed = JSON.parse(content);
+        verdict = typeof parsed.status === "string" ? parsed.status.toUpperCase() : "";
       }
       console.log(`  ${name.padEnd(18)} ${type.padEnd(12)} ${verdict}`);
     }

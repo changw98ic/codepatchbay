@@ -23,13 +23,14 @@ import { listJobs } from "./job/job-store.js";
 import { hubStatus, loadRegistry, resolveHubRoot } from "./hub/hub-registry.js";
 import { readHubLiveness } from "./hub/hub-registry.js";
 import { readLease, isLeaseStale } from "./infra.js";
-import { runtimeDataPath } from "./runtime.js";
+import { listRuntimeDataRoots, resolveProjectDataRoot } from "./runtime.js";
 import { WorkerStore } from "../../shared/orchestrator/worker-store.js";
 import { loadHubAuthConfig } from "../../shared/hub-auth.js";
 import { openHubOidcProvider } from "../../shared/hub-oidc.js";
 import { isLoopbackHost } from "../../shared/network.js";
 
 import { sanitizeProviderReason } from "./acp/acp-pool.js";
+import { readProviderQuotas, QuotaStatus } from "./provider-quota.js";
 import { scanHubPollution } from "./project/project-index.js";
 import {
   buildAgentSandboxLaunch,
@@ -250,7 +251,7 @@ export function deriveReadinessLevels(checks: Check[] = []) {
       name: "Node tests, web tests, and web build",
       status: "skipped",
       evidence: { reason: "doctor does not run long test/build gates" },
-      recommendedAction: "Run: cpb health-check or npm test && npm --workspace codepatchbay-web test -- --run && npm run build:web",
+      recommendedAction: "Run: cpb doctor or npm test && npm --workspace codepatchbay-web test -- --run && npm run build:web",
     },
     {
       level: 2,
@@ -266,7 +267,7 @@ export function deriveReadinessLevels(checks: Check[] = []) {
       name: "Fake ACP pipeline smoke",
       status: "skipped",
       evidence: { reason: "doctor does not launch pipeline smoke" },
-      recommendedAction: "Run: cpb health-check --skip-http --skip-tests --skip-build --fake-acp-smoke",
+      recommendedAction: "Run: cpb doctor --skip-http --skip-tests --skip-build --fake-acp-smoke",
     },
     {
       level: 4,
@@ -1086,13 +1087,11 @@ export async function checkHubAuthentication(
       now: options.now,
     });
     const local = await loadHubAuthConfig({
-      bearerToken: env.CPB_HUB_BEARER_TOKEN,
       serviceTokensFile: env.CPB_HUB_SERVICE_TOKENS_FILE,
       hubRoot,
       requireAuthentication: oidc.configured || env.CPB_HUB_ALLOW_ANONYMOUS_DEV !== "1",
     });
     const modes = [
-      local.credentials.some((credential) => credential.principal.source === "legacy-env") ? "legacy-token" : null,
       local.sourceFile ? "service-token-file" : null,
       oidc.configured ? "oidc-rfc9068" : null,
     ].filter(Boolean);
@@ -1174,9 +1173,11 @@ async function checkRegistryConsistency(hubRoot: string) {
   }
 }
 
-async function checkStaleJobs(cpbRoot: string) {
+async function checkStaleJobs(cpbRoot: string, hubRoot: string) {
   try {
     const allJobs = (await listJobs(cpbRoot)).map(readinessRecord);
+    const roots = await listRuntimeDataRoots(cpbRoot, { hubRoot });
+    const dataRoots = new Map(roots.filter((root) => root.projectId).map((root) => [root.projectId, root.dataRoot]));
     const terminalStates = ["completed", "failed", "blocked", "cancelled"];
     const running = allJobs.filter((j) => !terminalStates.includes(j.status));
     if (running.length === 0) return ok("stale-jobs", "jobs", "No running jobs");
@@ -1189,7 +1190,12 @@ async function checkStaleJobs(cpbRoot: string) {
         continue;
       }
       try {
-        const lease = await readLease(cpbRoot, job.leaseId);
+        const dataRoot = dataRoots.get(job.project);
+        if (!dataRoot) {
+          missingLeases.push({ jobId: job.jobId, project: job.project, leaseId: job.leaseId, issue: "project runtime root missing" });
+          continue;
+        }
+        const lease = await readLease(cpbRoot, job.leaseId, { dataRoot });
         if (lease === null) {
           missingLeases.push({ jobId: job.jobId, project: job.project, leaseId: job.leaseId, issue: "lease file missing" });
         } else if (isLeaseStale(lease)) {
@@ -1212,34 +1218,44 @@ async function checkStaleJobs(cpbRoot: string) {
   }
 }
 
-async function checkOrphanLeases(cpbRoot: string) {
+async function checkOrphanLeases(cpbRoot: string, hubRoot: string) {
   try {
-    const leasesDir = runtimeDataPath(cpbRoot, "leases");
-    let files;
-    try {
-      files = await readdir(leasesDir);
-    } catch {
-      return ok("orphan-leases", "leases", "No leases directory");
-    }
-    const leaseFiles = files.filter((f) => f.endsWith(".json"));
-    if (leaseFiles.length === 0) return ok("orphan-leases", "leases", "No lease files");
-
     const allJobs = (await listJobs(cpbRoot)).map(readinessRecord);
-    const jobLeaseIds = new Set(allJobs.map((j) => j.leaseId).filter(Boolean));
+    const roots = await listRuntimeDataRoots(cpbRoot, { hubRoot });
+    const jobsByRoot = new Map<string, Set<string>>();
+    for (const job of allJobs) {
+      const dataRoot = roots.find((root) => root.projectId === job.project)?.dataRoot;
+      if (!dataRoot) continue;
+      const leases = jobsByRoot.get(dataRoot) || new Set<string>();
+      if (job.leaseId) leases.add(job.leaseId);
+      jobsByRoot.set(dataRoot, leases);
+    }
+
     const orphans = [];
-    for (const f of leaseFiles) {
-      const leaseId = f.replace(".json", "");
-      if (!jobLeaseIds.has(leaseId)) {
-        orphans.push({ leaseId });
+    let leaseCount = 0;
+    for (const root of roots) {
+      const leasesDir = path.join(root.dataRoot, "leases");
+      let files: string[];
+      try {
+        files = await readdir(leasesDir);
+      } catch {
+        continue;
+      }
+      const jobLeaseIds = jobsByRoot.get(root.dataRoot) || new Set<string>();
+      for (const f of files.filter((name) => name.endsWith(".json"))) {
+        leaseCount += 1;
+        const leaseId = f.replace(".json", "");
+        if (!jobLeaseIds.has(leaseId)) orphans.push({ leaseId, dataRoot: root.dataRoot });
       }
     }
+    if (leaseCount === 0) return ok("orphan-leases", "leases", "No lease files");
     if (orphans.length > 0) {
       return warn("orphan-leases", "leases", `${orphans.length} orphan lease(s) not tied to any job`, {
         details: orphans,
         remediation: "Run: cpb gc to clean up orphan leases from completed jobs.",
       });
     }
-    return ok("orphan-leases", "leases", `${leaseFiles.length} lease(s), all tied to jobs`);
+    return ok("orphan-leases", "leases", `${leaseCount} lease(s), all tied to jobs`);
   } catch (e) {
     return warn("orphan-leases", "leases", `Cannot check orphan leases: ${e.message}`);
   }
@@ -1273,25 +1289,17 @@ async function checkStaleWorkers(hubRoot: string) {
 
 async function checkProviderBackoff(hubRoot: string) {
   try {
-    const rateLimitsPath = path.join(path.resolve(hubRoot), "providers", "rate-limits.json");
-    let limits;
-    try {
-      const raw = await readFile(rateLimitsPath, "utf8");
-      limits = JSON.parse(raw);
-    } catch {
-      return ok("provider-backoff", "provider", "No active provider backoff");
-    }
-
+    const limits = await readProviderQuotas(hubRoot);
     const active = [];
     const now = Date.now();
     for (const [agent, info] of Object.entries(limits)) {
       if (!info || typeof info !== "object") continue;
       const backoff = info as ReadinessRecord;
-      const untilTs = Date.parse(String(backoff.untilTs || ""));
-      if (Number.isFinite(untilTs) && untilTs > now) {
+      const untilTs = typeof backoff.nextEligibleAt === "number" ? backoff.nextEligibleAt : null;
+      if (untilTs !== null && untilTs > now && backoff.status !== QuotaStatus.AVAILABLE) {
         active.push({
           agent,
-          untilTs: backoff.untilTs,
+          untilTs: new Date(untilTs).toISOString(),
           reason: sanitizeProviderReason(backoff.reason || ""),
         });
       }
@@ -1625,9 +1633,9 @@ export async function runReadinessChecks({ cpbRoot, hubRoot, adapterOverrides, e
     checkHubStateBackend(resolvedHubRoot, env),
     checkHubAccessAudit(resolvedHubRoot, env),
     checkRegistryConsistency(resolvedHubRoot),
-    checkStaleJobs(resolvedCpbRoot),
+    checkStaleJobs(resolvedCpbRoot, resolvedHubRoot),
     checkStaleWorkers(resolvedHubRoot),
-    checkOrphanLeases(resolvedCpbRoot),
+    checkOrphanLeases(resolvedCpbRoot, resolvedHubRoot),
     checkProviderBackoff(resolvedHubRoot),
     checkHubProjectPollution(resolvedHubRoot),
   ]);
@@ -1740,25 +1748,6 @@ async function checkReleaseExecutorRoot({ env }: { env: ReadinessEnv }) {
   return okR("release.executor_root", `Executor root: ${executorRoot} (release: ${meta.releaseId || "dev"})`);
 }
 
-async function checkReleaseRuntimeRoot({ env }: { env: ReadinessEnv }) {
-  const executorRoot = env.CPB_EXECUTOR_ROOT ? path.resolve(env.CPB_EXECUTOR_ROOT) : null;
-  if (!executorRoot) {
-    return warnR("release.runtime_root", "Cannot check runtime root without CPB_EXECUTOR_ROOT", {
-      guidance: "Set CPB_EXECUTOR_ROOT or run from the CPB install directory.",
-    });
-  }
-  try {
-    const { runtimeDataRoot } = await import("./runtime.js");
-    const rtRoot = runtimeDataRoot(executorRoot);
-    await readdir(rtRoot);
-    return okR("release.runtime_root", `Runtime root readable: ${rtRoot}`);
-  } catch {
-    return warnR("release.runtime_root", "Runtime root not yet initialized", {
-      guidance: "Runtime data will be created on first use. No action needed if this is a fresh install.",
-    });
-  }
-}
-
 async function checkReleaseStateFormat({ env }: { env: ReadinessEnv }) {
   const selection = await inspectCurrentRelease({ env });
   if (!selection?.metadata?.stateFormatVersions) {
@@ -1857,7 +1846,6 @@ export async function runReleaseDoctorChecks({ cpbRoot, env = process.env }: Rea
   const checks = await Promise.all([
     checkReleaseCurrentMetadata({ env }),
     checkReleaseExecutorRoot({ env }),
-    checkReleaseRuntimeRoot({ env }),
     checkReleaseStateFormat({ env }),
     checkReleaseLauncherHealth({ env }),
     checkReleaseJobPinning({ env, cpbRoot: resolvedCpbRoot }),
@@ -2220,8 +2208,6 @@ export async function checkCodeGraphReady({ cpbRoot, sourcePath }: ReadinessReco
     });
   }
 
-  const statePath = path.join(path.resolve(cpbRoot || sourceRoot), "cpb-task", "codegraph-state.json");
-  const stateFile = await readCodeGraphStateOwner(statePath, "runtime_state");
   const daemonState = await readDaemonState(sourceRoot);
   const indexOnlyOk = process.env.CPB_CODEGRAPH_INDEX_ONLY_OK === "1";
 
@@ -2248,15 +2234,6 @@ export async function checkCodeGraphReady({ cpbRoot, sourcePath }: ReadinessReco
   }
 
   if (!daemonState) {
-    if (stateFile) {
-      throw new CodeGraphUnavailableError("CodeGraph runtime state has no canonical daemon owner", {
-        reason: "unbound_codegraph_state",
-        sourcePath: sourceRoot,
-        indexFile,
-        statePath,
-        daemonStatePath: path.join(sourceRoot, ".codegraph", "daemon.pid"),
-      });
-    }
     throw new CodeGraphUnavailableError("CodeGraph readiness state is unavailable", {
       reason: "missing_codegraph_state",
       sourcePath: sourceRoot,
@@ -2465,8 +2442,8 @@ function storyEntries({ planPath, diffPath, testsPath, verdictPath, riskPath, te
   }));
 }
 
-async function writeProjectForDemo(cpbRoot: string, project: string, sourcePath: string) {
-  const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
+async function writeProjectForDemo(dataRoot: string, project: string, sourcePath: string) {
+  const wikiDir = path.join(dataRoot, "wiki");
   await mkdir(path.join(wikiDir, "inbox"), { recursive: true });
   await mkdir(path.join(wikiDir, "outputs"), { recursive: true });
   await writeFile(
@@ -2596,8 +2573,8 @@ async function runDemoInRoot(tempRoot: string, project: string, task: string) {
   await mkdir(sourcePath, { recursive: true });
   await writeToyRepo(sourcePath);
 
-  const wikiDir = await writeProjectForDemo(cpbRoot, project, sourcePath);
-  const dataRoot = cpbRoot;
+  const dataRoot = path.join(cpbRoot, "projects", project);
+  const wikiDir = await writeProjectForDemo(dataRoot, project, sourcePath);
   const { buildArtifactIndex } = await import("./job/job-projection.js");
   const { appendEvent, eventFileFor } = await import("./event/event-store.js");
   const { completeJob, completePhase, createJob, getJob, startPhase } = await import("./job/job-store.js");
@@ -2772,22 +2749,8 @@ export async function runDemo({
 
 // ── Audit export (from audit-export.ts) ────────────────────────────────────
 
-function collectRuntimeFailureRefs(events: LooseRecord[], materialized?: ReadinessRecord) {
-  // Prefer materialized state (event-replay source of truth)
-  if (materialized?.runtimeFailures && Array.isArray(materialized.runtimeFailures) && materialized.runtimeFailures.length > 0) {
-    return materialized.runtimeFailures;
-  }
-  // Fallback: scan event log for legacy event types (pre-runtime_failure_recorded jobs)
-  return events
-    .filter((event) => event.type === "runtime_failure_recorded" || event.type === "phase_poisoned_session" || event.type === "job_panic")
-    .map((event) => ({
-      type: event.failureType || event.type,
-      attemptId: event.attemptId || null,
-      phase: event.phase || null,
-      nodeId: event.nodeId || null,
-      reason: event.reason || (Array.isArray(event.reasons) ? event.reasons.join(", ") : null),
-      ts: event.ts || null,
-    }));
+function collectRuntimeFailureRefs(_events: LooseRecord[], materialized?: ReadinessRecord) {
+  return Array.isArray(materialized?.runtimeFailures) ? materialized.runtimeFailures : [];
 }
 
 export async function buildJobAuditExport(cpbRoot: string, project: string, jobId: string, { dataRoot, wikiDir }: { dataRoot?: string; wikiDir?: string } = {}) {

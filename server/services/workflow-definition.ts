@@ -1,4 +1,3 @@
-import path from "node:path";
 import { recordValue, type LooseRecord } from "../../shared/types.js";
 import {
   dispatchForPhase as coreDispatchForPhase,
@@ -25,13 +24,6 @@ function hasCompletedPhase(state: LooseRecord, phase: string) {
   return completedPhases.includes(phase) || hasArtifact(recordValue(state.artifacts)[phase]);
 }
 
-function artifactId(value: unknown, prefix: string) {
-  if (!hasArtifact(value)) return "";
-  const str = value as string;
-  const base = path.basename(str, ".md");
-  return base.startsWith(`${prefix}-`) ? base.slice(prefix.length + 1) : str;
-}
-
 // --- Job-level convenience functions ---
 
 export function nextPhaseFor(state: LooseRecord) {
@@ -48,39 +40,11 @@ export function nextPhaseFor(state: LooseRecord) {
   return "complete";
 }
 
-export function bridgeForPhaseJob(phase: string, project: string, job: LooseRecord) {
-  const bridgesDir = "bridges";
-  switch (phase) {
-    case "plan":
-      return { script: path.join(bridgesDir, "planner.sh"), args: [project, job.task ?? ""] };
-    case "execute": {
-      const planId = artifactId(job.artifacts?.plan, "plan");
-      return { script: path.join(bridgesDir, "executor.sh"), args: [project, planId] };
-    }
-    case "verify": {
-      const deliverableId = artifactId(job.artifacts?.execute, "deliverable");
-      return { script: path.join(bridgesDir, "verifier.sh"), args: deliverableId ? [project, deliverableId] : [project, "--job-id", job.jobId] };
-    }
-    case "review": {
-      const deliverableId = artifactId(job.artifacts?.execute, "deliverable");
-      return { script: path.join(bridgesDir, "reviewer.sh"), args: [project, deliverableId] };
-    }
-    case "complete":
-      return null;
-    default: {
-      const workflow = getWorkflow(job.workflow);
-      const bridge = workflow.bridgeForPhase?.[phase] ?? null;
-      if (bridge) return { script: path.join(bridgesDir, bridge), args: [project] };
-      return null;
-    }
-  }
-}
-
 function bridgeMapForPhases(phases: string[] = []) {
   return Object.fromEntries(phases.map((phase) => [phase, "run-phase.js"]));
 }
 
-function withServerCompatibility(workflow: CoreWorkflow): ServerWorkflow {
+function toServerWorkflow(workflow: CoreWorkflow): ServerWorkflow {
   return {
     ...workflow,
     phases: [...(workflow.phases ?? [])],
@@ -91,7 +55,7 @@ function withServerCompatibility(workflow: CoreWorkflow): ServerWorkflow {
 }
 
 export function getWorkflow(name: string) {
-  return withServerCompatibility(getCoreWorkflow(name));
+  return toServerWorkflow(getCoreWorkflow(name));
 }
 
 export function nextPhase(workflow: ServerWorkflow, currentPhase?: string | null) {

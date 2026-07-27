@@ -95,7 +95,7 @@ export async function recordExternalEvaluation({
     project,
     ...normalized,
     ts: now(),
-  }, dataRoot ? { dataRoot, includeLegacyFallback: false } : {});
+  }, { dataRoot });
 }
 
 function timelineFromTrace(trace: JobTrace) {

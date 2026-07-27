@@ -203,9 +203,9 @@ function interpolate(text: string, promptText: string): string {
   // {{cwd}} resolves to the current ACP session cwd. Persistent ACP processes
   // keep the same process.env across assignments, so {{worktree}} must follow
   // session/new.cwd instead of stale CPB_ACP_JOB_ID from process launch.
-  const hubRoot = process.env.CPB_HUB_ROOT || "";
+  const projectRuntimeRoot = process.env.CPB_PROJECT_RUNTIME_ROOT || "";
   const jobId = process.env.CPB_ACP_JOB_ID || "";
-  const worktreePath = currentSessionCwd || (hubRoot && jobId ? path.join(hubRoot, "worktrees", `${jobId}-pipeline`) : process.cwd());
+  const worktreePath = currentSessionCwd || (projectRuntimeRoot && jobId ? path.join(projectRuntimeRoot, "worktrees", `${jobId}-pipeline`) : process.cwd());
   return text
     .split("{{prompt}}").join(promptText)
     .split("{{cwd}}").join(currentSessionCwd || process.cwd())

@@ -198,7 +198,7 @@ test("job listing ignores unrelated directories and orphan streams", async () =>
   await rm(path.join(eventsRoot, "ignored"), { recursive: true, force: true });
 });
 
-test("event file listing honors canonical and optional legacy roots", async () => {
+test("event file listing honors only canonical project runtime roots", async () => {
   const files = await listEventFiles(root, { dataRoot });
   assert.deepEqual(
     files
@@ -262,11 +262,7 @@ test("event file listing honors canonical and optional legacy roots", async () =
       ["alpha/job-20260611-010100-project"],
     );
     assert.deepEqual(
-      (await listEventFiles(fallbackRoot, { dataRoot: projectDataRoot, includeLegacyFallback: true })).map(({ project: p, jobId }) => `${p}/${jobId}`).sort(),
-      ["alpha/job-20260611-010100-project", "legacy/job-20260611-010000-legacy"],
-    );
-    assert.deepEqual(
-      (await listEventFiles(fallbackRoot, { dataRoot: projectDataRoot, includeLegacyFallback: false }))
+      (await listEventFiles(fallbackRoot, { dataRoot: projectDataRoot }))
         .map(({ project: p, jobId }) => `${p}/${jobId}`).sort(),
       ["alpha/job-20260611-010100-project"],
     );

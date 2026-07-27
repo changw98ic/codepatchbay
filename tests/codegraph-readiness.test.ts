@@ -243,7 +243,7 @@ test("CodeGraph readiness does not trust writable CPB state without the canonica
 
   await assertCodeGraphUnavailable(
     () => checkCodeGraphReady({ cpbRoot, sourcePath }),
-    "unbound_codegraph_state",
+    "missing_codegraph_state",
   );
 });
 

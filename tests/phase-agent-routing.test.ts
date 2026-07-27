@@ -128,7 +128,7 @@ test("resolvePhaseAgentRouting switches only on sufficiently strong outcome evid
   assert.match(result.phaseRoutingDecision?.reason || "", /outcome evidence selected claude/);
 });
 
-test("resolvePhaseAgentRouting preserves the Codex baseline when outcome evidence is insufficient", () => {
+test("resolvePhaseAgentRouting remains unconfigured when outcome evidence is insufficient", () => {
   const result = resolvePhaseAgentRouting({
     outcomeMetrics: { agents: {} },
     taskCategory: "bugfix",
@@ -136,11 +136,11 @@ test("resolvePhaseAgentRouting preserves the Codex baseline when outcome evidenc
     role: "executor",
   });
 
-  assert.equal(result.phaseAgents.executor, "codex");
-  assert.equal(result.effectiveSelectedAgent, "codex");
-  assert.equal(result.phaseRoutingDecision?.selectionSource, "legacy_default");
+  assert.equal(result.phaseAgents.executor, undefined);
+  assert.equal(result.effectiveSelectedAgent, null);
+  assert.equal(result.phaseRoutingDecision?.selectionSource, "unconfigured");
   assert.equal(result.phaseRoutingDecision?.outcomeApplied, false);
-  assert.match(result.phaseRoutingDecision?.outcomeReason || "", /insufficient baseline evidence/);
+  assert.match(result.phaseRoutingDecision?.outcomeReason || "", /no eligible candidate/);
 });
 
 test("resolvePhaseAgentRouting overrides a required verifier only to enforce provider-family independence", () => {

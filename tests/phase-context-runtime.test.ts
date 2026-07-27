@@ -4,14 +4,13 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { appendEvent } from "../server/services/event/event-store.js";
 import { buildPhaseContextPacket } from "../server/services/phase-context.js";
 import { collectVerifierEvidence } from "../server/services/review/review-dispatch.js";
 import { createJob, completePhase } from "../server/services/job/job-store.js";
 import { registerProject } from "../server/services/hub/hub-registry.js";
 import { recordValue } from "../shared/types.js";
 
-test("phase context and verifier evidence restore from project runtime root, not legacy wiki/events", async () => {
+test("phase context and verifier evidence restore from the registered project runtime root", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "cpb-phase-context-runtime-"));
   const cpbRoot = path.join(root, "cpb");
   const hubRoot = path.join(root, "hub");
@@ -38,14 +37,16 @@ test("phase context and verifier evidence restore from project runtime root, not
     await writeFile(path.join(legacyWiki, "project.json"), JSON.stringify({ sourcePath: "/legacy/source" }, null, 2), "utf8");
     await writeFile(path.join(legacyWiki, "context.md"), "# Legacy Context\n", "utf8");
     await writeFile(path.join(legacyWiki, "outputs", "deliverable-001.md"), "# Legacy Deliverable\n", "utf8");
-    await appendEvent(cpbRoot, project, jobId, {
+    const legacyEventPath = path.join(cpbRoot, "cpb-task", "events", project, `${jobId}.jsonl`);
+    await mkdir(path.dirname(legacyEventPath), { recursive: true });
+    await writeFile(legacyEventPath, `${JSON.stringify({
       type: "job_created",
       jobId,
       project,
       task: "legacy task",
       workflow: "standard",
       ts: "2026-06-11T08:29:00.000Z",
-    }, { legacyOnly: true });
+    })}\n`, "utf8");
 
     await mkdir(path.join(dataRoot, "wiki", "inbox"), { recursive: true });
     await mkdir(path.join(dataRoot, "wiki", "outputs"), { recursive: true });

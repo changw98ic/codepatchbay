@@ -6304,8 +6304,8 @@ test("local worker inbox lock recovery fails closed on unknown liveness and unsa
     });
   }
 
-  await t.test("legacy owner without exact identity is rejected and preserved", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "cpb-worker-legacy-lock-"));
+  await t.test("owner without exact identity is rejected and preserved", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "cpb-worker-missing-identity-lock-"));
     const workerId = "worker-01";
     const assignmentId = "a-legacy-lock";
     const store = new WorkerStore(root);
@@ -6328,7 +6328,7 @@ test("local worker inbox lock recovery fails closed on unknown liveness and unsa
         attempt: 1,
         attemptToken: "legacy-lock-token",
       }),
-      /worker inbox lock busy/,
+      /worker inbox lock owner process identity is required/,
     );
     assert.deepEqual(
       recordValue(JSON.parse(await readFile(path.join(lockDir, "owner.json"), "utf8"))),

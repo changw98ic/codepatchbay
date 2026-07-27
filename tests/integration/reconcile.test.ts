@@ -162,22 +162,24 @@ describe("validateEventStream", () => {
     await assertSourceCpbTaskAbsent(cpbRoot);
   });
 
-  it("requires dataRoot unless legacy fallback is explicit", async () => {
+  it("requires a registered project runtime root and uses the canonical event path", async () => {
     await assert.rejects(
       () => validateEventStream(cpbRoot, "testproj", "job-noexist"),
-      /dataRoot is required/
+      /project runtime root required/
     );
 
-    const project = "legacytest";
-    const jobId = "job-legacy-clean";
-    const file = path.join(cpbRoot, "cpb-task", "events", project, `${jobId}.jsonl`);
+    const project = "canonicaltest";
+    const { dataRoot } = await setupProjectRuntime(cpbRoot, project);
+    const jobId = "job-canonical-clean";
+    const file = path.join(dataRoot, "events", project, `${jobId}.jsonl`);
     await writeJsonl(file, [
-      JSON.stringify({ type: "job_created", jobId, project, task: "legacy", ts: new Date().toISOString() }),
+      JSON.stringify({ type: "job_created", jobId, project, task: "canonical", ts: new Date().toISOString() }),
     ]);
 
-    const result = await validateEventStream(cpbRoot, project, jobId, { legacyOnly: true });
+    const result = await validateEventStream(cpbRoot, project, jobId, { dataRoot });
     assert.equal(result.valid, true);
     assert.equal(result.events.length, 1);
+    await assertSourceCpbTaskAbsent(cpbRoot);
   });
 });
 

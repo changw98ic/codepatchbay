@@ -36,7 +36,8 @@ test("audit export includes checklist artifacts from artifact index", async () =
     }, { dataRoot });
   }
   await appendEvent(cpbRoot, "proj", "job-audit-checklist", {
-    type: "phase_poisoned_session",
+    type: "runtime_failure_recorded",
+    failureType: "phase_poisoned_session",
     jobId: "job-audit-checklist",
     project: "proj",
     attemptId: "job-audit-checklist",

@@ -5,16 +5,16 @@ share one global bearer secret. This is a service-account foundation, not an
 interactive human-session implementation. Enterprise JWT access-token
 validation is documented separately in [Hub OIDC authorization](cpb-hub-oidc.md).
 
-## Compatibility and defaults
+## Authentication modes
 
-- With no credentials configured, a loopback-only Hub keeps the existing local
-  anonymous administrator behavior.
-- `CPB_HUB_BEARER_TOKEN` remains supported as the `legacy-admin` principal with
-  global `hub:admin` access.
 - `CPB_HUB_SERVICE_TOKENS_FILE` enables named service principals. It must be an
   absolute path to a regular, non-symlink file. On POSIX, group and other
   permission bits must be zero (for example, mode `0600`). Store it outside the
   Hub root so credential digests are not copied into Hub backups.
+- `CPB_HUB_OIDC_CONFIG_FILE` enables enterprise JWT authentication. See
+  [Hub OIDC authorization](cpb-hub-oidc.md).
+- A loopback-only development Hub may explicitly set
+  `CPB_HUB_ALLOW_ANONYMOUS_DEV=1`; this is not a production authentication mode.
 - A non-loopback Hub requires at least one configured credential and still
   requires the existing explicit cleartext-network opt-in when TLS terminates
   elsewhere.
@@ -84,8 +84,7 @@ mv /secure/cpb/hub-service-tokens.json.next /secure/cpb/hub-service-tokens.json
 
 The first request after the rename loads the replacement; concurrent requests
 share the same reload. Once it succeeds, removed tokens receive `401` and new
-tokens use their declared authorization immediately. The legacy environment
-token remains static and still requires a process restart to change.
+tokens use their declared authorization immediately.
 
 If the configured service-token file is missing, malformed, unsafe, expired in
 full, or changes while being read, requests receive HTTP `503` with

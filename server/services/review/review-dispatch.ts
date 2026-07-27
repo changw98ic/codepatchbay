@@ -17,7 +17,6 @@ import { constants, lstatSync, renameSync, type BigIntStats } from "node:fs";
 import path from "node:path";
 import { lstat, mkdir as mkdirReview, open, readFile, realpath } from "node:fs/promises";
 import { execFile } from "child_process";
-import { runtimeDataPath } from "../runtime.js";
 import { enqueue } from "../hub/hub-queue.js";
 import { makeJobId } from "../job/job-store.js";
 import {
@@ -177,9 +176,7 @@ type VerifierEvidence = LooseRecord & {
   diagnostics: Array<{ level: string; message: string }>;
 };
 
-type ArtifactEventOptions = ReviewStorageOptions & {
-  includeLegacyFallback?: boolean;
-};
+type ArtifactEventOptions = ReviewStorageOptions;
 
 type RemediationRunOptions = ReviewStorageOptions & {
   project: string;
@@ -370,10 +367,8 @@ type WorktreeCleanupResult = {
 };
 
 function worktreePathFor(cpbRoot: string, jobId: string, projectRuntimeRoot?: string): string {
-  const dataRoot = projectRuntimeRoot ? path.resolve(projectRuntimeRoot) : null;
-  return dataRoot
-    ? path.join(dataRoot, "worktrees", `${jobId}-pipeline`)
-    : runtimeDataPath(cpbRoot, "worktrees", `${jobId}-pipeline`);
+  if (!projectRuntimeRoot) throw new Error("project runtime root required for review worktree paths");
+  return path.join(path.resolve(projectRuntimeRoot), "worktrees", `${jobId}-pipeline`);
 }
 
 function worktreeError(
@@ -828,7 +823,6 @@ async function loadDurableReviewWorktreeAuthority(
 ): Promise<DurableReviewWorktreeAuthority> {
   const events = await readEventsRem(cpbRoot, project, jobId, {
     dataRoot,
-    includeLegacyFallback: false,
   });
   const createdEvents = events.filter((event) => event.type === "worktree_created");
   if (createdEvents.length === 0) {
@@ -4011,9 +4005,8 @@ export async function collectTestResults(sourcePath: string, { timeout = 30_000 
 
 export async function collectEventLog(cpbRoot: string, project: string, jobId: string, { maxEvents = 50, dataRoot = null }: ReviewStorageOptions & { maxEvents?: number } = {}) {
   try {
-    const events = await readEvents(cpbRoot, project, jobId, dataRoot
-      ? { dataRoot, includeLegacyFallback: false }
-      : {});
+    if (!dataRoot) throw new Error("dataRoot is required for event log collection");
+    const events = await readEvents(cpbRoot, project, jobId, { dataRoot });
     if (events.length === 0) {
       return { available: false, reason: "event log is empty or missing" };
     }
@@ -4131,10 +4124,11 @@ import { readJobsIndex, updateJobsIndexEntry as updateJobsIndexEntryRem } from "
 import { resolveHubRoot as resolveHubRootRem } from "../hub/hub-registry.js";
 import { enqueue as enqueueRem, listQueue } from "../hub/hub-queue.js";
 import { allocateArtifactId } from "../artifact-locator.js";
-import { runtimeDataRoot, resolveProjectDataRoot } from "../runtime.js";
+import { resolveProjectDataRoot } from "../runtime.js";
 
 function remediationDataRoot(cpbRoot: string, options: ReviewStorageOptions = {}): string {
-  return options.dataRoot || process.env.CPB_PROJECT_RUNTIME_ROOT || runtimeDataRoot(cpbRoot);
+  if (!options.dataRoot) throw new Error("dataRoot is required for remediation storage");
+  return path.resolve(options.dataRoot);
 }
 
 async function resolveRemediationDataRoot(cpbRoot: string, project: string, { hubRoot, dataRoot, lockDir }: ReviewStorageOptions = {}): Promise<string> {
@@ -4366,7 +4360,7 @@ export async function runRemediation(cpbRoot: string, {
   });
   const wikiDir = path.join(dataRoot, "wiki");
   const outputsDir = path.join(wikiDir, "outputs");
-  const eventOpts = { dataRoot, includeLegacyFallback: false };
+  const eventOpts = { dataRoot };
   const lockDir = await acquireRemediationLock(cpbRoot, project, jobId, {
     ...eventOpts,
     workflowLockOptions,
@@ -4406,7 +4400,9 @@ export async function completeRemediation(cpbRoot: string, { project, jobId, rem
     throw workflowLockError(
       `Remediation for ${project}/${jobId} requires its exact lock lease`,
       "REVIEW_WORKFLOW_LOCK_OWNERSHIP_UNAVAILABLE",
-      path.join(remediationDataRoot(cpbRoot, { dataRoot: explicitDataRoot }), "remediation-locks", project, `${jobId}.lock`),
+      explicitDataRoot
+        ? path.join(path.resolve(explicitDataRoot), "remediation-locks", project, `${jobId}.lock`)
+        : `project-runtime-root/remediation-locks/${project}/${jobId}.lock`,
     );
   }
   return withHeldWorkflowLockRelease(lockDir, "Remediation", async () => {
@@ -4415,7 +4411,7 @@ export async function completeRemediation(cpbRoot: string, { project, jobId, rem
       dataRoot: explicitDataRoot,
       lockDir,
     });
-    const eventOpts = { dataRoot, includeLegacyFallback: false };
+    const eventOpts = { dataRoot };
     if (status === "failed") {
       await recordRemediationEvent(cpbRoot, project, jobId, {
         type: "external_remediation_failed",
@@ -4502,7 +4498,8 @@ async function markJobSuperseded(cpbRoot: string, project: string, jobId: string
 }
 
 async function createRemediationLineageTask(cpbRoot: string, { project, jobId, remediationArtifact, remediationStatus, executorRoot, dataRoot }: LineageTaskOptions): Promise<void> {
-  const eventOpts = dataRoot ? { dataRoot, includeLegacyFallback: false } : {};
+  if (!dataRoot) throw new Error("dataRoot is required for remediation lineage");
+  const eventOpts = { dataRoot };
   const job = materializeJobRem(await readEventsRem(cpbRoot, project, jobId, eventOpts));
   if (!job?.task) {
     throw new Error(`job task missing: ${jobId}`);
@@ -4535,7 +4532,7 @@ async function createRemediationLineageTask(cpbRoot: string, { project, jobId, r
   let sourcePath = origin?.sourcePath || "";
   if (!sourcePath) {
     try {
-      const metaFile = path.join(cpbRoot, "wiki", "projects", project, "project.json");
+      const metaFile = path.join(dataRoot, "wiki", "project.json");
       const meta = JSON.parse(await readFileRem(metaFile, "utf8"));
       sourcePath = meta.sourcePath || "";
     } catch {}
@@ -4600,7 +4597,8 @@ function validateIdRepair(name: string, value: unknown): void {
 }
 
 async function acquireRepairLock(cpbRoot: string, project: string, jobId: string, options: ReviewStorageOptions = {}): Promise<string> {
-  const root = options.dataRoot || process.env.CPB_PROJECT_RUNTIME_ROOT || runtimeDataRoot(cpbRoot);
+  if (!options.dataRoot) throw new Error("dataRoot is required for repair storage");
+  const root = path.resolve(options.dataRoot);
   const lockDir = path.join(root, "repair-locks", project, `${jobId}.lock`);
   try {
     return await acquireHeldWorkflowLock(
@@ -4657,7 +4655,7 @@ export async function runRepair(cpbRoot: string, {
     dataRoot: explicitDataRoot || process.env.CPB_PROJECT_RUNTIME_ROOT,
   });
   const outputsDir = path.join(dataRoot, "wiki", "outputs");
-  const eventOpts = { dataRoot, includeLegacyFallback: false };
+  const eventOpts = { dataRoot };
   const lockDir = await acquireRepairLock(cpbRoot, project, jobId, {
     ...eventOpts,
     workflowLockOptions,
@@ -4690,7 +4688,9 @@ export async function completeRepair(cpbRoot: string, { project, jobId, repairId
     throw workflowLockError(
       `Repair for ${project}/${jobId} requires its exact lock lease`,
       "REVIEW_WORKFLOW_LOCK_OWNERSHIP_UNAVAILABLE",
-      path.join(explicitDataRoot || runtimeDataRoot(cpbRoot), "repair-locks", project, `${jobId}.lock`),
+      explicitDataRoot
+        ? path.join(path.resolve(explicitDataRoot), "repair-locks", project, `${jobId}.lock`)
+        : `project-runtime-root/repair-locks/${project}/${jobId}.lock`,
     );
   }
   return withHeldWorkflowLockRelease(lockDir, "Repair", async () => {
@@ -4699,7 +4699,7 @@ export async function completeRepair(cpbRoot: string, { project, jobId, repairId
       dataRoot: explicitDataRoot,
       lockDir,
     });
-    const eventOpts = { dataRoot, includeLegacyFallback: false };
+    const eventOpts = { dataRoot };
     if (status === "failed") {
       await recordRepairEvent(cpbRoot, project, jobId, {
         type: "external_repair_failed",
@@ -4770,7 +4770,8 @@ function parseRepairStatus(content: string): string | null {
 }
 
 async function createRepairLineageTask(cpbRoot: string, { project, jobId, repairArtifact, repairStatus, executorRoot, dataRoot }: LineageTaskOptions): Promise<void> {
-  const eventOpts = dataRoot ? { dataRoot, includeLegacyFallback: false } : {};
+  if (!dataRoot) throw new Error("dataRoot is required for repair lineage");
+  const eventOpts = { dataRoot };
   const job = materializeJobRepair(await readEventsRepair(cpbRoot, project, jobId, eventOpts));
   if (!job?.task) {
     throw new Error(`job task missing: ${jobId}`);
@@ -4787,7 +4788,7 @@ async function createRepairLineageTask(cpbRoot: string, { project, jobId, repair
   let sourcePath = origin?.sourcePath || "";
   if (!sourcePath) {
     try {
-      const metaFile = path.join(cpbRoot, "wiki", "projects", project, "project.json");
+      const metaFile = path.join(dataRoot, "wiki", "project.json");
       const meta = JSON.parse(await readFileRepair(metaFile, "utf8"));
       sourcePath = meta.sourcePath || "";
     } catch {}

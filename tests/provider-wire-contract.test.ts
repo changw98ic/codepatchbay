@@ -33,47 +33,32 @@ test("provider quota diagnostics identify malformed canonical JSON", async () =>
   );
 });
 
-test("provider quota validation preserves valid legacy records and extension fields", async () => {
-  const hubRoot = await tempRoot("cpb-provider-quota-legacy-contract");
-  const filePath = path.join(hubRoot, "providers", "rate-limits.json");
+test("provider quota validation preserves canonical records and extension fields", async () => {
+  const hubRoot = await tempRoot("cpb-provider-quota-canonical-contract");
+  const filePath = path.join(hubRoot, "providers", "quotas.json");
   await mkdir(path.dirname(filePath), { recursive: true });
   const untilTs = "2027-01-02T03:04:05.000Z";
-  const legacy = {
-    legacy: {
+  const canonical = {
+    codex: {
+      providerKey: "codex",
+      agent: "codex",
+      status: "rate_limited",
       untilTs,
       reason: "old",
       metadata: { migratedFrom: "v0" },
     },
   };
-  await writeFile(filePath, `${JSON.stringify(legacy)}\n`, "utf8");
+  await writeFile(filePath, `${JSON.stringify(canonical)}\n`, "utf8");
 
-  assert.deepEqual(await readProviderQuotas(hubRoot), {
-    legacy: {
-      ...legacy.legacy,
-      providerKey: "legacy",
-      agent: "legacy",
-      status: "rate_limited",
-      nextEligibleAt: Date.parse(untilTs),
-      source: "legacy-rate-limits",
-      confidence: 1,
-    },
-  });
+  assert.deepEqual(await readProviderQuotas(hubRoot), canonical);
 });
 
-test("provider quota validation rejects malformed legacy reset timestamps", async () => {
-  const hubRoot = await tempRoot("cpb-provider-quota-legacy-invalid-contract");
+test("provider quota reads ignore retired rate-limit files", async () => {
+  const hubRoot = await tempRoot("cpb-provider-quota-retired-contract");
   const filePath = path.join(hubRoot, "providers", "rate-limits.json");
   await mkdir(path.dirname(filePath), { recursive: true });
   await writeFile(filePath, `${JSON.stringify({ codex: { untilTs: "not-a-date" } })}\n`, "utf8");
-
-  await assert.rejects(
-    readProviderQuotas(hubRoot),
-    (err: unknown) => {
-      assert.equal((err as { code?: string }).code, "PROVIDER_QUOTA_ENTRY_CONTRACT_INVALID");
-      assert.match(String((err as Error).message), /rate-limits\.json.*untilTs/i);
-      return true;
-    },
-  );
+  assert.deepEqual(await readProviderQuotas(hubRoot), {});
 });
 
 test("provider quota validation rejects entries without a status", async () => {

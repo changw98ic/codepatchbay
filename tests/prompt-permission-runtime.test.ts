@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { appendEvent, readEvents } from "../server/services/event/event-store.js";
+import { readEvents } from "../server/services/event/event-store.js";
 import { createJob } from "../server/services/job/job-store.js";
 import {
   buildExecutorJobPrompt,
@@ -41,16 +41,6 @@ test("job prompts use project runtime root and fail closed without a registered 
     const legacyWiki = path.join(cpbRoot, "wiki", "projects", project);
     await mkdir(path.join(legacyWiki, "outputs"), { recursive: true });
     await writeFile(path.join(legacyWiki, "outputs", "deliverable-001.md"), "# Legacy Deliverable\n", "utf8");
-    await appendEvent(cpbRoot, project, jobId, {
-      type: "job_created",
-      jobId,
-      project,
-      task: "legacy task",
-      workflow: "standard",
-      sourceContext: { contextPackPath: "/legacy/context-pack.json" },
-      ts: "2026-06-11T08:59:00.000Z",
-    }, { legacyOnly: true });
-
     await mkdir(path.join(dataRoot, "wiki", "inbox"), { recursive: true });
     await mkdir(path.join(dataRoot, "wiki", "outputs"), { recursive: true });
     await writeFile(path.join(dataRoot, "wiki", "outputs", "deliverable-001.md"), "# Runtime Deliverable\n", "utf8");
@@ -112,7 +102,7 @@ test("job prompts use project runtime root and fail closed without a registered 
   }
 });
 
-test("permission policy uses project dataRoot and records denials without legacy fallback", async () => {
+test("permission policy uses project dataRoot and records denials", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "cpb-permission-runtime-"));
   const cpbRoot = path.join(root, "cpb");
   const dataRoot = path.join(root, "hub", "projects", "flow");
@@ -125,7 +115,7 @@ test("permission policy uses project dataRoot and records denials without legacy
 
     assert.equal(canWrite("verifier", runtimeOutput, cpbRoot, project, null, { dataRoot }).allowed, true);
     assert.equal(canWrite("verifier", legacyOutput, cpbRoot, project, null).allowed, false);
-    assert.equal(canWrite("verifier", legacyOutput, cpbRoot, project, null, { legacyOnly: true }).allowed, true);
+    assert.equal(canWrite("verifier", legacyOutput, cpbRoot, project, null).allowed, false);
 
     const policy = getPhasePolicy("verifier", cpbRoot, project, { dataRoot });
     assert.deepEqual(policy.writeAllowed, [path.join(dataRoot, "wiki", "outputs")]);
@@ -146,11 +136,11 @@ test("permission policy uses project dataRoot and records denials without legacy
       reason: "test denial",
       dataRoot,
     });
-    const events = await readEvents(cpbRoot, project, jobId, { dataRoot, includeLegacyFallback: false });
+    const events = await readEvents(cpbRoot, project, jobId, { dataRoot });
     assert.equal(events.length, 1);
     assert.equal(events[0].type, "permission_denied");
     await assert.rejects(
-      () => readEvents(cpbRoot, project, jobId, { includeLegacyFallback: false }),
+      () => readEvents(cpbRoot, project, jobId),
       /dataRoot is required/,
     );
 

@@ -3,22 +3,13 @@ import { isRecord, recordValue } from "./checklist-shared.js";
 
 const VALID_STATUSES = new Set(["pass", "fail", "inconclusive", "infra_error"]);
 
-const REQUIRED_BASIS_KEYS = [
-  "taskGoal", "worktreeDiff", "tests", "buildLogs",
-  "events", "runtimeState", "executorSummary",
-];
-
-function fullBasis(overrides: Record<string, unknown> = {}) {
-  const basis: LooseRecord = {};
-  for (const key of REQUIRED_BASIS_KEYS) {
-    basis[key] = overrides[key] ?? "missing";
-  }
-  return basis;
-}
-
 export function validateVerdictEnvelope(envelope: LooseRecord) {
   if (!envelope || typeof envelope !== "object") {
     return { valid: false, error: "envelope must be an object" };
+  }
+
+  if (envelope.schemaVersion !== 2) {
+    return { valid: false, error: "schemaVersion must be 2" };
   }
 
   if (!VALID_STATUSES.has(envelope.status)) {
@@ -40,22 +31,6 @@ export function validateVerdictEnvelope(envelope: LooseRecord) {
     if (!Array.isArray(envelope.fix_scope)) {
       return { valid: false, error: "fix_scope must be an array" };
     }
-  }
-
-  // Legacy v1: basis + blockingMissingInputs still accepted
-  if (envelope.basis !== undefined) {
-    if (typeof envelope.basis !== "object" || envelope.basis === null || Array.isArray(envelope.basis)) {
-      return { valid: false, error: "basis must be an object" };
-    }
-    const basis = recordValue(envelope.basis);
-    const missing = REQUIRED_BASIS_KEYS.filter((k) => !(k in basis));
-    if (missing.length > 0) {
-      return { valid: false, error: `basis missing required keys: ${missing.join(", ")}` };
-    }
-  }
-
-  if (envelope.blockingMissingInputs !== undefined && !Array.isArray(envelope.blockingMissingInputs)) {
-    return { valid: false, error: "blockingMissingInputs must be an array" };
   }
 
   if (typeof envelope.reason !== "string") {
@@ -181,13 +156,9 @@ export function buildRetryInputFromVerdict(envelope: LooseRecord, {
   const blockingChecks = Array.isArray(envelope?.blocking)
     ? envelope.blocking.map(summarizeBlockingEntry)
     : [];
-  const missingInputChecks = Array.isArray(envelope?.blockingMissingInputs)
-    ? envelope.blockingMissingInputs.map((item) => truncate(`missing input: ${item}`))
-    : [];
   const structuredChecks = uniqueNonEmpty([
     ...blockingChecks,
     ...failedLayerChecks(envelope),
-    ...missingInputChecks,
   ]);
   const failingChecks = (structuredChecks.length ? structuredChecks : uniqueNonEmpty([envelope?.reason])).slice(0, maxRetryItems);
 
@@ -218,128 +189,37 @@ export function buildRetryInputFromVerdict(envelope: LooseRecord, {
   };
 }
 
-// Back-fill v1 basis fields from v2 structured fields for backward compatibility
-function backfillLegacy(envelope: LooseRecord) {
-  if (!envelope.basis) {
-    const layers = recordValue(envelope.layers);
-    const fastLayer = recordValue(layers.fast);
-    const changedLayer = recordValue(layers.changed);
-    const acceptanceLayer = recordValue(layers.acceptance);
-    const tests = fastLayer.detail || changedLayer.detail || "not run";
-    const build = acceptanceLayer.detail || "not run";
-    envelope.basis = fullBasis({
-      taskGoal: envelope.task_goal || envelope.reason || "",
-      worktreeDiff: envelope.diff_summary || "none",
-      tests,
-      buildLogs: build,
-      events: "none",
-      runtimeState: "none",
-      executorSummary: envelope.executor_summary || "",
-    });
-  }
-  if (!envelope.blockingMissingInputs) {
-    const blocking = Array.isArray(envelope.blocking) ? envelope.blocking : [];
-    envelope.blockingMissingInputs = blocking.map((b: unknown) =>
-      typeof b === "string" ? b : recordValue(b).criterion || recordValue(b).input || String(b)
-    );
-  }
-  return envelope;
-}
-
 export function parseVerdictEnvelope(content: string) {
-  if (!content || typeof content !== "string") {
+  if (typeof content !== "string" || !content.trim()) {
     return {
       status: "inconclusive",
-      basis: fullBasis(),
-      blockingMissingInputs: ["content"],
-      reason: "empty content",
-      source: "empty",
+      reason: "verdict artifact is empty; canonical JSON envelope required",
+      source: "invalid",
     };
   }
 
-  // Try structured JSON envelope with `status` field (fenced code block)
-  const jsonBlockMatch = content.match(/```json\s*\n([\s\S]*?)\n```/);
-  if (jsonBlockMatch) {
-    try {
-      const parsed = JSON.parse(jsonBlockMatch[1]);
-      if (parsed && typeof parsed.status === "string") {
-        const normalized = backfillLegacy({ ...parsed, status: parsed.status.toLowerCase() });
-        const validation = validateVerdictEnvelope(normalized);
-        if (validation.valid) {
-          return { ...normalized, source: "envelope" };
-        }
-      }
-    } catch {}
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch (error) {
+    return {
+      status: "inconclusive",
+      reason: `verdict artifact is not canonical JSON: ${error instanceof Error ? error.message : String(error)}`,
+      source: "invalid",
+    };
   }
 
-  // Try standalone JSON with `status` field near the top.
-  // Use balanced-brace extraction to handle nested objects correctly.
-  const topLines = content.split(/\r?\n/).slice(0, 200).join("\n");
-  const jsonStart = topLines.indexOf("{");
-  if (jsonStart >= 0) {
-    let depth = 0;
-    let jsonEnd = -1;
-    for (let i = jsonStart; i < topLines.length; i++) {
-      if (topLines[i] === "{") depth++;
-      else if (topLines[i] === "}") depth--;
-      if (depth === 0) { jsonEnd = i + 1; break; }
-    }
-    if (jsonEnd > jsonStart) {
-      const candidate = topLines.substring(jsonStart, jsonEnd);
-      try {
-        const parsed = JSON.parse(candidate);
-        if (parsed && typeof parsed.status === "string") {
-          const normalized = backfillLegacy({ ...parsed, status: parsed.status.toLowerCase() });
-          const validation = validateVerdictEnvelope(normalized);
-          if (validation.valid) {
-            return { ...normalized, source: "envelope" };
-          }
-        }
-      } catch {}
-    }
+  const envelope = recordValue(parsed);
+  const validation = validateVerdictEnvelope(envelope);
+  if (!validation.valid) {
+    return {
+      ...envelope,
+      status: "inconclusive",
+      reason: `invalid verdict envelope: ${validation.error}`,
+      source: "invalid",
+    };
   }
-
-  // Legacy text format: VERDICT: PASS|FAIL|PARTIAL
-  const lines = content.split(/\r?\n/).slice(0, 5);
-  for (const line of lines) {
-    const match = line.match(/^VERDICT:\s*(PASS|FAIL|PARTIAL)\b/i);
-    if (match) {
-      const raw = match[1].toUpperCase();
-      const status = raw === "PARTIAL" ? "fail" : raw.toLowerCase();
-      return {
-        status,
-        basis: fullBasis({ taskGoal: "legacy", executorSummary: "legacy" }),
-        blockingMissingInputs: [],
-        reason: `Legacy verdict: ${raw}`,
-        source: "legacy",
-      };
-    }
-  }
-
-  // Bare PASS/FAIL/PARTIAL
-  for (const line of lines) {
-    const legacy = line.match(/^\s*(PASS|FAIL|PARTIAL)\b/i);
-    if (legacy) {
-      const raw = legacy[1].toUpperCase();
-      const status = raw === "PARTIAL" ? "fail" : raw.toLowerCase();
-      return {
-        status,
-        basis: fullBasis({ taskGoal: "legacy", executorSummary: "legacy" }),
-        blockingMissingInputs: [],
-        reason: `Legacy bare verdict: ${raw}`,
-        source: "legacy",
-      };
-    }
-  }
-
-  // Unrecognizable content
-  return {
-    status: "inconclusive",
-    basis: fullBasis(),
-    blockingMissingInputs: ["recognizable verdict"],
-    reason: "no recognizable verdict found",
-    source: "unknown",
-  };
+  return { ...envelope, source: "json" };
 }
 
 export function formatVerdictEnvelope(envelope: LooseRecord) {

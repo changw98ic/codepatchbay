@@ -3790,10 +3790,13 @@ export class AcpPool {
       const reg = await getRegistry();
       const desc = reg?.getDescriptor(agent);
       if (desc?.lifecycle === "cached") {
+        if (!session.conversationKey) {
+          throw new Error(`cached ACP session requires a conversation key: ${agent}`);
+        }
         await saveSessionId(this.cpbRoot, agent, session.sessionId, {
           dataRoot: this.#requestDataRoot(options),
-          ...(session.conversationKey ? { conversationKey: session.conversationKey } : {}),
-        }).catch(() => null);
+          conversationKey: session.conversationKey,
+        });
       }
     }
     const persistentKey = this.#conversationKey(options) || this.#requestDataRoot(options)
@@ -5148,10 +5151,11 @@ export class AcpPool {
     const conversationKey = this.#conversationKey(options);
     const dataRoot = this.#requestDataRoot(options);
     if (desc?.lifecycle === "cached") {
+      if (!conversationKey) throw new Error(`cached ACP session requires a conversation key: ${agent}`);
       const cached = await loadSessionId(this.cpbRoot, agent, {
         dataRoot,
-        ...(conversationKey ? { conversationKey } : {}),
-      }).catch(() => null);
+        conversationKey,
+      });
       if (cached?.sessionId) resumeSessionId = cached.sessionId;
     }
 
@@ -5266,9 +5270,12 @@ export class AcpPool {
         const reg = await getRegistry();
         const desc = reg?.getDescriptor(agent);
         if (desc?.lifecycle === "cached") {
+          if (!persistent.conversationKey) {
+            throw new Error(`cached ACP session requires a conversation key: ${agent}`);
+          }
           await saveSessionId(this.cpbRoot, agent, session.sessionId, {
             dataRoot: this.#requestDataRoot({}, persistent),
-            ...(persistent.conversationKey ? { conversationKey: persistent.conversationKey } : {}),
+            conversationKey: persistent.conversationKey,
           });
         }
       })() : Promise.resolve();

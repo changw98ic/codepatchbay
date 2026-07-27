@@ -10,24 +10,23 @@ import {
 
 // ─── parseVerdict ──────────────────────────────────────────────────────────
 
-test("parseVerdict: PASS from canonical line", () => {
-  const result = parseVerdict("## Result\n\nVERDICT: PASS\nAll good");
+test("parseVerdict: PASS from canonical JSON", () => {
+  const result = parseVerdict(JSON.stringify({ schemaVersion: 2, status: "pass", reason: "All good" }));
   assert.deepStrictEqual(result, { status: "pass", raw: "PASS" });
 });
 
-test("parseVerdict: FAIL from canonical line", () => {
-  const result = parseVerdict("VERDICT: FAIL\nTests broke");
+test("parseVerdict: FAIL from canonical JSON", () => {
+  const result = parseVerdict(JSON.stringify({ schemaVersion: 2, status: "fail", reason: "Tests broke" }));
   assert.deepStrictEqual(result, { status: "fail", raw: "FAIL" });
 });
 
-test("parseVerdict: PARTIAL treated as fail", () => {
-  const result = parseVerdict("VERDICT: PARTIAL");
-  assert.deepStrictEqual(result, { status: "fail", raw: "PARTIAL" });
+test("parseVerdict: inconclusive is a failed gate", () => {
+  const result = parseVerdict(JSON.stringify({ schemaVersion: 2, status: "inconclusive", reason: "Insufficient evidence" }));
+  assert.deepStrictEqual(result, { status: "fail", raw: "INCONCLUSIVE" });
 });
 
-test("parseVerdict: case-insensitive canonical line", () => {
-  const result = parseVerdict("verdict: pass");
-  assert.deepStrictEqual(result, { status: "pass", raw: "PASS" });
+test("parseVerdict: rejects non-canonical status casing", () => {
+  assert.strictEqual(parseVerdict(JSON.stringify({ schemaVersion: 2, status: "PASS", reason: "ok" })), null);
 });
 
 test("parseVerdict: null for null input", () => {
@@ -46,15 +45,14 @@ test("parseVerdict: null for text with no verdict line", () => {
   assert.strictEqual(parseVerdict("Just some random output\nNo verdict here"), null);
 });
 
-test("parseVerdict: handles extra whitespace around status", () => {
-  const result = parseVerdict("VERDICT:   PASS  ");
+test("parseVerdict: accepts JSON surrounding whitespace", () => {
+  const result = parseVerdict(`  ${JSON.stringify({ schemaVersion: 2, status: "pass", reason: "ok" })}  `);
   assert.deepStrictEqual(result, { status: "pass", raw: "PASS" });
 });
 
-test("parseVerdict: uses first VERDICT line (skips duplicates)", () => {
-  const text = "VERDICT: FAIL\nSome output\nVERDICT: PASS";
-  const result = parseVerdict(text);
-  assert.deepStrictEqual(result, { status: "fail", raw: "FAIL" });
+test("parseVerdict: rejects prose around canonical JSON", () => {
+  const text = `before\n${JSON.stringify({ schemaVersion: 2, status: "pass", reason: "ok" })}`;
+  assert.strictEqual(parseVerdict(text), null);
 });
 
 test("parseVerdict: only scans first 10 lines", () => {
@@ -62,29 +60,25 @@ test("parseVerdict: only scans first 10 lines", () => {
   assert.strictEqual(parseVerdict(filler + "\nVERDICT: PASS"), null);
 });
 
-test("parseVerdict: JSON fallback with { verdict: 'pass' }", () => {
-  const result = parseVerdict('{"verdict":"pass"}');
+test("parseVerdict: rejects JSON without schemaVersion 2", () => {
+  assert.strictEqual(parseVerdict('{"verdict":"pass"}'), null);
+});
+
+test("parseVerdict: rejects JSON without canonical status", () => {
+  assert.strictEqual(parseVerdict(JSON.stringify({ schemaVersion: 2, verdict: "fail", reason: "old shape" })), null);
+});
+
+test("parseVerdict: accepts canonical object input", () => {
+  const result = parseVerdict({ schemaVersion: 2, status: "pass", reason: "ok" });
   assert.deepStrictEqual(result, { status: "pass", raw: "PASS" });
 });
 
-test("parseVerdict: JSON fallback with { verdict: 'fail' }", () => {
-  const result = parseVerdict('{"verdict":"fail"}');
-  assert.deepStrictEqual(result, { status: "fail", raw: "FAIL" });
+test("parseVerdict: rejects object input without schemaVersion 2", () => {
+  assert.strictEqual(parseVerdict({ status: "fail", reason: "old shape" }), null);
 });
 
-test("parseVerdict: object input with .verdict property", () => {
-  const result = parseVerdict({ verdict: "pass" });
-  assert.deepStrictEqual(result, { status: "pass", raw: "PASS" });
-});
-
-test("parseVerdict: object input with .status FAIL", () => {
-  const result = parseVerdict({ status: "FAIL" });
-  assert.deepStrictEqual(result, { status: "fail", raw: "FAIL" });
-});
-
-test("parseVerdict: object input with PARTIAL treated as fail", () => {
-  const result = parseVerdict({ verdict: "PARTIAL" });
-  assert.deepStrictEqual(result, { status: "fail", raw: "PARTIAL" });
+test("parseVerdict: rejects unsupported partial status", () => {
+  assert.strictEqual(parseVerdict({ schemaVersion: 2, status: "partial", reason: "old status" }), null);
 });
 
 test("parseVerdict: object with unrecognized value returns null", () => {

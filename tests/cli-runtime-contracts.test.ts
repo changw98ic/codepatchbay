@@ -231,9 +231,10 @@ async function readJson(filePath: string) {
   return JSON.parse(await readFile(filePath, "utf8"));
 }
 
-test("run project resolution leaves task text available for auto-detection", () => {
-  assert.equal(projectArgForCommand("run", ["fix failing tests"]), null);
-  assert.equal(projectArgForCommand("run", ["fix failing tests", "--project", "myproj"]), "myproj");
+test("fix and task project resolution leaves command positional values available", () => {
+  assert.equal(projectArgForCommand("fix", ["fix failing tests"]), null);
+  assert.equal(projectArgForCommand("fix", ["fix failing tests", "--project", "myproj"]), "myproj");
+  assert.equal(projectArgForCommand("task", ["job-123"]), null);
   assert.equal(projectArgForCommand("pipeline", ["myproj", "fix failing tests"]), "myproj");
 });
 

@@ -132,10 +132,12 @@ export function generateDynamicAgentPlan(options: LooseRecord = {}) {
   const requiresIndependentVerifier = options.independentVerifierRequired === true || highRisk(riskMap);
   const generatedAt = new Date().toISOString();
   const agentConfig: LooseRecord = {};
+  const verifierAgent = options.verifierAgent || DEFAULT_DYNAMIC_VERIFIER_AGENT;
+  const adversarialVerifierAgent = options.adversarialVerifierAgent || verifierAgent;
 
   if (requiresIndependentVerifier) {
     agentConfig.verifier = {
-      agent: DEFAULT_DYNAMIC_VERIFIER_AGENT,
+      agent: verifierAgent,
       required: true,
       independent: true,
       reason: options.independentVerifierRequired === true
@@ -143,7 +145,7 @@ export function generateDynamicAgentPlan(options: LooseRecord = {}) {
         : `${stringValue(riskMap.riskLevel, "high")} risk requires independent verification`,
     };
     agentConfig.adversarial_verifier = {
-      agent: DEFAULT_DYNAMIC_VERIFIER_AGENT,
+      agent: adversarialVerifierAgent,
       required: true,
       independent: true,
       reason: "RiskMap requires adversarial verification",

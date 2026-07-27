@@ -424,7 +424,8 @@ function headlessEscalationSection() {
 export async function buildPlannerPrompt(executorRoot: string, cpbRoot: string, project: string, task: string, planFile: string, _options: LooseRecord = {}): Promise<string> {
   const roleTitle = await readRoleTitle(executorRoot, "planner");
   const skillsSection = await buildSkillsSection(executorRoot, "planner", { phase: "plan", task });
-  const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
+  const projectDataRoot = await resolvePromptDataRoot(cpbRoot, project, _options);
+  const wikiDir = path.join(projectDataRoot, "wiki");
   const profile = await loadProfile(executorRoot, "planner", { projectWikiDir: wikiDir });
   const projContext = await preRead(path.join(wikiDir, "context.md"));
   const decisions = await preRead(path.join(wikiDir, "decisions.md"));
@@ -436,7 +437,7 @@ export async function buildPlannerPrompt(executorRoot: string, cpbRoot: string, 
   const constraints = dangerous
     ? ""
     : `## Constraints
-- ONLY write files under: ${path.join(cpbRoot, "wiki", "projects", project, "inbox")}/
+- ONLY write files under: ${path.join(wikiDir, "inbox")}/
 - You may run read-only local inspection commands only (for example: pwd, ls, cat, sed, rg, git status, git diff).`;
 
   return `You are CodePatchbay Planner. Role: ${roleTitle}
@@ -476,7 +477,8 @@ Use scope-matched step count with concrete acceptance criteria.${await projectIn
 
 export async function buildExecutorPrompt(executorRoot: string, cpbRoot: string, project: string, planId: string, deliverableFile: string, verdictFile: string, _options: LooseRecord = {}): Promise<string> {
   const roleTitle = await readRoleTitle(executorRoot, "executor");
-  const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
+  const projectDataRoot = await resolvePromptDataRoot(cpbRoot, project, _options);
+  const wikiDir = path.join(projectDataRoot, "wiki");
 
   const profile = await loadProfile(executorRoot, "executor", { projectWikiDir: wikiDir });
   const planFile = path.join(wikiDir, "inbox", `plan-${planId}.md`);
@@ -501,7 +503,7 @@ export async function buildExecutorPrompt(executorRoot: string, cpbRoot: string,
     : `## Constraints
 - Write code ONLY in the target project directory${projectCwd ? ": " + projectCwd : ""}
 - Write deliverable ONLY to: ${deliverableFile}
-- Write verdicts ONLY under: ${path.join(cpbRoot, "wiki", "projects", project, "outputs")}/
+- Write verdicts ONLY under: ${path.join(wikiDir, "outputs")}/
 - Do NOT modify files under: ${path.join(executorRoot, "wiki", "system")}/, ${path.join(executorRoot, "profiles")}/, ${path.join(executorRoot, "bridges")}/
 - Do NOT mutate git history, publish, deploy, or run destructive shell commands.
 - Do NOT read or write files outside the project, CodePatchbay wiki, and CodePatchbay profiles directories.`;
@@ -574,7 +576,7 @@ export async function buildExecutorJobPrompt(executorRoot: string, cpbRoot: stri
   const eventLog = path.join(projectDataRoot, "events", project, `${jobId}.jsonl`);
   const stateRoot = projectDataRoot;
   const resolvedDeliverableFile = path.join(wikiDir, "outputs", path.basename(deliverableFile));
-  const routingFeedbackFile = path.join(wikiDir, "outputs", path.basename(dispatchFeedbackPath(cpbRoot, project, jobId)));
+  const routingFeedbackFile = dispatchFeedbackPath(cpbRoot, project, jobId, { dataRoot: projectDataRoot });
   const contextPack = await resolveContextPackLocator(cpbRoot, project, jobId, { ..._options, dataRoot: projectDataRoot });
   const contextPackLocator = contextPack?.path
     ? `- Job context pack: ${contextPack.path}`
@@ -647,9 +649,10 @@ Follow handshake-protocol (executor->verifier, Phase: execute).
 Include plan-ref derived from the plan artifact in the deliverable metadata.${await projectInstructionsSection(wikiDir)}`;
 }
 
-export async function buildRepairerPrompt(executorRoot: string, cpbRoot: string, project: string, jobId: string, repairFile: string): Promise<string> {
+export async function buildRepairerPrompt(executorRoot: string, cpbRoot: string, project: string, jobId: string, repairFile: string, _options: LooseRecord = {}): Promise<string> {
   const roleTitle = await readRoleTitle(executorRoot, "repairer");
-  const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
+  const projectDataRoot = await resolvePromptDataRoot(cpbRoot, project, _options);
+  const wikiDir = path.join(projectDataRoot, "wiki");
 
   const profile = await loadProfile(executorRoot, "repairer", { projectWikiDir: wikiDir });
   const skillsSection = await buildSkillsSection(executorRoot, "repairer", { phase: "repair" });
@@ -688,9 +691,11 @@ ${executionIntensitySection("repair")}
 5. After the repair file is written, stop immediately and return a short completion message.${await projectInstructionsSection(wikiDir)}`;
 }
 
-export async function buildVerifierPrompt(executorRoot: string, cpbRoot: string, project: string, deliverableId: string, verdictFile: string, { planId }: LooseRecord = {}): Promise<string> {
+export async function buildVerifierPrompt(executorRoot: string, cpbRoot: string, project: string, deliverableId: string, verdictFile: string, options: LooseRecord = {}): Promise<string> {
+  const { planId } = options;
   const roleTitle = await readRoleTitle(executorRoot, "verifier");
-  const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
+  const projectDataRoot = await resolvePromptDataRoot(cpbRoot, project, options);
+  const wikiDir = path.join(projectDataRoot, "wiki");
 
   const profile = await loadProfile(executorRoot, "verifier", { projectWikiDir: wikiDir });
   const deliverableFile = path.join(wikiDir, "outputs", `deliverable-${deliverableId}.md`);
@@ -930,7 +935,8 @@ After the first line, include concise findings, changed files, and verification 
 
 export async function buildReviewerReviewPrompt(executorRoot: string, cpbRoot: string, project: string, deliverableId: string, _options: LooseRecord = {}): Promise<string> {
   const roleTitle = await readRoleTitle(executorRoot, "reviewer");
-  const wikiDir = path.join(cpbRoot, "wiki", "projects", project);
+  const projectDataRoot = await resolvePromptDataRoot(cpbRoot, project, _options);
+  const wikiDir = path.join(projectDataRoot, "wiki");
   const deliverableFile = path.join(wikiDir, "outputs", `deliverable-${deliverableId}.md`);
   const reviewFile = path.join(wikiDir, "outputs", `review-${deliverableId}.md`);
 

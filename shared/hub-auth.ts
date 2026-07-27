@@ -3,22 +3,20 @@ import type { Stats } from "node:fs";
 import { lstat, open } from "node:fs/promises";
 import path from "node:path";
 
-import { normalizeBearerToken } from "./network.js";
-
 const HUB_SERVICE_TOKENS_FORMAT = "cpb-hub-service-tokens/v1";
 const MAX_AUTH_FILE_BYTES = 1024 * 1024;
 const MAX_SERVICE_TOKENS = 1024;
 const MAX_PROJECTS_PER_TOKEN = 4096;
 const SAFE_PRINCIPAL_ID = /^[A-Za-z0-9](?:[A-Za-z0-9._:@-]{0,126}[A-Za-z0-9])?$/;
 const SAFE_PROJECT_ID = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9])?$/;
-const RESERVED_PRINCIPAL_IDS = new Set(["legacy-admin", "local-anonymous"]);
+const RESERVED_PRINCIPAL_IDS = new Set(["local-anonymous"]);
 
 export type HubScope = "hub:health" | "hub:read" | "hub:admin";
 export type HubPrincipal = {
   id: string;
   scopes: HubScope[];
   projects: "*" | string[];
-  source: "legacy-env" | "service-token-file" | "local-anonymous" | "oidc" | "worker-broker";
+  source: "service-token-file" | "local-anonymous" | "oidc" | "worker-broker";
   expiresAt: string | null;
 };
 
@@ -37,7 +35,6 @@ export type HubAuthConfig = {
 };
 
 export type HubAuthOptions = {
-  bearerToken?: unknown;
   serviceTokensFile?: unknown;
   hubRoot?: unknown;
   requireAuthentication?: unknown;
@@ -272,31 +269,13 @@ async function inspectServiceTokensFileFingerprint(filePath: string) {
   }
 }
 
-export async function loadHubAuthConfig({ bearerToken, serviceTokensFile, hubRoot, requireAuthentication }: HubAuthOptions = {}): Promise<HubAuthConfig> {
-  const legacyToken = normalizeBearerToken(bearerToken, "CPB Hub bearer token");
+export async function loadHubAuthConfig({ serviceTokensFile, hubRoot, requireAuthentication }: HubAuthOptions = {}): Promise<HubAuthConfig> {
   const loaded = await readServiceTokensFile(serviceTokensFile);
   const resolvedHubRoot = String(hubRoot || "").trim();
   if (loaded.filePath && resolvedHubRoot && isWithin(resolvedHubRoot, loaded.filePath)) {
     throw new Error("CPB_HUB_SERVICE_TOKENS_FILE must be stored outside the Hub root and its backups");
   }
   const credentials = [...loaded.entries];
-  if (legacyToken) {
-    const digest = tokenDigest(legacyToken);
-    if (credentials.some((entry) => timingSafeEqual(entry.digest, digest))) {
-      throw new Error("CPB_HUB_BEARER_TOKEN duplicates a token in CPB_HUB_SERVICE_TOKENS_FILE");
-    }
-    credentials.push({
-      digest,
-      expiresAtMs: null,
-      principal: {
-        id: "legacy-admin",
-        scopes: ["hub:admin"],
-        projects: "*",
-        source: "legacy-env",
-        expiresAt: null,
-      },
-    });
-  }
   if (credentials.length > 0 && !credentials.some((entry) => entry.expiresAtMs === null || entry.expiresAtMs > Date.now())) {
     throw new Error("all configured Hub bearer credentials are expired");
   }

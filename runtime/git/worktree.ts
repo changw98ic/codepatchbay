@@ -21,15 +21,12 @@ const REQUIRED_IGNORES = [
   "dist/",
   "build/",
   "coverage/",
-  "cpb-task/state/",
-  "cpb-task/worktrees/",
 ];
 
 const WORKTREE_LOCAL_EXCLUDES = [
   ".codegraph",
   ".claude/",
   ".codex/",
-  "cpb-task/",
   "node_modules",
   "node_modules/",
 ];

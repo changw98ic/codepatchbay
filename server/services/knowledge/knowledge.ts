@@ -121,19 +121,20 @@ export function resolveKnowledgePath({ hubRoot = null, sourcePath, dataRoot = nu
   if (classification === "session") {
     return path.join(sessionPath(stringValue(sourcePath), sessionId, { dataRoot, projectRuntimeRoot }), `${name}.md`);
   }
+  const runtimeRoot = requireSessionRuntimeRoot({ dataRoot, projectRuntimeRoot });
   if (classification === "project-memory") {
-    return path.join(path.resolve(stringValue(sourcePath)), ".cpb", "memory.md");
+    return path.join(runtimeRoot, "wiki", "memory.md");
   }
   if (kind === "adr") {
-    return path.join(path.resolve(stringValue(sourcePath)), ".cpb", "wiki", "decisions", `${name}.md`);
+    return path.join(runtimeRoot, "wiki", "decisions", `${name}.md`);
   }
   if (kind === "incident") {
-    return path.join(path.resolve(stringValue(sourcePath)), ".cpb", "wiki", "incidents", `${name}.md`);
+    return path.join(runtimeRoot, "wiki", "incidents", `${name}.md`);
   }
   if (kind === "runbook") {
-    return path.join(path.resolve(stringValue(sourcePath)), ".cpb", "wiki", "runbooks", `${name}.md`);
+    return path.join(runtimeRoot, "wiki", "runbooks", `${name}.md`);
   }
-  return path.join(path.resolve(stringValue(sourcePath)), ".cpb", "wiki", `${name}.md`);
+  return path.join(runtimeRoot, "wiki", `${name}.md`);
 }
 
 export function knowledgePolicySummary() {
@@ -146,12 +147,15 @@ export function knowledgePolicySummary() {
   };
 }
 
-export async function scanKnowledgeContamination(sourcePath: string, { fs: fsMod }: LooseRecord = {}) {
+export async function scanKnowledgeContamination(sourcePath: string, { fs: fsMod, dataRoot, projectRuntimeRoot }: LooseRecord = {}) {
   const realFs = fsLike(fsMod);
-  const src = path.resolve(sourcePath);
   const issues: LooseRecord[] = [];
-  const wikiRoot = path.join(src, ".cpb", "wiki");
-  const memoryFile = path.join(src, ".cpb", "memory.md");
+  const runtimeRoot = requireSessionRuntimeRoot({
+    dataRoot: typeof dataRoot === "string" ? dataRoot : null,
+    projectRuntimeRoot: typeof projectRuntimeRoot === "string" ? projectRuntimeRoot : null,
+  });
+  const wikiRoot = path.join(runtimeRoot, "wiki");
+  const memoryFile = path.join(wikiRoot, "memory.md");
 
   const machineStatePatterns = [
     /"leaseId"/, /"rateLimit"/, /"heartbeat"/, /"workerId"/,
@@ -172,13 +176,13 @@ export async function scanKnowledgeContamination(sourcePath: string, { fs: fsMod
     }
   }
 
-  await scanDir(wikiRoot, ".cpb/wiki");
+  await scanDir(wikiRoot, "wiki");
 
   try {
     const content = await realFs.readFile(memoryFile, "utf8");
     for (const pattern of machineStatePatterns) {
       if (pattern.test(content)) {
-        issues.push({ path: ".cpb/memory.md", reason: `machine-state pattern ${pattern} found in project memory` });
+        issues.push({ path: "wiki/memory.md", reason: `machine-state pattern ${pattern} found in project memory` });
         break;
       }
     }
@@ -259,12 +263,12 @@ function requireSessionRuntimeRoot(options: RuntimeRootOptions = {}) {
   return path.resolve(runtimeRoot);
 }
 
-export function projectWikiPath(sourcePath: string) {
-  return path.join(path.resolve(sourcePath), ".cpb", "wiki");
+export function projectWikiPath(_sourcePath: string, options: RuntimeRootOptions = {}) {
+  return path.join(requireSessionRuntimeRoot(options), "wiki");
 }
 
-export function projectMemoryPath(sourcePath: string) {
-  return path.join(path.resolve(sourcePath), ".cpb", "memory.md");
+export function projectMemoryPath(_sourcePath: string, options: RuntimeRootOptions = {}) {
+  return path.join(requireSessionRuntimeRoot(options), "wiki", "memory.md");
 }
 
 export function sessionPath(sourcePath: string, sessionId: string, options: LooseRecord = {}) {
@@ -274,7 +278,7 @@ export function sessionPath(sourcePath: string, sessionId: string, options: Loos
 
 export async function initProjectWikiPaths(sourcePath: string, _sessionId?: string, _options: LooseRecord = {}) {
   assertNoTraversal(sourcePath);
-  const wikiRoot = projectWikiPath(sourcePath);
+  const wikiRoot = projectWikiPath(sourcePath, _options);
   await fs.mkdir(wikiRoot, { recursive: true });
   for (const sub of WIKI_SUBDIRS) {
     await fs.mkdir(path.join(wikiRoot, sub), { recursive: true });

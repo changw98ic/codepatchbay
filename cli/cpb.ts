@@ -45,7 +45,8 @@ async function usage() {
   console.log(`  ${CYAN}init${NC} <path> [name]                  Initialize project`);
   console.log(`  ${CYAN}hub${NC} [status|start|stop|projects|...]  Hub management`);
   console.log(`  ${CYAN}pipeline${NC} <project> "<task>" [--retries <n>]  Full pipeline`);
-  console.log(`  ${CYAN}run${NC} "<task>" [--project <id>]         Run task (pipeline alias)`);
+  console.log(`  ${CYAN}fix${NC} "<problem>" [--project id] [--follow] [--idempotency-key k]  Submit a fix request (user entry)`);
+  console.log(`  ${CYAN}task${NC} <task-id> [--project id]              Show task status (user entry)`);
   console.log(`  ${CYAN}retry${NC} <project> <job-id> [--agent <name>]  Retry job phase`);
   console.log(`  ${CYAN}status${NC} <project>                       Project status`);
   console.log(`  ${CYAN}list${NC}                                   List projects`);
@@ -87,7 +88,8 @@ const COMMANDS = {
   init: "init.js",
   hub: "hub.js",
   pipeline: "pipeline.js",
-  run: "pipeline.js",
+  fix: "fix.js",
+  task: "task.js",
   status: "status.js",
   list: "list.js",
   jobs: "jobs.js",
@@ -95,7 +97,6 @@ const COMMANDS = {
   diff: "diff.js",
   review: "review.js",
   inbox: "inbox.js",
-  outputs: "inbox.js",
   setup: "setup.js",
   agents: "agents.js",
   github: "github.js",
@@ -109,7 +110,10 @@ const COMMANDS = {
 // --- Main ---
 
 export function projectArgForCommand(cmd: string, cmdArgs: string[]) {
-  let projectArg = cmd === "run" ? null : cmdArgs.find((a) => !a.startsWith("-"));
+  // `fix`/`task` take a non-project positional (problem / task-id),
+  // so the positional must not be treated as a project name; project comes from
+  // --project or auto-detection inside the command (mirrors pipeline.ts).
+  let projectArg = cmd === "fix" || cmd === "task" ? null : cmdArgs.find((a) => !a.startsWith("-"));
   const projectFlagIdx = cmdArgs.indexOf("--project");
   if (projectFlagIdx >= 0 && cmdArgs[projectFlagIdx + 1]) {
     projectArg = cmdArgs[projectFlagIdx + 1];
@@ -144,12 +148,6 @@ async function main() {
     cmd = "version";
   }
 
-  // quickstart is an alias for setup --quickstart
-  if (cmd === "quickstart" || cmd === "health-check") {
-    if (cmd === "quickstart") cmdArgs.unshift("--quickstart");
-    cmd = cmd === "quickstart" ? "setup" : "doctor";
-  }
-
   const mod = cmd in COMMANDS ? await import(path.join(CPB_EXECUTOR_ROOT, "cli", "commands", COMMANDS[cmd])) : null;
 
   if (!mod) {
@@ -160,11 +158,9 @@ async function main() {
 
   if (!process.env.CPB_PROJECT_RUNTIME_ROOT) {
     // Resolve per-project runtime root from hub registry for project-scoped commands
-    const PROJECT_COMMANDS = new Set(["pipeline", "run", "status", "retry", "diff", "review", "inbox", "outputs", "cancel", "redirect"]);
+    const PROJECT_COMMANDS = new Set(["pipeline", "fix", "task", "status", "retry", "diff", "review", "inbox", "cancel", "redirect"]);
     if (PROJECT_COMMANDS.has(cmd)) {
-      // `run` resolves an omitted project from cwd/package.json inside the
-      // pipeline command. Treating the task text as a positional project here
-      // prevents that auto-detection from running.
+      // `fix` and `task` resolve their project from --project or command logic.
       const projectArg = projectArgForCommand(cmd, cmdArgs);
       if (projectArg) {
         const { resolveHubRoot, getProject } = await import(path.join(CPB_EXECUTOR_ROOT, "server", "services", "hub", "hub-registry.js"));

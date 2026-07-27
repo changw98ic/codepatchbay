@@ -2,7 +2,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, stat } from "node:fs/promises";
+import { mkdtemp, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -53,7 +53,7 @@ test("lease storage requires explicit dataRoot and ignores ambient project runti
   });
 });
 
-test("lease storage writes dataRoot and uses legacy root only with explicit opt-in", async () => {
+test("lease storage writes only to the explicit dataRoot", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "cpb-lease-runtime-"));
   const cpbRoot = path.join(root, "source");
   const dataRoot = path.join(root, "runtime");
@@ -71,16 +71,10 @@ test("lease storage writes dataRoot and uses legacy root only with explicit opt-
     assert.equal(await pathExists(path.join(dataRoot, "leases", "lease-runtime-root.json")), true);
     assert.equal(await pathExists(path.join(envRoot, "leases", "lease-runtime-root.json")), false);
 
-    const legacyLease = await acquireLease(cpbRoot, {
-      leaseId: "lease-legacy-root",
-      jobId: "job-legacy-root",
-      phase: "plan",
-      ttlMs: 1_000,
-      includeLegacyFallback: true,
-    });
-    assert.equal(legacyLease.jobId, "job-legacy-root");
-    assert.equal(await pathExists(path.join(cpbRoot, "cpb-task", "leases", "lease-legacy-root.json")), true);
-    assert.equal((await readLease(cpbRoot, "lease-legacy-root", { includeLegacyFallback: true }))?.jobId, "job-legacy-root");
+    await assert.rejects(
+      () => readLease(cpbRoot, "lease-runtime-root"),
+      /project runtime root required for lease storage/,
+    );
   });
 });
 
@@ -108,7 +102,7 @@ test("process registry requires explicit dataRoot and ignores ambient project ru
   });
 });
 
-test("process registry writes dataRoot and uses legacy root only with explicit opt-in", async () => {
+test("process registry writes only to the explicit dataRoot", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "cpb-process-runtime-"));
   const cpbRoot = path.join(root, "source");
   const dataRoot = path.join(root, "runtime");
@@ -126,14 +120,9 @@ test("process registry writes dataRoot and uses legacy root only with explicit o
     assert.equal(await pathExists(path.join(envRoot, "processes", "job-runtime-root.json")), false);
     assert.equal((await getProcess(cpbRoot, "job-runtime-root", { dataRoot }))?.project, "flow");
 
-    await registerProcess(cpbRoot, {
-      jobId: "job-legacy-root",
-      project: "flow",
-      phase: "plan",
-      includeLegacyFallback: true,
-    });
-    const legacyFile = path.join(cpbRoot, "cpb-task", "processes", "job-legacy-root.json");
-    assert.equal(await pathExists(legacyFile), true);
-    assert.equal(JSON.parse(await readFile(legacyFile, "utf8")).jobId, "job-legacy-root");
+    await assert.rejects(
+      () => getProcess(cpbRoot, "job-runtime-root"),
+      /project runtime root required for process registry/,
+    );
   });
 });

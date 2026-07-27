@@ -1,7 +1,7 @@
 // ── observability ──
 import path from "node:path";
 import { sanitizeProviderReason, getManagedAcpPool } from "../acp/acp-pool.js";
-import { deriveWorkerStatus, hubStatus, listProjects } from "../hub/hub-registry.js";
+import { deriveWorkerStatus, getProject, hubStatus, listProjects } from "../hub/hub-registry.js";
 import { listQueue, queueStatus } from "../hub/hub-queue.js";
 import { knowledgePolicySummary } from "../knowledge/knowledge.js";
 import { listDispatches } from "../dispatch/dispatch.js";
@@ -285,10 +285,16 @@ import { readEvents, materializeJob } from "../event/event-store.js";
 import { readLease, isLeaseStale } from "../infra.js";
 import { listInboxMessages } from "../hub/hub-queue.js";
 import { listSessions } from "../review/review-session.js";
+import { resolveProjectDataRoot } from "../runtime.js";
 
 const EVENT_TAIL_SIZE = 10;
 
 export async function buildChainSnapshot({ cpbRoot, hubRoot, project, jobId }: { cpbRoot: string; hubRoot?: string | null; project: string; jobId: string }): Promise<ChainSnapshot> {
+  const registeredProject = hubRoot ? await getProject(hubRoot, project) : null;
+  const dataRoot = await resolveProjectDataRoot(cpbRoot, project, {
+    hubRoot: hubRoot || undefined,
+    dataRoot: registeredProject?.projectRuntimeRoot,
+  });
   const timestamp = new Date().toISOString();
   const snapshot: ChainSnapshot = {
     job: null,
@@ -303,7 +309,7 @@ export async function buildChainSnapshot({ cpbRoot, hubRoot, project, jobId }: {
 
   let events = [];
   try {
-    events = await readEvents(cpbRoot, project, jobId) as LooseRecord[];
+    events = await readEvents(cpbRoot, project, jobId, { dataRoot }) as LooseRecord[];
     if (events.length > 0) {
       const materialized = materializeJob(events);
       snapshot.job = typeof materialized === "object" && materialized !== null ? materialized as LooseRecord : null;
@@ -313,7 +319,7 @@ export async function buildChainSnapshot({ cpbRoot, hubRoot, project, jobId }: {
 
   if (snapshot.job?.leaseId) {
     try {
-      snapshot.lease = await readLease(cpbRoot, snapshot.job.leaseId) as LooseRecord | null;
+      snapshot.lease = await readLease(cpbRoot, snapshot.job.leaseId, { dataRoot }) as LooseRecord | null;
     } catch {}
   }
 
@@ -336,13 +342,13 @@ export async function buildChainSnapshot({ cpbRoot, hubRoot, project, jobId }: {
     try {
       const msgs = await listInboxMessages(cpbRoot, project, {
         status: "pending",
-      });
+      }, { dataRoot });
       snapshot.inboxPending = msgs.length;
     } catch {}
   }
 
   try {
-    const sessions = await listSessions(cpbRoot);
+    const sessions = await listSessions(cpbRoot, { dataRoot });
     snapshot.reviewSession =
       sessions.find((s) => s.jobId === jobId) || null;
   } catch {}
@@ -498,7 +504,7 @@ export async function recordPerformance(cpbRoot: string, project: string, jobId:
       durationMs: durationMs || null,
       error: error || null,
       ts: ts || new Date().toISOString(),
-    }, entry.dataRoot ? { dataRoot: entry.dataRoot, includeLegacyFallback: false } : {});
+    }, { dataRoot: entry.dataRoot });
   } catch {}
 
   const dir = perfDir(cpbRoot, entry);

@@ -8,10 +8,10 @@ import { buildArtifactIndex } from "../server/services/job/job-projection.js";
 import {
   allocateArtifactId,
   buildArtifactIndex as locatorBuildArtifactIndex,
-  deliverableFilePath,
-  planFilePath,
-  reviewFilePath,
-  verdictFilePath,
+  runtimeDeliverableFilePath,
+  runtimePlanFilePath,
+  runtimeVerdictFilePath,
+  resolveOutputsDir,
   withArtifactLocatorTestHooks,
 } from "../server/services/artifact-locator.js";
 import { tempRoot } from "./helpers.js";
@@ -41,13 +41,15 @@ function codedLocatorError(error: unknown, code: string): (Error & {
 
 test("artifact index returns schema envelope and required entry fields", async () => {
   const root = await tempRoot("cpb-artifact-index-fields");
-  const wikiDir = path.join(root, "wiki", "projects", "proj");
+  const dataRoot = path.join(root, "projects", "proj");
+  const wikiDir = path.join(dataRoot, "wiki");
   const outputs = path.join(wikiDir, "outputs");
   await mkdir(outputs, { recursive: true });
   const content = "## Deliverable\nhello world\n";
   await writeFile(path.join(outputs, "deliverable-001.md"), content, "utf8");
 
   const index = await buildArtifactIndex(root, "proj", "job-001", {
+    dataRoot,
     wikiDir,
     events: [{
       type: "phase_completed",
@@ -76,7 +78,9 @@ test("artifact index returns schema envelope and required entry fields", async (
 
 test("artifact index reports missing files as broken references and deduplicates entries", async () => {
   const root = await tempRoot("cpb-artifact-index-broken");
+  const dataRoot = path.join(root, "projects", "proj");
   const index = await buildArtifactIndex(root, "proj", "job-002", {
+    dataRoot,
     events: [
       { type: "phase_completed", phase: "execute", artifact: "deliverable-missing.md", ts: "2026-06-04T11:00:00Z" },
       { type: "phase_retry", phase: "execute", artifact: "deliverable-missing.md", ts: "2026-06-04T11:01:00Z" },
@@ -90,7 +94,8 @@ test("artifact index reports missing files as broken references and deduplicates
 
 test("artifact index infers kinds from filenames and phases", async () => {
   const root = await tempRoot("cpb-artifact-index-kinds");
-  const wikiDir = path.join(root, "wiki", "projects", "proj");
+  const dataRoot = path.join(root, "projects", "proj");
+  const wikiDir = path.join(dataRoot, "wiki");
   const inbox = path.join(wikiDir, "inbox");
   const outputs = path.join(wikiDir, "outputs");
   await mkdir(inbox, { recursive: true });
@@ -108,6 +113,7 @@ test("artifact index infers kinds from filenames and phases", async () => {
   }
 
   const index = await buildArtifactIndex(root, "proj", "job-003", {
+    dataRoot,
     wikiDir,
     events: cases.map((item) => ({ type: "artifact", phase: item.phase, artifact: item.file })),
   });
@@ -118,11 +124,12 @@ test("artifact index infers kinds from filenames and phases", async () => {
   }
 });
 
-test("artifact locator keeps legacy path helpers and re-exports buildArtifactIndex", async () => {
-  assert.equal(planFilePath("/opt/cpb", "my-proj", "042"), "/opt/cpb/wiki/projects/my-proj/inbox/plan-042.md");
-  assert.equal(deliverableFilePath("/opt/cpb", "my-proj", "042"), "/opt/cpb/wiki/projects/my-proj/outputs/deliverable-042.md");
-  assert.equal(verdictFilePath("/opt/cpb", "my-proj", "042"), "/opt/cpb/wiki/projects/my-proj/outputs/verdict-042.md");
-  assert.equal(reviewFilePath("/opt/cpb", "my-proj", "042"), "/opt/cpb/wiki/projects/my-proj/outputs/review-042.md");
+test("artifact locator uses Hub-managed project runtime paths and re-exports buildArtifactIndex", async () => {
+  const hubRoot = "/opt/hub";
+  assert.equal(await runtimePlanFilePath(hubRoot, "/opt/cpb", "my-proj", "042"), "/opt/hub/projects/my-proj/wiki/inbox/plan-042.md");
+  assert.equal(await runtimeDeliverableFilePath(hubRoot, "/opt/cpb", "my-proj", "042"), "/opt/hub/projects/my-proj/wiki/outputs/deliverable-042.md");
+  assert.equal(await runtimeVerdictFilePath(hubRoot, "/opt/cpb", "my-proj", "042"), "/opt/hub/projects/my-proj/wiki/outputs/verdict-042.md");
+  assert.equal(path.join(await resolveOutputsDir(hubRoot, "/opt/cpb", "my-proj"), "review-042.md"), "/opt/hub/projects/my-proj/wiki/outputs/review-042.md");
   assert.equal(locatorBuildArtifactIndex, buildArtifactIndex);
 
   const root = await tempRoot("cpb-artifact-id");

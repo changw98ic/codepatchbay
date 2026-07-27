@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { isPhasePassed } from "../contracts/phase-result.js";
 import { completionGateEvent, evaluateCompletionGate, parseVerdict } from "./completion-gate.js";
 import { loadCompletionChecklistArtifacts } from "./completion-checklist-artifacts.js";
@@ -66,10 +67,18 @@ function phaseResultNamed(phaseResults: LooseRecord[], phase: string) {
   return null;
 }
 
-function verdictTextForPhase(phaseResults: LooseRecord[], phase: string) {
+async function verdictTextForPhase(phaseResults: LooseRecord[], phase: string) {
   const phaseResult = phaseResultNamed(phaseResults, phase);
   const artifact = objectValue(phaseResult?.artifact);
-  return phaseResult?.verdict || artifact?.content || artifact?.metadata || null;
+  if (typeof artifact?.content === "string") return artifact.content;
+  if (typeof artifact?.path === "string") {
+    try {
+      return await readFile(artifact.path, "utf8");
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
 function completedPhaseNames(phaseResults: LooseRecord[]) {
@@ -163,8 +172,8 @@ export async function runCompletionGate({
   repairContext = null,
 }: CompletionGateRunnerInput): Promise<CompletionGateRunnerResult> {
   const runtimeEnv = env ?? process.env;
-  const parsedVerdict = parseVerdict(verdictTextForPhase(phaseResults, "verify"));
-  const parsedAdversarialVerdict = parseVerdict(verdictTextForPhase(phaseResults, "adversarial_verify"));
+  const parsedVerdict = parseVerdict(await verdictTextForPhase(phaseResults, "verify"));
+  const parsedAdversarialVerdict = parseVerdict(await verdictTextForPhase(phaseResults, "adversarial_verify"));
   const jobForGate = { ...job, completedPhases: completedPhaseNames(phaseResults) };
 
   const { checklistArtifacts, artifactInvalidReason } = await loadCompletionChecklistArtifacts({
