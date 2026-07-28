@@ -9,5 +9,10 @@
   "envPrefix": "CPB_ACP_BROWSER_AGENT",
   "description": "Universal browser-based AI adapter via Playwright and ACP",
   "lifecycle": "cached",
-  "poolLimit": 1
+  "poolLimit": 1,
+  "providerFamily": "browser",
+  "tieBreakPriority": 100,
+  "sandboxPolicy": "cpb-required",
+  "inheritFiles": [],
+  "quarantineFiles": []
 }

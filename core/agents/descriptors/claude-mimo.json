@@ -16,6 +16,16 @@
   "providerVariant": "mimo-v2.5pro",
   "transport": "claude-cli",
   "lifecycle": "one-shot",
+  "providerFamily": "mimo",
+  "tieBreakPriority": 40,
+  "sandboxPolicy": "cpb-required",
+  "inheritFiles": [
+    { "from": "$HOME/.claude.json", "to": "$HOME/.claude.json" },
+    { "from": "$HOME/.claude/.credentials.json", "to": "$HOME/.claude/.credentials.json" },
+    { "from": "$HOME/.claude/credentials.json", "to": "$HOME/.claude/credentials.json" },
+    { "from": "$HOME/.claude/auth.json", "to": "$HOME/.claude/auth.json" }
+  ],
+  "quarantineFiles": [],
   "resumeCommand": "claude",
   "resumeArgs": ["--resume"]
 }

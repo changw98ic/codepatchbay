@@ -1,4 +1,5 @@
 import { recordValue, type LooseRecord } from "../../shared/types.js";
+import { getCapability, providerRegistryEnabled } from "./registry.js";
 
 const MIN_SAMPLES = 12;
 const MIN_CONFIDENCE = 0.6;
@@ -106,10 +107,32 @@ export function resolveAllowedAgentNames(...contexts: unknown[]): string[] | nul
   return null;
 }
 
+/**
+ * Registry-declared tie-break priority for an agent, or null when the registry
+ * is disabled (kill-switch off), not yet loaded, or the agent is unknown. In
+ * every null case callers fall back to the legacy literal/regex heuristic so
+ * behavior is preserved across a rollback or in unit tests that never load the
+ * registry.
+ */
+function registryTieBreakPriority(agent: string): number | null {
+  if (!providerRegistryEnabled()) return null;
+  try {
+    return getCapability(agent)?.tieBreakPriority ?? null;
+  } catch {
+    // Registry not loaded — degrade to legacy heuristic below.
+    return null;
+  }
+}
+
 function rankPolicyCandidates(candidates: CandidateScore[]): CandidateScore | null {
   return [...candidates].sort((a, b) => {
     if (b.eligible !== a.eligible) return Number(b.eligible) - Number(a.eligible);
     if (b.value !== a.value) return b.value - a.value;
+    const pa = registryTieBreakPriority(a.agent);
+    const pb = registryTieBreakPriority(b.agent);
+    if (pa !== null && pb !== null && pa !== pb) return pa - pb;
+    // Legacy fallback (also the entire ranking path when kill-switch is off):
+    // codex wins ties, then alphabetical for determinism.
     if (a.agent === "codex") return -1;
     if (b.agent === "codex") return 1;
     return a.agent.localeCompare(b.agent);
@@ -117,6 +140,22 @@ function rankPolicyCandidates(candidates: CandidateScore[]): CandidateScore | nu
 }
 
 export function providerFamilyFor(agent: unknown, providerKey: unknown = null): string {
+  // When the registry is enabled and loaded, prefer the descriptor-declared
+  // family. This is the B2a path that retires the codex/claude regex special
+  // cases in favor of descriptor data.
+  if (providerRegistryEnabled()) {
+    const resolved = agentName(agent);
+    if (resolved) {
+      try {
+        const family = getCapability(resolved)?.providerFamily;
+        if (family) return family;
+      } catch {
+        // Registry not loaded — fall through to the regex heuristic below.
+      }
+    }
+  }
+  // Legacy regex heuristic (also the kill-switch=off path). Kept verbatim so
+  // CPB_PROVIDER_REGISTRY=0 and registry-not-loaded callers see no change.
   const key = (text(providerKey) || "").toLowerCase();
   const name = (agentName(agent) || "unknown").toLowerCase();
   if (key === "claude:glm" || key.startsWith("glm:") || key.startsWith("zhipu:") || name === "claude-glm" || name.startsWith("glm-")) return "glm";

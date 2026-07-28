@@ -11,5 +11,10 @@
   "envPrefix": "CPB_ACP_FAKE_ACP",
   "description": "Deterministic ACP-compatible fake provider for CPB full-chain tests",
   "lifecycle": "one-shot",
-  "poolLimit": 1
+  "poolLimit": 1,
+  "providerFamily": "test",
+  "tieBreakPriority": 1000,
+  "sandboxPolicy": "none",
+  "inheritFiles": [],
+  "quarantineFiles": []
 }

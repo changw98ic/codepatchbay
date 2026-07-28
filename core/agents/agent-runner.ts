@@ -3,6 +3,11 @@ import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { recordValue, type LooseRecord } from "../../shared/types.js";
 import { FailureKind, failure } from "../contracts/failure.js";
+import {
+  getCapability,
+  providerRegistryEnabled,
+  resolveAgentEnvPrefix,
+} from "./registry.js";
 
 const RATE_LIMIT_PATTERN = /\b(?:429|529)\b|rate.?limit|too many requests|capacity|overloaded|over.?capacity|ProviderQuotaError|访问量过大|模型当前访问量|当前访问量过大|temporar(?:y|ily) unavailable/i;
 const DEFAULT_TIMEOUT_MS = 0;
@@ -111,6 +116,19 @@ function mergeArgsEnv(current: unknown, appended: string[]) {
 }
 
 function claudeArgsEnvKey(agentName: string) {
+  if (!CLAUDE_COMPATIBLE_AGENT.test(agentName)) return null;
+  if (providerRegistryEnabled()) {
+    // Derive the canonical ARGS key from the registry env-prefix resolver (B2b):
+    // it already enforces the CPB_ACP_<NAME> namespace used for the _ARGS suffix
+    // and is the same resolver used elsewhere for the per-agent envPrefix. Falls
+    // back to null if the name is somehow rejected.
+    try {
+      return `${resolveAgentEnvPrefix(agentName)}_ARGS`;
+    } catch {
+      return null;
+    }
+  }
+  // Legacy literal path (kill-switch off): hand-rolled claude / claude-* key.
   if (agentName === "claude") return "CPB_ACP_CLAUDE_ARGS";
   if (!agentName.startsWith("claude-")) return null;
   return `CPB_ACP_${agentName.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_ARGS`;
@@ -351,11 +369,24 @@ function phaseWriteAllowOverride(
     || baseEnv.CPB_AGENT_SANDBOX_INHERITED,
   );
   if (!hasExplicitSandbox) {
-    if (agentName === "codex") {
-      // Codex already has a phase-aware native sandbox. Avoid nesting it in
-      // CPB's outer sandbox, which changes the available toolchain and prevents
-      // MCP subprocesses from matching a native Codex run. An explicit CPB
-      // sandbox setting still wins when an operator requires one.
+    // Sandbox skip is driven by the descriptor's declared `sandboxPolicy`
+    // (B2b): "native" providers already run inside their own phase-aware
+    // sandbox, so nesting them in CPB's outer sandbox changes the available
+    // toolchain and prevents MCP subprocesses from matching a native run.
+    // codex ships with `sandboxPolicy: "native"`, so behavior is preserved.
+    // Set CPB_PROVIDER_REGISTRY=0 (or run without the registry loaded, as some
+    // focused unit tests do) to fall back to the literal `==="codex"` test.
+    let nativeSandbox: boolean;
+    if (providerRegistryEnabled()) {
+      try {
+        nativeSandbox = getCapability(agentName)?.sandboxPolicy === "native";
+      } catch {
+        nativeSandbox = agentName === "codex";
+      }
+    } else {
+      nativeSandbox = agentName === "codex";
+    }
+    if (nativeSandbox) {
       baseEnv.CPB_AGENT_SANDBOX_INHERITED = "1";
     } else {
       baseEnv.CPB_AGENT_SANDBOX = "required";

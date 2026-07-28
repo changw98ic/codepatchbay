@@ -1,11 +1,19 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { createAgentHome } from "../core/agents/isolation.js";
+import { createAgentHome, inheritFilesIntoHome } from "../core/agents/isolation.js";
+import { loadRegistry } from "../core/agents/registry.js";
 
 const clean = (dir) => rm(dir, { recursive: true, force: true });
+
+// B2b: the generic inheritFiles path is only reached when the registry is
+// loaded (kill-switch defaults ON). Load once for the file so codex/claude
+// descriptors — and their inheritFiles/quarantineFiles — are visible to
+// createAgentHome. Tests that need the legacy literal path set
+// CPB_PROVIDER_REGISTRY=0 explicitly.
+await loadRegistry("");
 
 test("createAgentHome builds 0o700 HOME under dataRoot with git-neutral env", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "cpb-iso-"));
@@ -65,16 +73,231 @@ test("codex: stale config.toml in target home is quarantined on re-run", async (
   } finally { await clean(dir); }
 });
 
-test("characterize: parentEnv.CODEX_HOME set → inherit skipped (auth NOT copied) [pins review P2 behavior]", async () => {
+test("parentEnv.CODEX_HOME set → inheritFiles resolves $CODEX_HOME to custom root [B2b new behavior]", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "cpb-iso-"));
   try {
     const dataRoot = path.join(dir, "runtime");
     const customCodexHome = path.join(dir, "custom-codex");
+    const parentHome = path.join(dir, "userhome");
     await mkdir(customCodexHome, { recursive: true });
+    await mkdir(parentHome, { recursive: true });
     await writeFile(path.join(customCodexHome, "auth.json"), '{"token":"y"}');
-    const env = await createAgentHome(dir, "codex", "job-4", { dataRoot, parentEnv: { CODEX_HOME: customCodexHome } });
-    // 当前行为:codex 分支 gated on !CODEX_HOME → inheritCodexConfig 不执行 → auth 未拷贝。
-    // Phase B 若改为"始终从 CODEX_HOME 继承",本测试须同步更新。
-    await assert.rejects(() => readFile(path.join(env.HOME, ".codex", "auth.json")));
+    const env = await createAgentHome(dir, "codex", "job-4", {
+      dataRoot,
+      parentEnv: { HOME: parentHome, CODEX_HOME: customCodexHome },
+    });
+    // B2b: descriptor-driven inheritFiles resolves `from: "$CODEX_HOME/auth.json"`
+    // against parentEnv.CODEX_HOME, so auth IS now inherited from the custom
+    // root (replaces the legacy skip-on-CODEX_HOME gating that left the isolated
+    // codex without auth). The §6.2 env-awareness fix.
+    const copied = await readFile(path.join(env.HOME, ".codex", "auth.json"), "utf8");
+    assert.equal(copied, '{"token":"y"}');
+  } finally { await clean(dir); }
+});
+
+test("CPB_PROVIDER_REGISTRY=0 retains legacy skip-on-CODEX_HOME gating (kill-switch fallback)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "cpb-iso-"));
+  try {
+    const dataRoot = path.join(dir, "runtime");
+    const customCodexHome = path.join(dir, "custom-codex");
+    const parentHome = path.join(dir, "userhome");
+    await mkdir(customCodexHome, { recursive: true });
+    await mkdir(parentHome, { recursive: true });
+    await writeFile(path.join(customCodexHome, "auth.json"), '{"token":"legacy-skip"}');
+    const prev = process.env.CPB_PROVIDER_REGISTRY;
+    process.env.CPB_PROVIDER_REGISTRY = "0";
+    try {
+      const env = await createAgentHome(dir, "codex", "job-kill", {
+        dataRoot,
+        parentEnv: { HOME: parentHome, CODEX_HOME: customCodexHome },
+      });
+      // Legacy path gated on !CODEX_HOME: when parentEnv.CODEX_HOME is set the
+      // whole codex branch is skipped — no env.CODEX_HOME export, no auth copy.
+      assert.equal(env.CODEX_HOME, undefined);
+      await assert.rejects(() => readFile(path.join(env.HOME, ".codex", "auth.json")));
+    } finally {
+      if (prev === undefined) delete process.env.CPB_PROVIDER_REGISTRY;
+      else process.env.CPB_PROVIDER_REGISTRY = prev;
+    }
+  } finally { await clean(dir); }
+});
+
+// --- B2b Step 1: generic descriptor-driven inheritFilesIntoHome ---
+
+test("generic inheritFilesIntoHome copies files per descriptor (codex-shaped, trusted)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "cpb-iso-"));
+  try {
+    const parentHome = path.join(dir, "parent");
+    const targetHome = path.join(dir, "target");
+    await mkdir(targetHome, { recursive: true });
+    await mkdir(path.join(parentHome, ".codex"), { recursive: true });
+    await writeFile(path.join(parentHome, ".codex", "auth.json"), '{"token":"generic"}');
+    await inheritFilesIntoHome(
+      targetHome,
+      { HOME: parentHome },
+      {
+        inheritFiles: [{ from: "$HOME/.codex/auth.json", to: "$HOME/.codex/auth.json" }],
+        quarantineFiles: [],
+      },
+      { trusted: true },
+    );
+    const copied = await readFile(path.join(targetHome, ".codex", "auth.json"), "utf8");
+    assert.equal(copied, '{"token":"generic"}');
+  } finally { await clean(dir); }
+});
+
+test("inheritFilesIntoHome is env-aware: $CODEX_HOME resolves to parentEnv.CODEX_HOME", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "cpb-iso-"));
+  try {
+    const parentHome = path.join(dir, "parent");
+    const customCodex = path.join(dir, "custom-codex");
+    const targetHome = path.join(dir, "target");
+    await mkdir(targetHome, { recursive: true });
+    await mkdir(customCodex, { recursive: true });
+    await mkdir(parentHome, { recursive: true });
+    await writeFile(path.join(customCodex, "auth.json"), '{"token":"from-custom-codex-home"}');
+    await inheritFilesIntoHome(
+      targetHome,
+      { HOME: parentHome, CODEX_HOME: customCodex },
+      { inheritFiles: [{ from: "$CODEX_HOME/auth.json", to: "$HOME/.codex/auth.json" }] },
+      { trusted: true },
+    );
+    const copied = await readFile(path.join(targetHome, ".codex", "auth.json"), "utf8");
+    assert.equal(copied, '{"token":"from-custom-codex-home"}');
+  } finally { await clean(dir); }
+});
+
+test("inheritFilesIntoHome quarantines declared files (config.toml) before inheriting", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "cpb-iso-"));
+  try {
+    const targetHome = path.join(dir, "target");
+    await mkdir(path.join(targetHome, ".codex"), { recursive: true });
+    await writeFile(path.join(targetHome, ".codex", "config.toml"), 'model = "stale"');
+    await inheritFilesIntoHome(
+      targetHome,
+      {},
+      { inheritFiles: [], quarantineFiles: ["$HOME/.codex/config.toml"] },
+      { trusted: true },
+    );
+    const entries = await readdir(path.join(targetHome, ".codex"));
+    assert.ok(entries.some((e) => e.startsWith("config.toml.quarantine-")), entries.join(","));
+    assert.ok(!entries.includes("config.toml"));
+  } finally { await clean(dir); }
+});
+
+test("inheritFilesIntoHome fail-closed: untrusted descriptor with non-credential basename rejected", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "cpb-iso-"));
+  try {
+    const parentHome = path.join(dir, "parent");
+    const targetHome = path.join(dir, "target");
+    await mkdir(targetHome, { recursive: true });
+    await mkdir(parentHome, { recursive: true });
+    await writeFile(path.join(parentHome, "evil.txt"), "leak");
+    await assert.rejects(
+      () => inheritFilesIntoHome(
+        targetHome,
+        { HOME: parentHome },
+        { inheritFiles: [{ from: "$HOME/evil.txt", to: "$HOME/evil.txt" }] },
+        { trusted: false },
+      ),
+      (err: any) => err.code === "CPB_AGENT_HOME_UNTRUSTED_INHERIT_FILE",
+    );
+    await assert.rejects(() => readFile(path.join(targetHome, "evil.txt")));
+  } finally { await clean(dir); }
+});
+
+test("inheritFilesIntoHome fail-closed: untrusted from outside trusted env root rejected", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "cpb-iso-"));
+  try {
+    const parentHome = path.join(dir, "parent");
+    const outside = path.join(dir, "outside");
+    const targetHome = path.join(dir, "target");
+    await mkdir(outside, { recursive: true });
+    await mkdir(targetHome, { recursive: true });
+    await mkdir(parentHome, { recursive: true });
+    await writeFile(path.join(outside, "auth.json"), '{"token":"leaked"}');
+    await assert.rejects(
+      () => inheritFilesIntoHome(
+        targetHome,
+        { HOME: parentHome },
+        { inheritFiles: [{ from: `${outside}/auth.json`, to: "$HOME/auth.json" }] },
+        { trusted: false },
+      ),
+      (err: any) => err.code === "CPB_AGENT_HOME_UNTRUSTED_INHERIT_SOURCE",
+    );
+    await assert.rejects(() => readFile(path.join(targetHome, "auth.json")));
+  } finally { await clean(dir); }
+});
+
+test("inheritFilesIntoHome fail-closed: 'to' escaping $HOME rejected even when trusted", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "cpb-iso-"));
+  try {
+    const parentHome = path.join(dir, "parent");
+    const targetHome = path.join(dir, "target");
+    await mkdir(parentHome, { recursive: true });
+    await mkdir(targetHome, { recursive: true });
+    await mkdir(path.join(parentHome, ".codex"), { recursive: true });
+    await writeFile(path.join(parentHome, ".codex", "auth.json"), '{"token":"x"}');
+    await assert.rejects(
+      () => inheritFilesIntoHome(
+        targetHome,
+        { HOME: parentHome },
+        { inheritFiles: [{ from: "$HOME/.codex/auth.json", to: "/etc/cpb-leak/auth.json" }] },
+        { trusted: true },
+      ),
+      (err: any) => err.code === "CPB_AGENT_HOME_PATH_ESCAPE",
+    );
+    await assert.rejects(
+      () => inheritFilesIntoHome(
+        targetHome,
+        { HOME: parentHome },
+        { inheritFiles: [{ from: "$HOME/.codex/auth.json", to: "$HOME/../../cpb-leak" }] },
+        { trusted: true },
+      ),
+      (err: any) => err.code === "CPB_AGENT_HOME_PATH_ESCAPE",
+    );
+  } finally { await clean(dir); }
+});
+
+test("inheritFilesIntoHome respects per-file maxBytes tighter than the global cap", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "cpb-iso-"));
+  try {
+    const parentHome = path.join(dir, "parent");
+    const targetHome = path.join(dir, "target");
+    await mkdir(targetHome, { recursive: true });
+    await mkdir(path.join(parentHome, ".codex"), { recursive: true });
+    await writeFile(path.join(parentHome, ".codex", "auth.json"), "x".repeat(100));
+    await assert.rejects(
+      () => inheritFilesIntoHome(
+        targetHome,
+        { HOME: parentHome },
+        { inheritFiles: [{ from: "$HOME/.codex/auth.json", to: "$HOME/.codex/auth.json", maxBytes: 10 }] },
+        { trusted: true },
+      ),
+      (err: any) => err.code === "CPB_AGENT_HOME_AUTH_TOO_LARGE",
+    );
+    await assert.rejects(() => readFile(path.join(targetHome, ".codex", "auth.json")));
+  } finally { await clean(dir); }
+});
+
+test("inheritFilesIntoHome refuses symlink from-source (trusted and untrusted)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "cpb-iso-"));
+  try {
+    const parentHome = path.join(dir, "parent");
+    const targetHome = path.join(dir, "target");
+    const outside = path.join(dir, "outside-auth.json");
+    await mkdir(targetHome, { recursive: true });
+    await mkdir(path.join(parentHome, ".codex"), { recursive: true });
+    await writeFile(outside, '{"token":"outside"}');
+    await symlink(outside, path.join(parentHome, ".codex", "auth.json"));
+    await assert.rejects(
+      () => inheritFilesIntoHome(
+        targetHome,
+        { HOME: parentHome },
+        { inheritFiles: [{ from: "$HOME/.codex/auth.json", to: "$HOME/.codex/auth.json" }] },
+        { trusted: true },
+      ),
+      (err: any) => err.code === "CPB_AGENT_HOME_UNSAFE_AUTH_SOURCE",
+    );
   } finally { await clean(dir); }
 });

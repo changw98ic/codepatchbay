@@ -13,6 +13,16 @@
   "protocol": "acp",
   "description": "Anthropic Claude Code in ACP mode",
   "lifecycle": "one-shot",
+  "providerFamily": "claude",
+  "tieBreakPriority": 20,
+  "sandboxPolicy": "cpb-required",
+  "inheritFiles": [
+    { "from": "$HOME/.claude.json", "to": "$HOME/.claude.json" },
+    { "from": "$HOME/.claude/.credentials.json", "to": "$HOME/.claude/.credentials.json" },
+    { "from": "$HOME/.claude/credentials.json", "to": "$HOME/.claude/credentials.json" },
+    { "from": "$HOME/.claude/auth.json", "to": "$HOME/.claude/auth.json" }
+  ],
+  "quarantineFiles": [],
   "resumeCommand": "claude",
   "resumeArgs": ["--resume"]
 }

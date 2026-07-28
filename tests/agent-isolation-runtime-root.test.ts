@@ -9,9 +9,16 @@ import {
   createAgentHome,
   resolveAgentHomeRuntimeRoot,
 } from "../core/agents/isolation.js";
+import { loadRegistry } from "../core/agents/registry.js";
 import { AcpClient, resolveAcpAuditFile } from "../server/services/acp/acp-client.js";
 import { AcpPool } from "../server/services/acp/acp-pool.js";
 import { tempRoot } from "./helpers.js";
+
+// B2b: the generic descriptor-driven inheritFiles path is only reached when
+// the registry is loaded (kill-switch defaults ON). Load once for the file so
+// the codex/claude descriptors and their inheritFiles/quarantineFiles are
+// visible to createAgentHome.
+await loadRegistry("");
 
 async function assertMissing(filePath: string) {
   await assert.rejects(
@@ -133,8 +140,12 @@ test("createAgentHome snapshots Codex auth but excludes version-sensitive user c
     dataRoot,
     parentEnv: { HOME: userHome },
   });
-  const authPath = path.join(env.CODEX_HOME!, "auth.json");
-  const configPath = path.join(env.CODEX_HOME!, "config.toml");
+  // B2b: the descriptor-driven path no longer exports CODEX_HOME explicitly
+  // (codex finds auth at its $HOME/.codex default, which is where inheritFiles
+  // places it). Resolve auth/config against the isolated HOME directly.
+  const codexHome = path.join(env.HOME, ".codex");
+  const authPath = path.join(codexHome, "auth.json");
+  const configPath = path.join(codexHome, "config.toml");
 
   assert.equal((await lstat(authPath)).isSymbolicLink(), false);
   assert.equal(await readFile(authPath, "utf8"), "{\"token\":\"fixture\"}\n");

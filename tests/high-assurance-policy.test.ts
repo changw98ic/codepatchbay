@@ -1,31 +1,74 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test, before } from "node:test";
 
 import {
   highAssuranceAgentPolicyViolations,
   highAssuranceAgentForRole,
   resolveHighAssurancePolicy,
+  hasDistinctFamilyVerifier,
 } from "../core/policy/high-assurance.js";
 import { generateDynamicAgentPlan } from "../core/agents/dynamic-agent-plan.js";
+import { loadRegistry } from "../core/agents/registry.js";
 
-test("high assurance defaults to Codex plus GLM planning, GLM execution, and blind Codex verification", () => {
+// Load the descriptor registry once for the file so the B2c registry-driven
+// high-assurance fallbacks resolve deterministically (codex wins planner/
+// verifier at priority 10; claude wins executor at priority 20). Per-file
+// process isolation keeps this from leaking into other test files.
+before(async () => {
+  await loadRegistry("");
+});
+
+test("high assurance defaults are registry-driven: codex planning/verification, claude execution", () => {
+  // B2c: fallback literals are resolved via the registry. codex wins planner
+  // and verifier (priority 10); claude wins executor (priority 20, beating
+  // claude-glm at priority 30). The "codex"/"claude-glm" literals survive only
+  // under CPB_PROVIDER_REGISTRY=0.
   const policy = resolveHighAssurancePolicy({ sourceContext: { assurance: { mode: "high" } } });
 
   assert.equal(policy.enabled, true);
-  assert.deepEqual(policy.planning.candidates, ["codex", "claude-glm"]);
+  assert.deepEqual(policy.planning.candidates, ["codex", "claude"]);
   assert.equal(policy.planning.arbiter, "codex");
-  assert.equal(policy.execution.agent, "claude-glm");
+  assert.equal(policy.execution.agent, "claude");
   assert.equal(policy.verification.agent, "codex");
   assert.equal(policy.verification.blind, true);
   assert.equal(policy.verification.independent, true);
   assert.deepEqual(highAssuranceAgentForRole(policy, "executor"), {
-    selectedAgent: "claude-glm",
+    selectedAgent: "claude",
     required: true,
   });
   assert.deepEqual(highAssuranceAgentForRole(policy, "verifier"), {
     selectedAgent: "codex",
     required: true,
   });
+});
+
+test("B2c kill-switch: CPB_PROVIDER_REGISTRY=0 restores the legacy codex/claude-glm literals", () => {
+  const previous = process.env.CPB_PROVIDER_REGISTRY;
+  process.env.CPB_PROVIDER_REGISTRY = "0";
+  try {
+    const policy = resolveHighAssurancePolicy({ sourceContext: { assurance: { mode: "high" } } });
+    assert.deepEqual(policy.planning.candidates, ["codex", "claude-glm"]);
+    assert.equal(policy.execution.agent, "claude-glm");
+    assert.equal(policy.verification.agent, "codex");
+  } finally {
+    if (previous === undefined) delete process.env.CPB_PROVIDER_REGISTRY;
+    else process.env.CPB_PROVIDER_REGISTRY = previous;
+  }
+});
+
+test("B2c fail-closed predicate: independence requires a distinct-family verifier", () => {
+  assert.equal(hasDistinctFamilyVerifier(["codex"], "codex"), false);
+  assert.equal(hasDistinctFamilyVerifier(["codex", "mimo"], "codex"), true);
+  assert.equal(hasDistinctFamilyVerifier([], "codex"), false);
+  assert.equal(hasDistinctFamilyVerifier([null], "codex"), true);
+});
+
+test("B2c fail-closed: high mode does not throw when the builtin registry offers diverse verifiers", () => {
+  // Registry (before hook) has codex (codex family) and claude-mimo (mimo
+  // family) verifiers, so independence from a claude-family executor holds.
+  const policy = resolveHighAssurancePolicy({ sourceContext: { assurance: { mode: "high" } } });
+  assert.equal(policy.enabled, true);
+  assert.equal(policy.verification.independent, true);
 });
 
 test("high assurance can force independent verification for a medium-risk task", () => {

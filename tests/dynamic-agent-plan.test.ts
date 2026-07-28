@@ -1,8 +1,16 @@
-import { test } from "node:test";
+import { test, before } from "node:test";
 import assert from "node:assert/strict";
 import { generateDynamicAgentPlan, validateDynamicAgentPlan } from "../core/agents/dynamic-agent-plan.js";
+import { loadRegistry } from "../core/agents/registry.js";
 
 type VerifierConfig = { agent?: string; required?: boolean; independent?: boolean };
+
+// Load the descriptor registry once for the file so the B2c registry-driven
+// default-verifier resolution is exercised deterministically. Per-file process
+// isolation keeps this from leaking into other test files.
+before(async () => {
+  await loadRegistry("");
+});
 
 test("low-risk plan: no required verifier, schemaVersion=1, source=riskmap", () => {
   const plan = generateDynamicAgentPlan({ riskMap: { riskLevel: "low" }, workflowDag: { nodes: [] } });
@@ -57,4 +65,25 @@ test("validateDynamicAgentPlan: required verifier with verify node but no id bin
   const result = validateDynamicAgentPlan(plan, workflowDag);
   assert.equal(result.valid, false);
   assert.deepEqual(result.missingRoles, ["verifier"]);
+});
+
+test("B2c: default verifier resolves via registry — codex wins verifier role at lowest tieBreakPriority", () => {
+  // Registry is loaded (before hook). codex declares verifier at priority 10,
+  // claude-mimo declares verifier at priority 40 → codex wins. The resolution
+  // is registry-driven, not a "codex" literal.
+  const plan = generateDynamicAgentPlan({ riskMap: { riskLevel: "high" }, workflowDag: { nodes: [] } });
+  assert.equal((plan.agentConfig.verifier as VerifierConfig).agent, "codex");
+  assert.equal((plan.agentConfig.adversarial_verifier as VerifierConfig).agent, "codex");
+});
+
+test("B2c kill-switch: CPB_PROVIDER_REGISTRY=0 preserves the codex literal default", () => {
+  const previous = process.env.CPB_PROVIDER_REGISTRY;
+  process.env.CPB_PROVIDER_REGISTRY = "0";
+  try {
+    const plan = generateDynamicAgentPlan({ riskMap: { riskLevel: "high" }, workflowDag: { nodes: [] } });
+    assert.equal((plan.agentConfig.verifier as VerifierConfig).agent, "codex");
+  } finally {
+    if (previous === undefined) delete process.env.CPB_PROVIDER_REGISTRY;
+    else process.env.CPB_PROVIDER_REGISTRY = previous;
+  }
 });

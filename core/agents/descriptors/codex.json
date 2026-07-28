@@ -12,6 +12,13 @@
   "protocol": "acp",
   "description": "OpenAI Codex CLI in ACP mode",
   "lifecycle": "one-shot",
+  "providerFamily": "codex",
+  "tieBreakPriority": 10,
+  "sandboxPolicy": "native",
+  "inheritFiles": [
+    { "from": "$CODEX_HOME/auth.json", "to": "$HOME/.codex/auth.json", "maxBytes": 1048576 }
+  ],
+  "quarantineFiles": ["$HOME/.codex/config.toml"],
   "resumeCommand": "codex",
   "resumeArgs": ["--resume"]
 }

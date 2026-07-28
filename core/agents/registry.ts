@@ -10,6 +10,11 @@ const _registry = new Map<string, any>();
 const _discovered = new Map<string, any>();
 const _squads = new Map<string, any>();
 const _rrCounters = new Map<string, number>(); // round-robin counters per squad
+// Names loaded from the shipped core/agents/descriptors/*.json directory. These
+// are the only descriptors whose `inheritFiles`/`quarantineFiles` are trusted to
+// override the §6.2 source-allowlist/containment gates (B2b): anything coming
+// from CPB_AGENTS_CONFIG_DIR or auto-discovery is treated as untrusted data.
+const _builtinNames = new Set<string>();
 let _loaded = false;
 
 const ACP_AGENT_ENV_NAME = /^[A-Za-z0-9]+(?:[-_.][A-Za-z0-9]+)*$/;
@@ -45,6 +50,31 @@ function validateDescriptor(d: LooseRecord) {
   } catch {
     return false;
   }
+  // Provider-capability fields (B1) are optional and type-tolerant: when
+  // present they must match the declared shape, but absence is fine so legacy
+  // descriptors and auto-discovered agents keep loading unchanged. This is
+  // purely additive — no previously-accepted descriptor is rejected unless it
+  // carries a new field with a fundamentally wrong type.
+  if (!isValidCapabilityShape(d)) return false;
+  return true;
+}
+
+/**
+ * Lenient shape check for the optional B1 provider-capability fields.
+ * Returns false only when a field is present with a fundamentally wrong type.
+ */
+function isValidCapabilityShape(d: LooseRecord): boolean {
+  if (d.providerFamily !== undefined && typeof d.providerFamily !== "string") return false;
+  if (d.sandboxPolicy !== undefined && typeof d.sandboxPolicy !== "string") return false;
+  const priority = d.tieBreakPriority;
+  if (
+    priority !== undefined &&
+    (typeof priority !== "number" || !Number.isFinite(priority) || priority < 0)
+  ) {
+    return false;
+  }
+  if (d.inheritFiles !== undefined && !Array.isArray(d.inheritFiles)) return false;
+  if (d.quarantineFiles !== undefined && !Array.isArray(d.quarantineFiles)) return false;
   return true;
 }
 
@@ -62,6 +92,7 @@ async function loadBuiltinDescriptors() {
       const d = JSON.parse(raw);
       if (validateDescriptor(d)) {
         _registry.set(d.name, d);
+        _builtinNames.add(d.name);
       }
     } catch {
       // Skip invalid descriptors
@@ -98,6 +129,7 @@ export async function loadRegistry(configDir: string) {
   _discovered.clear();
   _squads.clear();
   _rrCounters.clear();
+  _builtinNames.clear();
   await loadBuiltinDescriptors();
   await loadUserDescriptors(configDir);
 
@@ -158,6 +190,51 @@ export function getDescriptor(name: string) {
   return _registry.get(name) || _discovered.get(name) || null;
 }
 
+/**
+ * Whether `name` was loaded from the shipped `core/agents/descriptors/*.json`
+ * directory (B2b). Builtin descriptors are authored by CPB and trusted to
+ * override the §6.2 inherit-source allowlist; user-registered
+ * (`CPB_AGENTS_CONFIG_DIR`) and auto-discovered agents are untrusted data.
+ */
+export function isBuiltinDescriptor(name: string) {
+  ensureLoaded();
+  return _builtinNames.has(name);
+}
+
+/**
+ * Provider-capability projection of a descriptor (B1).
+ *
+ * Always returns a fully-populated object (never partial) by defensively
+ * normalizing missing/malformed fields, so callers can read it without
+ * re-checking each property. Returns null for unknown agents. This is purely
+ * additive — it reads fields that older descriptors simply don't carry.
+ */
+export type AgentCapability = {
+  providerFamily: string | null;
+  tieBreakPriority: number;
+  sandboxPolicy: "native" | "cpb-required" | "none";
+  inheritFiles: Array<{ from: string; to: string; maxBytes?: number }>;
+  quarantineFiles: string[];
+};
+
+export function getCapability(name: string): AgentCapability | null {
+  ensureLoaded();
+  const d = _registry.get(name) || _discovered.get(name);
+  if (!d) return null;
+  return {
+    providerFamily: typeof d.providerFamily === "string" ? d.providerFamily : null,
+    tieBreakPriority:
+      typeof d.tieBreakPriority === "number" && Number.isFinite(d.tieBreakPriority)
+        ? d.tieBreakPriority
+        : 1000,
+    sandboxPolicy: ["native", "cpb-required", "none"].includes(d.sandboxPolicy)
+      ? d.sandboxPolicy
+      : "cpb-required",
+    inheritFiles: Array.isArray(d.inheritFiles) ? d.inheritFiles : [],
+    quarantineFiles: Array.isArray(d.quarantineFiles) ? d.quarantineFiles : [],
+  };
+}
+
 
 /**
  * Resolve the command and args for a given agent name.
@@ -201,26 +278,77 @@ export function listAgentsByProtocol(protocol: string) {
 }
 
 /**
- * Default agent for a given role. Codex is the quality baseline for every
- * coding role; alternative providers become defaults only through explicit
- * configuration or sufficiently strong outcome evidence.
+ * Whether the provider-capability registry drives routing decisions (B2+).
+ *
+ * Default is ON: every B2 call site reads `getCapability()` / descriptor
+ * fields instead of branching on `==="codex"` / `==="claude"` literals. Set
+ * `CPB_PROVIDER_REGISTRY=0` to fall back to the pre-B2 literal/regex path —
+ * the per-task kill switch required by the RFC §4 rollback safety.
+ */
+export function providerRegistryEnabled(): boolean {
+  return process.env.CPB_PROVIDER_REGISTRY !== "0";
+}
+
+/**
+ * Pick the lowest-priority candidate from a list, using the registry-declared
+ * `tieBreakPriority` (smaller wins). Ties break by ascending agent name so the
+ * result is deterministic regardless of map iteration order.
+ */
+function pickRoleCandidate(candidates: LooseRecord[]): string | null {
+  if (candidates.length === 0) return null;
+  let best = candidates[0];
+  let bestName = String(best.name);
+  let bestPriority = getCapability(bestName)?.tieBreakPriority ?? 1000;
+  for (let i = 1; i < candidates.length; i++) {
+    const c = candidates[i];
+    const cName = String(c.name);
+    const priority = getCapability(cName)?.tieBreakPriority ?? 1000;
+    if (priority < bestPriority || (priority === bestPriority && cName < bestName)) {
+      best = c;
+      bestName = cName;
+      bestPriority = priority;
+    }
+  }
+  return bestName;
+}
+
+/**
+ * Default agent for a given role.
+ *
+ * With the provider-capability registry active (default), candidates are
+ * agents whose `defaultRoles` include `role`, ranked by lowest
+ * `tieBreakPriority` (codex still wins the roles it declares because it
+ * carries priority 10) — but codex no longer pre-empts roles it does not own.
+ * Set `CPB_PROVIDER_REGISTRY=0` to restore the legacy codex short-circuit.
  */
 export function defaultAgentForRole(role: string) {
   ensureLoaded();
-  const codex = _registry.get("codex") || _discovered.get("codex");
-  if (codex && (codex.protocol || "unknown") === "acp") return "codex";
-  // Prefer registered ACP agents with matching role
-  for (const d of _registry.values()) {
-    if (d.defaultRoles && d.defaultRoles.includes(role) && (d.protocol || "unknown") === "acp") {
-      return d.name;
+  if (!providerRegistryEnabled()) {
+    // Legacy path: codex is the unconditional baseline for ACP roles.
+    const codex = _registry.get("codex") || _discovered.get("codex");
+    if (codex && (codex.protocol || "unknown") === "acp") return "codex";
+    for (const d of _registry.values()) {
+      if (d.defaultRoles && d.defaultRoles.includes(role) && (d.protocol || "unknown") === "acp") {
+        return d.name;
+      }
     }
-  }
-  // Try any registered agent with matching role
-  for (const d of _registry.values()) {
-    if (d.defaultRoles && d.defaultRoles.includes(role)) {
-      return d.name;
+    for (const d of _registry.values()) {
+      if (d.defaultRoles && d.defaultRoles.includes(role)) {
+        return d.name;
+      }
     }
+    throw new Error(`no registered ACP agent is configured for role: ${role}`);
   }
+  // Registry-driven path: rank role-owners by ACP-first then lowest priority.
+  const acpCandidates: LooseRecord[] = [];
+  const otherCandidates: LooseRecord[] = [];
+  for (const d of _registry.values()) {
+    if (!Array.isArray(d.defaultRoles) || !d.defaultRoles.includes(role)) continue;
+    if ((d.protocol || "unknown") === "acp") acpCandidates.push(d);
+    else otherCandidates.push(d);
+  }
+  const pick = pickRoleCandidate(acpCandidates) ?? pickRoleCandidate(otherCandidates);
+  if (pick) return pick;
   throw new Error(`no registered ACP agent is configured for role: ${role}`);
 }
 

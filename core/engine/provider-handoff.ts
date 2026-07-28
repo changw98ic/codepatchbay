@@ -168,7 +168,12 @@ export function resolveProviderKey(
     variant = null;
   }
   if (pool?.providerKey) return pool.providerKey(selectedAgent, variant) || null;
-  if (variant && selectedAgent === "claude") return `claude:${variant}`;
+  // Variant namespacing (B2c): any agent whose provider family is "claude"
+  // namespaces its variant into the provider key (`${agent}:${variant}`).
+  // `providerFamilyFor` is kill-switch-aware (registry first, regex fallback),
+  // so CPB_PROVIDER_REGISTRY=0 preserves the literal `selectedAgent === "claude"`
+  // behavior and `claude:${variant}` only fires for the "claude" family.
+  if (variant && providerFamilyFor(selectedAgent) === "claude") return `${selectedAgent}:${variant}`;
   return selectedAgent || null;
 }
 
