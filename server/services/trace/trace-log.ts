@@ -465,6 +465,21 @@ function formatDuration(durationMs: number | null) {
   return durationMs === null ? "" : ` ${durationMs}ms`;
 }
 
+function routingConclusion(span: TraceSpan): string {
+  if (span.kind !== "routing") return "";
+  const attrs = span.attributes;
+  const selected = text(attrs["routing.selected_agent"]);
+  if (!selected) return "";
+  const parts: string[] = [];
+  const source = text(attrs["routing.selection_source"]);
+  if (source) parts.push(`source=${source}`);
+  const preferred = text(attrs["routing.preferred_agent"]);
+  if (preferred && preferred !== selected) parts.push(`preferred=${preferred}`);
+  const reason = text(attrs["routing.outcome_reason"]);
+  if (reason) parts.push(`reason=${reason}`);
+  return parts.length > 0 ? ` → ${selected} (${parts.join("; ")})` : ` → ${selected}`;
+}
+
 function formatSpan(span: TraceSpan, depth = 0): string[] {
   const indent = "  ".repeat(depth);
   const status = span.status ? ` ${span.status}` : "";
@@ -477,7 +492,7 @@ function formatSpan(span: TraceSpan, depth = 0): string[] {
   const correlationText = correlations.length > 0
     ? ` [${correlations.map(([key, value]) => `${key}=${String(value)}`).join(" ")}]`
     : "";
-  const line = `${indent}- ${span.name}${status}${formatDuration(numberOrNull(span.durationMs))}${correlationText}`;
+  const line = `${indent}- ${span.name}${status}${formatDuration(numberOrNull(span.durationMs))}${correlationText}${routingConclusion(span)}`;
   return [line, ...span.children.flatMap((child) => formatSpan(child, depth + 1))];
 }
 

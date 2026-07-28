@@ -11,7 +11,7 @@ const runInstallPlan = runInstallPlanWithEvents as (plan: unknown, options?: Loo
 
 function usage() {
   return [
-    "Usage: cpb agents <list|detect|install|upgrade|test> [options]",
+    "Usage: cpb agents <list|detect|install|upgrade|test|stats> [options]",
     "",
     "Commands:",
     "  cpb agents list [--json]",
@@ -19,6 +19,7 @@ function usage() {
     "  cpb agents install <agent> [--method <method>] [--version <ver>] [--json] [--yes]",
     "  cpb agents upgrade <agent> [--method <method>] [--json] [--yes]",
     "  cpb agents test <agent> [--json]",
+    "  cpb agents stats [--json]",
   ].join("\n");
 }
 
@@ -156,6 +157,24 @@ export async function run(args: string[] = []) {
       console.log(`${agentId}: ${result.status}`);
     }
     return result.status === "ready" ? 0 : 1;
+  }
+
+  if (command === "stats") {
+    const { resolveHubRoot } = await import("../../server/services/hub/hub-registry.js");
+    const { readAgentRoutingMetrics, readProviderUsageRollup } = await import("../../server/services/provider-usage.js");
+    const { summarizeAgentStats, formatAgentStatsHuman } = await import("../../server/services/trace/agent-stats-format.js");
+    const cpbRoot = process.env.CPB_ROOT;
+    const hubRoot = resolveHubRoot(cpbRoot);
+    const routingResult = await readAgentRoutingMetrics(hubRoot, {});
+    const routingMetrics = Object.values(recordValue(routingResult.agents));
+    const usageRollup = await readProviderUsageRollup(hubRoot);
+    const summary = summarizeAgentStats({ routingMetrics, usageRollup });
+    if (args.includes("--json")) {
+      console.log(JSON.stringify(summary, null, 2));
+    } else {
+      process.stdout.write(formatAgentStatsHuman(summary));
+    }
+    return 0;
   }
 
   console.error(usage());

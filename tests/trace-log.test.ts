@@ -304,6 +304,10 @@ test("buildJobTrace projects phase, prompt, usage, and retry decision spans", as
   assert.equal(executionPolicySpan.attributes["execution.sandbox_enforcement"], "cpb-outer");
   assert.equal(executionPolicySpan.attributes["execution.outer_workspace_writable"], false);
   assert.match(formatTraceHuman(trace), /phase verify failed/);
+  assert.match(
+    formatTraceHuman(trace),
+    /routing verify.*→ claude-mimo \(source=dynamic_agent_plan; preferred=codex; reason=independent verifier required\)/,
+  );
 });
 
 test("buildJobTrace keeps retry iterations and solver candidates distinct within an attempt", async () => {

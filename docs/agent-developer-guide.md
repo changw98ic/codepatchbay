@@ -229,3 +229,126 @@ registry 解析、ACP 进程启动、JSON-RPC 握手、session update、response
 §6）：接入第三类 agent 将无需改源码——descriptor 注册、路由、隔离全部走配置化
 registry。届时本指南第 7 节的"放 descriptor / 设 `CPB_AGENTS_CONFIG_DIR`"会成为
 所有 agent 的标准接入路径，不再需要 builtin 目录。
+
+## 9. Observability / 可观测性
+
+接入或调试 agent 时，三条命令覆盖"单 job 路由复盘 → 全链路重放 → 跨 job agent
+统计"三层观测。三者均读 hub runtime 下的 append-only event log，零额外采集开销。
+
+### 9.1 `cpb jobs trace <project> <jobId>` — 单 job phase/span 树
+
+把一个 job 的 event log 折叠成 span 树（phase → routing → tool → candidate →
+guardrail），人类可读或 JSON。实现：[`cli/commands/jobs.ts`](../cli/commands/jobs.ts)
+→ [`server/services/trace/trace-log.ts`](../server/services/trace/trace-log.ts)
+(`buildJobTrace` / `formatTraceHuman`)。
+
+```bash
+cpb jobs trace my-project 2026-07-28-abc123            # 人类可读 span 树
+cpb jobs trace my-project 2026-07-28-abc123 --json     # 结构化 JobTrace
+```
+
+完整 flag 集（取自 `cli/commands/jobs.ts` 的 usage 文本）：
+
+```
+cpb jobs trace <project> <jobId> [--json] [--replay] [--include-patch] [--data-root <path>]
+```
+
+- `--json` — 输出结构化 `JobTrace`（含 `traceId` / `project` / `jobId` / `root` /
+  `spans`，每个 span 含 `name` / `kind` / `status` / `durationMs` / `attributes` /
+  `children`）。
+- `--data-root <path>` — 覆盖项目 runtime root（默认读 `CPB_PROJECT_RUNTIME_ROOT`）。
+
+**路由决策 span**（`span.kind === "routing"`）是 agent 接入时最该看的 span。每个
+`agent_routing_*` event 被展开成下列 `routing.*` 属性（实现：`trace-log.ts` 的
+`eventAttributes`，属性仅在 event 携带对应字段时出现）：
+
+| 属性 | 含义 |
+|---|---|
+| `routing.selected_agent` | 本 phase 最终选中的 agent（路由结论的主语） |
+| `routing.selection_source` | 选择来源（如 `outcome` = 按历史 outcome metric 选；`default` = 走 descriptor `defaultRoles`） |
+| `routing.preferred_agent` | 调用方显式偏好的 agent（`--<role>-agent` 指定）；与 `selected_agent` 不同时才有意义 |
+| `routing.final_agent` | 经过 fallback / independence 调整后实际 spawn 的 agent |
+| `routing.outcome_applied` | 是否应用了 outcome metric（`true`/`false`） |
+| `routing.outcome_reason` | outcome 决策的人类可读理由 |
+| `routing.independence_applied` | 是否触发了 verifier/executor provider family 独立性约束 |
+| `routing.independence_conflict` | 是否检测到 provider family 冲突 |
+| `routing.excluded_provider_family` | 因独立性被排除的 provider family |
+| `routing.metrics_unavailable_reason` | metric 不可用时的原因（样本不足等） |
+| `routing.candidates` | 候选 agent 列表（数组） |
+| `routing.thresholds` | 本次路由使用的阈值（样本数 / 置信度等，对象） |
+| `routing.fallback_applied` / `routing.fallback_count` | 是否走了 provider fallback 及次数 |
+| `routing.task_category` | 任务分类（影响 metric 作用域） |
+| `routing.provider_key` | 选中 agent 绑定的 provider key |
+| `routing.failure_kind` / `routing.final_status` | 路由失败归类与终态 |
+
+人类可读输出还会把路由 span 压成一行结论（`routingConclusion`，`trace-log.ts`）：
+
+```
+- routing verify ok 120ms → codex (source=outcome; preferred=claude; reason=...)
+```
+
+即 `→ <routing.selected_agent> (source=...; preferred=...; reason=...)`，三者仅在
+存在且非空时出现。调试"为什么 verify 没路由到我的 agent"时，先看这一行：`source`
+告诉你走了哪条决策路径，`excluded_provider_family` / `independence_applied` 告诉你
+是否被独立性约束排除，`metrics_unavailable_reason` 告诉你是否样本不足回退到了
+default 路由。
+
+### 9.2 `cpb jobs trace --replay` — 全链路重放 + ACP audit 对账
+
+`--replay` 把 trace 升级成"决策重放"：在 span 树之上叠一条事件 timeline、决策摘要
+（routing / retries / providerHandoffs / verification / completion /
+externalEvaluations）、candidate bundle、覆盖率自检与 decision boundary 分类。
+实现：[`server/services/trace/trace-replay.ts`](../server/services/trace/trace-replay.ts)
+(`buildJobReplay` / `formatJobReplayHuman`)。
+
+```bash
+cpb jobs trace my-project 2026-07-28-abc123 --replay              # 人类可读重放
+cpb jobs trace my-project 2026-07-28-abc123 --replay --json       # 结构化 replay
+cpb jobs trace my-project 2026-07-28-abc123 --replay --include-patch  # 含完整 patch 文本
+```
+
+- 人类输出开头给出 `Decision boundary: <classification> at <boundary>` + `Reason`，
+  随后是逐条 `Timeline:` 事件序列（`#<seq> <ts> <type> <status>`）。
+- 候选 bundle 一行汇总：`Candidate bundle: <bundleHash> patch=<sha256> bytes=<n>`
+  （`--include-patch` 才会在 JSON 里附带 patch 正文；默认只入账 hash/字节数）。
+- **ACP audit 对账**：trace 的事件流会把每个 ACP `acp.audit_file`（`trace-log.ts`
+  的 `eventAttributes`）+ `acp.audit_index` 折叠成 tool span，replay 的
+  `coverage.toolCalls` 阶段即以 `acp.audit_file` 是否出现为判据（`trace-replay.ts`
+  的 `traceCoverage`）。换言之 replay 把"agent 报告的 tool 调用"与"ACP audit 落盘
+  的 tool 调用"对齐到同一 timeline，可用于核查 agent 是否真的执行了它声称的命令。
+- replay 的 `coverage` 字段还会标出 `missing` 阶段（如 `routing` / `prompt` /
+  `verifier` / `completionGate` / `finalPatch` 是否齐备），缺项即 job 不完整。
+
+### 9.3 `cpb agents stats [--json]` — per-agent 成功率统计
+
+跨 job 聚合每个 agent 的 successes / retries / success_rate，数据源是 outcome metric
+（`readAgentRoutingMetrics`，按 phase/role/taskCategory 作用域，**故意不含 token 与
+成本**——资源遥测不得作为质量代理）叠加 provider usage rollup。实现：
+[`cli/commands/agents.ts`](../cli/commands/agents.ts) 的 `stats` 分支 →
+[`server/services/trace/agent-stats-format.ts`](../server/services/trace/agent-stats-format.ts)
+(`summarizeAgentStats` / `formatAgentStatsHuman`)。
+
+```bash
+cpb agents stats            # 人类可读，每 agent 一行
+cpb agents stats --json     # 结构化 AgentStatsSummary
+```
+
+人类输出格式（每 agent 一行，制表符分隔）：
+
+```
+codex	successes=27	retries=3	success_rate=90%
+claude	successes=7	retries=3	success_rate=70%
+```
+
+`success_rate` = `Math.round(successes / (successes + retries) * 100)`%（四舍五入到整数）；样本为 0 时
+显示 `n/a`。JSON 形态为 `{ agents: [{ agent, successes, retries, byRole }], usageRollup }`，
+其中 `byRole` 是按 role 的二次拆分（仅当底层 metric 携带 `role` 字段时填充；当前
+`cpb agents stats` 不带 role 过滤调用 `readAgentRoutingMetrics(hubRoot, {})`，故
+`byRole` 默认为空对象 `{}`，留作结构扩展位）。空 hub 时输出
+`{"agents":[],"usageRollup":{}}`，不抛错。
+
+> 这条命令是 A4 新增的暴露面：底层的 `readAgentRoutingMetrics` /
+> `readProviderUsageRollup` 早已被 engine 内部消费（自动路由按它选 agent），此前
+> 仅缺 CLI 入口。现在接入新 agent 后，跑一次 `cpb agents stats` 即可看到它被路由
+> 到哪些 role、成功率如何，据此判断是否需要调整 descriptor 的 `defaultRoles` 或
+> 显式 `--<role>-agent` 覆盖。
