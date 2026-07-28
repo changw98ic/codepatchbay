@@ -2093,6 +2093,14 @@ export async function main({
   }
 
   const { workerId, hubRoot, cpbRoot, once } = opts;
+  // Load the agent registry early so routing (defaultAgentForRole/getCapability),
+  // auth inheritance (createAgentHome), and isolation all have descriptor data.
+  try {
+    const { loadRegistry } = await import("../../core/agents/registry.js");
+    await loadRegistry("");
+  } catch (err) {
+    process.stderr.write(`[managed-worker] registry load failed: ${err instanceof Error ? err.message : String(err)}\n`);
+  }
   const { assertHubWritable } = await import("../../shared/hub-maintenance.js");
   await assertHubWritable(hubRoot);
   const log = createLogger(`worker-${workerId}`);
