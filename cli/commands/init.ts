@@ -122,12 +122,53 @@ export async function initProject(args: string[], { cpbRoot, executorRoot }: Loo
     process.exit(1);
   }
 
+  // Index the source with CodeGraph so the capability map can be generated at registration
+  let codegraphReady = false;
+  try {
+    const { spawnSync } = await import("node:child_process");
+    const cgInit = spawnSync("codegraph", ["init", resolvedPath], {
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 300_000,
+    });
+    if (cgInit.status !== 0) {
+      console.log(`${YELLOW}Warning: CodeGraph init failed; capability map may be incomplete${NC}`);
+    } else {
+      const cgSync = spawnSync("codegraph", ["sync", resolvedPath], {
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout: 300_000,
+      });
+      if (cgSync.status === 0) {
+        console.log(`${GREEN}CodeGraph indexed: ${resolvedPath}${NC}`);
+        codegraphReady = true;
+      } else {
+        console.log(`${YELLOW}Warning: CodeGraph sync failed; capability map may be incomplete${NC}`);
+      }
+    }
+  } catch {
+    console.log(`${YELLOW}Warning: CodeGraph not available; capability map may be incomplete${NC}`);
+  }
+
+  // Allow capability map generation with index-only (no daemon required at init time).
+  // The codegraph daemon starts on-demand when the engine runs a phase.
+  if (codegraphReady) {
+    process.env.CPB_CODEGRAPH_INDEX_ONLY_OK = "1";
+  }
+
   const { registerProject, resolveHubRoot } = await import("../../server/services/hub/hub-registry.js");
   const hubRoot = resolveHubRoot(cpbRoot);
   const registered = await registerProject(hubRoot, {
     name: projectName,
     sourcePath: resolvedPath,
-    skipCodeGraphGate: true,
+    skipCodeGraphGate: !codegraphReady,
+    metadata: {
+      agents: {
+        planner: "codex",
+        executor: "claude",
+        verifier: "codex",
+        reviewer: "codex",
+        remediator: "claude",
+      },
+    },
   });
   if (!registered?.projectRuntimeRoot) {
     throw new Error(`Hub registration did not assign a runtime root for '${projectName}'`);
@@ -200,26 +241,11 @@ export async function initProject(args: string[], { cpbRoot, executorRoot }: Loo
     await writeFile(ctxPath, ctxLines.join("\n") + "\n");
   }
 
-  // 4. CPB.md
-  const cpbMd = `# CodePatchbay Configuration
-cpb:
-  project: ${projectName}
-  codex_agent: planner
-  claude_agent: executor
-  wiki_root: ${wikiDir}/
-  phases:
-    plan: { agent: planner, model: auto }
-    execute: { agent: executor, model: auto }
-    verify: { agent: verifier, model: auto }
-`;
-  await writeFile(path.join(resolvedPath, "CPB.md"), cpbMd);
-  console.log(`Created: ${path.join(resolvedPath, "CPB.md")}`);
   console.log("");
   console.log(`Project '${projectName}' ready.`);
   console.log(`Wiki: ${wikiDir}`);
-
   console.log(`Registered with Hub: ${hubRoot}`);
-
+  console.log(`Agent config stored in project record (planner=codex, executor=claude, verifier=codex)`);
   console.log("");
   console.log(`Next: cpb pipeline ${projectName} "<task>"`);
 }
