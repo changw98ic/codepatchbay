@@ -132,6 +132,13 @@ fixture) 输出的无版本 `{status:"ok",...}` envelope 一律照常接受（�
 写入边界的强制层在 `core/acp/policy.ts` 与 `core/policy/filesystem-boundary.ts`：
 read-only phase（verify/review）越权写 → `READ_ONLY_MUTATION_DENIED`（见第 5 节）。
 
+> **Skills 副本约定**：`executor` 与 `remediator` 共用同一组 remediation skills
+> （`debug` / `lint` / `review-feedback` / `tdd` / `test`），且各自在
+> [`profiles/<role>/skills/`](../profiles/) 下保留**独立副本**（`diff
+> profiles/executor/skills profiles/remediator/skills` 为空）。这是有意的 role 隔离
+> 设计——**不**做物理去重、不共享目录、不 symlink：去重会耦合两个 role，违背每个
+> role 独立演化的原则。两个目录内容必须保持一致；新增/修改 skill 时两边同步。
+
 ## 5. Sandbox 与隔离模型
 
 ### Per-agent per-job HOME
