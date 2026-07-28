@@ -847,7 +847,27 @@ export async function startWorktreeCodeGraphRuntime(
     });
   }
 
+  // Sync the worktree index to clear any stale daemon state inherited from the
+  // source checkout (the worktree shares the source's .codegraph/ which has a
+  // daemon.pid bound to the source path, not this worktree).
+  try {
+    await execFileAsync("codegraph", ["sync", canonicalWorktreePath], {
+      cwd: canonicalWorktreePath,
+      env,
+      timeout: timeoutMs,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    log.warn(`codegraph sync for worktree (non-fatal): ${message}`);
+  }
+
   const statePath = path.join(canonicalWorktreePath, ".codegraph", "daemon.pid");
+  // The worktree inherits the source's .codegraph/daemon.pid (bound to the source
+  // path). removeStaleCodeGraphState refuses to clear a state bound to a different
+  // worktree (safety). Since this worktree was just created from the source, the
+  // inherited daemon.pid is definitively stale — remove it directly.
+  try { await execFileAsync("rm", ["-f", statePath]); } catch {}
   await removeStaleCodeGraphState(statePath, canonicalWorktreePath);
   let serverStderr = "";
   const child = _spawn("codegraph", ["serve", "--mcp", "--path", canonicalWorktreePath], {

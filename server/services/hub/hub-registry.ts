@@ -2007,7 +2007,7 @@ export function buildHubControlPlaneEnv(
     CPB_PORT: port == null ? undefined : String(port),
     CPB_HOST: host,
     CPB_ORCHESTRATOR_START_TOKEN: startupToken,
-  }, { allowKeys: ["CPB_ORCHESTRATOR_START_TOKEN", "CPB_WORKER_DISPATCH_ENABLED", "CPB_CODEGRAPH_INDEX_ONLY_OK"] });
+  }, { allowKeys: ["CPB_ORCHESTRATOR_START_TOKEN", "CPB_WORKER_DISPATCH_ENABLED", "CPB_CODEGRAPH_INDEX_ONLY_OK", "CPB_HUB_WORKER_BROKER_URL"] });
 }
 
 export function buildHubServerEnv(parentEnv = process.env, options: HubRecord = {}) {
