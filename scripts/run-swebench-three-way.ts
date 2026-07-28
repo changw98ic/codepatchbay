@@ -5617,7 +5617,7 @@ export async function prepareSource(task: SolverTask, laneRoot: string, runRoot:
     await runRequiredGit(["init"], sourcePath, gitEnv, 600_000, signal);
     await runRequiredGit(["remote", "add", "origin", cachePath], sourcePath, gitEnv, 600_000, signal);
     await runRequiredGit(["fetch", "--depth=1", "origin", task.baseCommit], sourcePath, gitEnv, 600_000, signal);
-    await runRequiredGit(["checkout", "--detach", "FETCH_HEAD"], sourcePath, gitEnv, 600_000, signal);
+    await runRequiredGit(["checkout", "-B", "cpb-swebench-base", "FETCH_HEAD"], sourcePath, gitEnv, 600_000, signal);
     const head = (await runRequiredGit(["rev-parse", "HEAD"], sourcePath, gitEnv, 30_000, signal)).stdout.trim();
     if (head !== task.baseCommit) throw new Error(`source identity mismatch: expected ${task.baseCommit}, got ${head}`);
     await writeJsonAtomic(path.join(laneRoot, "source-prepare.json"), {
