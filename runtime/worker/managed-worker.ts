@@ -2213,7 +2213,9 @@ export async function main({
         await workerStore.completeInboxClaim(workerId, inboxAssignmentId, claim.claimToken);
         continue;
       }
-      if (!path.isAbsolute(assignment.projectRuntimeRoot) || path.resolve(assignment.projectRuntimeRoot) !== assignment.projectRuntimeRoot) {
+      if (typeof assignment.projectRuntimeRoot !== "string"
+        || !path.isAbsolute(assignment.projectRuntimeRoot)
+        || path.resolve(assignment.projectRuntimeRoot) !== assignment.projectRuntimeRoot) {
         log.warn(`missing or non-canonical projectRuntimeRoot in assignment`);
         await workerStore.completeInboxClaim(workerId, inboxAssignmentId, claim.claimToken);
         continue;
@@ -3320,7 +3322,7 @@ export async function main({
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((err) => {
-    process.stderr.write(`[managed-worker] fatal: ${err.message}\n`);
+    process.stderr.write(`[managed-worker] fatal: ${err.stack || err.message}\n`);
     process.exit(1);
   });
 }
