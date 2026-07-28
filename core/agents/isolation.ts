@@ -1,12 +1,13 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
-import { constants, existsSync } from "node:fs";
+import { constants, existsSync, lstatSync, realpathSync } from "node:fs";
 import { chmod, lstat, mkdir, open, readdir, rename } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
   getCapability,
   isBuiltinDescriptor,
+  loadRegistry,
   type AgentCapability,
 } from "./registry.js";
 
@@ -208,17 +209,71 @@ function sanitizedInstanceSegment(value: unknown) {
   return segment;
 }
 
-function assertContained(root: string, candidate: string, label: string) {
+function assertContained(
+  root: string,
+  candidate: string,
+  label: string,
+  { allowRoot = false, checkFinalComponent = true }: { allowRoot?: boolean; checkFinalComponent?: boolean } = {},
+) {
   const resolvedRoot = path.resolve(root);
   const resolvedCandidate = path.resolve(candidate);
   const relative = path.relative(resolvedRoot, resolvedCandidate);
-  if (relative === "" || relative.startsWith("..") || path.isAbsolute(relative)) {
+  const canonicalRoot = canonicalPathWithExistingPrefix(resolvedRoot);
+  const canonicalCandidate = canonicalPathWithExistingPrefix(
+    checkFinalComponent ? resolvedCandidate : path.dirname(resolvedCandidate),
+  );
+  const canonicalRelative = canonicalRoot && canonicalCandidate
+    ? path.relative(canonicalRoot, canonicalCandidate)
+    : null;
+  if (
+    (!allowRoot && relative === "")
+    || relative.startsWith("..")
+    || path.isAbsolute(relative)
+    || !canonicalRoot
+    || !canonicalCandidate
+    || (!allowRoot && canonicalRelative === "")
+    || canonicalRelative?.startsWith("..")
+    || (canonicalRelative ? path.isAbsolute(canonicalRelative) : false)
+  ) {
     throw isolationError(`${label} escapes isolated agent runtime root: ${resolvedCandidate}`, "CPB_AGENT_HOME_PATH_ESCAPE", {
       root: resolvedRoot,
       candidate: resolvedCandidate,
+      canonicalRoot,
+      canonicalCandidate,
     });
   }
   return resolvedCandidate;
+}
+
+/**
+ * Resolve the existing prefix of a path through symlinks while preserving any
+ * not-yet-created suffix. Lexical `path.relative` checks and O_NOFOLLOW on the
+ * final file do not protect against a symlink in an intermediate directory.
+ */
+function canonicalPathWithExistingPrefix(value: string): string | null {
+  let current = path.resolve(value);
+  const unresolved: string[] = [];
+  while (true) {
+    try {
+      lstatSync(current);
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") return null;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    unresolved.unshift(path.basename(current));
+    current = parent;
+  }
+  let canonical = current;
+  try {
+    canonical = realpathSync(current);
+  } catch {
+    // A dangling symlink or a disappearing prefix is unsafe to treat as a
+    // lexically contained path. Callers fail closed on the null result.
+    return null;
+  }
+  return path.join(canonical, ...unresolved);
 }
 
 async function isolateOwnedRegularFileNoFollow(filePath: string) {
@@ -631,7 +686,19 @@ function resolveInheritTarget(toTemplate: string, targetHome: string): string {
     rel = toTemplate;
   }
   const resolved = path.resolve(targetHome, rel);
-  assertContained(targetHome, resolved, "isolated agent HOME inherit target");
+  if (resolved === path.resolve(targetHome)) {
+    assertContained(targetHome, resolved, "isolated agent HOME inherit target");
+  } else {
+    // Validate the full lexical path, but canonicalize only its parent chain.
+    // A final symlink is rejected by copy/quarantine no-follow checks so its
+    // established UNSAFE_AUTH_TARGET error remains observable to callers.
+    assertContained(
+      targetHome,
+      resolved,
+      "isolated agent HOME inherit target",
+      { allowRoot: true, checkFinalComponent: false },
+    );
+  }
   return resolved;
 }
 
@@ -645,13 +712,16 @@ function resolveInheritTarget(toTemplate: string, targetHome: string): string {
 function assertTrustedInheritSource(fromResolved: string, parentEnv: StringRecord): void {
   const trustedRoots: string[] = [];
   const codexRoot = resolveSourceCodexHome(parentEnv);
-  if (codexRoot) trustedRoots.push(path.resolve(codexRoot));
+  const canonicalCodexRoot = codexRoot ? canonicalPathWithExistingPrefix(codexRoot) : null;
+  if (canonicalCodexRoot) trustedRoots.push(canonicalCodexRoot);
   const homeRoot = resolveSourceHome(parentEnv);
-  if (homeRoot) trustedRoots.push(path.resolve(homeRoot));
+  const canonicalHomeRoot = homeRoot ? canonicalPathWithExistingPrefix(homeRoot) : null;
+  if (canonicalHomeRoot) trustedRoots.push(canonicalHomeRoot);
 
+  const canonicalSource = canonicalPathWithExistingPrefix(fromResolved);
   let insideTrusted = false;
-  for (const root of trustedRoots) {
-    const rel = path.relative(root, path.resolve(fromResolved));
+  if (canonicalSource) for (const root of trustedRoots) {
+    const rel = path.relative(root, canonicalSource);
     if (rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel)) {
       insideTrusted = true;
       break;
@@ -732,6 +802,42 @@ function resolveInheritEntry(
     assertTrustedInheritSource(fromResolved, parentEnv);
   }
   return { fromResolved, toResolved, maxBytes };
+}
+
+/**
+ * Derive provider-specific home variables from the descriptor's declared
+ * inherit mapping. For example, `$CODEX_HOME/auth.json` copied to
+ * `$HOME/.codex/auth.json` means the child must see `CODEX_HOME` rooted at the
+ * isolated `.codex` directory. This keeps the mapping descriptor-driven for
+ * future providers instead of reintroducing an agent-name switch.
+ */
+function isolatedProviderHomeEnv(
+  descriptor: Pick<AgentCapability, "inheritFiles">,
+  targetHome: string,
+): StringRecord {
+  const env: StringRecord = {};
+  for (const entry of descriptor.inheritFiles) {
+    if (!entry || typeof entry.from !== "string" || typeof entry.to !== "string") continue;
+    const sourceMatch = /^\$([A-Za-z_][A-Za-z0-9_]*)\/(.+)$/.exec(entry.from);
+    if (!sourceMatch || sourceMatch[1] === "HOME" || !entry.to.startsWith("$HOME/")) continue;
+    const sourceSuffix = sourceMatch[2];
+    const targetSuffix = entry.to.slice("$HOME/".length);
+    const suffix = `/${sourceSuffix}`;
+    let rootSuffix = "";
+    if (targetSuffix === sourceSuffix) continue;
+    if (targetSuffix.endsWith(suffix)) {
+      rootSuffix = targetSuffix.slice(0, -suffix.length);
+    }
+    if (!rootSuffix) continue;
+    const isolatedRoot = resolveInheritTarget(`$HOME/${rootSuffix}`, targetHome);
+    const existing = env[sourceMatch[1]];
+    if (existing && existing !== isolatedRoot) {
+      delete env[sourceMatch[1]];
+      continue;
+    }
+    env[sourceMatch[1]] = isolatedRoot;
+  }
+  return env;
 }
 
 /**
@@ -881,6 +987,10 @@ export async function createAgentHome(cpbRoot: string, agentName: string, jobId:
   // loadRegistry) no capability is found and nothing is inherited.
   let cap: AgentCapability | null = null;
   try {
+    // Ensure builtin descriptors (codex/claude auth inheritance) are loaded
+    // even when the caller (e.g. a managed-worker process) did not call
+    // loadRegistry. Idempotent: loadRegistry("") is a no-op after first load.
+    await loadRegistry("");
     cap = getCapability(agentName);
   } catch {
     cap = null;
@@ -895,6 +1005,7 @@ export async function createAgentHome(cpbRoot: string, agentName: string, jobId:
     if (cap.inheritFiles.length || cap.quarantineFiles.length) {
       await inheritFilesIntoHome(baseDir, parentEnv, cap, { trusted });
     }
+    Object.assign(env, isolatedProviderHomeEnv(cap, baseDir));
   }
   return env;
 }
