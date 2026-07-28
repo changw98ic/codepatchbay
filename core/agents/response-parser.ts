@@ -77,6 +77,7 @@ function jsonObjectCandidates(output: string) {
 }
 
 const AGENT_SUCCESS_STATUSES = new Set(["ok"]);
+const SUPPORTED_ENVELOPE_VERSIONS = new Set([1]);
 
 function isStructuredJsonFailure(reason: unknown) {
   return typeof reason === "string" && reason !== "parse failed";
@@ -99,6 +100,12 @@ function tryParseJsonObjectWithStatuses(str: string, successStatuses: Set<string
         reason: parsed.reason || parsed.error || (status
           ? `agent reported non-success status: ${parsed.status}`
           : "agent response missing status field"),
+      };
+    }
+    if (parsed.schemaVersion !== undefined && !SUPPORTED_ENVELOPE_VERSIONS.has(parsed.schemaVersion)) {
+      return {
+        ok: false,
+        reason: `unsupported envelope schemaVersion: ${String(parsed.schemaVersion)} (supported: ${[...SUPPORTED_ENVELOPE_VERSIONS].join(", ")})`,
       };
     }
     return { ok: true, data: parsed };

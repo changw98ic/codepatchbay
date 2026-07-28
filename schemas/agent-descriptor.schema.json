@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codepatchbay/schemas/agent-descriptor.schema.json",
+  "title": "CPB Agent Descriptor",
+  "type": "object",
+  "required": ["name", "command", "envPrefix"],
+  "additionalProperties": true,
+  "properties": {
+    "name": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$" },
+    "displayName": { "type": "string" },
+    "command": { "type": "string", "minLength": 1 },
+    "args": { "type": "array", "items": { "type": "string" } },
+    "fallbackCommand": { "type": "string" },
+    "fallbackArgs": { "type": "array", "items": { "type": "string" } },
+    "envPrefix": { "type": "string", "pattern": "^CPB_ACP_[A-Z0-9]+(?:_[A-Z0-9]+)*$" },
+    "protocol": { "type": "string", "enum": ["acp", "claude-cli", "unknown"] },
+    "transport": { "type": "string" },
+    "lifecycle": { "type": "string", "enum": ["one-shot", "cached"] },
+    "stability": { "type": "string", "enum": ["stable", "experimental", "test", "discovered"] },
+    "capabilities": { "type": "array", "items": { "type": "string" } },
+    "defaultRoles": {
+      "type": "array",
+      "items": { "type": "string", "enum": ["planner", "executor", "verifier", "reviewer", "remediator"] }
+    },
+    "poolLimit": { "type": "integer", "minimum": 0 },
+    "providerKey": { "type": "string" },
+    "providerVariant": { "type": "string" },
+    "sessionMcpServers": { "type": "boolean" },
+    "resumeCommand": { "type": "string" },
+    "resumeArgs": { "type": "array", "items": { "type": "string" } },
+    "description": { "type": "string" }
+  }
+}
