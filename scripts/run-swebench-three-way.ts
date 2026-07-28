@@ -5841,13 +5841,14 @@ async function writeNeutralAssignment({
   await store.init();
   const previousIndexOnly = process.env.CPB_CODEGRAPH_INDEX_ONLY_OK;
   process.env.CPB_CODEGRAPH_INDEX_ONLY_OK = "1";
+  let registeredRuntimeRoot: string | undefined;
   try {
-    await registerProject(hubRoot, {
+    registeredRuntimeRoot = (await registerProject(hubRoot, {
       id: projectId,
       name: projectId,
       sourcePath,
       metadata: { comparisonRunRootHash: sha256(runRoot), lane: "cpb_high_assurance" },
-    });
+    })).projectRuntimeRoot;
   } finally {
     if (previousIndexOnly === undefined) delete process.env.CPB_CODEGRAPH_INDEX_ONLY_OK;
     else process.env.CPB_CODEGRAPH_INDEX_ONLY_OK = previousIndexOnly;
@@ -5890,6 +5891,7 @@ async function writeNeutralAssignment({
     ...attempt,
     workerId,
     status: "assigned",
+    projectRuntimeRoot: registeredRuntimeRoot,
     sourcePath,
     task: task.task,
     workflow: "standard",
