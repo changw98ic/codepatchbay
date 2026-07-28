@@ -8,11 +8,9 @@ import { loadRegistry } from "../core/agents/registry.js";
 
 const clean = (dir) => rm(dir, { recursive: true, force: true });
 
-// B2b: the generic inheritFiles path is only reached when the registry is
-// loaded (kill-switch defaults ON). Load once for the file so codex/claude
-// descriptors — and their inheritFiles/quarantineFiles — are visible to
-// createAgentHome. Tests that need the legacy literal path set
-// CPB_PROVIDER_REGISTRY=0 explicitly.
+// B2b: the generic descriptor-driven inheritFiles path is reached
+// unconditionally. Load once for the file so codex/claude descriptors — and
+// their inheritFiles/quarantineFiles — are visible to createAgentHome.
 await loadRegistry("");
 
 test("createAgentHome builds 0o700 HOME under dataRoot with git-neutral env", async () => {
@@ -66,7 +64,7 @@ test("codex: stale config.toml in target home is quarantined on re-run", async (
     const env1 = await createAgentHome(dir, "codex", "job-3", { dataRoot, parentEnv: { HOME: fakeHome } });
     // 模拟旧 CPB run 留下的 config.toml
     await writeFile(path.join(env1.HOME, ".codex", "config.toml"), 'model = "old"');
-    // 同一 home 再跑一次 → inheritCodexConfig 应把它 quarantine
+    // 同一 home 再跑一次 → descriptor quarantineFiles 应把它 quarantine
     await createAgentHome(dir, "codex", "job-3", { dataRoot, parentEnv: { HOME: fakeHome } });
     const entries = await readdir(path.join(env1.HOME, ".codex"));
     assert.ok(entries.some((e) => e.startsWith("config.toml.quarantine-")), entries.join(","));
@@ -92,33 +90,6 @@ test("parentEnv.CODEX_HOME set → inheritFiles resolves $CODEX_HOME to custom r
     // codex without auth). The §6.2 env-awareness fix.
     const copied = await readFile(path.join(env.HOME, ".codex", "auth.json"), "utf8");
     assert.equal(copied, '{"token":"y"}');
-  } finally { await clean(dir); }
-});
-
-test("CPB_PROVIDER_REGISTRY=0 retains legacy skip-on-CODEX_HOME gating (kill-switch fallback)", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "cpb-iso-"));
-  try {
-    const dataRoot = path.join(dir, "runtime");
-    const customCodexHome = path.join(dir, "custom-codex");
-    const parentHome = path.join(dir, "userhome");
-    await mkdir(customCodexHome, { recursive: true });
-    await mkdir(parentHome, { recursive: true });
-    await writeFile(path.join(customCodexHome, "auth.json"), '{"token":"legacy-skip"}');
-    const prev = process.env.CPB_PROVIDER_REGISTRY;
-    process.env.CPB_PROVIDER_REGISTRY = "0";
-    try {
-      const env = await createAgentHome(dir, "codex", "job-kill", {
-        dataRoot,
-        parentEnv: { HOME: parentHome, CODEX_HOME: customCodexHome },
-      });
-      // Legacy path gated on !CODEX_HOME: when parentEnv.CODEX_HOME is set the
-      // whole codex branch is skipped — no env.CODEX_HOME export, no auth copy.
-      assert.equal(env.CODEX_HOME, undefined);
-      await assert.rejects(() => readFile(path.join(env.HOME, ".codex", "auth.json")));
-    } finally {
-      if (prev === undefined) delete process.env.CPB_PROVIDER_REGISTRY;
-      else process.env.CPB_PROVIDER_REGISTRY = prev;
-    }
   } finally { await clean(dir); }
 });
 

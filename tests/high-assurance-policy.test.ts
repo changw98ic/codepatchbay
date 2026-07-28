@@ -21,8 +21,7 @@ before(async () => {
 test("high assurance defaults are registry-driven: codex planning/verification, claude execution", () => {
   // B2c: fallback literals are resolved via the registry. codex wins planner
   // and verifier (priority 10); claude wins executor (priority 20, beating
-  // claude-glm at priority 30). The "codex"/"claude-glm" literals survive only
-  // under CPB_PROVIDER_REGISTRY=0.
+  // claude-glm at priority 30).
   const policy = resolveHighAssurancePolicy({ sourceContext: { assurance: { mode: "high" } } });
 
   assert.equal(policy.enabled, true);
@@ -40,20 +39,6 @@ test("high assurance defaults are registry-driven: codex planning/verification, 
     selectedAgent: "codex",
     required: true,
   });
-});
-
-test("B2c kill-switch: CPB_PROVIDER_REGISTRY=0 restores the legacy codex/claude-glm literals", () => {
-  const previous = process.env.CPB_PROVIDER_REGISTRY;
-  process.env.CPB_PROVIDER_REGISTRY = "0";
-  try {
-    const policy = resolveHighAssurancePolicy({ sourceContext: { assurance: { mode: "high" } } });
-    assert.deepEqual(policy.planning.candidates, ["codex", "claude-glm"]);
-    assert.equal(policy.execution.agent, "claude-glm");
-    assert.equal(policy.verification.agent, "codex");
-  } finally {
-    if (previous === undefined) delete process.env.CPB_PROVIDER_REGISTRY;
-    else process.env.CPB_PROVIDER_REGISTRY = previous;
-  }
 });
 
 test("B2c fail-closed predicate: independence requires a distinct-family verifier", () => {

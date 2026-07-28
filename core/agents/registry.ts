@@ -334,18 +334,6 @@ export function listAgentsByProtocol(protocol: string) {
 }
 
 /**
- * Whether the provider-capability registry drives routing decisions (B2+).
- *
- * Default is ON: every B2 call site reads `getCapability()` / descriptor
- * fields instead of branching on `==="codex"` / `==="claude"` literals. Set
- * `CPB_PROVIDER_REGISTRY=0` to fall back to the pre-B2 literal/regex path —
- * the per-task kill switch required by the RFC §4 rollback safety.
- */
-export function providerRegistryEnabled(): boolean {
-  return process.env.CPB_PROVIDER_REGISTRY !== "0";
-}
-
-/**
  * Pick the lowest-priority candidate from a list, using the registry-declared
  * `tieBreakPriority` (smaller wins). Ties break by ascending agent name so the
  * result is deterministic regardless of map iteration order.
@@ -371,30 +359,12 @@ function pickRoleCandidate(candidates: LooseRecord[]): string | null {
 /**
  * Default agent for a given role.
  *
- * With the provider-capability registry active (default), candidates are
- * agents whose `defaultRoles` include `role`, ranked by lowest
+ * Candidates are agents whose `defaultRoles` include `role`, ranked by lowest
  * `tieBreakPriority` (codex still wins the roles it declares because it
  * carries priority 10) — but codex no longer pre-empts roles it does not own.
- * Set `CPB_PROVIDER_REGISTRY=0` to restore the legacy codex short-circuit.
  */
 export function defaultAgentForRole(role: string) {
   ensureLoaded();
-  if (!providerRegistryEnabled()) {
-    // Legacy path: codex is the unconditional baseline for ACP roles.
-    const codex = _registry.get("codex") || _discovered.get("codex");
-    if (codex && (codex.protocol || "unknown") === "acp") return "codex";
-    for (const d of _registry.values()) {
-      if (d.defaultRoles && d.defaultRoles.includes(role) && (d.protocol || "unknown") === "acp") {
-        return d.name;
-      }
-    }
-    for (const d of _registry.values()) {
-      if (d.defaultRoles && d.defaultRoles.includes(role)) {
-        return d.name;
-      }
-    }
-    throw new Error(`no registered ACP agent is configured for role: ${role}`);
-  }
   // Registry-driven path: rank role-owners by ACP-first then lowest priority.
   const acpCandidates: LooseRecord[] = [];
   const otherCandidates: LooseRecord[] = [];

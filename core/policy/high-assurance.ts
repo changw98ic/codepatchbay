@@ -3,7 +3,6 @@ import {
   defaultAgentForRole,
   getCapability,
   listAgents,
-  providerRegistryEnabled,
 } from "../agents/registry.js";
 
 export type AssuranceAgent = string | {
@@ -70,13 +69,11 @@ function boundedCritiqueRounds(value: unknown): number {
 /**
  * Resolve a high-assurance fallback agent via the provider-capability registry
  * (B2c): the lowest-`tieBreakPriority` agent that owns `role`. The explicit
- * `legacy` literal survives both the `CPB_PROVIDER_REGISTRY=0` kill switch and
- * the "registry not loaded" case (e.g. unit tests that never call
- * `loadRegistry`), so callers see no behavior change unless the registry is
- * actually driving resolution.
+ * `legacy` literal survives only the "registry not loaded" case (e.g. unit
+ * tests that never call `loadRegistry`); otherwise the registry drives
+ * resolution.
  */
 function registryRoleFallback(role: string, legacy: string): string {
-  if (!providerRegistryEnabled()) return legacy;
   try {
     return defaultAgentForRole(role);
   } catch {
@@ -99,11 +96,10 @@ export function hasDistinctFamilyVerifier(
 
 /**
  * Registry-backed projection of `hasDistinctFamilyVerifier`. Returns true
- * (no enforcement) when the kill switch is off or the registry is not loaded,
- * matching the pre-B2c behavior where no such check existed.
+ * (no enforcement) when the registry is not loaded, matching the pre-B2c
+ * behavior where no such check existed.
  */
 function registryHasIndependentVerifier(executionAgentName: string): boolean {
-  if (!providerRegistryEnabled()) return true;
   try {
     const execFamily = getCapability(executionAgentName)?.providerFamily ?? null;
     const verifierFamilies = listAgents()
@@ -111,7 +107,7 @@ function registryHasIndependentVerifier(executionAgentName: string): boolean {
       .map((d) => getCapability(d.name)?.providerFamily ?? null);
     return hasDistinctFamilyVerifier(verifierFamilies, execFamily);
   } catch {
-    // Registry not loaded — cannot enforce independence; legacy path allowed it.
+    // Registry not loaded — cannot enforce independence; allow.
     return true;
   }
 }
@@ -127,8 +123,7 @@ export function resolveHighAssurancePolicy(ctx: LooseRecord = {}): HighAssurance
   // quality-first role split.  High-assurance overrides live only inside the
   // explicit assurance policy. The fallback literals are resolved through the
   // provider-capability registry (B2c): codex wins planner/verifier (priority
-  // 10) and claude wins executor (priority 20). CPB_PROVIDER_REGISTRY=0 keeps
-  // the legacy "codex"/"claude-glm" literals.
+  // 10) and claude wins executor (priority 20).
   const candidateA = normalizeAgent(rawCandidates[0] || planning.candidateA, registryRoleFallback("planner", "codex"));
   const candidateB = normalizeAgent(rawCandidates[1] || planning.candidateB, registryRoleFallback("executor", "claude-glm"));
   const arbiter = normalizeAgent(planning.arbiter, registryRoleFallback("planner", "codex"));

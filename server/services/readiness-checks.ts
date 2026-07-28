@@ -376,7 +376,7 @@ async function checkAcpAdapter(adapterName: string, command: string, args: strin
   const baseCommand = path.basename(String(command));
   const isCodexAcp = baseCommand === "codex-acp"
     || (baseCommand === "npx" && args.some((arg) => (
-      arg === "@zed-industries/codex-acp" || arg === "@agentclientprotocol/codex-acp"
+      arg === "@agentclientprotocol/codex-acp"
     )));
   const probeArgs = isCodexAcp
     ? baseCommand === "npx"

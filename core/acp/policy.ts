@@ -54,8 +54,9 @@ const CODEX_HEADLESS_CONFIG_OVERRIDES = [
 ];
 
 const CODEX_COMMANDS = new Set(["codex-acp", "npx"]);
+// Only the canonical @agentclientprotocol/codex-acp npx package is recognized;
+// the legacy Zed-published wrapper was dropped (no dual-recognition).
 const CODEX_ACP_NPX_PACKAGES = new Set([
-  "@zed-industries/codex-acp",
   "@agentclientprotocol/codex-acp",
 ]);
 
@@ -136,16 +137,16 @@ export function codexExecutionConfigArgs(
 
 /**
  * Translate CPB's phase policy into the env-based configuration consumed by the
- * `@agentclientprotocol/codex-acp` adapter. Unlike the legacy
- * `@zed-industries/codex-acp` wrapper (which parses the `-c key=value` args
- * emitted by codexExecutionConfigArgs), the agentclientprotocol adapter reads
- * `CODEX_CONFIG` (JSON merged into the Codex session config) and
- * `INITIAL_AGENT_MODE` (read-only | agent | agent-full-access) from its
- * environment. Without these, a read-only phase (e.g. verify) launches with the
- * adapter's default workspace-write/on-request policy instead of CPB's
- * read-only/never contract. This mirrors the same sandbox/approval policy that
- * codexExecutionConfigArgs emits as -c flags, so both adapter generations get an
- * equivalent phase contract regardless of which config channel they read.
+ * `@agentclientprotocol/codex-acp` adapter. The npx adapter reads `CODEX_CONFIG`
+ * (JSON merged into the Codex session config) and `INITIAL_AGENT_MODE`
+ * (read-only | agent | agent-full-access) from its environment, while the bare
+ * `codex-acp` command consumes the `-c key=value` args emitted by
+ * codexExecutionConfigArgs. Without the env channel, a read-only phase (e.g.
+ * verify) launches with the npx adapter's default workspace-write/on-request
+ * policy instead of CPB's read-only/never contract. This mirrors the same
+ * sandbox/approval policy that codexExecutionConfigArgs emits as -c flags, so
+ * the bare command and the npx adapter get an equivalent phase contract
+ * regardless of which config channel they read.
  */
 export function codexAcpEnvPolicy(env: CodexExecutionEnv = {}): {
   CODEX_CONFIG?: string;

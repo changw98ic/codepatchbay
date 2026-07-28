@@ -75,15 +75,3 @@ test("B2c: default verifier resolves via registry — codex wins verifier role a
   assert.equal((plan.agentConfig.verifier as VerifierConfig).agent, "codex");
   assert.equal((plan.agentConfig.adversarial_verifier as VerifierConfig).agent, "codex");
 });
-
-test("B2c kill-switch: CPB_PROVIDER_REGISTRY=0 preserves the codex literal default", () => {
-  const previous = process.env.CPB_PROVIDER_REGISTRY;
-  process.env.CPB_PROVIDER_REGISTRY = "0";
-  try {
-    const plan = generateDynamicAgentPlan({ riskMap: { riskLevel: "high" }, workflowDag: { nodes: [] } });
-    assert.equal((plan.agentConfig.verifier as VerifierConfig).agent, "codex");
-  } finally {
-    if (previous === undefined) delete process.env.CPB_PROVIDER_REGISTRY;
-    else process.env.CPB_PROVIDER_REGISTRY = previous;
-  }
-});

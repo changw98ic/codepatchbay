@@ -4,7 +4,7 @@ import { PhaseResult } from "../../shared/types.js";
 import { PhaseContext } from "./run-phase.js";
 import { ProviderAgents } from "./provider-handoff.js";
 import { resolveAllowedAgentNames } from "../agents/outcome-routing.js";
-import { defaultAgentForRole, providerRegistryEnabled } from "../agents/registry.js";
+import { defaultAgentForRole } from "../agents/registry.js";
 import {
   recoveryInstruction,
   selectFailureRecovery,
@@ -301,12 +301,10 @@ function retryContextFromFailure(
  * Resolves via the registry to the lowest-`tieBreakPriority` executor (claude
  * wins priority 20 over claude-glm priority 30) instead of the legacy "codex"
  * literal — codex does not declare the executor role, so it was an ill-fit
- * execution fallback. Set `CPB_PROVIDER_REGISTRY=0` to restore the "codex"
- * literal (RFC §4 kill switch); if the registry is enabled but not yet loaded
- * the legacy literal is preserved.
+ * execution fallback. If the registry is not yet loaded the codex literal is
+ * preserved.
  */
 function defaultExecuteFallbackAgent(): string {
-  if (!providerRegistryEnabled()) return "codex";
   try {
     return defaultAgentForRole("executor");
   } catch {

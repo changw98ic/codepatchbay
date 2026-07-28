@@ -1,23 +1,21 @@
 import { recordValue, type LooseRecord } from "../../shared/types.js";
-import { defaultAgentForRole, providerRegistryEnabled } from "./registry.js";
+import { defaultAgentForRole } from "./registry.js";
 
 /**
  * Default verifier agent for dynamic agent plans (B2c).
  *
  * Resolves via the provider-capability registry: the agent whose `defaultRoles`
  * includes "verifier" with the lowest `tieBreakPriority` (codex wins because it
- * carries priority 10). `CPB_DYNAMIC_VERIFIER_AGENT` still overrides either
- * path. Set `CPB_PROVIDER_REGISTRY=0` to restore the legacy "codex" literal
- * short-circuit (RFC §4 kill switch).
+ * carries priority 10). `CPB_DYNAMIC_VERIFIER_AGENT` still overrides the
+ * resolution.
  */
 function defaultDynamicVerifierAgent(): string {
   const fromEnv = process.env.CPB_DYNAMIC_VERIFIER_AGENT;
   if (fromEnv && fromEnv.trim()) return fromEnv.trim();
-  if (!providerRegistryEnabled()) return "codex";
   try {
     return defaultAgentForRole("verifier");
   } catch {
-    // Registry not loaded — fall back to the legacy literal.
+    // Registry not loaded — fall back to the codex literal.
     return "codex";
   }
 }

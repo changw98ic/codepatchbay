@@ -913,7 +913,7 @@ function isCodexAcpCommand(command: unknown, args: unknown[] = []): boolean {
   const baseCommand = String(command).split("/").pop();
   if (baseCommand === "codex-acp") return true;
   return baseCommand === "npx" && Array.isArray(args) && args.some((arg) => (
-    arg === "@zed-industries/codex-acp" || arg === "@agentclientprotocol/codex-acp"
+    arg === "@agentclientprotocol/codex-acp"
   ));
 }
 

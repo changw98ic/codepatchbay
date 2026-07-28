@@ -7,7 +7,6 @@ import path from "node:path";
 import {
   getCapability,
   isBuiltinDescriptor,
-  providerRegistryEnabled,
   type AgentCapability,
 } from "./registry.js";
 
@@ -73,13 +72,6 @@ export function __withAgentIsolationTestHooks<T>(
 function currentAgentIsolationTestHooks() {
   return agentIsolationTestHookStorage.getStore() || {};
 }
-// Authentication is portable across Codex/ACP versions. User-level
-// config.toml is not: model, MCP, plugin, and feature settings can target a
-// newer Codex than the installed ACP adapter and make every job fail before
-// execution. CPB supplies runtime configuration explicitly instead.
-const CODEX_SHARED_CONFIG_FILES = ["auth.json"];
-const CLAUDE_SHARED_HOME_FILES = [".claude.json"];
-const CLAUDE_SHARED_CONFIG_FILES = [".credentials.json", "credentials.json", "auth.json"];
 const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const INVALID_RUNTIME_ROOT_SENTINELS = new Set(["undefined", "null"]);
 const PRESERVED_HOME_QUARANTINE = /\.quarantine-\d+-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -436,10 +428,6 @@ async function copyRegularFileNoFollow(source: string, target: string, maxBytes:
   return true;
 }
 
-async function maybeCopyFile(source: string, target: string) {
-  return copyRegularFileNoFollow(source, target);
-}
-
 async function syncDirectory(directory: string) {
   if (
     typeof constants.O_NOFOLLOW !== "number"
@@ -590,46 +578,6 @@ async function isolateAgentHomeDirectory(jobDir: string, generation: PathGenerat
     });
   }
   return quarantineDir;
-}
-
-async function inheritCodexConfig(targetHome: string, parentEnv: StringRecord = {}) {
-  const sourceCodexHome = resolveSourceCodexHome(parentEnv);
-  const targetCodexHome = path.join(targetHome, ".codex");
-  await mkdir(targetCodexHome, { recursive: true });
-  if (!sourceCodexHome) return targetCodexHome;
-
-  // Isolate config left by an older CPB run and preserve it for recovery.
-  await isolateOwnedRegularFileNoFollow(path.join(targetCodexHome, "config.toml"));
-
-  await Promise.all(CODEX_SHARED_CONFIG_FILES.map(async (fileName) => {
-    const source = path.join(sourceCodexHome, fileName);
-    const target = path.join(targetCodexHome, fileName);
-    return copyRegularFileNoFollow(source, target);
-  }));
-  return targetCodexHome;
-}
-
-async function inheritClaudeConfig(targetHome: string, parentEnv: StringRecord = {}) {
-  const sourceHome = resolveSourceHome(parentEnv);
-  const targetClaudeHome = path.join(targetHome, ".claude");
-  await mkdir(targetClaudeHome, { recursive: true });
-  if (!sourceHome) return targetClaudeHome;
-
-  await Promise.all([
-    ...CLAUDE_SHARED_HOME_FILES.map((fileName) =>
-      maybeCopyFile(
-        path.join(sourceHome, fileName),
-        path.join(targetHome, fileName),
-      )
-    ),
-    ...CLAUDE_SHARED_CONFIG_FILES.map((fileName) =>
-      maybeCopyFile(
-        path.join(sourceHome, ".claude", fileName),
-        path.join(targetClaudeHome, fileName),
-      )
-    ),
-  ]);
-  return targetClaudeHome;
 }
 
 /**
@@ -820,15 +768,14 @@ export function assertInheritFilesSafe(
 }
 
 /**
- * Descriptor-driven HOME inheritance (B2b, RFC §6.2). Replaces the
- * `agentName === "codex"` / `=== "claude"` literal branches in `createAgentHome`
- * with a generic loop over `descriptor.inheritFiles` plus `quarantineFiles`.
+ * Descriptor-driven HOME inheritance (B2b, RFC §6.2). Loops generically over
+ * `descriptor.inheritFiles` plus `quarantineFiles` instead of branching on
+ * `agentName === "codex"` / `=== "claude"` literals.
  *
- * Order matches the legacy `inheritCodexConfig`: declared quarantine files are
- * isolated first (so a stale config left by an older CPB run cannot poison the
- * fresh auth copy), then each inherit entry is copied with `O_NOFOLLOW` /
- * `lstat` symlink refusal and the per-file `maxBytes` cap (clamped to
- * `MAX_INHERITED_AUTH_BYTES`).
+ * Declared quarantine files are isolated first (so a stale config left by an
+ * older CPB run cannot poison the fresh auth copy), then each inherit entry is
+ * copied with `O_NOFOLLOW` / `lstat` symlink refusal and the per-file
+ * `maxBytes` cap (clamped to `MAX_INHERITED_AUTH_BYTES`).
  *
  * `trusted` selects between builtin descriptors (CPB-authored, source allowlist
  * skipped) and user-registered/auto-discovered descriptors (§6.2 source gate
@@ -927,39 +874,26 @@ export async function createAgentHome(cpbRoot: string, agentName: string, jobId:
     env.TMP = tempDir;
     env.TEMP = tempDir;
   }
-  // Provider-capability registry drives HOME inheritance when enabled (B2b):
-  // every descriptor's inheritFiles/quarantineFiles is looped generically instead
-  // of branching on `agentName === "codex"/"claude"`. Set CPB_PROVIDER_REGISTRY=0
-  // to fall back to the pre-B2 literal branches (inheritCodexConfig/
-  // inheritClaudeConfig); the legacy helpers are also kept as the fallback when
-  // the registry has not been loaded (e.g. focused unit tests that import
-  // createAgentHome directly).
-  let registryHandled = false;
-  if (providerRegistryEnabled()) {
-    let cap: AgentCapability | null = null;
-    try {
-      cap = getCapability(agentName);
-    } catch {
-      cap = null;
-    }
-    if (cap) {
-      let trusted = false;
-      try {
-        trusted = isBuiltinDescriptor(agentName);
-      } catch {
-        trusted = false;
-      }
-      if (cap.inheritFiles.length || cap.quarantineFiles.length) {
-        await inheritFilesIntoHome(baseDir, parentEnv, cap, { trusted });
-      }
-      registryHandled = true;
-    }
+  // Descriptor-driven HOME inheritance (B2b): every descriptor's
+  // inheritFiles/quarantineFiles is looped generically instead of branching on
+  // `agentName === "codex"/"claude"` literals. When the registry is not loaded
+  // (e.g. focused unit tests that import createAgentHome directly without
+  // loadRegistry) no capability is found and nothing is inherited.
+  let cap: AgentCapability | null = null;
+  try {
+    cap = getCapability(agentName);
+  } catch {
+    cap = null;
   }
-  if (!registryHandled) {
-    if (agentName === "codex" && !parentEnv.CODEX_HOME) {
-      env.CODEX_HOME = await inheritCodexConfig(baseDir, parentEnv);
-    } else if (agentName === "claude") {
-      await inheritClaudeConfig(baseDir, parentEnv);
+  if (cap) {
+    let trusted = false;
+    try {
+      trusted = isBuiltinDescriptor(agentName);
+    } catch {
+      trusted = false;
+    }
+    if (cap.inheritFiles.length || cap.quarantineFiles.length) {
+      await inheritFilesIntoHome(baseDir, parentEnv, cap, { trusted });
     }
   }
   return env;
