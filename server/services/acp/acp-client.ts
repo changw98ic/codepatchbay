@@ -22,6 +22,7 @@ import {
   codexSandboxEnforcementForExecution,
   codexSandboxModeForExecution,
   headlessCodexConfigArgs,
+  codexAcpEnvPolicy,
   classifyUiToolRequest,
   mergeHeadlessDenyTools,
 } from "../../../core/acp/policy.js";
@@ -911,7 +912,9 @@ function codexCodegraphMcpServers(env: NodeJS.ProcessEnv): McpServerConfig[] {
 function isCodexAcpCommand(command: unknown, args: unknown[] = []): boolean {
   const baseCommand = String(command).split("/").pop();
   if (baseCommand === "codex-acp") return true;
-  return baseCommand === "npx" && Array.isArray(args) && args.some((arg) => arg === "@zed-industries/codex-acp");
+  return baseCommand === "npx" && Array.isArray(args) && args.some((arg) => (
+    arg === "@zed-industries/codex-acp" || arg === "@agentclientprotocol/codex-acp"
+  ));
 }
 
 // These bundled transports reject or bypass session/new.mcpServers regardless
@@ -1722,6 +1725,14 @@ export class AcpClient {
       // drop the inner provider sandbox regardless of the inherited mode.
       env.CPB_AGENT_SANDBOX = "off";
       env.CPB_AGENT_SANDBOX_MODE = "off";
+    }
+    if (this.agent === "codex") {
+      // The @agentclientprotocol/codex-acp adapter reads phase policy from env
+      // (CODEX_CONFIG + INITIAL_AGENT_MODE), not -c launch args. Without these
+      // a read-only phase launches with the adapter default (workspace-write).
+      const codexPolicy = codexAcpEnvPolicy(env);
+      if (codexPolicy.CODEX_CONFIG) env.CODEX_CONFIG = codexPolicy.CODEX_CONFIG;
+      if (codexPolicy.INITIAL_AGENT_MODE) env.INITIAL_AGENT_MODE = codexPolicy.INITIAL_AGENT_MODE;
     }
     const isolateAgentHome = shouldIsolateAgentHome(this.agent, env);
     if (isolateAgentHome) {

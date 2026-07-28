@@ -373,10 +373,20 @@ export async function checkDiskSpace(dirPath: string, label: string, { execFileF
 
 async function checkAcpAdapter(adapterName: string, command: string, args: string[], { npxPkg, stability }: { npxPkg?: string; stability?: string } = {}) {
   const id = `acp-adapter-${adapterName}`;
+  const baseCommand = path.basename(String(command));
+  const isCodexAcp = baseCommand === "codex-acp"
+    || (baseCommand === "npx" && args.some((arg) => (
+      arg === "@zed-industries/codex-acp" || arg === "@agentclientprotocol/codex-acp"
+    )));
+  const probeArgs = isCodexAcp
+    ? baseCommand === "npx"
+      ? [...args, "--version"]
+      : ["--version"]
+    : [...args];
 
   let stdout;
   try {
-    const result = await execFileAsync(command, [...args], { timeout: SUBPROCESS_TIMEOUT_MS });
+    const result = await execFileAsync(command, probeArgs, { timeout: SUBPROCESS_TIMEOUT_MS });
     stdout = result.stdout || "";
   } catch (e) {
     // Discovered agents: info only (non-blocking)
@@ -398,12 +408,14 @@ async function checkAcpAdapter(adapterName: string, command: string, args: strin
     });
   }
 
-  // Try to extract version from --help output or run --version
-  let version;
-  try {
-    const verResult = await execFileAsync(command, ["--version"], { timeout: SUBPROCESS_TIMEOUT_MS });
-    version = (verResult.stdout || "").trim();
-  } catch {}
+  // Try to extract a version from the probe output or run --version.
+  let version = stdout.match(/\b[0-9]+\.[0-9]+\.[0-9]+\b/)?.[0];
+  if (!version) {
+    try {
+      const verResult = await execFileAsync(command, ["--version"], { timeout: SUBPROCESS_TIMEOUT_MS });
+      version = (verResult.stdout || "").trim();
+    } catch {}
+  }
   if (!version) {
     const verMatch = stdout.match(/version[:\s]+([0-9]+\.[0-9]+\.[0-9]+)/i);
     version = verMatch ? verMatch[1] : undefined;
@@ -1604,11 +1616,11 @@ export async function runReadinessChecks({ cpbRoot, hubRoot, adapterOverrides, e
     }
   } catch {
     // Registry unavailable, fall back to hardcoded ACP adapters
-    const codexAdapter = adapterOverrides?.codex || { command: "codex-acp", args: ["--help"] };
+    const codexAdapter = adapterOverrides?.codex || { command: "codex-acp", args: [] };
     const claudeAdapter = adapterOverrides?.claude || { command: "claude-agent-acp", args: ["--help"] };
     const reasonixAdapter = adapterOverrides?.reasonix || { command: "reasonix", args: ["acp"] };
     adapterChecks = [
-      checkAcpAdapter("codex", codexAdapter.command, codexAdapter.args, { npxPkg: "@zed-industries/codex-acp" }),
+      checkAcpAdapter("codex", codexAdapter.command, codexAdapter.args, { npxPkg: "@agentclientprotocol/codex-acp" }),
       checkAcpAdapter("claude", claudeAdapter.command, claudeAdapter.args, { npxPkg: "@agentclientprotocol/claude-agent-acp" }),
       checkAcpAdapter("reasonix", reasonixAdapter.command, reasonixAdapter.args, { stability: "discovered" }),
     ];

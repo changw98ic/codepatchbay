@@ -54,6 +54,10 @@ const CODEX_HEADLESS_CONFIG_OVERRIDES = [
 ];
 
 const CODEX_COMMANDS = new Set(["codex-acp", "npx"]);
+const CODEX_ACP_NPX_PACKAGES = new Set([
+  "@zed-industries/codex-acp",
+  "@agentclientprotocol/codex-acp",
+]);
 
 const CODEX_MUTATING_PHASES = new Set(["execute", "remediate"]);
 const CODEX_MUTATING_ROLES = new Set(["executor", "remediator"]);
@@ -109,7 +113,7 @@ export function codexExecutionConfigArgs(
 ) {
   const baseCommand = String(command).split("/").pop();
   const isCodexAcp = baseCommand === "codex-acp"
-    || (baseCommand === "npx" && Array.isArray(args) && args.some((arg) => arg === "@zed-industries/codex-acp"));
+    || (baseCommand === "npx" && Array.isArray(args) && args.some((arg) => CODEX_ACP_NPX_PACKAGES.has(arg)));
   if (!isCodexAcp) return [];
 
   const filesystemBoundary = parseAgentFilesystemBoundary(env.CPB_AGENT_FS_BOUNDARY_JSON);
@@ -128,6 +132,38 @@ export function codexExecutionConfigArgs(
     // turns a recoverable command denial into an unexplained phase timeout.
     "-c", 'approval_policy="never"',
   ];
+}
+
+/**
+ * Translate CPB's phase policy into the env-based configuration consumed by the
+ * `@agentclientprotocol/codex-acp` adapter. Unlike the legacy
+ * `@zed-industries/codex-acp` wrapper (which parses the `-c key=value` args
+ * emitted by codexExecutionConfigArgs), the agentclientprotocol adapter reads
+ * `CODEX_CONFIG` (JSON merged into the Codex session config) and
+ * `INITIAL_AGENT_MODE` (read-only | agent | agent-full-access) from its
+ * environment. Without these, a read-only phase (e.g. verify) launches with the
+ * adapter's default workspace-write/on-request policy instead of CPB's
+ * read-only/never contract. This mirrors the same sandbox/approval policy that
+ * codexExecutionConfigArgs emits as -c flags, so both adapter generations get an
+ * equivalent phase contract regardless of which config channel they read.
+ */
+export function codexAcpEnvPolicy(env: CodexExecutionEnv = {}): {
+  CODEX_CONFIG?: string;
+  INITIAL_AGENT_MODE?: string;
+} {
+  const mode = codexConfiguredSandboxModeForExecution(env);
+  const initialAgentMode =
+    mode === "read-only" ? "read-only"
+    : mode === "workspace-write" ? "agent"
+    : "agent-full-access"; // danger-full-access: CPB outer sandbox enforces the real boundary
+  const config: Record<string, unknown> = {
+    approval_policy: "never",
+    sandbox_mode: mode,
+  };
+  return {
+    CODEX_CONFIG: JSON.stringify(config),
+    INITIAL_AGENT_MODE: initialAgentMode,
+  };
 }
 
 export function normalizeAcpProfile(profile: unknown): string | null {
@@ -156,8 +192,8 @@ export function resolveAcpLane({ profile, uiLane, uiLaneReason }: LooseRecord = 
 export function headlessCodexConfigArgs(command: string, args: string[] = []) {
   const baseCommand = String(command).split("/").pop();
   if (baseCommand === "codex-acp") return [...CODEX_HEADLESS_CONFIG_OVERRIDES];
-  // npx fallback: npx -y @zed-industries/codex-acp
-  if (baseCommand === "npx" && Array.isArray(args) && args.some(a => a === "@zed-industries/codex-acp")) {
+  // npx fallback: npx -y @agentclientprotocol/codex-acp
+  if (baseCommand === "npx" && Array.isArray(args) && args.some(a => CODEX_ACP_NPX_PACKAGES.has(a))) {
     return [...CODEX_HEADLESS_CONFIG_OVERRIDES];
   }
   return [];

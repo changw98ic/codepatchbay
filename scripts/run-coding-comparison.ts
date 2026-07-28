@@ -858,7 +858,7 @@ export async function runCodingComparison(options: CliOptions) {
     versions = {
       codex: await versionEvidence("codex", ["--version"]),
       codexAcp: await versionEvidence(process.env.CPB_ACP_CODEX_COMMAND || "codex-acp", ["--version"]),
-      codexAcpPackage: await versionEvidence("npm", ["list", "-g", "@zed-industries/codex-acp", "--depth=0", "--json"]),
+      codexAcpPackage: await versionEvidence("npm", ["list", "-g", "@agentclientprotocol/codex-acp", "--depth=0", "--json"]),
       codegraph: await versionEvidence("codegraph", ["--version"]),
       node: process.version,
     };

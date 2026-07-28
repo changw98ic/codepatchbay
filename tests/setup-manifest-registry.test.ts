@@ -243,4 +243,22 @@ describe("D40 manifest registry layout", () => {
       assert.equal(result.valid, true, `Agent ${agent.id} should pass validation: ${result.errors.join(", ")}`);
     }
   });
+
+  it("Codex ACP health uses the manifest probe arguments", async () => {
+    const { checkSetupAgentHealth } = await import("../core/setup/health-check.js");
+    const calls = [];
+    const result = await checkSetupAgentHealth({
+      id: "codex",
+      displayName: "OpenAI Codex CLI",
+      binary: "codex",
+      adapter: { protocol: "acp", command: "codex-acp", args: ["--version"] },
+    }, {
+      runCommand: async (command, args) => {
+        calls.push([command, args]);
+        return { ok: true, stdout: command === "codex-acp" ? "@agentclientprotocol/codex-acp 1.1.7" : "codex-cli 0.145.0" };
+      },
+    });
+    assert.equal(result.status, "ready");
+    assert.deepEqual(calls, [["codex", ["--version"]], ["codex-acp", ["--version"]]]);
+  });
 });

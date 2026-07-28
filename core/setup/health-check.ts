@@ -79,7 +79,10 @@ export async function checkSetupAgentHealth(agentOrId: unknown, { runCommand = d
   let adapter: LooseRecord = skippedCheck("agent manifest does not define adapter.command");
   const adapterConfig = recordValue(agent.adapter);
   if (adapterConfig.command) {
-    adapter = okOrProbe(await commandRunner(String(adapterConfig.command), ["--help"]));
+    const adapterArgs = Array.isArray(adapterConfig.args) && adapterConfig.args.length > 0
+      ? adapterConfig.args.map(String)
+      : ["--help"];
+    adapter = okOrProbe(await commandRunner(String(adapterConfig.command), adapterArgs));
   }
 
   const checks = { binary, auth, adapter };

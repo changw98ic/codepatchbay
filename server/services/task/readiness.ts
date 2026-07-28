@@ -91,7 +91,7 @@ const ACP_EXECUTABLES: Record<
   string,
   { command: string; npxPkg: string | null }
 > = Object.freeze({
-  codex: { command: "codex-acp", npxPkg: "@zed-industries/codex-acp" },
+  codex: { command: "codex-acp", npxPkg: "@agentclientprotocol/codex-acp" },
   claude: { command: "claude-agent-acp", npxPkg: "@agentclientprotocol/claude-agent-acp" },
   reasonix: { command: "reasonix", npxPkg: null },
 });

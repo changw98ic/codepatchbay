@@ -3,7 +3,7 @@
   "displayName": "Codex CLI",
   "command": "codex-acp",
   "fallbackCommand": "npx",
-  "fallbackArgs": ["-y", "@zed-industries/codex-acp"],
+  "fallbackArgs": ["-y", "@agentclientprotocol/codex-acp"],
   "args": [],
   "capabilities": ["plan", "execute", "verify", "review"],
   "defaultRoles": ["planner", "verifier", "reviewer"],

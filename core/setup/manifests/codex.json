@@ -41,6 +41,7 @@
   "adapter": {
     "protocol": "acp",
     "command": "codex-acp",
-    "npxPkg": "@zed-industries/codex-acp"
+    "args": ["--version"],
+    "npxPkg": "@agentclientprotocol/codex-acp"
   }
 }
