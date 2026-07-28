@@ -1,6 +1,7 @@
 import { resolvePhaseAgentWithFallback } from "../agents/routing.js";
 import { resolveAllowedAgentNames, selectOutcomeAwareAgent } from "../agents/outcome-routing.js";
 import { highAssuranceAgentForRole, resolveHighAssurancePolicy } from "../policy/high-assurance.js";
+import { defaultAgentForRole } from "../agents/registry.js";
 
 import { isRecord, recordValue, type LooseRecord } from "../contracts/types.js";
 
@@ -171,7 +172,13 @@ export function resolvePhaseAgentRouting({
   }
 
   const configuredAgent = phaseAgents[role] || null;
-  const outcomePreferredAgent = dynamicAgent?.selectedAgent || staticRoutingDecision?.selectedAgent || configuredAgent;
+  // Fall back to the registry's defaultAgentForRole when no explicit source
+  // (dynamic plan, static routing, or configured agent) provides one. Without
+  // this, the preferred agent is null and outcome-routing picks by tie-break
+  // priority alone, collapsing to a single agent for all roles.
+  let roleDefault: string | null = null;
+  try { roleDefault = defaultAgentForRole(role); } catch { roleDefault = null; }
+  const outcomePreferredAgent = dynamicAgent?.selectedAgent || staticRoutingDecision?.selectedAgent || configuredAgent || roleDefault;
   const tracePreferredAgent = staticRoutingDecision?.preferredAgent || outcomePreferredAgent;
   const selectionSource = assuranceAgent?.selectedAgent
     ? "high_assurance_policy"
@@ -181,7 +188,9 @@ export function resolvePhaseAgentRouting({
       ? "static_routing"
       : phaseAgents[role]
         ? "configured_agent"
-        : "unconfigured";
+        : roleDefault
+          ? "registry_default"
+          : "unconfigured";
   const routingCandidates = [
     staticRoutingDecision?.fallbackAgent,
     phaseAgents[role],
