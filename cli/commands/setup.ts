@@ -128,17 +128,23 @@ async function isCommandAvailable(command: string) {
 }
 
 async function detectQuickAgents() {
-  const known = [
-    { name: "claude", command: "claude", displayName: "Claude Code" },
-    { name: "codex", command: "codex", displayName: "Codex CLI" },
-    { name: "opencode", command: "opencode", displayName: "OpenCode" },
-    { name: "cursor", command: "cursor", displayName: "Cursor Agent" },
-  ];
-
+  const { listSetupAgents } = await import("../../core/setup/agent-catalog.js");
+  // Data-driven from the setup manifest catalog instead of a hardcoded roster:
+  // each manifest declares its own `binary` (the executable `which` should
+  // probe) and `displayName`, so new agents appear here without editing this
+  // list. Catalog order encodes recommended priority (codex, claude, ...).
+  const catalog = listSetupAgents();
   const results = [];
-  for (const agent of known) {
-    const available = await isCommandAvailable(agent.command);
-    results.push({ ...agent, available });
+  for (const agent of catalog) {
+    const command = String(agent.binary || agent.id || "");
+    if (!command) continue;
+    const available = await isCommandAvailable(command);
+    results.push({
+      name: String(agent.id),
+      command,
+      displayName: String(agent.displayName || agent.id),
+      available,
+    });
   }
   return results;
 }
@@ -197,13 +203,18 @@ async function runQuickstart(args: string[], { cpbRoot, executorRoot }: LooseRec
       } else {
         qWarn(`Agent '${selectedAgent}' not found in known agents. Proceeding anyway.`);
       }
-    } else if (available.length === 1) {
+    } else if (available.length > 0) {
+      // Data-driven default: pick the first available agent in catalog order
+      // (recommended priority — codex before claude before opencode, ...).
+      // Collapses the old single-vs-multi split: the highest-priority detected
+      // agent wins instead of a hardcoded "claude".
       selectedAgent = available[0].name;
-      qOk(`Auto-detected agent: ${available[0].displayName}`);
-    } else if (available.length > 1) {
-      qOk(`${available.length} agents found: ${available.map((a) => a.displayName).join(", ")}`);
-      selectedAgent = "claude"; // Default to Claude if multiple available
-      qOk(`Defaulting to: Claude Code`);
+      if (available.length === 1) {
+        qOk(`Auto-detected agent: ${available[0].displayName}`);
+      } else {
+        qOk(`${available.length} agents found: ${available.map((a) => a.displayName).join(", ")}`);
+        qOk(`Defaulting to: ${available[0].displayName}`);
+      }
     } else {
       qWarn("No agents detected. Install a supported agent using its vendor's official documentation.");
       console.log("");
@@ -248,7 +259,7 @@ async function runQuickstart(args: string[], { cpbRoot, executorRoot }: LooseRec
 
   console.log("  Your project is set up. Here's how to use it:\n");
   console.log(`  ${Q_CYAN}Run a full pipeline:${Q_NC}`);
-  console.log(`    cpb pipeline ${projectName} "Add a hello world endpoint" --agent ${selectedAgent || "claude"}\n`);
+  console.log(`    cpb pipeline ${projectName} "Add a hello world endpoint" --agent ${selectedAgent || "demo"}\n`);
   console.log(`  ${Q_CYAN}Inspect progress:${Q_NC}`);
   console.log(`    cpb status ${projectName}`);
   console.log(`    cpb jobs report\n`);

@@ -1,7 +1,8 @@
 import { recordValue, type LooseRecord } from "../../shared/types.js";
-import { readdir, readFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { autoDiscoverAgents } from "./auto-discover.js";
+import { assertInheritFilesSafe, type InheritFileEntry } from "./isolation.js";
 
 const DESCRIPTORS_DIR = path.join(import.meta.dirname, "descriptors");
 const SQUADS_FILE = path.join(import.meta.dirname, "squads.json");
@@ -233,6 +234,61 @@ export function getCapability(name: string): AgentCapability | null {
     inheritFiles: Array.isArray(d.inheritFiles) ? d.inheritFiles : [],
     quarantineFiles: Array.isArray(d.quarantineFiles) ? d.quarantineFiles : [],
   };
+}
+
+/**
+ * Register a descriptor at runtime (B3, RFC §6.2 mutation API). Validates shape
+ * via `validateDescriptor`; for untrusted descriptors (the only kind the CLI /
+ * IPC boundary may supply) runs the §6.2 inherit-source/containment gate
+ * fail-closed via the shared `assertInheritFilesSafe` predicate before any
+ * persistence. Then atomically writes the descriptor to
+ * `${CPB_AGENTS_CONFIG_DIR}/<name>.json` (mkdir -p) and reloads the registry so
+ * the new agent is immediately visible to `hasAgent` / `getCapability`.
+ *
+ * `trusted` defaults to `false` and must only be overridden for CPB-authored
+ * builtin descriptors shipped under `core/agents/descriptors/*.json` (their
+ * `from`/`to` are reviewed in-tree and bypass the credential allowlist). The
+ * gate's single source of truth lives in `core/agents/isolation.ts`, shared
+ * with the runtime copy path (`inheritFilesIntoHome`).
+ *
+ * Returns `{ name, path }` describing the persisted descriptor so callers (CLI)
+ * can report the on-disk location.
+ */
+export async function registerDescriptor(
+  descriptor: LooseRecord,
+  { trusted = false }: { trusted?: boolean } = {},
+): Promise<{ name: string; path: string }> {
+  if (!validateDescriptor(descriptor)) {
+    throw new Error(
+      `refusing to register invalid descriptor: ${String(descriptor?.name ?? "<no name>")}`,
+    );
+  }
+  const name = String(descriptor.name);
+  const configDir = process.env.CPB_AGENTS_CONFIG_DIR;
+  if (!configDir || !configDir.trim()) {
+    throw new Error(
+      "CPB_AGENTS_CONFIG_DIR must be set to register a descriptor",
+    );
+  }
+  // §6.2 gate for untrusted (user-supplied) descriptors. `to` containment is
+  // validated against a concrete placeholder root — because `$HOME` templates
+  // are rewritten relative to it and absolute/`..` escapes are rejected, the
+  // accept/reject decision is identical for any concrete dir; configDir is real
+  // and per-registration. `from` resolves against `process.env`.
+  if (!trusted) {
+    assertInheritFilesSafe(
+      descriptor as { inheritFiles?: InheritFileEntry[]; quarantineFiles?: string[] },
+      process.env as Record<string, string | undefined>,
+      configDir,
+      { trusted: false },
+    );
+  }
+  await mkdir(configDir, { recursive: true });
+  const targetPath = path.join(configDir, `${name}.json`);
+  await writeFile(targetPath, `${JSON.stringify(descriptor, null, 2)}\n`, "utf8");
+  // Reload so the freshly written descriptor is immediately observable.
+  await loadRegistry(configDir);
+  return { name, path: targetPath };
 }
 
 

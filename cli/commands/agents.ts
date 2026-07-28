@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { isRecord, recordValue, type LooseRecord } from "../../shared/types.js";
+import { readFile, readdir } from "node:fs/promises";
+import path from "node:path";
 import { listSetupAgents } from "../../core/setup/agent-catalog.js";
 import { detectSetupEnvironment } from "../../core/setup/detect.js";
 import { checkSetupAgentHealth } from "../../core/setup/health-check.js";
@@ -11,10 +13,11 @@ const runInstallPlan = runInstallPlanWithEvents as (plan: unknown, options?: Loo
 
 function usage() {
   return [
-    "Usage: cpb agents <list|detect|install|upgrade|test|stats> [options]",
+    "Usage: cpb agents <list|add|detect|install|upgrade|test|stats> [options]",
     "",
     "Commands:",
     "  cpb agents list [--json]",
+    "  cpb agents add <descriptor.json> [--name <name>] [--json]",
     "  cpb agents detect [--json]",
     "  cpb agents install <agent> [--method <method>] [--version <ver>] [--json] [--yes]",
     "  cpb agents upgrade <agent> [--method <method>] [--json] [--yes]",
@@ -37,8 +40,32 @@ export async function run(args: string[] = []) {
   const [command] = args;
   if (!command || command === "list") {
     const agents = listSetupAgents();
+    // Also surface descriptors registered at runtime (written to
+    // CPB_AGENTS_CONFIG_DIR by `cpb agents add`) that have no manifest
+    // counterpart. We read the config dir directly so builtin / auto-discovered
+    // descriptors don't leak into this "user-registered" view.
+    const registered: LooseRecord[] = [];
+    const configDir = process.env.CPB_AGENTS_CONFIG_DIR;
+    if (configDir) {
+      let files: string[] = [];
+      try {
+        files = await readdir(configDir);
+      } catch {
+        files = [];
+      }
+      for (const f of files) {
+        if (!f.endsWith(".json")) continue;
+        try {
+          const d = JSON.parse(await readFile(path.join(configDir, f), "utf8"));
+          if (d && typeof d.name === "string") registered.push(d as LooseRecord);
+        } catch {
+          // skip malformed entry
+        }
+      }
+      registered.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+    }
     if (args.includes("--json")) {
-      console.log(JSON.stringify({ agents }, null, 2));
+      console.log(JSON.stringify({ agents, registered }, null, 2));
     } else {
       for (const agent of agents) {
         const adapter = recordValue(agent.adapter);
@@ -46,8 +73,53 @@ export async function run(args: string[] = []) {
         const adapterCmd = adapter?.command || "-";
         console.log(`${agent.id}\t${agent.displayName}\t${protocol}\t${adapterCmd}`);
       }
+      for (const d of registered) {
+        const name = String(d.name ?? "");
+        const protocol = String(d.protocol ?? "unknown");
+        const cmd = String(d.command ?? "-");
+        const display = d.displayName ? `${d.displayName} (registered)` : `${name} (registered)`;
+        console.log(`${name}\t${display}\t${protocol}\t${cmd}`);
+      }
     }
     return 0;
+  }
+
+  if (command === "add") {
+    const file = args[1];
+    if (!file) {
+      console.error(usage());
+      return 1;
+    }
+    let raw: string;
+    try {
+      raw = await readFile(file, "utf8");
+    } catch (err) {
+      console.error(`Cannot read descriptor file ${file}: ${(err as Error).message}`);
+      return 1;
+    }
+    let descriptor: unknown;
+    try {
+      descriptor = JSON.parse(raw);
+    } catch (err) {
+      console.error(`Invalid JSON in ${file}: ${(err as Error).message}`);
+      return 1;
+    }
+    const { registerDescriptor } = await import("../../core/agents/registry.js");
+    // `add` is the CLI/IPC boundary, so the descriptor is always untrusted:
+    // the §6.2 inherit-source/containment gate runs fail-closed before the
+    // descriptor is allowed to reach disk.
+    try {
+      const result = await registerDescriptor(descriptor as LooseRecord, { trusted: false });
+      if (args.includes("--json")) {
+        console.log(JSON.stringify({ registered: result }, null, 2));
+      } else {
+        console.log(`Registered agent '${result.name}' → ${result.path}`);
+      }
+      return 0;
+    } catch (err) {
+      console.error(`Failed to register descriptor: ${(err as Error).message}`);
+      return 1;
+    }
   }
 
   if (command === "detect") {

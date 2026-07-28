@@ -126,3 +126,47 @@ export function assertValidSetupAgentCatalog(agents: LooseRecord[]) {
   }
   return agents;
 }
+
+/**
+ * Cross-catalog invariant (B4): for every agent that exists in BOTH the
+ * provider-capability descriptor catalog (`core/agents/descriptors/*.json`,
+ * keyed by `name`) and the setup manifest catalog (keyed by `id`), every
+ * descriptor `defaultRoles` entry (the roles that drive agent routing) must
+ * also appear in the manifest `roles` array (the roles the agent advertises).
+ *
+ * `defaultRoles` (routing) and `roles` (advertised) are deliberately kept as
+ * distinct fields — a descriptor may route an agent to a role only when the
+ * manifest claims competence at that role. The invariant is one-directional:
+ * `defaultRoles ⊆ roles`. Manifests are free to advertise roles that no
+ * descriptor routes by default.
+ *
+ * `descriptorRoles` maps descriptor name → its `defaultRoles` strings. Agents
+ * without a matching descriptor entry are skipped (the invariant only binds
+ * agents present in both catalogs). Returns `{ valid, errors }`; purely
+ * declarative — no I/O — so callers (agent-catalog) own loading the
+ * descriptor side and deciding whether a violation throws or is reported.
+ */
+export function validateDefaultRolesSubset(
+  agents: LooseRecord[],
+  descriptorRoles: Map<string, string[]>,
+): { valid: boolean; errors: string[] } {
+  const errors: string[] = [];
+  if (!Array.isArray(agents)) return { valid: true, errors };
+  for (const agent of agents) {
+    const id = typeof agent?.id === "string" ? agent.id : "";
+    if (!id) continue;
+    const declared = descriptorRoles.get(id);
+    if (!declared || declared.length === 0) continue; // no descriptor → invariant N/A
+    const advertised = Array.isArray(agent.roles)
+      ? agent.roles.filter((r: unknown) => typeof r === "string").map((r) => String(r))
+      : [];
+    for (const role of declared) {
+      if (!advertised.includes(role)) {
+        errors.push(
+          `agent '${id}' descriptor defaultRoles include '${role}' but manifest roles ${JSON.stringify(advertised)} do not; defaultRoles must be a subset of roles`,
+        );
+      }
+    }
+  }
+  return { valid: errors.length === 0, errors };
+}

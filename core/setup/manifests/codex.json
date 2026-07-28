@@ -5,7 +5,7 @@
   "binary": "codex",
   "tier": 1,
   "recommended": true,
-  "roles": ["planner", "verifier", "executor"],
+  "roles": ["planner", "verifier", "reviewer", "executor"],
   "capabilities": ["repo_inspect", "file_edit", "shell", "verify", "pr_review"],
   "sourceUrl": "https://github.com/openai/codex/blob/main/codex-rs/README.md",
   "install": {

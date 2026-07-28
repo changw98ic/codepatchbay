@@ -726,7 +726,98 @@ function assertTrustedInheritSource(fromResolved: string, parentEnv: StringRecor
   }
 }
 
-type InheritFileEntry = { from: string; to: string; maxBytes?: number };
+export type InheritFileEntry = { from: string; to: string; maxBytes?: number };
+type ResolvedInheritEntry = { fromResolved: string; toResolved: string; maxBytes: number };
+
+/**
+ * Resolve + gate a single `quarantineFiles` entry against `targetHome` (pure
+ * path math, no I/O). Throws fail-closed if the entry is malformed or its
+ * resolved target escapes `targetHome` (§6.2 `to` containment).
+ */
+function resolveQuarantineEntry(entry: unknown, targetHome: string): string {
+  if (typeof entry !== "string" || !entry) {
+    throw isolationError(
+      "quarantineFiles entry must be a non-empty string",
+      "CPB_AGENT_HOME_INHERIT_ENTRY_INVALID",
+    );
+  }
+  return resolveInheritTarget(entry, targetHome);
+}
+
+/**
+ * Resolve + gate a single `inheritFiles` entry (pure path math, no I/O).
+ * Substitutes `$CODEX_HOME`/`$HOME` into `from`, canonicalizes `to` under
+ * `targetHome`, clamps `maxBytes` to `MAX_INHERITED_AUTH_BYTES`, and — for
+ * untrusted descriptors — runs the §6.2 source gate (trusted-env-root +
+ * credential-filename allowlist). Throws fail-closed on any violation.
+ */
+function resolveInheritEntry(
+  entry: unknown,
+  parentEnv: StringRecord,
+  targetHome: string,
+  { trusted }: { trusted: boolean },
+): ResolvedInheritEntry {
+  if (!entry || typeof entry !== "object") {
+    throw isolationError(
+      "inheritFiles entry must be an object with from/to",
+      "CPB_AGENT_HOME_INHERIT_ENTRY_INVALID",
+    );
+  }
+  const record = entry as { from?: unknown; to?: unknown; maxBytes?: unknown };
+  const from = typeof record.from === "string" ? record.from : "";
+  const to = typeof record.to === "string" ? record.to : "";
+  if (!from || !to) {
+    throw isolationError(
+      "inheritFiles entry missing from/to",
+      "CPB_AGENT_HOME_INHERIT_ENTRY_INVALID",
+    );
+  }
+  const declaredMax = typeof record.maxBytes === "number" && Number.isFinite(record.maxBytes) && record.maxBytes > 0
+    ? Math.floor(record.maxBytes)
+    : MAX_INHERITED_AUTH_BYTES;
+  const maxBytes = Math.min(declaredMax, MAX_INHERITED_AUTH_BYTES);
+
+  const fromResolved = substituteInheritPath(from, parentEnv);
+  const toResolved = resolveInheritTarget(to, targetHome);
+
+  if (!trusted) {
+    assertTrustedInheritSource(fromResolved, parentEnv);
+  }
+  return { fromResolved, toResolved, maxBytes };
+}
+
+/**
+ * Validate every `inheritFiles` / `quarantineFiles` entry declared by a
+ * descriptor against the §6.2 security gate WITHOUT performing any copy or
+ * isolation (no filesystem I/O). Shared between `inheritFilesIntoHome` (runtime
+ * copy) and `registerDescriptor` (registration-time validation) so the gate has
+ * a single source of truth. Throws fail-closed on the first violation.
+ *
+ * `targetHome` is any concrete directory used to validate `to` containment;
+ * because `$HOME` / `$HOME/...` templates are rewritten relative to it and
+ * absolute / `..` escapes are rejected by `assertContained`, the accept/reject
+ * decision for a template is identical regardless of which concrete root is
+ * supplied — callers that have no real isolated HOME yet (registration) may
+ * pass a placeholder directory.
+ */
+export function assertInheritFilesSafe(
+  descriptor: {
+    inheritFiles?: InheritFileEntry[];
+    quarantineFiles?: string[];
+  },
+  parentEnv: StringRecord,
+  targetHome: string,
+  { trusted = false }: { trusted?: boolean } = {},
+): void {
+  const quarantine = Array.isArray(descriptor.quarantineFiles) ? descriptor.quarantineFiles : [];
+  for (const entry of quarantine) {
+    resolveQuarantineEntry(entry, targetHome);
+  }
+  const files = Array.isArray(descriptor.inheritFiles) ? descriptor.inheritFiles : [];
+  for (const entry of files) {
+    resolveInheritEntry(entry, parentEnv, targetHome, { trusted });
+  }
+}
 
 /**
  * Descriptor-driven HOME inheritance (B2b, RFC §6.2). Replaces the
@@ -742,6 +833,9 @@ type InheritFileEntry = { from: string; to: string; maxBytes?: number };
  * `trusted` selects between builtin descriptors (CPB-authored, source allowlist
  * skipped) and user-registered/auto-discovered descriptors (§6.2 source gate
  * enforced, fail-closed on violation). `to` containment is enforced for both.
+ * Gate logic is shared with `assertInheritFilesSafe` (registration-time) via
+ * `resolveQuarantineEntry` / `resolveInheritEntry` so the runtime copy path and
+ * the registration validation path cannot drift.
  */
 export async function inheritFilesIntoHome(
   targetHome: string,
@@ -754,43 +848,18 @@ export async function inheritFilesIntoHome(
 ): Promise<void> {
   const quarantine = Array.isArray(descriptor.quarantineFiles) ? descriptor.quarantineFiles : [];
   for (const entry of quarantine) {
-    if (typeof entry !== "string" || !entry) {
-      throw isolationError(
-        "quarantineFiles entry must be a non-empty string",
-        "CPB_AGENT_HOME_INHERIT_ENTRY_INVALID",
-      );
-    }
-    const target = resolveInheritTarget(entry, targetHome);
+    const target = resolveQuarantineEntry(entry, targetHome);
     await isolateOwnedRegularFileNoFollow(target);
   }
 
   const files = Array.isArray(descriptor.inheritFiles) ? descriptor.inheritFiles : [];
   for (const entry of files) {
-    if (!entry || typeof entry !== "object") {
-      throw isolationError(
-        "inheritFiles entry must be an object with from/to",
-        "CPB_AGENT_HOME_INHERIT_ENTRY_INVALID",
-      );
-    }
-    const from = typeof entry.from === "string" ? entry.from : "";
-    const to = typeof entry.to === "string" ? entry.to : "";
-    if (!from || !to) {
-      throw isolationError(
-        "inheritFiles entry missing from/to",
-        "CPB_AGENT_HOME_INHERIT_ENTRY_INVALID",
-      );
-    }
-    const declaredMax = typeof entry.maxBytes === "number" && Number.isFinite(entry.maxBytes) && entry.maxBytes > 0
-      ? Math.floor(entry.maxBytes)
-      : MAX_INHERITED_AUTH_BYTES;
-    const maxBytes = Math.min(declaredMax, MAX_INHERITED_AUTH_BYTES);
-
-    const fromResolved = substituteInheritPath(from, parentEnv);
-    const toResolved = resolveInheritTarget(to, targetHome);
-
-    if (!trusted) {
-      assertTrustedInheritSource(fromResolved, parentEnv);
-    }
+    const { fromResolved, toResolved, maxBytes } = resolveInheritEntry(
+      entry,
+      parentEnv,
+      targetHome,
+      { trusted },
+    );
     await copyRegularFileNoFollow(fromResolved, toResolved, maxBytes);
   }
 }
