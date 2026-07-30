@@ -402,7 +402,7 @@ try {
       await runTests(parallelUnitFiles, { label: "unit tests (fast)" });
     }
     if (slowUnitTestFiles.length > 0) {
-      await runTests(slowUnitTestFiles, { concurrency: 2, label: "unit tests (slow)" });
+      await runTests(slowUnitTestFiles, { concurrency: 1, label: "unit tests (slow)" });
     }
     if (isolatedUnitTestFiles.length > 0) {
       await runTests(isolatedUnitTestFiles, { concurrency: 1, label: "isolated unit tests" });
