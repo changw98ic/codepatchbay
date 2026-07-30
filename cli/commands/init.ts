@@ -140,6 +140,7 @@ export async function initProject(args: string[], { cpbRoot, executorRoot }: Loo
   const registered = await registerProject(hubRoot, {
     name: projectName,
     sourcePath: resolvedPath,
+    cpbRoot,
     skipLocalCodeIndexGate: !localCodeIndexReady,
   });
   if (!registered?.projectRuntimeRoot) {
