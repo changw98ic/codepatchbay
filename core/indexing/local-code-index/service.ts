@@ -276,6 +276,11 @@ export async function ensureLocalCodeIndex(
     signal,
   } = options;
 
+  // A pre-aborted request must not start ast-grep merely to discover its
+  // version and then kill that child. Reject before any filesystem authority
+  // acquisition or subprocess creation.
+  signal?.throwIfAborted();
+
   // ── Resolve storage root and keys ─────────────────────────────────────
   const canonicalSource = await validateSourcePath(sourcePath);
   const storageRoot = await resolveStorageRoot(cpbRoot, canonicalSource);
