@@ -1,0 +1,25 @@
+{
+  "name": "gemini",
+  "displayName": "Gemini (dogfood)",
+  "command": "gemini-acp",
+  "fallbackCommand": "npx",
+  "fallbackArgs": ["-y", "@agentclientprotocol/gemini-acp"],
+  "envPrefix": "CPB_ACP_GEMINI",
+  "protocol": "acp",
+  "lifecycle": "one-shot",
+  "stability": "experimental",
+  "providerFamily": "gemini",
+  "tieBreakPriority": 60,
+  "sandboxPolicy": "cpb-required",
+  "defaultRoles": ["executor"],
+  "capabilities": ["plan", "execute", "verify", "review"],
+  "provider": {
+    "key": "gemini",
+    "family": "gemini",
+    "credentialEnv": ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
+  },
+  "inheritFiles": [
+    { "from": "$HOME/.gemini/auth.json", "to": "$HOME/.gemini/auth.json", "maxBytes": 1048576 }
+  ],
+  "quarantineFiles": []
+}

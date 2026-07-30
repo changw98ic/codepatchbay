@@ -366,24 +366,6 @@ test("npm-pack E2E binds nested npm runtime bytes and detects same-size mutation
   assert.throws(() => authority.dispose(), /execution bytes changed/);
 });
 
-test("npm-pack E2E detects replacement of the bound codegraph runtime shim", async (t) => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "cpb-e2e-codegraph-shim-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  const runtimeBin = path.join(root, "bin");
-  await mkdir(runtimeBin, { mode: 0o700 });
-  const target = path.join(root, "codegraph.js");
-  const replacement = path.join(root, "replacement.js");
-  await writeFile(target, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
-  await writeFile(replacement, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
-  const canonicalBin = await realpath(runtimeBin);
-  const authority = bindTrustedToolShim(canonicalBin, "codegraph", await realpath(target));
-  authority.validate();
-  await rename(path.join(canonicalBin, "codegraph"), path.join(root, "displaced-codegraph-shim"));
-  await symlink(await realpath(replacement), path.join(canonicalBin, "codegraph"));
-  assert.throws(() => authority.validate(), /tool shim changed/);
-  assert.throws(() => authority.dispose(), /tool shim changed/);
-});
-
 test("npm-pack E2E rejects wrong lock SRI and locally tampered bundled dependency bytes", () => {
   const registryManifest: PackedTreeManifest = {
     schemaVersion: 1,

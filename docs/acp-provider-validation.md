@@ -89,13 +89,9 @@ Headless `codex-acp` launches receive process-local config overrides that
 disable Computer Use, Browser, Chrome plugins, and clear notify hooks. Global
 Codex config is never modified.
 
-Codex ACP cannot accept non-empty `session/new.mcpServers`, so CPB still sends
-`mcpServers: []` for Codex sessions in both headless and UI lanes. Built-in
-CodeGraph is mounted through process-local Codex config instead: CPB launches
-`codex-acp` with
-`mcp_servers.codegraph.*` overrides that bridge the CodeGraph SSE endpoint through
-`supergateway`. Other ACP providers continue to receive CodeGraph through
-`session/new.mcpServers`.
+CPB sends `mcpServers: []` for normal Codex sessions in both headless and UI
+lanes. Repository indexing is file-backed and handled by CPB before agent
+execution; no index MCP server is injected into any provider session.
 
 At runtime, headless sessions deny Computer Use, Browser, Chrome, desktop
 automation, and MCP-shaped UI tool calls before side effects occur. Every

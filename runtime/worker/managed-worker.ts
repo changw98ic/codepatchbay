@@ -11,10 +11,8 @@
  *   - assignment-finalizer.js : PR/review bundle finalization + result persistence
  */
 
-import { AsyncLocalStorage } from "node:async_hooks";
-import { readFile, mkdir, writeFile, readdir, realpath, rename, stat, lstat } from "node:fs/promises";
-import { execFile as _execFile, spawn as _spawn, type ChildProcess } from "node:child_process";
-import { isDeepStrictEqual, promisify } from "node:util";
+import { readFile, mkdir, writeFile, readdir, realpath, lstat } from "node:fs/promises";
+import { isDeepStrictEqual } from "node:util";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
 import os from "node:os";
@@ -45,16 +43,9 @@ import { WorkerBrokerClient } from "../../shared/orchestrator/worker-broker-clie
 import { FailureKind } from "../../core/contracts/failure.js";
 import {
   captureProcessIdentity,
-  isProcessIdentityAlive,
-  killTree,
-  sameProcessIdentity,
   type ProcessIdentity,
 } from "../../core/runtime/process-tree.js";
-import {
-  readBoundedRegularFileNoFollow,
-  type BoundedRegularFileReadHooks,
-} from "../../core/runtime/durable-directory-lock.js";
-import { fsyncDirectory } from "../../shared/hub-maintenance.js";
+import { readBoundedRegularFileNoFollow } from "../../core/runtime/durable-directory-lock.js";
 import {
   validatedFinalizerCandidate,
   verifyFinalizerCandidateCommit,
@@ -77,8 +68,6 @@ import {
   type FinalizerMutationFence,
 } from "./assignment-finalizer.js";
 
-const execFileAsync = promisify(_execFile);
-
 const POLL_MS = 5_000;
 const HEARTBEAT_MS = 10_000;
 const CANCEL_POLL_MS = 1_000;
@@ -86,62 +75,10 @@ const WATCHER_CLOSE_TIMEOUT_MS = 2_000;
 const PRODUCT_VALIDATION_KEEP_WORKTREE_ENV = "CPB_PRODUCT_VALIDATION_KEEP_WORKTREE";
 const WORKER_EXIT_ON_IDLE_ENV = "CPB_WORKER_EXIT_ON_IDLE";
 const WORKER_IDLE_EXIT_MS_ENV = "CPB_WORKER_IDLE_EXIT_MS";
-const CODEGRAPH_STOP_TIMEOUT_MS = 2_000;
-const CODEGRAPH_STATE_MAX_BYTES = 64 * 1024;
 const TERMINAL_RESULT_MAX_BYTES = 16 * 1024 * 1024;
-const CODEGRAPH_CLEANUP_PROOF_GENERATOR = "runtime/worker/managed-worker.ts#stopAssignmentCodeGraphRuntime";
 const FINALIZER_RECOVERY_SCHEMA = "cpb.finalizer-recovery.v1";
 const FINALIZER_HANDOFF_SCHEMA = "cpb.finalizer-handoff.v1";
 const FINALIZER_HANDOFF_EVIDENCE_SCHEMA = "cpb.finalizer-handoff-evidence.v1";
-
-type WorktreeCodeGraphLog = Pick<ReturnType<typeof createLogger>, "info" | "warn">;
-
-export type WorktreeCodeGraphRuntime = {
-  pid: number;
-  processPid: number;
-  statePath: string;
-  evidence: LooseRecord;
-  stop: () => Promise<WorktreeCodeGraphCleanupProof>;
-};
-
-export type WorktreeCodeGraphStartupProof = {
-  ok: true;
-  source: string;
-  pid: number;
-  processPid: number;
-  statePath: string;
-  startedAt: string;
-  readyAt: string;
-};
-
-export type WorktreeCodeGraphCleanupProof = {
-  ok: true;
-  cleanupVerified: true;
-  processTreeStopped: true;
-  stateRemoved: true;
-  statePath: string;
-  worktreePath: string;
-  startup: WorktreeCodeGraphStartupProof;
-  startupSource: string;
-  pid: number;
-  processPid: number;
-  cleanupStartedAt: string;
-  cleanupCompletedAt: string;
-};
-
-type AssignmentCodeGraphCleanupProof = WorktreeCodeGraphCleanupProof & {
-  generator: typeof CODEGRAPH_CLEANUP_PROOF_GENERATOR;
-  assignmentId: string;
-  attempt: number;
-  attemptToken: string;
-  orchestratorEpoch?: number;
-  entryId: string;
-  projectId: string;
-  jobId: string;
-  workerId: string;
-  context: "before_terminal_publication" | "assignment_cleanup";
-  cleanupAttempt: number;
-};
 
 export function executionLeaseRenewalLost({
   renewed,
@@ -315,773 +252,7 @@ async function closeWatcherBounded(
   if (timedOut) log.warn(`watcher close timed out after ${WATCHER_CLOSE_TIMEOUT_MS}ms; continuing shutdown`);
 }
 
-async function waitForChildExit(child: ChildProcess, timeoutMs: number) {
-  if (child.exitCode !== null || child.signalCode !== null) return true;
-  return await new Promise<boolean>((resolve) => {
-    const onExit = () => {
-      clearTimeout(timer);
-      resolve(true);
-    };
-    const timer = setTimeout(() => {
-      child.off("exit", onExit);
-      resolve(false);
-    }, timeoutMs);
-    child.once("exit", onExit);
-  });
-}
 
-type CodeGraphDaemonState = {
-  pid: number;
-  codebaseRoot: string;
-  socketPath: string | null;
-  source: string;
-  processIdentity: ProcessIdentity;
-};
-
-type CodeGraphStateGeneration = {
-  dev: number | bigint;
-  ino: number | bigint;
-  size: number;
-  mtimeMs: number;
-  ctimeMs: number;
-  birthtimeMs: number;
-};
-
-type CodeGraphDaemonStateSnapshot = {
-  state: CodeGraphDaemonState;
-  generation: CodeGraphStateGeneration;
-};
-
-export type CodeGraphStateTestHooks = {
-  boundedRead?: BoundedRegularFileReadHooks;
-  afterStaleStateObserved?: (context: { statePath: string }) => void | Promise<void>;
-  afterStateQuarantineRename?: (context: {
-    statePath: string;
-    quarantinePath: string;
-  }) => void | Promise<void>;
-  syncDirectory?: (context: {
-    directory: string;
-    phase: "quarantine-rename" | "quarantine-remove";
-  }) => void | Promise<void>;
-};
-
-const codeGraphStateTestHookStorage = new AsyncLocalStorage<CodeGraphStateTestHooks>();
-
-export function withCodeGraphStateTestHooksForTests<T>(hooks: CodeGraphStateTestHooks, operation: () => T): T {
-  const parent = codeGraphStateTestHookStorage.getStore();
-  return codeGraphStateTestHookStorage.run(parent ? { ...parent, ...hooks } : hooks, operation);
-}
-
-function codeGraphStateTestHooks() {
-  return codeGraphStateTestHookStorage.getStore() || {};
-}
-
-function codeGraphStateError(message: string, code = "codegraph_state_invalid", cause?: unknown) {
-  return Object.assign(new Error(message, cause === undefined ? undefined : { cause }), { code });
-}
-
-async function waitForProcessIdentityExit(identity: ProcessIdentity, timeoutMs: number) {
-  const deadline = Date.now() + timeoutMs;
-  while (isProcessIdentityAlive(identity) && Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
-  return !isProcessIdentityAlive(identity);
-}
-
-async function verifyPathRemoved(targetPath: string) {
-  try {
-    await stat(targetPath);
-    return false;
-  } catch (error: unknown) {
-    if ((error as { code?: unknown })?.code === "ENOENT") return true;
-    throw Object.assign(new Error(`CodeGraph state removal check failed for ${targetPath}: ${error instanceof Error ? error.message : String(error)}`), {
-      code: "codegraph_cleanup_failed",
-    });
-  }
-}
-
-function parseStoredProcessIdentity(value: unknown, expectedPid: number): ProcessIdentity | null {
-  const record = recordValue(value);
-  const pid = Number(record.pid);
-  const birthId = typeof record.birthId === "string" ? record.birthId : "";
-  const incarnation = typeof record.incarnation === "string" ? record.incarnation : "";
-  const capturedAt = typeof record.capturedAt === "string" ? record.capturedAt : "";
-  const birthIdPrecision = typeof record.birthIdPrecision === "string" ? record.birthIdPrecision : undefined;
-  const processGroupId = Number(record.processGroupId);
-  if (
-    !Number.isSafeInteger(pid)
-    || pid <= 0
-    || pid !== expectedPid
-    || !birthId
-    || !capturedAt
-    || !Number.isFinite(Date.parse(capturedAt))
-    || new Date(Date.parse(capturedAt)).toISOString() !== capturedAt
-    || incarnation !== `${pid}:${birthId}`
-    || birthIdPrecision !== "exact"
-    || (record.processGroupId !== undefined && (!Number.isSafeInteger(processGroupId) || processGroupId <= 0))
-  ) return null;
-  const identity: ProcessIdentity = {
-    pid,
-    birthId,
-    incarnation,
-    capturedAt,
-    birthIdPrecision: "exact",
-  };
-  if (Number.isSafeInteger(processGroupId) && processGroupId > 0) identity.processGroupId = processGroupId;
-  return identity;
-}
-
-function codeGraphStateGeneration(info: CodeGraphStateGeneration): CodeGraphStateGeneration {
-  return {
-    dev: info.dev,
-    ino: info.ino,
-    size: info.size,
-    mtimeMs: info.mtimeMs,
-    ctimeMs: info.ctimeMs,
-    birthtimeMs: info.birthtimeMs,
-  };
-}
-
-function sameCodeGraphStateGeneration(left: CodeGraphStateGeneration, right: CodeGraphStateGeneration) {
-  return String(left.dev) === String(right.dev)
-    && String(left.ino) === String(right.ino)
-    && left.size === right.size
-    && left.mtimeMs === right.mtimeMs
-    && left.ctimeMs === right.ctimeMs
-    && left.birthtimeMs === right.birthtimeMs;
-}
-
-function sameCodeGraphStateAcrossRename(left: CodeGraphStateGeneration, right: CodeGraphStateGeneration) {
-  return String(left.dev) === String(right.dev)
-    && String(left.ino) === String(right.ino)
-    && left.size === right.size
-    && left.mtimeMs === right.mtimeMs
-    && left.birthtimeMs === right.birthtimeMs;
-}
-
-function sameCodeGraphDaemonState(left: CodeGraphDaemonState, right: CodeGraphDaemonState) {
-  return left.pid === right.pid
-    && left.codebaseRoot === right.codebaseRoot
-    && left.socketPath === right.socketPath
-    && left.source === right.source
-    && sameProcessIdentity(left.processIdentity, right.processIdentity);
-}
-
-async function readPinnedCodeGraphState(filePath: string) {
-  const before = await lstat(filePath);
-  const content = await readBoundedRegularFileNoFollow(filePath, {
-    maxBytes: CODEGRAPH_STATE_MAX_BYTES,
-    hooks: codeGraphStateTestHooks().boundedRead,
-  });
-  const after = await lstat(filePath);
-  if (
-    !before.isFile()
-    || before.isSymbolicLink()
-    || !after.isFile()
-    || after.isSymbolicLink()
-    || !sameCodeGraphStateGeneration(before, after)
-  ) {
-    throw codeGraphStateError(`CodeGraph state generation changed while reading: ${filePath}`);
-  }
-  return { content, generation: codeGraphStateGeneration(after) };
-}
-
-async function syncCodeGraphStateDirectory(
-  directory: string,
-  phase: "quarantine-rename" | "quarantine-remove",
-) {
-  await codeGraphStateTestHooks().syncDirectory?.({ directory, phase });
-  await fsyncDirectory(directory);
-}
-
-function codeGraphStateRecoveryError(
-  message: string,
-  cause: unknown,
-  metadata: Record<string, unknown>,
-) {
-  return Object.assign(new Error(message, { cause }), { code: "codegraph_runtime_failed", ...metadata });
-}
-
-async function removeStaleCodeGraphState(
-  statePath: string,
-  canonicalWorktreePath: string,
-  expectedState?: CodeGraphDaemonState,
-) {
-  let observed: CodeGraphDaemonStateSnapshot | null;
-  try {
-    observed = await readCodeGraphDaemonStateSnapshot(statePath, canonicalWorktreePath);
-  } catch (error: unknown) {
-    if ((error as { code?: unknown })?.code === "ENOENT") return;
-    throw Object.assign(new Error(`stale CodeGraph state cleanup failed for ${statePath}: ${error instanceof Error ? error.message : String(error)}`, {
-      cause: error,
-    }), {
-      code: "codegraph_runtime_failed",
-    });
-  }
-  if (!observed) return;
-  if (expectedState && !sameCodeGraphDaemonState(expectedState, observed.state)) {
-    throw codeGraphStateRecoveryError(
-      `CodeGraph state successor preserved instead of removing owned state: ${statePath}`,
-      codeGraphStateError(`CodeGraph state no longer matches the owned runtime: ${statePath}`),
-      {
-        committed: false,
-        successorPreserved: true,
-        recoveryPaths: { canonical: statePath },
-      },
-    );
-  }
-  if (isProcessIdentityAlive(observed.state.processIdentity)) {
-    throw Object.assign(new Error(`CodeGraph state belongs to a live process incarnation: ${observed.state.processIdentity.incarnation}`), {
-      code: "codegraph_runtime_failed",
-    });
-  }
-  await codeGraphStateTestHooks().afterStaleStateObserved?.({ statePath });
-
-  let current: CodeGraphDaemonStateSnapshot | null;
-  try {
-    current = await readCodeGraphDaemonStateSnapshot(statePath, canonicalWorktreePath);
-  } catch (error: unknown) {
-    throw codeGraphStateRecoveryError(
-      `stale CodeGraph state changed before quarantine: ${statePath}`,
-      error,
-      {
-        committed: false,
-        successorPreserved: true,
-        recoveryPaths: { canonical: statePath },
-      },
-    );
-  }
-  if (!current) return;
-  if (
-    !sameCodeGraphStateGeneration(observed.generation, current.generation)
-    || !sameCodeGraphDaemonState(observed.state, current.state)
-  ) {
-    throw codeGraphStateRecoveryError(
-      `stale CodeGraph state successor preserved before quarantine: ${statePath}`,
-      codeGraphStateError(`CodeGraph state generation changed before quarantine: ${statePath}`),
-      {
-        committed: false,
-        successorPreserved: true,
-        recoveryPaths: { canonical: statePath },
-      },
-    );
-  }
-
-  const quarantinePath = `${statePath}.stale-${process.pid}-${crypto.randomUUID()}`;
-  const directory = path.dirname(statePath);
-  try {
-    await rename(statePath, quarantinePath);
-  } catch (error: unknown) {
-    if ((error as { code?: unknown })?.code === "ENOENT") return;
-    throw codeGraphStateRecoveryError(
-      `stale CodeGraph state quarantine failed: ${statePath}`,
-      error,
-      {
-        committed: false,
-        recoveryPaths: { canonical: statePath },
-      },
-    );
-  }
-
-  try {
-    await syncCodeGraphStateDirectory(directory, "quarantine-rename");
-  } catch (error) {
-    throw codeGraphStateRecoveryError(
-      `stale CodeGraph state quarantine committed with ambiguous durability: ${statePath}`,
-      error,
-      {
-        committed: true,
-        renameCommitted: true,
-        removalCommitted: false,
-        committedPath: quarantinePath,
-        quarantinePreserved: true,
-        recoveryPaths: { canonical: statePath, quarantine: quarantinePath },
-      },
-    );
-  }
-
-  let renamedGeneration: CodeGraphStateGeneration;
-  try {
-    const renamed = await lstat(quarantinePath);
-    if (!renamed.isFile() || renamed.isSymbolicLink() || !sameCodeGraphStateAcrossRename(current.generation, renamed)) {
-      throw codeGraphStateError(`CodeGraph state generation changed during quarantine rename: ${quarantinePath}`);
-    }
-    renamedGeneration = codeGraphStateGeneration(renamed);
-    await codeGraphStateTestHooks().afterStateQuarantineRename?.({ statePath, quarantinePath });
-    const moved = await readCodeGraphDaemonStateSnapshot(quarantinePath, canonicalWorktreePath);
-    if (
-      !moved
-      || !sameCodeGraphStateGeneration(renamedGeneration, moved.generation)
-      || !sameCodeGraphDaemonState(current.state, moved.state)
-    ) {
-      throw codeGraphStateError(`CodeGraph state changed after quarantine rename: ${quarantinePath}`);
-    }
-  } catch (error) {
-    throw codeGraphStateRecoveryError(
-      `stale CodeGraph state quarantine preserved after verification failure: ${quarantinePath}`,
-      error,
-      {
-        committed: true,
-        renameCommitted: true,
-        removalCommitted: false,
-        committedPath: quarantinePath,
-        quarantinePreserved: true,
-        recoveryPaths: { canonical: statePath, quarantine: quarantinePath },
-      },
-    );
-  }
-
-  try {
-    await lstat(statePath);
-    throw codeGraphStateError(`CodeGraph state successor appeared during quarantine: ${statePath}`);
-  } catch (error: unknown) {
-    if ((error as { code?: unknown })?.code !== "ENOENT") {
-      throw codeGraphStateRecoveryError(
-        `stale CodeGraph state successor and quarantine preserved: ${statePath}`,
-        error,
-        {
-          committed: true,
-          renameCommitted: true,
-          removalCommitted: false,
-          committedPath: quarantinePath,
-          quarantinePreserved: true,
-          successorPreserved: true,
-          recoveryPaths: { canonical: statePath, quarantine: quarantinePath },
-        },
-      );
-    }
-  }
-
-  // Node does not expose unlinkat(2) with a pinned directory descriptor. Keep
-  // the verified, randomly named quarantine as recovery evidence instead of
-  // reintroducing a check-then-unlink window that could delete a successor.
-}
-
-export const _removeStaleCodeGraphStateForTests = removeStaleCodeGraphState;
-
-async function readCodeGraphDaemonStateSnapshot(
-  statePath: string,
-  canonicalWorktreePath: string,
-  { allowChildIdentity }: { allowChildIdentity?: ProcessIdentity } = {},
-): Promise<CodeGraphDaemonStateSnapshot | null> {
-  try {
-    const pinned = await readPinnedCodeGraphState(statePath);
-    const state = JSON.parse(pinned.content) as LooseRecord;
-    const pid = Number(state.pid);
-    if (!Number.isSafeInteger(pid) || pid <= 0) {
-      throw codeGraphStateError(`CodeGraph state has an invalid pid: ${statePath}`);
-    }
-    const codebaseRoot = typeof state.codebaseRoot === "string"
-      ? await realpath(state.codebaseRoot)
-      : "";
-    if (codebaseRoot !== canonicalWorktreePath) {
-      throw codeGraphStateError(`CodeGraph state is bound to a different worktree: ${statePath}`);
-    }
-    let processIdentity = parseStoredProcessIdentity(state.processIdentity, pid);
-    if (!processIdentity && allowChildIdentity && pid === allowChildIdentity.pid) {
-      const current = captureProcessIdentity(pid, { strict: true });
-      if (sameProcessIdentity(current, allowChildIdentity)) processIdentity = allowChildIdentity;
-    }
-    if (!processIdentity) {
-      throw codeGraphStateError(`CodeGraph state has no verifiable process identity: ${statePath}`);
-    }
-    return {
-      state: {
-        pid,
-        codebaseRoot,
-        socketPath: typeof state.socketPath === "string" ? state.socketPath : null,
-        source: typeof state.source === "string" ? state.source : "codegraph_daemon",
-        processIdentity,
-      },
-      generation: pinned.generation,
-    };
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") return null;
-    if (error instanceof SyntaxError) {
-      throw codeGraphStateError(`CodeGraph state contains invalid JSON: ${statePath}`, "codegraph_state_invalid", error);
-    }
-    throw error;
-  }
-}
-
-async function readCodeGraphDaemonState(
-  statePath: string,
-  canonicalWorktreePath: string,
-  options: { allowChildIdentity?: ProcessIdentity } = {},
-): Promise<CodeGraphDaemonState | null> {
-  return (await readCodeGraphDaemonStateSnapshot(statePath, canonicalWorktreePath, options))?.state ?? null;
-}
-
-async function waitForCodeGraphDaemonState({
-  statePath,
-  canonicalWorktreePath,
-  child,
-  childIdentity,
-  timeoutMs,
-}: {
-  statePath: string;
-  canonicalWorktreePath: string;
-  child: ChildProcess;
-  childIdentity: ProcessIdentity;
-  timeoutMs: number;
-}) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const state = await readCodeGraphDaemonState(statePath, canonicalWorktreePath, { allowChildIdentity: childIdentity });
-    if (state && isProcessIdentityAlive(state.processIdentity)) return state;
-    if (child.exitCode !== null || child.signalCode !== null) break;
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
-  return null;
-}
-
-type StopCodeGraphProcessTreeOptions = {
-  killProcessTree?: typeof killTree;
-  childIdentity?: ProcessIdentity;
-  processIdentityIsAlive?: typeof isProcessIdentityAlive;
-  waitForProcessIdentityExit?: typeof waitForProcessIdentityExit;
-};
-
-export async function stopCodeGraphProcessTree(
-  child: ChildProcess,
-  daemonIdentity: ProcessIdentity | null,
-  {
-    killProcessTree = killTree,
-    childIdentity,
-    processIdentityIsAlive = isProcessIdentityAlive,
-    waitForProcessIdentityExit: waitForIdentityExit = waitForProcessIdentityExit,
-  }: StopCodeGraphProcessTreeOptions = {},
-) {
-  child.stdin?.end();
-  if (child.pid && child.exitCode === null && child.signalCode === null) {
-    if (!childIdentity || childIdentity.pid !== child.pid) {
-      throw codeGraphStateError(`CodeGraph child process identity unavailable for pid ${child.pid}`, "codegraph_cleanup_failed");
-    }
-    await killProcessTree(child.pid, CODEGRAPH_STOP_TIMEOUT_MS, {
-      requireDescendantScan: true,
-      expectedRootIdentity: childIdentity,
-    });
-  }
-  const childExited = await waitForChildExit(child, CODEGRAPH_STOP_TIMEOUT_MS);
-
-  let daemonExited = !daemonIdentity || daemonIdentity.pid === child.pid
-    ? childExited
-    : false;
-  if (daemonIdentity && daemonIdentity.pid !== child.pid) {
-    await killProcessTree(daemonIdentity.pid, CODEGRAPH_STOP_TIMEOUT_MS, {
-      requireDescendantScan: true,
-      expectedRootIdentity: daemonIdentity,
-    });
-    daemonExited = await waitForIdentityExit(daemonIdentity, CODEGRAPH_STOP_TIMEOUT_MS);
-    if (!daemonExited || processIdentityIsAlive(daemonIdentity)) {
-      throw Object.assign(new Error(`CodeGraph daemon cleanup could not be verified for pid ${daemonIdentity.pid}`), {
-        code: "codegraph_cleanup_failed",
-      });
-    }
-  }
-
-  return childExited && daemonExited;
-}
-
-export async function cleanupStartingCodeGraphProcess(
-  pid: number,
-  identity: ProcessIdentity,
-  killProcessTree: typeof killTree = killTree,
-) {
-  if (identity.pid !== pid || !sameProcessIdentity(identity, identity)) {
-    throw codeGraphStateError(`CodeGraph starting process identity unavailable for pid ${pid}`, "codegraph_cleanup_failed");
-  }
-  await killProcessTree(pid, CODEGRAPH_STOP_TIMEOUT_MS, {
-    requireDescendantScan: true,
-    expectedRootIdentity: identity,
-  });
-}
-
-/**
- * Build a fresh worktree index and keep a real CodeGraph MCP process alive for
- * the exact worktree that prepareTask will inspect. The worktree-local state
- * avoids cross-assignment collisions in the shared CPB root and preserves the
- * normal fail-closed readiness contract (usable index + live matching PID).
- */
-export async function startWorktreeCodeGraphRuntime(
-  worktreePath: string | null | undefined,
-  {
-    env = process.env,
-    log = createLogger("worker-codegraph"),
-    onSpawn: onProcessSpawn,
-    stopProcessTree = stopCodeGraphProcessTree,
-    verifyStateRemoved: verifyStateRemovedFn = verifyPathRemoved,
-  }: {
-    env?: NodeJS.ProcessEnv;
-    log?: WorktreeCodeGraphLog;
-    onSpawn?: (pid: number, identity: ProcessIdentity) => void;
-    stopProcessTree?: typeof stopCodeGraphProcessTree;
-    verifyStateRemoved?: typeof verifyPathRemoved;
-  } = {},
-): Promise<WorktreeCodeGraphRuntime | null> {
-  if (!worktreePath || env.CPB_CODEGRAPH_ENABLED === "0" || env.CPB_WORKTREE_CODEGRAPH_INIT === "0") {
-    return null;
-  }
-
-  const canonicalWorktreePath = await realpath(worktreePath);
-  const timeout = Number.parseInt(env.CPB_WORKTREE_CODEGRAPH_INIT_TIMEOUT_MS || "600000", 10);
-  const timeoutMs = Number.isFinite(timeout) && timeout > 0 ? timeout : 600_000;
-  const startedAt = Date.now();
-  const startedAtIso = new Date(startedAt).toISOString();
-  let initStdout = "";
-  let initStderr = "";
-  try {
-    const initialized = await execFileAsync("codegraph", ["init", canonicalWorktreePath], {
-      cwd: canonicalWorktreePath,
-      env,
-      timeout: timeoutMs,
-      maxBuffer: 10 * 1024 * 1024,
-    });
-    initStdout = String(initialized.stdout || "");
-    initStderr = String(initialized.stderr || "");
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    log.warn(`codegraph init failed for worktree: ${message}`);
-    throw Object.assign(new Error(`CodeGraph init failed for worktree: ${message}`), {
-      code: "codegraph_init_failed",
-    });
-  }
-
-  const statePath = path.join(canonicalWorktreePath, ".codegraph", "daemon.pid");
-  await removeStaleCodeGraphState(statePath, canonicalWorktreePath);
-  let serverStderr = "";
-  const child = _spawn("codegraph", ["serve", "--mcp", "--path", canonicalWorktreePath], {
-    cwd: canonicalWorktreePath,
-    env,
-    detached: process.platform !== "win32",
-    stdio: ["pipe", "pipe", "pipe"],
-  });
-  child.stdout?.resume();
-  child.stderr?.on("data", (chunk: Buffer) => {
-    serverStderr = `${serverStderr}${chunk.toString("utf8")}`.slice(-2_000);
-  });
-  child.on("error", (error) => {
-    log.warn(`codegraph MCP process error: ${error.message}`);
-  });
-
-  let childIdentity: ProcessIdentity | null = null;
-  let daemonState: CodeGraphDaemonState | null = null;
-  try {
-    await new Promise<void>((resolve, reject) => {
-      const onSpawn = () => {
-        child.off("error", onError);
-        child.off("exit", onExit);
-        if (!child.pid) {
-          reject(new Error("CodeGraph MCP spawn completed without a pid"));
-          return;
-        }
-        try {
-          childIdentity = captureProcessIdentity(child.pid, { strict: true });
-          if (!childIdentity) throw new Error(`CodeGraph MCP process identity unavailable for pid ${child.pid}`);
-          onProcessSpawn?.(child.pid, childIdentity);
-          resolve();
-        } catch (error) {
-          reject(error);
-        }
-      };
-      const onError = (error: Error) => {
-        child.off("spawn", onSpawn);
-        child.off("exit", onExit);
-        reject(error);
-      };
-      const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
-        child.off("spawn", onSpawn);
-        child.off("error", onError);
-        reject(new Error(`CodeGraph MCP exited before readiness (code=${code}, signal=${signal || "none"})`));
-      };
-      child.once("spawn", onSpawn);
-      child.once("error", onError);
-      child.once("exit", onExit);
-    });
-
-    if (!child.pid) {
-      throw new Error(`CodeGraph MCP did not remain alive${serverStderr ? `: ${serverStderr}` : ""}`);
-    }
-    if (!childIdentity) {
-      throw new Error(`CodeGraph MCP process identity unavailable for pid ${child.pid}`);
-    }
-    const childPid = child.pid;
-    const serveTimeout = Number.parseInt(env.CPB_WORKTREE_CODEGRAPH_SERVE_TIMEOUT_MS || "10000", 10);
-    daemonState = await waitForCodeGraphDaemonState({
-      statePath,
-      canonicalWorktreePath,
-      child,
-      childIdentity,
-      timeoutMs: Number.isFinite(serveTimeout) && serveTimeout > 0 ? serveTimeout : 10_000,
-    });
-    if (!daemonState && child.exitCode === null && child.signalCode === null) {
-      // A degraded in-process server reports readiness on stderr instead of
-      // publishing daemon.pid. Give that explicit readiness frame a small,
-      // bounded delivery grace after the file-state deadline; under scheduler
-      // pressure the child can be spawned before its first stderr write runs.
-      const fallbackDeadline = Date.now() + 1_000;
-      while (
-        !/Shared daemon unavailable; serving this session in-process \(degraded\)/.test(serverStderr)
-        && child.exitCode === null
-        && child.signalCode === null
-        && Date.now() < fallbackDeadline
-      ) {
-        await new Promise((resolve) => setTimeout(resolve, 25));
-      }
-    }
-    if (!daemonState
-      && child.exitCode === null
-      && child.signalCode === null
-      && /Shared daemon unavailable; serving this session in-process \(degraded\)/.test(serverStderr)) {
-      daemonState = {
-        pid: childPid,
-        codebaseRoot: canonicalWorktreePath,
-        socketPath: null,
-        source: "managed_worker_mcp_in_process",
-        processIdentity: childIdentity,
-      };
-      await writeJsonAtomic(statePath, {
-        ...daemonState,
-        startedAt: new Date().toISOString(),
-      });
-    }
-    if (!daemonState) {
-      throw new Error(`CodeGraph daemon did not publish live readiness${serverStderr ? `: ${serverStderr}` : ""}`);
-    }
-    const readyDaemonState = daemonState;
-    const readyChildIdentity = childIdentity;
-    await writeJsonAtomic(statePath, {
-      ...readyDaemonState,
-      processIdentity: readyDaemonState.processIdentity,
-      startedAt: new Date().toISOString(),
-    });
-    const readyAt = Date.now();
-    const readyAtIso = new Date(readyAt).toISOString();
-
-    let stopped = false;
-    let stopProof: WorktreeCodeGraphCleanupProof | null = null;
-    let stopPromise: Promise<WorktreeCodeGraphCleanupProof> | null = null;
-    const stop = () => {
-      if (stopped && stopProof) return Promise.resolve(stopProof);
-      if (stopPromise) return stopPromise;
-
-      const attempt = (async () => {
-        const cleanupStartedAt = new Date().toISOString();
-        const processTreeStopped = await stopProcessTree(child, readyDaemonState.processIdentity, {
-          childIdentity: readyChildIdentity,
-        });
-        if (!processTreeStopped) {
-          throw Object.assign(new Error(`CodeGraph process cleanup failed for ${canonicalWorktreePath}`), {
-            code: "codegraph_cleanup_failed",
-          });
-        }
-        try {
-          await removeStaleCodeGraphState(statePath, canonicalWorktreePath, readyDaemonState);
-        } catch (error: unknown) {
-          throw Object.assign(new Error(
-            `CodeGraph state cleanup failed for ${canonicalWorktreePath}: ${error instanceof Error ? error.message : String(error)}`,
-            { cause: error },
-          ), {
-            code: "codegraph_cleanup_failed",
-          });
-        }
-        let stateRemoved: boolean;
-        try {
-          stateRemoved = await verifyStateRemovedFn(statePath);
-        } catch (error: unknown) {
-          throw Object.assign(new Error(
-            `CodeGraph state removal verification failed for ${canonicalWorktreePath}: ${error instanceof Error ? error.message : String(error)}`,
-          ), {
-            code: "codegraph_cleanup_failed",
-            cause: error,
-          });
-        }
-        if (!stateRemoved) {
-          throw Object.assign(new Error(`CodeGraph state cleanup did not remove ${statePath}`), {
-            code: "codegraph_cleanup_failed",
-          });
-        }
-        const cleanupCompletedAt = new Date().toISOString();
-        return {
-          ok: true,
-          cleanupVerified: true,
-          processTreeStopped: true,
-          stateRemoved: true,
-          statePath,
-          worktreePath: canonicalWorktreePath,
-          startup: {
-            ok: true,
-            source: readyDaemonState.source,
-            pid: readyDaemonState.pid,
-            processPid: childPid,
-            statePath,
-            startedAt: startedAtIso,
-            readyAt: readyAtIso,
-          },
-          startupSource: readyDaemonState.source,
-          pid: readyDaemonState.pid,
-          processPid: childPid,
-          cleanupStartedAt,
-          cleanupCompletedAt,
-        } satisfies WorktreeCodeGraphCleanupProof;
-      })();
-      stopPromise = attempt;
-      void attempt.then(
-        (proof) => {
-          stopped = true;
-          stopProof = proof;
-          if (stopPromise === attempt) stopPromise = null;
-        },
-        () => {
-          if (stopPromise === attempt) stopPromise = null;
-        },
-      );
-      return attempt;
-    };
-
-    log.info(`codegraph initialized and serving worktree in ${Date.now() - startedAt}ms`);
-    return {
-      pid: readyDaemonState.pid,
-      processPid: childPid,
-      statePath,
-      evidence: {
-        ok: true,
-        elapsedMs: Date.now() - startedAt,
-        startedAt: startedAtIso,
-        readyAt: readyAtIso,
-        pid: readyDaemonState.pid,
-        processPid: childPid,
-        source: readyDaemonState.source,
-        stdoutTail: initStdout.slice(-2_000),
-        stderrTail: initStderr.slice(-2_000),
-      },
-      stop,
-    };
-  } catch (err: unknown) {
-    let cleanupError: unknown = null;
-    try {
-      await stopCodeGraphProcessTree(child, daemonState?.processIdentity || null, {
-        ...(childIdentity ? { childIdentity } : {}),
-      });
-      if (daemonState) {
-        await removeStaleCodeGraphState(statePath, canonicalWorktreePath, daemonState);
-      }
-    } catch (error) {
-      cleanupError = error;
-    }
-    const message = err instanceof Error ? err.message : String(err);
-    log.warn(`codegraph runtime failed for worktree: ${message}`);
-    const runtimeError = Object.assign(new Error(`CodeGraph runtime failed for worktree: ${message}`, { cause: err }), {
-      code: "codegraph_runtime_failed",
-    });
-    if (!cleanupError) throw runtimeError;
-    throw Object.assign(new AggregateError([runtimeError, cleanupError], runtimeError.message, { cause: runtimeError }), {
-      code: "codegraph_runtime_failed",
-      primaryError: runtimeError,
-      cleanupError,
-    });
-  }
-}
 
 type ManagedWorkerArgs = {
   workerId?: string;
@@ -2061,11 +1232,7 @@ function parseArgs(argv: string[]): ManagedWorkerArgs {
   return opts;
 }
 
-export async function main({
-  startCodeGraphRuntime = startWorktreeCodeGraphRuntime,
-}: {
-  startCodeGraphRuntime?: typeof startWorktreeCodeGraphRuntime;
-} = {}) {
+export async function main() {
   const opts = parseArgs(process.argv);
   if (!opts.workerId || !opts.hubRoot || !opts.cpbRoot) {
     process.stderr.write("Usage: managed-worker.js --worker-id <id> --hub-root <path> --cpb-root <path> [--once]\n");
@@ -2073,6 +1240,14 @@ export async function main({
   }
 
   const { workerId, hubRoot, cpbRoot, once } = opts;
+  // Load the agent registry early so routing (defaultAgentForRole/getCapability),
+  // auth inheritance (createAgentHome), and isolation all have descriptor data.
+  try {
+    const { loadRegistry } = await import("../../core/agents/registry.js");
+    await loadRegistry("");
+  } catch (err) {
+    process.stderr.write(`[managed-worker] registry load failed: ${err instanceof Error ? err.message : String(err)}\n`);
+  }
   const { assertHubWritable } = await import("../../shared/hub-maintenance.js");
   await assertHubWritable(hubRoot);
   const log = createLogger(`worker-${workerId}`);
@@ -2141,8 +1316,6 @@ export async function main({
   let pollTimer: NodeJS.Timeout | null = null;
   let idleCheckTimer: NodeJS.Timeout | null = null;
   let shuttingDown = false;
-  const activeCodeGraphRuntimes = new Set<WorktreeCodeGraphRuntime>();
-  const startingCodeGraphProcessIdentities = new Map<number, ProcessIdentity>();
 
   // Bridge: service injection + sourcePath resolution (no direct core import)
   const { runJobWithServices } = await import("../../bridges/engine-bridge.js");
@@ -2213,7 +1386,9 @@ export async function main({
         await workerStore.completeInboxClaim(workerId, inboxAssignmentId, claim.claimToken);
         continue;
       }
-      if (!path.isAbsolute(assignment.projectRuntimeRoot) || path.resolve(assignment.projectRuntimeRoot) !== assignment.projectRuntimeRoot) {
+      if (typeof assignment.projectRuntimeRoot !== "string"
+        || !path.isAbsolute(assignment.projectRuntimeRoot)
+        || path.resolve(assignment.projectRuntimeRoot) !== assignment.projectRuntimeRoot) {
         log.warn(`missing or non-canonical projectRuntimeRoot in assignment`);
         await workerStore.completeInboxClaim(workerId, inboxAssignmentId, claim.claimToken);
         continue;
@@ -2509,7 +1684,6 @@ export async function main({
       // Create worktree for isolation. Managed pipeline execution must never
       // fall back to the source checkout.
       let worktreeInfo: WorktreeInfo | null = null;
-      let codegraphRuntime: WorktreeCodeGraphRuntime | null = null;
       let terminalAttemptResult: LooseRecord | null = null;
       let inboxAcked = false;
       let terminalSyncFailed = false;
@@ -2524,79 +1698,7 @@ export async function main({
         evidence?: LooseRecord;
         finalizeResult?: LooseRecord;
       } | null = null;
-      let codegraphCleanupComplete = true;
-      let codegraphCleanupProof: AssignmentCodeGraphCleanupProof | null = null;
       let worktreeCleanupProof: ManagedWorktreeCleanupProof | null = null;
-
-      async function stopAssignmentCodeGraphRuntime({
-        failOnError,
-        context,
-      }: {
-        failOnError: boolean;
-        context: "before_terminal_publication" | "assignment_cleanup";
-      }) {
-        if (!codegraphRuntime) return { ok: true, proof: codegraphCleanupProof };
-        const runtime = codegraphRuntime;
-        let lastError: unknown = null;
-        for (let attempt = 1; attempt <= 2; attempt++) {
-          try {
-            const runtimeProof = await runtime.stop();
-            const proof: AssignmentCodeGraphCleanupProof = {
-              generator: CODEGRAPH_CLEANUP_PROOF_GENERATOR,
-              assignmentId,
-              attempt: attemptNum,
-              attemptToken: assignment.attemptToken,
-              ...(assignment.orchestratorEpoch !== undefined ? { orchestratorEpoch: assignment.orchestratorEpoch } : {}),
-              entryId: assignment.entryId,
-              projectId: assignment.projectId,
-              jobId,
-              workerId,
-              context,
-              cleanupAttempt: attempt,
-              ok: runtimeProof.ok,
-              cleanupVerified: runtimeProof.cleanupVerified,
-              processTreeStopped: runtimeProof.processTreeStopped,
-              stateRemoved: runtimeProof.stateRemoved,
-              statePath: runtimeProof.statePath,
-              worktreePath: runtimeProof.worktreePath,
-              startup: {
-                ok: runtimeProof.startup.ok,
-                source: runtimeProof.startup.source,
-                pid: runtimeProof.startup.pid,
-                processPid: runtimeProof.startup.processPid,
-                statePath: runtimeProof.startup.statePath,
-                startedAt: runtimeProof.startup.startedAt,
-                readyAt: runtimeProof.startup.readyAt,
-              },
-              startupSource: runtimeProof.startupSource,
-              pid: runtimeProof.pid,
-              processPid: runtimeProof.processPid,
-              cleanupStartedAt: runtimeProof.cleanupStartedAt,
-              cleanupCompletedAt: runtimeProof.cleanupCompletedAt,
-            };
-            codegraphCleanupProof = proof;
-            activeCodeGraphRuntimes.delete(runtime);
-            if (codegraphRuntime === runtime) codegraphRuntime = null;
-            return { ok: true, proof };
-          } catch (err: unknown) {
-            lastError = err;
-            if (attempt === 1) {
-              jobLog.warn(`CodeGraph cleanup attempt failed; retrying: ${err instanceof Error ? err.message : String(err)}`);
-            }
-          }
-        }
-
-        const message = lastError instanceof Error ? lastError.message : String(lastError);
-        const prefix = context === "before_terminal_publication"
-          ? "CodeGraph cleanup failed before terminal publication"
-          : "CodeGraph cleanup failed during assignment cleanup";
-        const error = Object.assign(new Error(`${prefix} after retry: ${message}`), {
-          code: "codegraph_cleanup_failed",
-        });
-        if (failOnError) throw error;
-        jobLog.warn(error.message);
-        return { ok: false, proof: null };
-      }
 
       // Run job via bridge (service injection + sourcePath resolution)
       try {
@@ -2632,34 +1734,9 @@ export async function main({
             worktreeVerification: worktreeInfo.verification,
             createdAt: new Date().toISOString(),
           });
-          await writeAssignmentHeartbeat({
-            phase: "codegraph",
-            activePhase: null,
-            progressKind: "codegraph_initializing",
-            lastProgressType: "codegraph_initializing",
-          }, { progress: true });
-          let startingCodeGraphProcessPid: number | null = null;
-          try {
-            codegraphRuntime = await startCodeGraphRuntime(worktreeInfo.path, {
-              log: jobLog,
-              onSpawn: (pid, identity) => {
-                startingCodeGraphProcessPid = pid;
-                startingCodeGraphProcessIdentities.set(pid, identity);
-              },
-            });
-          } finally {
-            if (startingCodeGraphProcessPid) startingCodeGraphProcessIdentities.delete(startingCodeGraphProcessPid);
-          }
-          if (codegraphRuntime) {
-            activeCodeGraphRuntimes.add(codegraphRuntime);
-            await writeAssignmentHeartbeat({
-              phase: "codegraph",
-              activePhase: null,
-              progressKind: "codegraph_initialized",
-              lastProgressType: "codegraph_initialized",
-              codegraph: codegraphRuntime.evidence,
-            }, { progress: true });
-          }
+          // The local code index is ensured by task preparation for this exact
+          // worktree. It is external to the source tree and needs no daemon or
+          // worker-owned process lifecycle.
         } else {
           jobLog.info(finalizerOnly
             ? "finalizer-only recovery: skipping worktree creation and job execution"
@@ -2750,23 +1827,8 @@ export async function main({
         if (!acpAttemptReleaseComplete) {
           throw new Error("ACP attempt session release failed before result publication");
         }
-        const codegraphCleanup = await stopAssignmentCodeGraphRuntime({
-          failOnError: true,
-          context: "before_terminal_publication",
-        });
-        codegraphCleanupProof = codegraphCleanup.proof;
         const terminalPublication = await publishTerminalResultAfterWorktreeCleanup({
           produceResult: async (capture) => {
-            const captureWithCleanup = async (file: string, value: unknown) => {
-              const persisted = { ...recordValue(value) };
-              if (persisted.status === "completed" && codegraphCleanupProof) {
-                persisted.cleanup = {
-                  ...recordValue(persisted.cleanup),
-                  codegraph: codegraphCleanupProof,
-                };
-              }
-              return await capture(file, persisted);
-            };
             if (finalizerOnly && result.status === "completed") {
               const runtimeServices = await import("../../bridges/runtime-services.js") as unknown as LooseRecord;
               const recoverFinalizerOnly = runtimeServices.recoverFinalizerOnly;
@@ -2790,7 +1852,7 @@ export async function main({
                 assertMutationLease: assertFinalizerMutationLease,
                 mutationFence: finalizerMutationFence,
                 verifiedPriorAttempt: verifiedPriorFinalizerAttempt,
-                writeResult: captureWithCleanup,
+                writeResult: capture,
               });
             }
             return await finalizeAndWriteSuccessfulResult({
@@ -2806,7 +1868,7 @@ export async function main({
               log: jobLog,
               assertMutationLease: assertFinalizerMutationLease,
               mutationFence: finalizerMutationFence,
-              writeResult: captureWithCleanup,
+              writeResult: capture,
             });
           },
           managedWorktree: worktreeInfo,
@@ -2958,12 +2020,6 @@ export async function main({
           };
         }
       } finally {
-        const codegraphCleanup = await stopAssignmentCodeGraphRuntime({
-          failOnError: false,
-          context: "assignment_cleanup",
-        });
-        codegraphCleanupComplete = codegraphCleanup.ok;
-        if (codegraphCleanup.proof) codegraphCleanupProof = codegraphCleanup.proof;
         if (!acpAttemptReleaseComplete) {
           acpAttemptReleaseComplete = await releaseWorkerAcpAttempt({
             worktreePath: worktreeInfo?.path,
@@ -3007,21 +2063,6 @@ export async function main({
       }
 
       if (pendingFailure) {
-        if (!codegraphCleanupComplete) {
-          clearInterval(assignmentHeartbeat);
-          clearInterval(cancelTimer);
-          await writeAssignmentHeartbeat({
-            status: "cleanup_failed",
-            phase: "codegraph_cleanup",
-            activePhase: null,
-            progressKind: "codegraph_cleanup_failed",
-            lastProgressType: "codegraph_cleanup_failed",
-          }, { progress: true }).catch(() => {});
-          jobLog.error("CodeGraph cleanup remained failed after retry; retaining assignment ownership and exiting worker for recovery");
-          await shutdown("codegraph_cleanup_failed");
-          return;
-        }
-
         if (pendingFailure.evidence?.worktreeCleanup) {
           await writeAssignmentHeartbeat({
             status: "cleanup_failed",
@@ -3240,53 +2281,6 @@ export async function main({
   idleCheckTimer?.unref();
   void exitIdleWorkerIfRequested().catch(() => {});
 
-  async function retryCodeGraphShutdownCleanup(label: string, cleanup: () => Promise<unknown>) {
-    let lastError: unknown = null;
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      try {
-        await cleanup();
-        return null;
-      } catch (error: unknown) {
-        lastError = error;
-        if (attempt === 1) {
-          log.warn(`CodeGraph shutdown cleanup failed for ${label}; retrying: ${error instanceof Error ? error.message : String(error)}`);
-        }
-      }
-    }
-    return lastError;
-  }
-
-  async function cleanupCodeGraphBeforeShutdown(signal: string) {
-    const failures: string[] = [];
-    for (const [pid, identity] of [...startingCodeGraphProcessIdentities]) {
-      const error = await retryCodeGraphShutdownCleanup(`starting pid ${pid}`, () => cleanupStartingCodeGraphProcess(pid, identity));
-      if (error) {
-        failures.push(`starting pid ${pid}: ${error instanceof Error ? error.message : String(error)}`);
-      } else {
-        startingCodeGraphProcessIdentities.delete(pid);
-      }
-    }
-    for (const runtime of [...activeCodeGraphRuntimes]) {
-      const error = await retryCodeGraphShutdownCleanup(`runtime pid ${runtime.pid}`, () => runtime.stop());
-      if (error) {
-        failures.push(`runtime pid ${runtime.pid}: ${error instanceof Error ? error.message : String(error)}`);
-      } else {
-        activeCodeGraphRuntimes.delete(runtime);
-      }
-    }
-    if (failures.length === 0) return true;
-    const reason = failures.join("; ");
-    log.error(`CodeGraph cleanup failed during shutdown (${signal}): ${reason}`);
-    await workerStore.updateWorkerIf(workerId, {
-      status: "cleanup_failed",
-      exitSignal: "codegraph_cleanup_failed",
-      cleanupFailureReason: reason,
-    }, {
-      incarnationToken: workerIncarnationToken,
-    }).catch(() => {});
-    return false;
-  }
-
   // Graceful shutdown
   async function shutdown(signal: string) {
     if (shuttingDown) return;
@@ -3302,11 +2296,7 @@ export async function main({
     }
     if (watcher) await closeWatcherBounded(watcher, log);
     watcher = null;
-    const codegraphClean = await cleanupCodeGraphBeforeShutdown(signal);
     await stopWorkerAcpPool();
-    if (!codegraphClean) {
-      process.exit(1);
-    }
 
     await workerStore.updateWorkerIf(workerId, { status: "exited", exitSignal: signal }, {
       incarnationToken: workerIncarnationToken,
@@ -3320,7 +2310,7 @@ export async function main({
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((err) => {
-    process.stderr.write(`[managed-worker] fatal: ${err.message}\n`);
+    process.stderr.write(`[managed-worker] fatal: ${err.stack || err.message}\n`);
     process.exit(1);
   });
 }

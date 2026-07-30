@@ -11,7 +11,8 @@
   "stability": "experimental",
   "description": "{{description}}",
   "provider": {
-    "type": "ollama",
-    "model": "{{model}}"
+    "key": "{{name}}",
+    "family": "ollama",
+    "credentialEnv": ["{{apiKeyEnv}}", "{{baseUrlEnv}}", "{{modelEnv}}"]
   }
 }

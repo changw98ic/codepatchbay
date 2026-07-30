@@ -51,7 +51,6 @@ const REHEARSAL_BRANCH_PATTERN = /^cpb-release-rehearsal\/[A-Za-z0-9._-]+$/;
 const PROVIDER_PREFLIGHT_GENERATOR = "scripts/queue-swebench-batch.ts#runSweBenchProviderPreflight";
 const LIVE_HANDSHAKE_GENERATOR = "scripts/queue-swebench-batch.ts#liveProviderPreflightHandshake";
 const DRAFT_PR_REHEARSAL_GENERATOR = "scripts/rehearse-disposable-draft-pr.ts#rehearseDisposableDraftPr";
-const CODEGRAPH_CLEANUP_PROOF_GENERATOR = "runtime/worker/managed-worker.ts#stopAssignmentCodeGraphRuntime";
 const REQUIRED_PROVIDER_ROUTES = [
   { phase: "plan", role: "planner", agentKey: "planner" },
   { phase: "execute", role: "executor", agentKey: "executor" },
@@ -90,33 +89,6 @@ const PROVIDER_HANDSHAKE_EVIDENCE_FIELDS = new Set([
   "failureKind",
   "error",
 ]);
-const CODEGRAPH_CLEANUP_PROOF_FIELDS = new Set([
-  "assignmentId",
-  "attempt",
-  "attemptToken",
-  "cleanupAttempt",
-  "cleanupCompletedAt",
-  "cleanupStartedAt",
-  "cleanupVerified",
-  "context",
-  "entryId",
-  "generator",
-  "jobId",
-  "ok",
-  "orchestratorEpoch",
-  "pid",
-  "processPid",
-  "processTreeStopped",
-  "projectId",
-  "startup",
-  "startupSource",
-  "statePath",
-  "stateRemoved",
-  "workerId",
-  "worktreePath",
-]);
-const CODEGRAPH_CLEANUP_STARTUP_FIELDS = new Set(["ok", "pid", "processPid", "readyAt", "source", "startedAt", "statePath"]);
-
 const REQUIRED_ACP_PREFLIGHT_DENY_TOOLS = [
   "fs/read_text_file",
   "fs/write_text_file",
@@ -222,10 +194,6 @@ function handshakeControlPlaneEvidenceValid(
 function positiveNumber(value: unknown) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0;
-}
-
-function positiveSafeInteger(value: unknown) {
-  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
 
 function isIsoTimestamp(value: unknown): value is string {
@@ -724,154 +692,10 @@ function completedJobRetryViolations(job: LooseRecord, jobPath: string) {
   return violations;
 }
 
-function unexpectedKeys(value: LooseRecord, allowed: Set<string>) {
-  return Object.keys(value).filter((key) => !allowed.has(key));
-}
-
-function orderedIsoTimestamps(...values: unknown[]) {
-  const parsed = values.map((value) => isIsoTimestamp(value) ? Date.parse(String(value)) : NaN);
-  return parsed.every(Number.isFinite)
-    && parsed.every((value, index) => index === 0 || parsed[index - 1] <= value);
-}
-
-function completedJobCodeGraphCleanupViolations(job: LooseRecord, jobPath: string) {
-  const violations: LiveReleaseEvidenceViolation[] = [];
-  const proofPath = `${jobPath}.cleanup.codegraph`;
-  const cleanup = isRecord(job.cleanup) ? job.cleanup : {};
-  if (!isRecord(cleanup.codegraph)) {
-    return [{ path: proofPath, reason: "must include closed CodeGraph cleanup proof" }];
-  }
-  const proof = cleanup.codegraph as LooseRecord;
-  const startup = isRecord(proof.startup) ? proof.startup as LooseRecord : {};
-  if (unexpectedKeys(proof, CODEGRAPH_CLEANUP_PROOF_FIELDS).length > 0
-    || unexpectedKeys(startup, CODEGRAPH_CLEANUP_STARTUP_FIELDS).length > 0) {
-    violations.push({ path: proofPath, reason: "must use a closed schema" });
-  }
-  if (proof.generator !== CODEGRAPH_CLEANUP_PROOF_GENERATOR) {
-    violations.push({ path: `${proofPath}.generator`, reason: "must identify the managed worker cleanup generator" });
-  }
-  if (proof.ok !== true || proof.cleanupVerified !== true || proof.processTreeStopped !== true || proof.stateRemoved !== true) {
-    violations.push({ path: proofPath, reason: "must prove cleanup, state removal, and process-tree stop" });
-  }
-  for (const field of ["attempt", "cleanupAttempt", "orchestratorEpoch", "pid", "processPid"]) {
-    if (!positiveSafeInteger(proof[field])) {
-      violations.push({ path: `${proofPath}.${field}`, reason: "must be a native positive safe integer" });
-    }
-  }
-  for (const field of ["pid", "processPid"]) {
-    if (!positiveSafeInteger(startup[field])) {
-      violations.push({ path: `${proofPath}.startup.${field}`, reason: "must be a native positive safe integer" });
-    }
-  }
-  // Runtime cleanup can recover with retries; release evidence requires first-cleanup success.
-  if (proof.cleanupAttempt !== 1) {
-    violations.push({ path: `${proofPath}.cleanupAttempt`, reason: "must be 1" });
-  }
-  if (proof.context !== "before_terminal_publication") {
-    violations.push({ path: `${proofPath}.context`, reason: "must be before_terminal_publication" });
-  }
-  if (proof.assignmentId !== job.assignmentId || proof.jobId !== job.jobId) {
-    violations.push({ path: proofPath, reason: "must match the representative job identity" });
-  }
-  if (startup.ok !== true
-    || startup.source !== proof.startupSource
-    || startup.pid !== proof.pid
-    || startup.processPid !== proof.processPid
-    || startup.statePath !== proof.statePath) {
-    violations.push({ path: `${proofPath}.startup`, reason: "must match cleanup pid, process pid, state path, and source" });
-  }
-  if (!orderedIsoTimestamps(startup.startedAt, startup.readyAt, proof.cleanupStartedAt, proof.cleanupCompletedAt)) {
-    violations.push({ path: proofPath, reason: "must have ordered ISO startup and cleanup timestamps" });
-  }
-  if (!nonEmptyString(proof.statePath) || !nonEmptyString(proof.worktreePath) || !nonEmptyString(startup.source)) {
-    violations.push({ path: proofPath, reason: "must include startup readiness source, state path, and worktree path" });
-  }
-  return violations;
-}
-
-function assignmentIdFromSourceAssignment(assignment: unknown) {
-  const record = isRecord(assignment) ? assignment : {};
-  const queued = isRecord(record.queued) ? record.queued : {};
-  return nonEmptyString(queued.assignmentId)
-    ? queued.assignmentId
-    : nonEmptyString(record.assignmentId)
-      ? record.assignmentId
-      : "";
-}
-
-function definedAuthorityValues(...values: unknown[]) {
-  return values.filter((value) => value !== undefined);
-}
-
-function completedJobSourceIdentityViolations(
-  job: LooseRecord,
-  jobPath: string,
-  assignment: LooseRecord | null,
-  terminalState: LooseRecord | null,
-) {
-  const violations: LiveReleaseEvidenceViolation[] = [];
-  const proofPath = `${jobPath}.cleanup.codegraph`;
-  const cleanup = isRecord(job.cleanup) ? job.cleanup : {};
-  if (!isRecord(cleanup.codegraph)) return violations;
-  const proof = cleanup.codegraph as LooseRecord;
-  const sourceAssignment = assignment || {};
-  const queued = isRecord(sourceAssignment.queued) ? sourceAssignment.queued : {};
-  const state = terminalState || {};
-  const requireStringIdentity = (field: string, candidates: unknown[], reason: string) => {
-    const present = definedAuthorityValues(...candidates);
-    const invalid = present.filter((value) => !nonEmptyString(value));
-    if (invalid.length > 0) {
-      violations.push({ path: `${proofPath}.${field}`, reason: `all ${field} authority values must be non-empty strings` });
-      return;
-    }
-    const expected = present[0];
-    if (!nonEmptyString(expected)) {
-      violations.push({ path: `${proofPath}.${field}`, reason: `must have an authoritative ${field} in source manifest or terminal state` });
-      return;
-    }
-    if (present.some((value) => value !== expected)) {
-      violations.push({ path: `${proofPath}.${field}`, reason: `all ${field} authority values must agree` });
-    } else if (proof[field] !== expected) {
-      violations.push({ path: `${proofPath}.${field}`, reason });
-    }
-  };
-  const requireNumberIdentity = (field: string, candidates: unknown[], reason: string) => {
-    const present = definedAuthorityValues(...candidates);
-    const invalid = present.filter((value) => !positiveSafeInteger(value));
-    if (invalid.length > 0) {
-      violations.push({ path: `${proofPath}.${field}`, reason: `all ${field} authority values must be native positive safe integers` });
-      return;
-    }
-    const expected = present[0];
-    if (!positiveSafeInteger(expected)) {
-      violations.push({ path: `${proofPath}.${field}`, reason: `must have an authoritative ${field} in source manifest or terminal state` });
-      return;
-    }
-    if (present.some((value) => value !== expected)) {
-      violations.push({ path: `${proofPath}.${field}`, reason: `all ${field} authority values must agree` });
-    } else if (proof[field] !== expected) {
-      violations.push({ path: `${proofPath}.${field}`, reason });
-    }
-  };
-
-  requireStringIdentity("assignmentId", [queued.assignmentId, sourceAssignment.assignmentId, state.assignmentId, job.assignmentId], "must match source manifest assignment identity");
-  const jobAttempts = isRecord(job.attempts) ? job.attempts : {};
-  requireNumberIdentity("attempt", [queued.attempt, sourceAssignment.attempt, sourceAssignment.attempts, state.attempt, state.attempts, job.attempt, jobAttempts.count], "must match source manifest attempt identity");
-  requireStringIdentity("attemptToken", [queued.attemptToken, sourceAssignment.attemptToken, state.attemptToken], "must match source manifest attempt token");
-  requireStringIdentity("entryId", [sourceAssignment.entryId, queued.entryId, state.entryId], "must match source manifest entry identity");
-  requireStringIdentity("projectId", [sourceAssignment.projectId, queued.projectId, state.projectId], "must match source manifest project identity");
-  requireStringIdentity("jobId", [state.jobId, job.jobId], "must match terminal job identity");
-  requireStringIdentity("workerId", [queued.workerId, sourceAssignment.workerId, state.workerId, job.workerId], "must match source manifest worker identity");
-  requireNumberIdentity("orchestratorEpoch", [queued.orchestratorEpoch, sourceAssignment.orchestratorEpoch, state.orchestratorEpoch, job.orchestratorEpoch], "must match source manifest orchestrator epoch");
-  return violations;
-}
-
 async function completedRepresentativeJobViolations(
   root: string,
   jobs: unknown[],
   expectedProviderPreflightPhases: unknown[],
-  sourceAssignments: unknown[],
-  sourceTerminalStates: unknown[],
   artifactPathRewrite?: ArtifactPathRewrite,
 ) {
   const violations: LiveReleaseEvidenceViolation[] = [];
@@ -880,17 +704,6 @@ async function completedRepresentativeJobViolations(
       path: "providerConnectivity.jobs",
       reason: "must include exactly one representative provider job",
     });
-  }
-  const assignmentsById = new Map<string, LooseRecord>();
-  for (const assignment of sourceAssignments) {
-    const assignmentId = assignmentIdFromSourceAssignment(assignment);
-    if (assignmentId) assignmentsById.set(assignmentId, isRecord(assignment) ? assignment : {});
-  }
-  const terminalStatesById = new Map<string, LooseRecord>();
-  for (const terminalState of sourceTerminalStates) {
-    if (isRecord(terminalState) && nonEmptyString(terminalState.assignmentId)) {
-      terminalStatesById.set(terminalState.assignmentId, terminalState);
-    }
   }
   let completedJobCount = 0;
   for (const [index, job] of jobs.entries()) {
@@ -942,14 +755,6 @@ async function completedRepresentativeJobViolations(
     }
     violations.push(...await completedJobPhaseEvidenceViolations(root, job, jobPath, artifactPathRewrite));
     violations.push(...completedJobRetryViolations(job, jobPath));
-    violations.push(...completedJobCodeGraphCleanupViolations(job, jobPath));
-    const assignmentId = nonEmptyString(job.assignmentId) ? job.assignmentId : "";
-    violations.push(...completedJobSourceIdentityViolations(
-      job,
-      jobPath,
-      assignmentId ? assignmentsById.get(assignmentId) || null : null,
-      assignmentId ? terminalStatesById.get(assignmentId) || null : null,
-    ));
   }
   if (completedJobCount !== 1) {
     violations.push({
@@ -1035,8 +840,6 @@ async function providerConnectivityViolations(
     root,
     arrayValue(report.jobs),
     arrayValue(sourcePreflight.phases),
-    sourceAssignments,
-    sourceTerminalStates,
     artifactPathRewrite,
   ));
   if (summary.providerPreflightOk !== true) {

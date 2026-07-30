@@ -23,6 +23,7 @@ import { homedir, hostname } from "node:os";
 import path from "node:path";
 
 import { registerProject } from "../server/services/hub/hub-registry.js";
+import { ensureLocalCodeIndex } from "../core/indexing/local-code-index/index.js";
 import {
   captureProcessIdentity,
   captureSpawnProcessIdentity,
@@ -5617,7 +5618,7 @@ export async function prepareSource(task: SolverTask, laneRoot: string, runRoot:
     await runRequiredGit(["init"], sourcePath, gitEnv, 600_000, signal);
     await runRequiredGit(["remote", "add", "origin", cachePath], sourcePath, gitEnv, 600_000, signal);
     await runRequiredGit(["fetch", "--depth=1", "origin", task.baseCommit], sourcePath, gitEnv, 600_000, signal);
-    await runRequiredGit(["checkout", "--detach", "FETCH_HEAD"], sourcePath, gitEnv, 600_000, signal);
+    await runRequiredGit(["checkout", "-B", "cpb-swebench-base", "FETCH_HEAD"], sourcePath, gitEnv, 600_000, signal);
     const head = (await runRequiredGit(["rev-parse", "HEAD"], sourcePath, gitEnv, 30_000, signal)).stdout.trim();
     if (head !== task.baseCommit) throw new Error(`source identity mismatch: expected ${task.baseCommit}, got ${head}`);
     await writeJsonAtomic(path.join(laneRoot, "source-prepare.json"), {
@@ -5644,12 +5645,13 @@ export async function prepareSource(task: SolverTask, laneRoot: string, runRoot:
   return sourcePath;
 }
 
-async function initializeCodeGraph(sourcePath: string) {
-  const init = await runRequired("codegraph", ["init", sourcePath], REPO_ROOT, 600_000);
-  const status = await runRequired("codegraph", ["status", sourcePath], REPO_ROOT, 120_000);
+async function initializeLocalCodeIndex(sourcePath: string, cpbRoot: string) {
+  const result = await ensureLocalCodeIndex({ cpbRoot, sourcePath, force: true });
   return {
-    init: { stdout: init.stdout.slice(-4000), stderr: init.stderr.slice(-4000) },
-    status: { stdout: status.stdout.slice(-4000), stderr: status.stderr.slice(-4000) },
+    ref: result.ref,
+    snapshotId: result.ref.snapshotId,
+    fileCount: result.stats.discoveredFiles,
+    tool: result.tool,
   };
 }
 
@@ -5675,7 +5677,7 @@ async function capturePatch(sourcePath: string, baseCommit: string, patchPath: s
   // Agent/runtime state is not part of a software candidate. Explicit-path
   // `git clean` removes only untracked entries; tracked project config at the
   // same paths is preserved.
-  await runRequired("git", ["clean", "-fd", "--", ".omc", ".claude", ".codex", ".cpb", ".codegraph", "cpb-task"], sourcePath, 120_000, signal).catch(() => null);
+  await runRequired("git", ["clean", "-fd", "--", ".omc", ".claude", ".codex", ".cpb", "cpb-task"], sourcePath, 120_000, signal).catch(() => null);
   await runRequired("git", ["add", "-N", "--", "."], sourcePath, 120_000, signal).catch(() => null);
   const diff = await runRequired("git", ["diff", "--binary", baseCommit, "--", "."], sourcePath, 120_000, signal);
   await mkdir(path.dirname(patchPath), { recursive: true });
@@ -5839,19 +5841,12 @@ async function writeNeutralAssignment({
   const projectId = `project-${task.opaqueId}`;
   const store = new AssignmentStore(hubRoot);
   await store.init();
-  const previousIndexOnly = process.env.CPB_CODEGRAPH_INDEX_ONLY_OK;
-  process.env.CPB_CODEGRAPH_INDEX_ONLY_OK = "1";
-  try {
-    await registerProject(hubRoot, {
-      id: projectId,
-      name: projectId,
-      sourcePath,
-      metadata: { comparisonRunRootHash: sha256(runRoot), lane: "cpb_high_assurance" },
-    });
-  } finally {
-    if (previousIndexOnly === undefined) delete process.env.CPB_CODEGRAPH_INDEX_ONLY_OK;
-    else process.env.CPB_CODEGRAPH_INDEX_ONLY_OK = previousIndexOnly;
-  }
+  const registeredRuntimeRoot = (await registerProject(hubRoot, {
+    id: projectId,
+    name: projectId,
+    sourcePath,
+    metadata: { comparisonRunRootHash: sha256(runRoot), lane: "cpb_high_assurance" },
+  })).projectRuntimeRoot;
   const agents: ProductValidationAgents = {
     planner: "codex",
     executor: "claude-glm",
@@ -5890,6 +5885,7 @@ async function writeNeutralAssignment({
     ...attempt,
     workerId,
     status: "assigned",
+    projectRuntimeRoot: registeredRuntimeRoot,
     sourcePath,
     task: task.task,
     workflow: "standard",
@@ -5986,7 +5982,7 @@ async function cpbHighAssurance(
   boundary: AgentFilesystemBoundary,
 ) {
   throwIfAborted(options.signal);
-  const codegraph = await initializeCodeGraph(sourcePath);
+  const localCodeIndex = await initializeLocalCodeIndex(sourcePath, laneRoot);
   throwIfAborted(options.signal);
   const assignment = await writeNeutralAssignment({ runRoot, laneRoot, task, sourcePath });
   throwIfAborted(options.signal);
@@ -6010,7 +6006,6 @@ async function cpbHighAssurance(
       distRoot: frozenDistRoot,
       signal: options.signal,
       extraEnv: {
-        CPB_CODEGRAPH_INDEX_ONLY_OK: "1",
         CPB_ASSURANCE_MODE: "high",
         // Each task has its own Hub, so the default ACP lease directory would
         // only serialize requests inside one task. Share admission state for
@@ -6130,7 +6125,7 @@ async function cpbHighAssurance(
       assignmentId: assignment.assignmentId,
       projectId: assignment.projectId,
       promptFiles,
-      codegraph,
+      localCodeIndex,
       completionViolations,
       attemptStatus: result.status || null,
       jobStatus: jobResult.status || null,

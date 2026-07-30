@@ -43,7 +43,7 @@ test("listJobsAcrossRuntimeRoots invalidates short-lived snapshots after event w
       id: "flow",
       name: "flow",
       sourcePath,
-      skipCodeGraphGate: true,
+      skipLocalCodeIndexGate: true,
     });
 
     const firstJobId = "job-20260611-040000-first";
@@ -78,7 +78,7 @@ test("listJobsAcrossRuntimeRoots returns the registered project runtime job", as
       id: "flow",
       name: "flow",
       sourcePath,
-      skipCodeGraphGate: true,
+      skipLocalCodeIndexGate: true,
     });
 
     await appendCreatedJob(cpbRoot, "flow", jobId, dataRoot, 10, "canonical copy");

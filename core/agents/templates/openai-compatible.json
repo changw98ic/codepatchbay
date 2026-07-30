@@ -11,8 +11,8 @@
   "stability": "experimental",
   "description": "{{description}}",
   "provider": {
-    "type": "openai-compatible",
-    "apiKeyEnv": "{{apiKeyEnv}}",
-    "baseUrl": "{{baseUrl}}"
+    "key": "{{name}}",
+    "family": "openai-compatible",
+    "credentialEnv": ["{{apiKeyEnv}}", "{{baseUrlEnv}}", "{{modelEnv}}"]
   }
 }

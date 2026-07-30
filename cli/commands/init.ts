@@ -122,12 +122,25 @@ export async function initProject(args: string[], { cpbRoot, executorRoot }: Loo
     process.exit(1);
   }
 
+  // Build the external, file-backed local code index so the capability map can
+  // be generated at registration. The index has no daemon, PID file, socket,
+  // or source-tree state.
+  let localCodeIndexReady = false;
+  try {
+    const { ensureLocalCodeIndex } = await import("../../core/indexing/local-code-index/index.js");
+    const indexed = await ensureLocalCodeIndex({ cpbRoot, sourcePath: resolvedPath, force: true });
+    console.log(`${GREEN}Local code index built: ${indexed.stats.discoveredFiles} files (${resolvedPath})${NC}`);
+    localCodeIndexReady = true;
+  } catch (error) {
+    console.log(`${YELLOW}Warning: local code index unavailable; capability map may be incomplete (${error instanceof Error ? error.message : String(error)})${NC}`);
+  }
+
   const { registerProject, resolveHubRoot } = await import("../../server/services/hub/hub-registry.js");
   const hubRoot = resolveHubRoot(cpbRoot);
   const registered = await registerProject(hubRoot, {
     name: projectName,
     sourcePath: resolvedPath,
-    skipCodeGraphGate: true,
+    skipLocalCodeIndexGate: !localCodeIndexReady,
   });
   if (!registered?.projectRuntimeRoot) {
     throw new Error(`Hub registration did not assign a runtime root for '${projectName}'`);
@@ -154,6 +167,16 @@ export async function initProject(args: string[], { cpbRoot, executorRoot }: Loo
     initAt: new Date().toISOString(),
   };
   await writeFile(path.join(wikiDir, "project.json"), JSON.stringify(meta, null, 2));
+  // Keep project agent/provider/model selection in the canonical per-project
+  // config. It starts empty: role defaults are resolved by the registry and
+  // no model/provider is bound during project initialization.
+  const { writeProjectJson } = await import("../../server/services/agent/agent-config.js");
+  await writeProjectJson(dataRoot, projectName, meta);
+  const { ensureProviderCatalog } = await import("../../core/agents/provider-catalog.js");
+  await ensureProviderCatalog({
+    ...process.env,
+    CPB_HUB_ROOT: hubRoot,
+  });
 
   // 2. Replace placeholders
   for (const f of ["context.md", "tasks.md", "decisions.md", "log.md"]) {
@@ -200,26 +223,11 @@ export async function initProject(args: string[], { cpbRoot, executorRoot }: Loo
     await writeFile(ctxPath, ctxLines.join("\n") + "\n");
   }
 
-  // 4. CPB.md
-  const cpbMd = `# CodePatchbay Configuration
-cpb:
-  project: ${projectName}
-  codex_agent: planner
-  claude_agent: executor
-  wiki_root: ${wikiDir}/
-  phases:
-    plan: { agent: planner, model: auto }
-    execute: { agent: executor, model: auto }
-    verify: { agent: verifier, model: auto }
-`;
-  await writeFile(path.join(resolvedPath, "CPB.md"), cpbMd);
-  console.log(`Created: ${path.join(resolvedPath, "CPB.md")}`);
   console.log("");
   console.log(`Project '${projectName}' ready.`);
   console.log(`Wiki: ${wikiDir}`);
-
   console.log(`Registered with Hub: ${hubRoot}`);
-
+  console.log("Agent config stored in project.json (default agent has no provider/model binding)");
   console.log("");
   console.log(`Next: cpb pipeline ${projectName} "<task>"`);
 }

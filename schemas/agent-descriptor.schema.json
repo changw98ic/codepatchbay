@@ -1,0 +1,155 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codepatchbay/schemas/agent-descriptor.schema.json",
+  "title": "CPB Agent Descriptor",
+  "type": "object",
+  "required": ["name", "command", "envPrefix"],
+  "additionalProperties": true,
+  "properties": {
+    "name": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$" },
+    "displayName": { "type": "string" },
+    "command": { "type": "string", "minLength": 1 },
+    "args": { "type": "array", "items": { "type": "string" } },
+    "fallbackCommand": { "type": "string" },
+    "fallbackArgs": { "type": "array", "items": { "type": "string" } },
+    "envPrefix": { "type": "string", "pattern": "^CPB_ACP_[A-Z0-9]+(?:_[A-Z0-9]+)*$" },
+    "protocol": { "type": "string", "enum": ["acp", "claude-cli", "unknown"] },
+    "transport": { "type": "string" },
+    "lifecycle": { "type": "string", "enum": ["one-shot", "cached"] },
+    "stability": { "type": "string", "enum": ["stable", "experimental", "test", "discovered"] },
+    "capabilities": { "type": "array", "items": { "type": "string" } },
+    "defaultRoles": {
+      "type": "array",
+      "items": { "type": "string", "enum": ["planner", "executor", "verifier", "reviewer", "remediator"] }
+    },
+    "poolLimit": { "type": "integer", "minimum": 0 },
+    "providerKey": { "type": "string" },
+    "providerVariant": { "type": "string" },
+    "provider": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "key": { "type": "string" },
+        "keyTemplate": { "type": "string" },
+        "variant": { "type": "string" },
+        "variantAliases": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "family": { "type": "string" },
+        "credentialEnv": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" }
+        },
+        "environment": {
+          "type": "object",
+          "additionalProperties": {
+            "anyOf": [
+              { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+              {
+                "type": "array",
+                "items": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" }
+              }
+            ]
+          }
+        },
+        "derived": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "values": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "runtimeEnv": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" }
+        },
+        "required": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" }
+        },
+        "requiredEnv": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" }
+        },
+        "normalizers": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "cli": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "command": { "type": "string" },
+            "commandEnv": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+            "args": { "type": "array", "items": { "type": "string" } },
+            "modelEnv": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+            "modelArg": { "type": ["string", "null"] }
+          }
+        },
+        "homeAgent": { "type": "string" },
+        "capsule": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "nativeExecutable": {
+              "type": "object",
+              "required": ["basename", "pathContains", "env", "targetEnv", "kind"],
+              "properties": {
+                "basename": { "type": "string", "minLength": 1 },
+                "pathContains": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": { "type": "string", "minLength": 1 }
+                },
+                "env": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+                "targetEnv": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+                "kind": { "type": "string", "enum": ["node", "native"] }
+              }
+            }
+          }
+        },
+        "quota": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "region": { "type": "string" },
+            "timezone": { "type": "string" },
+            "policy": { "type": "object", "additionalProperties": true },
+            "rules": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["pattern", "status"],
+                "properties": {
+                  "pattern": { "type": "string", "minLength": 1 },
+                  "status": { "type": "string", "minLength": 1 },
+                  "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+                  "reason": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "fallbacks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["providerKey", "agent"],
+            "properties": {
+              "providerKey": { "type": "string" },
+              "agent": { "type": "string" },
+              "variant": { "type": ["string", "null"] },
+              "providerFallback": { "type": "boolean" }
+            }
+          }
+        }
+      }
+    },
+    "sessionMcpServers": { "type": "boolean" },
+    "resumeCommand": { "type": "string" },
+    "resumeArgs": { "type": "array", "items": { "type": "string" } },
+    "description": { "type": "string" }
+  }
+}

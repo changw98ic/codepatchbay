@@ -1,30 +1,29 @@
-# DW-08 Migration Runbook: CodeGraph-Gated Dynamic Workflows
+# DW-08 Migration Runbook: Local-Index-Gated Dynamic Workflows
 
 Date: 2026-06-08
 
 ## Summary
 
-This runbook documents the DW-08 operational migration from the retired workflow queue contract to CodeGraph-gated dynamic workflows. The live queue accepts only `codegraph_unavailable`; `index_unavailable` is a historical source value handled before cutover. It also covers the `WORKCPBS` to `WORKFLOWS` definition rename and the acceptance path for CodeGraph capability maps, RiskMap generation, workflow DAG materialization, dynamic verifier planning, and adversarial verification.
+This runbook documents local-index-gated dynamic workflows. The live queue accepts only `local_code_index_unavailable`; retired queue values are rejected and must be re-enqueued under the current schema. It also covers capability maps, RiskMap generation, workflow DAG materialization, dynamic verifier planning, and adversarial verification.
 
 ## What Changed
 
-| Old | New | Files Affected |
-|-----|-----|----------------|
-| `INDEX_UNAVAILABLE` | `CODEGRAPH_UNAVAILABLE` | `core/contracts/failure.ts` |
-| `index_unavailable` | `codegraph_unavailable` | `server/services/hub-queue.ts`, `server/services/index-freshness.ts`, `server/services/queue-rules.ts` |
-| `recoverIndexUnavailable()` | `recoverCodegraphUnavailable()` | `server/services/queue-rules.ts`, `server/services/hub-queue.ts` |
-| `WORKCPBS` | `WORKFLOWS` | `core/workflow/definition.ts` |
+| Canonical contract | Location |
+|--------------------|----------|
+| `LOCAL_CODE_INDEX_UNAVAILABLE` / `local_code_index_unavailable` | `core/contracts/failure.ts`, `server/services/hub/hub-queue.ts` |
+| `recoverLocalCodeIndexUnavailable()` | `server/services/hub/hub-queue.ts` |
+| `WORKFLOWS` | `core/workflow/definition.ts` |
 
 New runtime signals and projections:
 
 | Surface | Required Evidence |
 |---------|-------------------|
-| Project registration | `project_capability_map`, `safety_boundary_map`, `high_risk_area_map`, and high `capabilityMapConfidence` generated from a live CodeGraph state |
-| Queue claim gate | missing or stale CodeGraph capability metadata blocks with `codegraph_unavailable` |
+| Project registration | `project_capability_map`, `safety_boundary_map`, `high_risk_area_map`, and high `capabilityMapConfidence` generated from a file-backed local code index |
+| Queue claim gate | missing or stale local-index capability metadata blocks with `local_code_index_unavailable` |
 | Job events | `riskmap_generated`, `workflow_dag_materialized`, `dynamic_agent_plan_generated`, `dag_node_started`, `dag_node_completed`, `dag_node_failed` |
 | High-risk verification | `adversarial_verify` runs after `verify` when the RiskMap requires it, and emits `adversarial_verdict` |
 | Pipeline projection | `riskMap`, `dynamicAgentPlan`, `adversarialVerdict`, `workflowDag`, `dagResume`, `riskLevel`, and `adversarialRequired` are visible to API/UI consumers |
-| Attention projection | Inbox and Hub attention surfaces delegate to `buildAttentionProjection()` for stale runtime, jobs-index divergence, CodeGraph blockers, provider rate limits, waiting approval, failed workflow, failed DAG node, and review-ready items |
+| Attention projection | Inbox and Hub attention surfaces delegate to `buildAttentionProjection()` for stale runtime, jobs-index divergence, local-index blockers, provider rate limits, waiting approval, failed workflow, failed DAG node, and review-ready items |
 | DW status | `dw-status` prints `dag_metadata_ready`, `dag_node_first_sequential_ready`, `dag_resume_ready`, and `dag_parallel_execution_ready` separately |
 
 ## Current Readiness Levels
@@ -33,7 +32,7 @@ As of 2026-06-11:
 
 | Capability | Readiness |
 |------------|-----------|
-| Runtime health gate | Implemented; local runtime may still be blocked by release mismatch, CodeGraph queue blockers, stale jobs, or jobs-index divergence |
+| Runtime health gate | Implemented; local runtime may still be blocked by release mismatch, local-index queue blockers, stale jobs, or jobs-index divergence |
 | Workflow single source | Ready |
 | DAG metadata | Ready |
 | DAG resume | Ready |
@@ -66,8 +65,8 @@ the effective provider connection limit during agent execution.
 
 ## Migration Steps
 
-1. Deploy the CodeGraph readiness and project capability map changes first. New project registration must fail closed when the live CodeGraph state is missing, even if an old SQLite index file exists.
-2. Verify each registered project has `project_capability_map`, `safety_boundary_map`, and `high_risk_area_map` metadata with high confidence. Do not manually mark this metadata as high confidence unless it came from the CodeGraph inventory.
+1. Deploy the local-index readiness and project capability map changes first. New project registration must fail closed when the file-backed local code index is missing, even if an old SQLite index file exists.
+2. Verify each registered project has `project_capability_map`, `safety_boundary_map`, and `high_risk_area_map` metadata with high confidence. Do not manually mark this metadata as high confidence unless it came from the local-index inventory.
 3. Deploy the workflow DAG and event projection changes. Confirm new jobs emit `workflow_dag_materialized` before node execution and emit `dag_node_started` / `dag_node_completed` for each executed node. Same-phase DAG nodes must be interpreted by `nodeId`, not by phase alone. For wide DAGs, confirm `executionMode: "bounded_dependency_parallel"`, `dagParallelExecutionReady: true`, `dagUnsafeNodePolicy: "exclusive"`, `dagConflictPolicy: "stable_prefix_serialization"`, and `dagDurableCommitOrder: "stable_topological_node_order"`.
 4. Deploy RiskMap and dynamic verifier planning. High-risk tasks must emit `riskmap_generated` and `dynamic_agent_plan_generated`, and the queue metadata should persist the same dynamic plan used by the engine.
 5. Deploy the `adversarial_verify` phase. For high or critical RiskMap outputs, `adversarial_verify` must run after normal `verify` and must emit `adversarial_verdict`.
@@ -76,11 +75,11 @@ the effective provider connection limit during agent execution.
 
 ## Handling Stale Queue Entries
 
-The live queue contract is canonical-only: entries with status `index_unavailable` are not readable, counted, or retryable. Before cutover, convert those entries to `codegraph_unavailable` only when their stored failure evidence proves the CodeGraph blocker; otherwise re-enqueue them with the current queue schema. Preserve queue evidence before any one-time cleanup or migration. The runtime contains no dual-status compatibility branch.
+The live queue contract is canonical-only. Entries carrying retired status values are not readable, counted, converted, or retried. Preserve their evidence if needed, then re-enqueue the task with the current queue schema. The runtime contains no dual-status compatibility branch.
 
-If a pending entry is blocked as `codegraph_unavailable`, do not force it to `pending` until CodeGraph readiness and project capability map generation are healthy. The correct recovery path is:
+If a pending entry is blocked as `local_code_index_unavailable`, do not force it to `pending` until local-index readiness and project capability map generation are healthy. The correct recovery path is:
 
-1. Restore or restart the CodeGraph daemon for the source project.
+1. Rebuild the local code index for the source project.
 2. Re-register or refresh the project so the queue entry receives high-confidence capability metadata.
 3. Let queue retry-window recovery or an explicit safe retry return the entry to `pending`.
 
@@ -88,7 +87,7 @@ If a pending entry is blocked as `codegraph_unavailable`, do not force it to `pe
 
 A high-risk queue task is accepted only when all of these are true:
 
-1. The project has high-confidence capability metadata derived from CodeGraph.
+1. The project has high-confidence capability metadata derived from the local code index.
 2. `prepare_task` emits and persists a `riskMap` with `riskLevel` and `adversarialRequired`.
 3. The engine emits `dynamic_agent_plan_generated` with independent verifier/adversarial verifier configuration when the RiskMap requires it.
 4. The materialized DAG includes `adversarial_verify` after `verify`.
@@ -105,8 +104,7 @@ If `adversarial_verify` fails, treat the failure as a verifier failure with a ti
 - `cd web && npm test -- --run` should pass.
 - `./cpb dw-status` should print the DAG readiness keys and may exit non-zero only for explicit runtime health blockers.
 - `rg 'INDEX_UNAVAILABLE|WORKCPBS|recoverIndexUnavailable' core server scripts` should return no production references.
-- `rg 'index_unavailable' core server scripts` should return no production references.
-- `node --test dist/tests/dw-codegraph-gate.test.js dist/tests/riskmap-service.test.js dist/tests/engine-prepare-task.test.js` should pass.
+- `node --test dist/tests/code-index-capability-map.test.js dist/tests/riskmap-service.test.js dist/tests/engine-prepare-task.test.js` should pass.
 - `node --test dist/tests/queue-orchestrator.test.js dist/tests/scheduler-dag-provider.test.js` should pass.
 - `node --test dist/tests/dw08-acceptance.test.js` should pass.
 - `find . \( -path './.*' -o -path './cpb-task' -o -path './node_modules' -o -path './web/node_modules' -o -path './dist' -o -path './web/dist' -o -path './dist-tests' -o -path './marketing/codepatchbay-vibecoding-video/assets/gsap.min.js' \) -prune -o -type f \( -name '*.js' -o -name '*.mjs' -o -name '*.cjs' \) -print | sort` should return no source files.

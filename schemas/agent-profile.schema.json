@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codepatchbay/schemas/agent-profile.schema.json",
+  "title": "CPB Role Profile config.json",
+  "type": "object",
+  "required": ["permissions"],
+  "additionalProperties": false,
+  "properties": {
+    "permissions": {
+      "type": "object",
+      "required": ["write_paths", "deny_tools", "deny_commands"],
+      "properties": {
+        "write_paths": { "type": "array", "items": { "type": "string" } },
+        "deny_tools": { "type": "array", "items": { "type": "string" } },
+        "deny_commands": { "type": "boolean" }
+      }
+    }
+  }
+}

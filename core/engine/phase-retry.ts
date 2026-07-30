@@ -4,6 +4,7 @@ import { PhaseResult } from "../../shared/types.js";
 import { PhaseContext } from "./run-phase.js";
 import { ProviderAgents } from "./provider-handoff.js";
 import { resolveAllowedAgentNames } from "../agents/outcome-routing.js";
+import { defaultAgentForRole } from "../agents/registry.js";
 import {
   recoveryInstruction,
   selectFailureRecovery,
@@ -240,7 +241,7 @@ function qualityRepairInstruction(failureKind: string, reason: string, phase = "
   }
   if (failureKind === FailureKind.BROAD_TEST_COMMAND_DENIED) {
     if (phase === "plan") {
-      return "This is the plan phase: do not run tests, python -c probes, heredoc scripts, temporary diagnostics, or transformed verification commands. Plan from CodeGraph, file reads, static code inspection, task text, and explicitly listed verification targets only.";
+      return "This is the plan phase: do not run tests, python -c probes, heredoc scripts, temporary diagnostics, or transformed verification commands. Plan from the local code index, file reads, static code inspection, task text, and explicitly listed verification targets only.";
     }
     if (phase === "execute") {
       return "This is the execute phase: do not run tests, python -c probes, ad hoc scripts, temporary diagnostics, or transformed verification commands. Continue with bounded file inspection, source/test edits, and the structured execution result; leave canonical and diagnostic command execution to verify.";
@@ -294,9 +295,26 @@ function retryContextFromFailure(
   };
 }
 
+/**
+ * Default fallback agent for execute-phase hard-constraint denials (B2c).
+ *
+ * Resolves via the registry to the lowest-`tieBreakPriority` executor (claude
+ * wins priority 20 over claude-glm priority 30) instead of the legacy "codex"
+ * literal — codex does not declare the executor role, so it was an ill-fit
+ * execution fallback. If the registry is not yet loaded the codex literal is
+ * preserved.
+ */
+function defaultExecuteFallbackAgent(): string {
+  try {
+    return defaultAgentForRole("executor");
+  } catch {
+    return "codex";
+  }
+}
+
 function configuredExecuteHardConstraintFallbackAgent(env: NodeJS.ProcessEnv) {
   const raw = env.CPB_EXECUTE_HARD_CONSTRAINT_FALLBACK_AGENT;
-  if (raw === undefined) return "codex";
+  if (raw === undefined) return defaultExecuteFallbackAgent();
   const trimmed = raw.trim();
   if (!trimmed || /^(0|false|off|none|null)$/i.test(trimmed)) return "";
   return trimmed;

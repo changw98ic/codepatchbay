@@ -2172,14 +2172,13 @@ function createTrustedNpmExecution(canonicalPackDir: string): TrustedNpmExecutio
       allowCurrentProcessRuntime: true,
     }));
   }
-  for (const command of ["git", "gh", "codegraph", "codex", "claude", "cc"]) {
+  for (const command of ["git", "gh", "codex", "claude", "cc"]) {
     const resolved = resolveSelectedTool(command);
     if (resolved) selectedTools.set(command, resolved);
   }
   for (const required of [
     "git",
     "gh",
-    "codegraph",
     ...(AGENT_MODE === "codex" ? ["codex"] : []),
     ...(AGENT_MODE === "mixed" ? ["codex", "claude"] : []),
     ...(AGENT_MODE === "claude" || AGENT_MODE === "cc" ? ["claude"] : []),
@@ -2195,7 +2194,6 @@ function createTrustedNpmExecution(canonicalPackDir: string): TrustedNpmExecutio
       allowForeignOwner: true,
       allowCurrentProcessRuntime: true,
     }),
-    bindTrustedRuntimeTree(resolveToolPackageRoot(selectedTools.get("codegraph") as string, "codegraph")),
     bindStaticFile(userConfig, { empty: true }),
     bindStaticFile(globalConfig, { empty: true }),
   ];
@@ -3232,49 +3230,7 @@ async function printSummary() {
   const q = runInstalledCpb(["hub", "queue-status"], { silent: true, allowFail: true });
   if (q.ok) console.log(q.stdout);
 
-  // Check latest session for CodeGraph usage when Codex participates in the route.
-  if (AGENT_MODE === "claude" || AGENT_MODE === "cc") {
-    log("MCP", "Pure Claude Code mode; skipping Codex MCP usage check.");
-    return true;
-  }
-
-  log("MCP", "Checking if Codex used CodeGraph tools...");
-  try {
-    const sessionDir = path.join(homedir(), ".codex", "sessions");
-    let latestSession = null;
-    let latestTime = 0;
-    const today = new Date();
-    const datePath = `${today.getFullYear()}/${String(today.getMonth() + 1).padStart(2, "0")}/${String(today.getDate()).padStart(2, "0")}`;
-    const dayDir = path.join(sessionDir, datePath);
-    if (existsSync(dayDir)) {
-      for (const f of readdirSync(dayDir)) {
-        if (!f.endsWith(".jsonl")) continue;
-        const st = statSync(path.join(dayDir, f));
-        if (st.mtimeMs > latestTime) {
-          latestTime = st.mtimeMs;
-          latestSession = path.join(dayDir, f);
-        }
-      }
-    }
-    if (latestSession) {
-      const content = readFileSync(latestSession, "utf8");
-      const mcpCalls = (content.match(/mcp__codegraph__|mcp_servers\.codegraph|"name":"codegraph"/g) || []).length;
-      const execCalls = (content.match(/"name":"exec_command"/g) || []).length;
-      if (mcpCalls > 0) {
-        pass(`Codex used CodeGraph ${mcpCalls} time(s), exec_command ${execCalls} time(s)`);
-        return true;
-      } else {
-        fail(`Codex did NOT use CodeGraph (exec_command: ${execCalls})`);
-        return false;
-      }
-    } else {
-      fail("No recent Codex session found");
-      return false;
-    }
-  } catch (e) {
-    fail(`Could not check MCP usage: ${e instanceof Error ? e.message : String(e)}`);
-    return false;
-  }
+  return true;
 }
 
 function redactE2eErrorText(value: unknown) {

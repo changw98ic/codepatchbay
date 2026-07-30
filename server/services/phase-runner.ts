@@ -21,7 +21,21 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { buildChildEnv, providerCredentialKeysForAgent } from "../../core/policy/child-env.js";
+import {
+  buildChildEnv,
+} from "../../core/policy/child-env.js";
+import {
+  agentForProviderVariant,
+  defaultAgentForRole,
+  getDescriptor,
+  loadRegistry,
+  providerCapsuleEnvironmentKeysForAllAgents,
+  resolveAgentEnvPrefix,
+} from "../../core/agents/registry.js";
+import {
+  normalizeProviderConfigForSelection,
+  providerCredentialInputKeysForSelection,
+} from "../../core/agents/provider-config.js";
 import type { LooseRecord } from "../../shared/types.js";
 import { buildLocator, locatorEnvelope, projectExists } from "./phase-locator.js";
 import { getJob, listJobsFromIndex } from "./job/job-store.js";
@@ -1032,23 +1046,31 @@ async function assertSourceSnapshot(snapshot: SourceSnapshotEntry[], budget?: Ca
   }
 }
 
+function descriptorForPhaseAgent(agent: string): LooseRecord | null {
+  try {
+    return getDescriptor(agent) as LooseRecord | null;
+  } catch {
+    return null;
+  }
+}
+
 function providerEnvPrefix(agent: string) {
   const normalized = agent.trim().toLowerCase();
   if (!/^[a-z0-9]+(?:[-_.][a-z0-9]+)*$/.test(normalized)) {
     throw launchError(`invalid selected provider name: ${agent}`, "PHASE_RUNNER_PROVIDER_COMMAND_UNSAFE");
   }
-  return `CPB_ACP_${normalized.toUpperCase().replace(/[-.]/g, "_")}`;
+  const descriptor = descriptorForPhaseAgent(agent);
+  try {
+    return resolveAgentEnvPrefix(agent, descriptor?.envPrefix);
+  } catch (error) {
+    throw launchError(`invalid selected provider environment prefix: ${agent}`, "PHASE_RUNNER_PROVIDER_COMMAND_UNSAFE", error);
+  }
 }
 
 function providerDefaultCommand(agent: string) {
-  const normalized = agent.trim().toLowerCase();
-  if (["codex", "openai", "openai-codex"].includes(normalized)) return "codex-acp";
-  if (normalized === "claude" || normalized.startsWith("claude-")
-    || ["anthropic", "bedrock", "aws-bedrock", "glm", "glm-compatible", "zhipu", "mimo", "mimo-v2.5pro", "xiaomi"].includes(normalized)) {
-    return "claude-agent-acp";
-  }
-  if (["gemini", "google"].includes(normalized)) return "gemini-acp";
-  return normalized;
+  const descriptor = descriptorForPhaseAgent(agent);
+  const command = typeof descriptor?.command === "string" ? descriptor.command.trim() : "";
+  return command || agent.trim();
 }
 
 function parseProviderArgs(value: string | undefined, key: string) {
@@ -1075,6 +1097,9 @@ async function resolveFixedProviderCommand(
   inputEnv: NodeJS.ProcessEnv,
 ) {
   const prefix = providerEnvPrefix(agent);
+  const descriptor = descriptorForPhaseAgent(agent);
+  const configuredCommand = typeof descriptor?.command === "string" ? descriptor.command.trim() : "";
+  const fallbackCommand = typeof descriptor?.fallbackCommand === "string" ? descriptor.fallbackCommand.trim() : "";
   const override = String(inputEnv[`${prefix}_COMMAND`] || "").trim();
   const hookPath = launchTestHooks.getStore()?.providerCommandPaths?.[agent];
   let requested = override || hookPath || "";
@@ -1087,7 +1112,7 @@ async function resolveFixedProviderCommand(
   }
   if (!requested) {
     isDefault = true;
-    const commandName = providerDefaultCommand(agent);
+    const commandNames = [...new Set([configuredCommand || providerDefaultCommand(agent), fallbackCommand].filter(Boolean))];
     const candidateDirectories = [...new Set([
       path.dirname(canonicalExecutable),
       "/opt/homebrew/bin",
@@ -1095,17 +1120,20 @@ async function resolveFixedProviderCommand(
       "/usr/bin",
       "/bin",
     ])];
-    for (const directory of candidateDirectories) {
-      const candidate = path.join(directory, commandName);
-      try {
-        const info = await lstat(candidate);
-        if (info.isFile() || info.isSymbolicLink()) {
-          requested = candidate;
-          break;
+    for (const commandName of commandNames) {
+      for (const directory of candidateDirectories) {
+        const candidate = path.join(directory, commandName);
+        try {
+          const info = await lstat(candidate);
+          if (info.isFile() || info.isSymbolicLink()) {
+            requested = candidate;
+            break;
+          }
+        } catch (error) {
+          if (!isMissingPathError(error)) throw error;
         }
-      } catch (error) {
-        if (!isMissingPathError(error)) throw error;
       }
+      if (requested) break;
     }
   }
   if (!requested) {
@@ -1119,8 +1147,17 @@ async function resolveFixedProviderCommand(
   if (!info.isFile() || info.isSymbolicLink()) {
     throw launchError(`selected provider adapter must resolve to a regular file: ${requested}`, "PHASE_RUNNER_PROVIDER_COMMAND_UNSAFE");
   }
-  const args = parseProviderArgs(inputEnv[`${prefix}_ARGS`], `${prefix}_ARGS`);
-  return { prefix, requested, canonical, args, isDefault };
+  const configuredArgs = Array.isArray(descriptor?.args)
+    ? descriptor.args.filter((arg): arg is string => typeof arg === "string" && !arg.includes("\0"))
+    : [];
+  const fallbackArgs = Array.isArray(descriptor?.fallbackArgs)
+    ? descriptor.fallbackArgs.filter((arg): arg is string => typeof arg === "string" && !arg.includes("\0"))
+    : [];
+  const argsOverride = inputEnv[`${prefix}_ARGS`];
+  const args = argsOverride !== undefined
+    ? parseProviderArgs(argsOverride, `${prefix}_ARGS`)
+    : (fallbackCommand && requested.endsWith(`/${fallbackCommand}`) ? fallbackArgs : configuredArgs);
+  return { prefix, requested, canonical, args, isDefault, descriptor };
 }
 
 async function nearestPackageRoot(entryPath: string) {
@@ -1220,7 +1257,18 @@ async function bindProviderIntoCapsule(
   budget: CapsuleBudget,
 ): Promise<ProviderBinding> {
   if (!agent) return { env: {} };
-  for (const key of ["CPB_ACP_CLIENT", "CPB_AGENT_SANDBOX_COMMAND", "CPB_AGENT_SANDBOX_ARGS", "CPB_CLAUDE_CLI_COMMAND"]) {
+  const descriptor = descriptorForPhaseAgent(agent);
+  const providerConfig = normalizeProviderConfigForSelection(agent, descriptor, {
+    provider: inputEnv.CPB_PROVIDER || inputEnv.CPB_PROVIDER_ID || null,
+    model: inputEnv.CPB_MODEL || inputEnv.CPB_MODEL_NAME || null,
+  }, inputEnv);
+  const commandBoundaryKeys = [
+    "CPB_ACP_CLIENT",
+    "CPB_AGENT_SANDBOX_COMMAND",
+    "CPB_AGENT_SANDBOX_ARGS",
+    providerConfig.cliCommandEnv,
+  ].filter((key): key is string => Boolean(key));
+  for (const key of commandBoundaryKeys) {
     if (inputEnv[key]) {
       throw launchError(`${key} cannot select a mutable command at the phase credential boundary`, "PHASE_RUNNER_PROVIDER_COMMAND_UNSAFE");
     }
@@ -1299,30 +1347,22 @@ async function bindProviderIntoCapsule(
     [`${resolved.prefix}_COMMAND`]: command,
     [`${resolved.prefix}_ARGS`]: JSON.stringify(args),
   };
-  const normalized = agent.toLowerCase();
-  if (packageEntry && ["codex", "openai", "openai-codex"].includes(normalized)) {
-    const native = findCapsuleFile(packageEntry, (candidate) => path.basename(candidate.path) === "codex"
-      && path.basename(path.dirname(candidate.path)) === "bin"
-      && candidate.path.includes(`${path.sep}@openai${path.sep}codex-`));
+  const nativeConfig = providerConfig.capsule.nativeExecutable;
+  if (packageEntry && nativeConfig) {
+    const native = findCapsuleFile(packageEntry, (candidate) => (
+      path.basename(candidate.path) === nativeConfig.basename
+      && nativeConfig.pathContains.every((fragment) => candidate.path.includes(fragment))
+    ));
     if (!native) {
-      throw launchError("copied Codex ACP package does not contain its native Codex executable", "PHASE_RUNNER_PROVIDER_COMMAND_UNSAFE");
+      throw launchError(
+        `copied ${agent} provider package does not contain configured native executable '${nativeConfig.basename}'`,
+        "PHASE_RUNNER_PROVIDER_COMMAND_UNSAFE",
+      );
     }
-    if (await providerArtifactKind(native.path) !== "native") {
-      throw launchError("copied Codex executable is not a native binary", "PHASE_RUNNER_PROVIDER_COMMAND_UNSAFE");
+    if (await providerArtifactKind(native.path) !== nativeConfig.kind) {
+      throw launchError(`configured native executable for ${agent} has the wrong artifact kind`, "PHASE_RUNNER_PROVIDER_COMMAND_UNSAFE");
     }
-    env.CPB_CAPSULE_CODEX_PATH = native.path;
-  }
-  if (packageEntry && (normalized === "claude" || normalized.startsWith("claude-")
-    || ["anthropic", "bedrock", "aws-bedrock", "glm", "glm-compatible", "zhipu", "mimo", "mimo-v2.5pro", "xiaomi"].includes(normalized))) {
-    const native = findCapsuleFile(packageEntry, (candidate) => path.basename(candidate.path) === "claude"
-      && candidate.path.includes(`${path.sep}@anthropic-ai${path.sep}claude-agent-sdk-`));
-    if (!native) {
-      throw launchError("copied Claude ACP package does not contain its native Claude executable", "PHASE_RUNNER_PROVIDER_COMMAND_UNSAFE");
-    }
-    if (await providerArtifactKind(native.path) !== "native") {
-      throw launchError("copied Claude executable is not a native binary", "PHASE_RUNNER_PROVIDER_COMMAND_UNSAFE");
-    }
-    env.CPB_CAPSULE_CLAUDE_CODE_EXECUTABLE = native.path;
+    env[nativeConfig.env] = native.path;
   }
   await setCapsuleDirectoryMode(providerDirectory, 0o500);
   return { env };
@@ -1694,28 +1734,44 @@ function requirePathWithin(root: string, candidate: string, label: string) {
 }
 
 function selectedAgentForPhase(phase: string, scriptPath: string, env: NodeJS.ProcessEnv) {
+  void scriptPath;
+  const normalized = phase.toLowerCase();
+  const role = normalized.startsWith("execute") || normalized.startsWith("repair") || normalized.startsWith("review-fix")
+    ? "executor"
+    : normalized.startsWith("plan")
+      ? "planner"
+      : normalized.startsWith("review")
+        ? "reviewer"
+        : normalized.startsWith("verify")
+          ? "verifier"
+          : null;
+  if (!role) return null;
+
+  const legacyFallback = role === "executor" ? "claude" : "codex";
   const override = String(env.CPB_OVERRIDE_AGENT || "").trim().toLowerCase();
+  let agent = override || legacyFallback;
+  if (!override) {
+    try {
+      agent = defaultAgentForRole(role);
+    } catch {
+      // The built-in fallback keeps the phase launcher usable before registry
+      // initialization. Normal dispatch loads the registry first.
+    }
+  }
   const variant = String(
-    env.CPB_CLAUDE_VARIANT
+    env.CPB_PROVIDER_VARIANT
+      || env.CPB_ACP_AGENT_VARIANT
+      || env.CPB_CLAUDE_VARIANT
       || env.CPB_BUILDER_VARIANT
       || env.CPB_ACP_CLAUDE_VARIANT
       || "",
-  ).trim().toLowerCase();
-  const scopedClaudeAgent = (agent: string) => {
-    if (agent !== "claude") return agent;
-    if (["glm", "glm-compatible", "zhipu"].includes(variant)) return "claude-glm";
-    if (["mimo", "mimo-v2.5pro", "xiaomi"].includes(variant)) return "claude-mimo";
+  ).trim();
+  if (!variant) return agent;
+  try {
+    return agentForProviderVariant(variant, agent) || agent;
+  } catch {
     return agent;
-  };
-  if (override) return scopedClaudeAgent(override);
-  const normalized = phase.toLowerCase();
-  if (normalized.startsWith("execute") || normalized.startsWith("repair") || normalized.startsWith("review-fix")) {
-    return scopedClaudeAgent("claude");
   }
-  if (normalized.startsWith("plan") || normalized.startsWith("review") || normalized.startsWith("verify")) {
-    return "codex";
-  }
-  return null;
 }
 
 function trustedExecutablePathEnv(canonicalExecutable: string) {
@@ -1757,13 +1813,26 @@ function minimalRunnerEnv(
     allowKeys: [
       "CPB_CAPSULE_CODEX_PATH",
       "CPB_CAPSULE_CLAUDE_CODE_EXECUTABLE",
+      ...(() => {
+        try {
+          return [...providerCapsuleEnvironmentKeysForAllAgents()];
+        } catch {
+          return [];
+        }
+      })(),
     ],
   };
   const result = buildChildEnv(sanitized, extra, options);
   result.PATH = trustedExecutablePathEnv(capsuleExecutable);
   const credentials: NodeJS.ProcessEnv = {};
   if (selectedAgent) {
-    for (const key of providerCredentialKeysForAgent(selectedAgent)) {
+    for (const key of providerCredentialInputKeysForSelection(
+      selectedAgent,
+      descriptorForPhaseAgent(selectedAgent),
+      input.CPB_PROVIDER || input.CPB_PROVIDER_ID || null,
+      input.CPB_MODEL || input.CPB_MODEL_NAME || null,
+      input,
+    )) {
       if (input[key] !== undefined) credentials[key] = input[key];
     }
   }
@@ -2664,6 +2733,16 @@ export async function dispatchPhase(cpbRoot: string, { project, jobId, phase, sc
       error: error instanceof Error ? error : new Error(String(error)),
       envelope,
     };
+  }
+  // Phase selection and provider command resolution are descriptor-driven.
+  // Load the same built-in/user registry in the parent before the sealed
+  // launch capsule is built, so custom variants also receive their declared
+  // environment prefix and provider credentials.
+  try {
+    await loadRegistry(String(runnerEnv.CPB_AGENTS_CONFIG_DIR || process.env.CPB_AGENTS_CONFIG_DIR || ""));
+  } catch {
+    // The launcher still has its safe legacy fallback for environments that
+    // intentionally run without a registry.
   }
   const result = await runTrustedJobRunner(
     resolvedExecutorRoot,

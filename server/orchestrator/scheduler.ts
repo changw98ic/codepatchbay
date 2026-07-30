@@ -15,7 +15,7 @@ import {
 import { readHubConfig, readSchedulerConfig } from "../services/agent/agent-config.js";
 import { ensureIndexFresh } from "../services/infra.js";
 import { projectCapabilityMapGate } from "../services/project/project-index.js";
-import { checkCodeGraphReady } from "../services/infra.js";
+import { localCodeIndexStatus } from "../../core/indexing/local-code-index/index.js";
 
 const CLAIM_TIMEOUT_MS = 120_000;
 
@@ -371,7 +371,7 @@ export class Scheduler {
       }
 
       if (!project.sourcePath || !project.projectRuntimeRoot) {
-        await this._markCodegraphUnavailable(entry, {
+        await this._markLocalCodeIndexUnavailable(entry, {
           indexFreshness: {
             available: false,
             indexDirty: true,
@@ -385,7 +385,7 @@ export class Scheduler {
 
       const capabilityGate = projectCapabilityMapGate(project);
       if (!capabilityGate.available) {
-        await this._markCodegraphUnavailable(entry, {
+        await this._markLocalCodeIndexUnavailable(entry, {
           capabilityMap: capabilityGate,
           indexFreshness: {
             available: false,
@@ -398,18 +398,18 @@ export class Scheduler {
         continue;
       }
 
-      let codegraphReadiness;
+      let localCodeIndexStatusResult;
       try {
-        codegraphReadiness = await checkCodeGraphReady({
+        localCodeIndexStatusResult = await localCodeIndexStatus({
           cpbRoot: this.cpbRoot || project.cpbRoot || project.metadata?.cpbRoot || project.sourcePath,
           sourcePath: project.sourcePath,
         });
       } catch (err) {
         const errorInfo = recordValue(err);
         const details = recordValue(errorInfo.details);
-        const reason = String(details.reason || errorInfo.code || "codegraph_unavailable");
-        await this._markCodegraphUnavailable(entry, {
-          codegraphReadiness: {
+        const reason = String(details.reason || errorInfo.code || "local_code_index_unavailable");
+        await this._markLocalCodeIndexUnavailable(entry, {
+          localCodeIndexReadiness: {
             available: false,
             reason,
             details: Object.keys(details).length > 0 ? details : null,
@@ -425,15 +425,33 @@ export class Scheduler {
         continue;
       }
 
+      if (!localCodeIndexStatusResult.available) {
+        const reason = localCodeIndexStatusResult.reason || "local_code_index_unavailable";
+        await this._markLocalCodeIndexUnavailable(entry, {
+          localCodeIndexReadiness: {
+            available: false,
+            reason,
+          },
+          indexFreshness: {
+            available: false,
+            indexDirty: true,
+            indexStale: false,
+            worktreeDirty: false,
+            dirtyReasons: [reason],
+          },
+        });
+        continue;
+      }
+
       const fresh = await ensureIndexFresh(project);
       if (!fresh.available) {
-        await this._markCodegraphUnavailable(entry, {
+        await this._markLocalCodeIndexUnavailable(entry, {
           indexFreshness: {
             available: false,
             indexDirty: fresh.indexDirty ?? true,
             indexStale: fresh.indexStale ?? false,
             worktreeDirty: fresh.worktreeDirty ?? false,
-            dirtyReasons: fresh.dirtyReasons ?? ["codegraph_unavailable"],
+            dirtyReasons: fresh.dirtyReasons ?? ["local_code_index_unavailable"],
           },
         });
         continue;
@@ -441,10 +459,10 @@ export class Scheduler {
 
       const nextMetadata = {
         ...entry.metadata,
-        codegraphReadiness: {
+        localCodeIndexReadiness: {
           available: true,
-          sourcePath: codegraphReadiness.sourcePath,
-          indexFile: codegraphReadiness.indexFile,
+          sourcePath: localCodeIndexStatusResult.ref.sourcePath,
+          ref: localCodeIndexStatusResult.ref,
         },
         indexSnapshot: {
           indexSnapshotId: fresh.indexSnapshotId,
@@ -472,11 +490,11 @@ export class Scheduler {
     return eligible;
   }
 
-  async _markCodegraphUnavailable(entry: SchedulerEntry, metadataPatch: SchedulerMetadata) {
+  async _markLocalCodeIndexUnavailable(entry: SchedulerEntry, metadataPatch: SchedulerMetadata) {
     const metadata = { ...(entry.metadata || {}), ...metadataPatch };
     const { updateEntry } = await import("../services/hub/hub-queue.js");
     const updated = await updateEntry(this.hubRoot, entry.id, {
-      status: "codegraph_unavailable",
+      status: "local_code_index_unavailable",
       updatedAt: nowIso(),
       metadata,
     }, {
@@ -484,7 +502,7 @@ export class Scheduler {
       expectedUpdatedAt: entry.updatedAt ?? null,
     });
     if (!updated) return false;
-    entry.status = "codegraph_unavailable";
+    entry.status = "local_code_index_unavailable";
     entry.updatedAt = nowIso();
     entry.metadata = metadata;
     return true;

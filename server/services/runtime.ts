@@ -121,14 +121,14 @@ async function readActiveRelease(env: NodeJS.ProcessEnv) {
 
 function countQueueBlockers(entries: LooseRecord[]) {
   const counts = {
-    codegraph_unavailable: 0,
+    local_code_index_unavailable: 0,
     agent_rate_limited: 0,
   };
   for (const entry of entries || []) {
     const status = entry?.status || "";
     const reason = entry?.metadata?.lastFailure || entry?.metadata?.failureKind || entry?.failure?.kind || "";
-    if (status === "codegraph_unavailable" || reason === "codegraph_unavailable") {
-      counts.codegraph_unavailable += 1;
+    if (status === "local_code_index_unavailable" || reason === "local_code_index_unavailable") {
+      counts.local_code_index_unavailable += 1;
     }
     if (status === "agent_rate_limited" || reason === "agent_rate_limited") {
       counts.agent_rate_limited += 1;
@@ -405,11 +405,11 @@ export async function collectRuntimeHealth({
     });
   }
 
-  if (queueBlockingCounts.codegraph_unavailable > 0) {
+  if (queueBlockingCounts.local_code_index_unavailable > 0) {
     blockers.push({
-      code: "codegraph_unavailable",
-      message: `${queueBlockingCounts.codegraph_unavailable} queue entr${queueBlockingCounts.codegraph_unavailable === 1 ? "y is" : "ies are"} blocked by CodeGraph readiness`,
-      count: queueBlockingCounts.codegraph_unavailable,
+      code: "local_code_index_unavailable",
+      message: `${queueBlockingCounts.local_code_index_unavailable} queue entr${queueBlockingCounts.local_code_index_unavailable === 1 ? "y is" : "ies are"} blocked by local code index readiness`,
+      count: queueBlockingCounts.local_code_index_unavailable,
     });
   }
   if (queueBlockingCounts.agent_rate_limited > 0) {

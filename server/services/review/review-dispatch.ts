@@ -3129,7 +3129,7 @@ const activeReviewRuns = new Map<string, ActiveReviewRun>();
 
 // ACP adapter lookup table — mirrors acp-client.js
 const ACP_ADAPTERS: Record<string, { command: string; args: string[]; npxPkg: string | null }> = {
-  codex:    { command: "codex-acp",         args: [],            npxPkg: "@zed-industries/codex-acp" },
+  codex:    { command: "codex-acp",         args: [],            npxPkg: "@agentclientprotocol/codex-acp" },
   claude:   { command: "claude-agent-acp",  args: [],            npxPkg: "@agentclientprotocol/claude-agent-acp" },
   reasonix: { command: "reasonix",          args: ["acp"],       npxPkg: null },
 };

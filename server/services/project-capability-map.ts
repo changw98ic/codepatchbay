@@ -1,11 +1,16 @@
 import { recordValue, type LooseRecord } from "../../shared/types.js";
-import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { promisify } from "node:util";
-import { CodeGraphUnavailableError, checkCodeGraphReady } from "./infra.js";
+import {
+  localCodeIndexStatus,
+  queryLocalCodeIndex,
+  LocalCodeIndexUnavailableError,
+} from "../../core/indexing/local-code-index/index.js";
+import type {
+  LocalCodeIndexRef,
+  LocalCodeIndexErrorReason,
+} from "../../core/indexing/local-code-index/index.js";
 
-const execFileAsync = promisify(execFile);
 const CAPABILITY_SCHEMA_VERSION = 1;
 
 const SOURCE_FILE_RE = /\.(?:[cm]?[jt]sx?|mjs|cjs|ts|tsx|py|go|rs|rb|java|swift)$/;
@@ -53,35 +58,29 @@ function topFiles(files: LooseRecord[], predicate: (file: LooseRecord) => boolea
     .map((file: LooseRecord) => toPosixPath(file.path));
 }
 
-async function queryCodeGraphFiles(indexFile: string) {
+async function queryLocalCodeIndexInventory(ref: LocalCodeIndexRef, cpbRoot?: string) {
   try {
-    const { stdout } = await execFileAsync("sqlite3", [
-      "-json",
-      indexFile,
-      "SELECT path, language, node_count AS nodeCount, size FROM files ORDER BY node_count DESC, path ASC;",
-    ], {
-      timeout: 10_000,
-      maxBuffer: 10 * 1024 * 1024,
-    });
-    const files = JSON.parse(stdout || "[]");
-    if (!Array.isArray(files) || files.length === 0) {
-      throw new CodeGraphUnavailableError("CodeGraph index has no file inventory", {
-        reason: "empty_codegraph_file_inventory",
-        indexFile,
+    const result = await queryLocalCodeIndex(
+      ref,
+      { kind: "inventory", limit: 500 },
+      { cpbRoot },
+    );
+    if (result.kind !== "inventory") {
+      throw new LocalCodeIndexUnavailableError("missing_local_code_index", {
+        sourcePath: ref.sourcePath,
       });
     }
-    return files.map((file) => ({
+    return result.files.map((file) => ({
       path: toPosixPath(file.path),
       language: file.language || "unknown",
-      nodeCount: Number(file.nodeCount || 0),
+      nodeCount: 0,
       size: Number(file.size || 0),
     }));
   } catch (err) {
-    if (err instanceof CodeGraphUnavailableError) throw err;
-    throw new CodeGraphUnavailableError("CodeGraph file inventory is unreadable", {
-      reason: "unreadable_codegraph_file_inventory",
-      indexFile,
-      cause: err.message,
+    if (err instanceof LocalCodeIndexUnavailableError) throw err;
+    throw new LocalCodeIndexUnavailableError("missing_local_code_index", {
+      sourcePath: ref.sourcePath,
+      cause: err instanceof Error ? err.message : String(err),
     });
   }
 }
@@ -147,8 +146,12 @@ export function projectCapabilityMapGate(project: LooseRecord) {
 }
 
 export async function generateProjectCapabilityMaps({ cpbRoot, sourcePath }: LooseRecord = {}) {
-  const readiness = await checkCodeGraphReady({ cpbRoot, sourcePath });
-  const files = await queryCodeGraphFiles(readiness.indexFile);
+  const status = await localCodeIndexStatus({ cpbRoot, sourcePath });
+  if (!status.available) {
+    throw new LocalCodeIndexUnavailableError(status.reason as LocalCodeIndexErrorReason, { sourcePath });
+  }
+  const { ref, tool } = status;
+  const files = await queryLocalCodeIndexInventory(ref, cpbRoot);
   const generatedAt = new Date().toISOString();
   const areas = highRiskAreas(files);
   const boundaries = safetyBoundaries(areas);
@@ -157,33 +160,34 @@ export async function generateProjectCapabilityMaps({ cpbRoot, sourcePath }: Loo
   const coreModules = topFiles(files, isSourceFile, 30);
   const testSurfaces = topFiles(files, isTestFile, 30);
 
-  const codegraph = {
-    source: readiness.state?.source || null,
-    sourcePath: readiness.sourcePath,
-    indexFile: readiness.indexFile,
-    pid: readiness.state?.pid || null,
-    socketPath: readiness.state?.socketPath || null,
+  const localCodeIndex = {
+    ref,
+    sourcePath: ref.sourcePath,
+    tool: tool.name,
+    toolVersion: tool.version,
+  };
+
+  const codeIndexReadiness = {
+    available: true,
+    checkedAt: generatedAt,
+    sourcePath: ref.sourcePath,
+    ref,
+    tool: {
+      name: tool.name,
+      version: tool.version,
+      coverage: tool.coverage,
+    },
   };
 
   return {
     capabilityMapConfidence: "high",
-    codegraphReadiness: {
-      available: true,
-      checkedAt: generatedAt,
-      sourcePath: readiness.sourcePath,
-      indexFile: readiness.indexFile,
-      state: {
-        source: readiness.state?.source || null,
-        pid: readiness.state?.pid || null,
-        socketPath: readiness.state?.socketPath || null,
-      },
-    },
+    codeIndexReadiness,
     project_capability_map: {
       schemaVersion: CAPABILITY_SCHEMA_VERSION,
       confidence: "high",
-      source: "codegraph",
+      source: "local-code-index",
       generatedAt,
-      codegraph,
+      localCodeIndex,
       summary: {
         fileCount: files.length,
         sourceFileCount: sourceFiles.length,
@@ -193,19 +197,19 @@ export async function generateProjectCapabilityMaps({ cpbRoot, sourcePath }: Loo
       },
       coreModules,
       testSurfaces,
-      buildCommands: await packageScripts(readiness.sourcePath),
+      buildCommands: await packageScripts(ref.sourcePath),
     },
     safety_boundary_map: {
       schemaVersion: CAPABILITY_SCHEMA_VERSION,
       confidence: "high",
-      source: "codegraph",
+      source: "local-code-index",
       generatedAt,
       boundaries,
     },
     high_risk_area_map: {
       schemaVersion: CAPABILITY_SCHEMA_VERSION,
       confidence: "high",
-      source: "codegraph",
+      source: "local-code-index",
       generatedAt,
       areas,
       files: [...new Set(areas.flatMap((area) => area.files))].slice(0, 50),

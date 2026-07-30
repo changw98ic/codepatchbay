@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { getDescriptor, hasAgent, loadRegistry, resolveAgentCommand } from "../core/agents/registry.js";
+import { ensureLocalCodeIndex } from "../core/indexing/local-code-index/index.js";
 import {
   captureProcessIdentity,
   captureSpawnProcessIdentity,
@@ -51,7 +52,6 @@ const LIVE_PROVIDER_PREFLIGHT_SENTINEL = "CPB_PROVIDER_PREFLIGHT_OK";
 const PROVIDER_PREFLIGHT_GENERATOR = "scripts/queue-swebench-batch.ts#runSweBenchProviderPreflight";
 const LIVE_HANDSHAKE_GENERATOR = "scripts/queue-swebench-batch.ts#liveProviderPreflightHandshake";
 const CONTROL_PLANE_AUDIT_GENERATOR = "scripts/queue-swebench-batch.ts#controlPlaneAuditArtifact";
-const CODEGRAPH_CLEANUP_PROOF_GENERATOR = "runtime/worker/managed-worker.ts#stopAssignmentCodeGraphRuntime";
 const TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled"]);
 const HARD_CONSTRAINT_FAILURE_KINDS = new Set([
   "web_tool_denied",
@@ -106,7 +106,6 @@ type QueueOptions = {
   waitTimeoutMs: number;
   notify: boolean;
   notifyTitle: string;
-  skipCodegraph: boolean;
   excludeExisting: boolean;
   excludePaths: string[];
   startWorkers: number;
@@ -1197,69 +1196,6 @@ function cleanupEvidenceValue(value: unknown) {
   };
 }
 
-const CODEGRAPH_CLEANUP_PROOF_FIELDS = new Set([
-  "assignmentId",
-  "attempt",
-  "attemptToken",
-  "cleanupAttempt",
-  "cleanupCompletedAt",
-  "cleanupStartedAt",
-  "cleanupVerified",
-  "context",
-  "entryId",
-  "generator",
-  "jobId",
-  "ok",
-  "orchestratorEpoch",
-  "pid",
-  "processPid",
-  "processTreeStopped",
-  "projectId",
-  "startup",
-  "startupSource",
-  "statePath",
-  "stateRemoved",
-  "workerId",
-  "worktreePath",
-]);
-
-const CODEGRAPH_CLEANUP_STARTUP_FIELDS = new Set([
-  "ok",
-  "pid",
-  "processPid",
-  "readyAt",
-  "source",
-  "startedAt",
-  "statePath",
-]);
-
-function unexpectedKeys(value: LooseRecord, allowed: Set<string>) {
-  return Object.keys(value).filter((key) => !allowed.has(key));
-}
-
-function isIsoTimestamp(value: unknown) {
-  if (typeof value !== "string") return false;
-  const parsed = Date.parse(value);
-  return Number.isFinite(parsed)
-    && new Date(parsed).toISOString() === (value.includes(".") ? value : value.replace("Z", ".000Z"));
-}
-
-function orderedIsoTimestamps(...values: unknown[]) {
-  const parsed = values.map((value) => isIsoTimestamp(value) ? Date.parse(String(value)) : NaN);
-  return parsed.every(Number.isFinite)
-    && parsed.every((value, index) => index === 0 || parsed[index - 1] <= value);
-}
-
-function mergeCodeGraphCleanupEvidence(evidence: LooseRecord, proofValue: unknown) {
-  if (!isRecord(proofValue)) return;
-  evidence.cleanup = {
-    ...cleanupEvidenceValue(evidence.cleanup),
-    codegraph: recordValue(proofValue),
-  };
-  const proof = recordValue(proofValue);
-  if (stringValue(proof.jobId)) evidence.jobId = stringValue(proof.jobId);
-}
-
 function emptyWorkerCleanupEvidence(): WorkerCleanupEvidence {
   return {
     workerCleanupEvents: 0,
@@ -1769,7 +1705,6 @@ export async function collectSweBenchBatchEvidence({
     for (const resultFile of resultFiles) {
       const result = recordValue(await readJsonFile(resultFile));
       mergeAssignmentResultFailureEvidence(evidence, result);
-      mergeCodeGraphCleanupEvidence(evidence, recordValue(result.cleanup).codegraph);
       const jobId = stringValue(recordValue(result.jobResult).jobId || result.jobId || terminalState.jobId);
       if (jobId) evidence.jobId = jobId;
       const eventFile = runtimeEventFile(hubRoot, projectId, jobId);
@@ -1800,117 +1735,6 @@ function preflightViolationStrings(value: unknown) {
 
 function stableJsonEqual(left: unknown, right: unknown) {
   return stableJson(left) === stableJson(right);
-}
-
-function codeGraphCleanupProofViolations({
-  proofValue,
-  assignment,
-  terminalState,
-  job,
-  instanceId,
-}: {
-  proofValue: unknown;
-  assignment: unknown;
-  terminalState: unknown;
-  job: LooseRecord;
-  instanceId: string;
-}) {
-  const label = instanceId || stringValue(job.assignmentId) || "(unknown)";
-  const violations: string[] = [];
-  if (!isRecord(proofValue)) {
-    return [`completed live job ${label} is missing CodeGraph cleanup proof`];
-  }
-  const proof = recordValue(proofValue);
-  const startup = recordValue(proof.startup);
-  if (unexpectedKeys(proof, CODEGRAPH_CLEANUP_PROOF_FIELDS).length > 0
-    || unexpectedKeys(startup, CODEGRAPH_CLEANUP_STARTUP_FIELDS).length > 0) {
-    violations.push(`completed live job ${label} CodeGraph cleanup proof schema is not closed`);
-  }
-  if (proof.generator !== CODEGRAPH_CLEANUP_PROOF_GENERATOR) violations.push(`completed live job ${label} CodeGraph cleanup proof generator is invalid`);
-  if (proof.ok !== true || proof.cleanupVerified !== true || proof.processTreeStopped !== true || proof.stateRemoved !== true) {
-    violations.push(`completed live job ${label} CodeGraph cleanup proof is not verified`);
-  }
-  // Runtime cleanup can recover with retries; release evidence requires first-cleanup success.
-  if (!isPositiveSafeIntegerValue(proof.cleanupAttempt) || proof.cleanupAttempt !== 1) {
-    violations.push(`completed live job ${label} CodeGraph cleanup proof must come from the first cleanup attempt`);
-  }
-  if (proof.context !== "before_terminal_publication") {
-    violations.push(`completed live job ${label} CodeGraph cleanup proof context is invalid`);
-  }
-  if (startup.ok !== true || stringValue(startup.source) !== stringValue(proof.startupSource)) {
-    violations.push(`completed live job ${label} CodeGraph startup proof is inconsistent`);
-  }
-  if (!isPositiveSafeIntegerValue(startup.pid)
-    || !isPositiveSafeIntegerValue(startup.processPid)
-    || !isPositiveSafeIntegerValue(proof.pid)
-    || !isPositiveSafeIntegerValue(proof.processPid)) {
-    violations.push(`completed live job ${label} CodeGraph startup pids must be positive safe integers`);
-  }
-  if (startup.pid !== proof.pid
-    || startup.processPid !== proof.processPid
-    || stringValue(startup.statePath) !== stringValue(proof.statePath)) {
-    violations.push(`completed live job ${label} CodeGraph startup pids or state path are inconsistent`);
-  }
-  if (!orderedIsoTimestamps(startup.startedAt, startup.readyAt, proof.cleanupStartedAt, proof.cleanupCompletedAt)) {
-    violations.push(`completed live job ${label} CodeGraph cleanup proof timestamps are invalid or out of order`);
-  }
-  if (!stringValue(proof.statePath) || !stringValue(proof.worktreePath) || !stringValue(startup.source)) {
-    violations.push(`completed live job ${label} CodeGraph cleanup proof is missing startup readiness fields`);
-  }
-
-  const assignmentRecord = recordValue(assignment);
-  const queued = recordValue(assignmentRecord.queued);
-  const state = recordValue(terminalState);
-  const requireStringIdentity = (field: string, values: unknown[], mismatch: string) => {
-    const present = values.filter((value) => value !== undefined);
-    const validStrings = present
-      .filter((value): value is string => typeof value === "string")
-      .map((value) => value.trim())
-      .filter(Boolean);
-    const invalid = present.some((value) => typeof value !== "string" || value.trim().length === 0);
-    const authoritative = Array.from(new Set(validStrings));
-    if (invalid || authoritative.length === 0) {
-      violations.push(`completed live job ${label} CodeGraph cleanup proof is missing authoritative ${field}`);
-    } else if (authoritative.length > 1) {
-      violations.push(`completed live job ${label} CodeGraph cleanup proof has conflicting authoritative ${field}`);
-    } else if (proof[field] !== authoritative[0]) {
-      violations.push(`completed live job ${label} CodeGraph cleanup proof ${mismatch}`);
-    }
-  };
-  const requireNumericIdentity = (field: string, values: unknown[], mismatch: string) => {
-    const present = values.filter((value) => value !== undefined);
-    const invalid = present.some((value) => !isPositiveSafeIntegerValue(value));
-    const authoritative = Array.from(new Set(present.filter(isPositiveSafeIntegerValue)));
-    if (invalid || authoritative.length === 0) {
-      violations.push(`completed live job ${label} CodeGraph cleanup proof is missing authoritative ${field}`);
-    } else if (authoritative.length > 1) {
-      violations.push(`completed live job ${label} CodeGraph cleanup proof has conflicting authoritative ${field}`);
-    } else if (proof[field] !== authoritative[0]) {
-      violations.push(`completed live job ${label} CodeGraph cleanup proof ${mismatch}`);
-    }
-  };
-
-  requireStringIdentity(
-    "assignmentId",
-    [queued.assignmentId, assignmentRecord.assignmentId, state.assignmentId, job.assignmentId],
-    "assignment identity mismatch",
-  );
-  requireNumericIdentity("attempt", [
-    queued.attempt,
-    assignmentRecord.attempt,
-    assignmentRecord.attempts,
-    state.attempt,
-    state.attempts,
-    job.attempt,
-    recordValue(job.attempts).count,
-  ], "attempt identity mismatch");
-  requireStringIdentity("attemptToken", [queued.attemptToken, assignmentRecord.attemptToken, state.attemptToken], "attempt token mismatch");
-  requireStringIdentity("entryId", [assignmentRecord.entryId, queued.entryId, state.entryId], "entry identity mismatch");
-  requireStringIdentity("projectId", [assignmentRecord.projectId, queued.projectId, state.projectId], "project identity mismatch");
-  requireStringIdentity("jobId", [state.jobId, job.jobId], "job identity mismatch");
-  requireStringIdentity("workerId", [queued.workerId, assignmentRecord.workerId, state.workerId, job.workerId], "worker identity mismatch");
-  requireNumericIdentity("orchestratorEpoch", [queued.orchestratorEpoch, assignmentRecord.orchestratorEpoch, state.orchestratorEpoch, job.orchestratorEpoch], "orchestrator epoch mismatch");
-  return violations;
 }
 
 export function validateSweBenchBatchReport({
@@ -2152,13 +1976,6 @@ export function validateSweBenchBatchReport({
       if (stringValue(jobRecord.failureKind)) {
         violations.push(`completed live job ${instanceId || "(unknown)"} retains failure kind`);
       }
-      violations.push(...codeGraphCleanupProofViolations({
-        proofValue: recordValue(jobRecord.cleanup).codegraph,
-        assignment,
-        terminalState,
-        job: jobRecord,
-        instanceId,
-      }));
       const phaseEvidence = recordValue(jobRecord.phaseEvidence);
       for (const phase of ["prepare_task", "plan", "execute", "verify", "adversarial_verify"]) {
         const phaseRecord = recordValue(phaseEvidence[phase]);
@@ -2637,7 +2454,6 @@ export function resolveBatchQueueOptions(argv: string[]): QueueOptions {
       : defaultBatchWaitTimeoutMs({ count, startWorkers, timeoutMs }),
     notify: !hasFlag(args, "--no-notify"),
     notifyTitle: argValue(args, "--notify-title") || "CPB SWE-bench batch",
-    skipCodegraph: hasFlag(args, "--skip-codegraph"),
     excludeExisting: !hasFlag(args, "--include-existing"),
     excludePaths: (argValue(args, "--exclude-paths") || "docs/product/cpb-flagship-product-validation.json,docs/product/evidence")
       .split(",")
@@ -4068,15 +3884,6 @@ async function cloneAtCommit({ repo, baseCommit, targetDir, signal }: { repo: st
   await runRequired("git", ["checkout", "--detach", "FETCH_HEAD"], targetDir, undefined, signal);
 }
 
-async function initCodeGraph(sourcePath: string, signal?: AbortSignal) {
-  const init = await runRequired("codegraph", ["init", sourcePath], REPO_ROOT, 600_000, signal);
-  const statusResult = await runRequired("codegraph", ["status", sourcePath], REPO_ROOT, 120_000, signal);
-  return {
-    init: { code: init.code, stdoutTail: init.stdout.slice(-2000), stderrTail: init.stderr.slice(-2000) },
-    statusCommand: { code: statusResult.code, stdoutTail: statusResult.stdout.slice(-2000), stderrTail: statusResult.stderr.slice(-2000) },
-  };
-}
-
 function workerIdFor(index: number, options: QueueOptions) {
   if (options.workerCount === 1) return `${options.workerPrefix}-01`;
   return `${options.workerPrefix}-${String((index % options.workerCount) + 1).padStart(2, "0")}`;
@@ -4090,20 +3897,20 @@ type BatchAssignmentTransactionHooks = {
 
 export async function queueBatchAssignmentAtomically({
   hubRoot,
+  cpbRoot,
   workerId,
   input,
   sourcePath,
   metadata,
-  skipCodeGraphGate = false,
   signal,
   hooks = {},
 }: {
   hubRoot: string;
+  cpbRoot: string;
   workerId: string;
   input: AssignmentInput;
   sourcePath: string;
   metadata: NonNullable<Parameters<typeof registerProject>[1]>;
-  skipCodeGraphGate?: boolean;
   signal?: AbortSignal;
   hooks?: BatchAssignmentTransactionHooks;
 }) {
@@ -4152,8 +3959,8 @@ export async function queueBatchAssignmentAtomically({
       id: input.projectId,
       name: input.projectId,
       sourcePath,
+      cpbRoot,
       metadata,
-      skipCodeGraphGate,
     });
     projectReceipt = project.receipt;
     if (project.commitWarnings.length > 0) {
@@ -4643,7 +4450,6 @@ Options:
   --verifier-agent <n>    Verifier agent. Defaults to claude-mimo.
   --adversarial-agent <n> Adversarial verifier agent. Defaults to claude-mimo.
   --agent <n>             Single-agent override for controlled comparisons.
-  --skip-codegraph        Skip source CodeGraph initialization during environment setup.
   --start-workers <n>     Start n detached managed workers after queueing.
   --wait                  Wait for queued assignments to reach terminal status.
   --wait-timeout-ms <ms>  Batch wait timeout. Defaults to a worker-count-scaled full workflow window.
@@ -4731,7 +4537,7 @@ async function main() {
       planMode: options.planMode,
     });
 
-    let codegraph: unknown = null;
+    let localCodeIndex: unknown = null;
     let queued: LooseRecord | null = null;
     if (!options.dryRun) {
       throwIfAborted(providerPreflightAbort.signal);
@@ -4741,10 +4547,15 @@ async function main() {
         targetDir: sourcePath,
         signal: providerPreflightAbort.signal,
       });
-      codegraph = options.skipCodegraph ? null : await initCodeGraph(sourcePath, providerPreflightAbort.signal);
+      localCodeIndex = await ensureLocalCodeIndex({
+        sourcePath,
+        cpbRoot: options.cpbRoot,
+        signal: providerPreflightAbort.signal,
+      });
       throwIfAborted(providerPreflightAbort.signal);
       const enqueue = await queueBatchAssignmentAtomically({
         hubRoot: options.hubRoot,
+        cpbRoot: options.cpbRoot,
         workerId,
         input,
         sourcePath,
@@ -4775,7 +4586,7 @@ async function main() {
       sourcePath,
       record,
       queued,
-      codegraph,
+      localCodeIndex,
     });
     console.log(`[${index + 1}/${selected.length}] ${record.benchmarkInstanceId} -> ${workerId}${options.dryRun ? " (dry-run)" : ""}`);
   }

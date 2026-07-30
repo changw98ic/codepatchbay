@@ -70,7 +70,12 @@ const focusedTests = [
   "tests/release-gate-runner.test.js",
   "tests/release-readiness-report.test.js",
   "tests/acp-supervisor.test.js",
-  "tests/codegraph-capability-map.test.js",
+  "tests/code-index-capability-map.test.js",
+  "tests/local-code-index-v2-release-scan.test.js",
+  "tests/local-code-index-v2-migration.test.js",
+  "tests/local-code-index-contract.test.js",
+  "tests/local-code-index.test.js",
+  "tests/provider-capability-registry.test.js",
   "tests/checklist-decompose-integration.test.js",
 ];
 

@@ -202,8 +202,8 @@ test("sandboxed node wrapper can read script path passed as an argument", async 
 test("sandboxed global Node launcher can read exact optional native dependency packages", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "cpb-agent-sandbox-node-cli-"));
   const globalRoot = path.join(root, "lib", "node_modules");
-  const packageRoot = path.join(globalRoot, "@zed-industries", "codex-acp");
-  const nativeRoot = path.join(globalRoot, "@zed-industries", "codex-acp-darwin-arm64");
+  const packageRoot = path.join(globalRoot, "@agentclientprotocol", "codex-acp");
+  const nativeRoot = path.join(globalRoot, "@agentclientprotocol", "codex-acp-darwin-arm64");
   const binDir = path.join(root, "bin");
   const entrypoint = path.join(packageRoot, "bin", "codex-acp.js");
   const command = path.join(binDir, "codex-acp");
@@ -211,11 +211,11 @@ test("sandboxed global Node launcher can read exact optional native dependency p
   await mkdir(nativeRoot, { recursive: true });
   await mkdir(binDir, { recursive: true });
   await writeFile(path.join(packageRoot, "package.json"), JSON.stringify({
-    name: "@zed-industries/codex-acp",
-    optionalDependencies: { "@zed-industries/codex-acp-darwin-arm64": "1.0.0" },
+    name: "@agentclientprotocol/codex-acp",
+    optionalDependencies: { "@agentclientprotocol/codex-acp-darwin-arm64": "1.0.0" },
   }), "utf8");
   await writeFile(path.join(nativeRoot, "package.json"), JSON.stringify({
-    name: "@zed-industries/codex-acp-darwin-arm64",
+    name: "@agentclientprotocol/codex-acp-darwin-arm64",
   }), "utf8");
   await writeFile(entrypoint, "console.log('ok')\n", "utf8");
   await symlink(entrypoint, command);

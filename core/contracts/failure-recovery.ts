@@ -54,7 +54,7 @@ const KIND_CLASS: Record<string, FailureClassValue> = {
   [FailureKind.SCOPE_VIOLATION]: FailureClass.LOCATION,
   [FailureKind.VERIFICATION_FAILED]: FailureClass.IMPLEMENTATION,
   [FailureKind.BROAD_TEST_COMMAND_DENIED]: FailureClass.TEST_SELECTION,
-  [FailureKind.CODEGRAPH_UNAVAILABLE]: FailureClass.ENVIRONMENT,
+  [FailureKind.LOCAL_CODE_INDEX_UNAVAILABLE]: FailureClass.ENVIRONMENT,
   [FailureKind.RUNTIME_INTERRUPTED]: FailureClass.ENVIRONMENT,
   [FailureKind.WORKER_CRASHED]: FailureClass.ENVIRONMENT,
   [FailureKind.WORKER_HEARTBEAT_LOST]: FailureClass.ENVIRONMENT,

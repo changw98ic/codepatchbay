@@ -180,7 +180,6 @@ test("AcpClient residual cleanup kills helpers under project runtime root", asyn
       CPB_PROJECT_PATH_OVERRIDE: process.cwd(),
       CPB_PROJECT_RUNTIME_ROOT: runtimeRoot,
       CPB_AGENT_ISOLATE_HOME: "0",
-      CPB_CODEGRAPH_ENABLED: "0",
     },
   });
   assert.ok(
@@ -209,7 +208,6 @@ test("AcpClient residual cleanup ignores broad repository cwd paths", () => {
     env: {
       ...process.env,
       CPB_AGENT_ISOLATE_HOME: "0",
-      CPB_CODEGRAPH_ENABLED: "0",
     },
   });
 
@@ -291,7 +289,6 @@ test("AcpClient terminal cleanup refuses a recycled terminal PID", async () => {
     env: {
       ...process.env,
       CPB_AGENT_ISOLATE_HOME: "0",
-      CPB_CODEGRAPH_ENABLED: "0",
     },
     processSystem: system,
   });
@@ -350,7 +347,6 @@ test("AcpClient terminal cleanup propagates EPERM and keeps the terminal tracked
     env: {
       ...process.env,
       CPB_AGENT_ISOLATE_HOME: "0",
-      CPB_CODEGRAPH_ENABLED: "0",
     },
     processSystem: system,
   });
@@ -404,7 +400,6 @@ test("AcpClient terminal launch waits for close instead of bare-killing when ide
     env: {
       ...process.env,
       CPB_AGENT_ISOLATE_HOME: "0",
-      CPB_CODEGRAPH_ENABLED: "0",
     },
     processSystem: system,
   });
@@ -464,7 +459,6 @@ test("AcpClient terminal launch preserves identity and close failures for unowne
     env: {
       ...process.env,
       CPB_AGENT_ISOLATE_HOME: "0",
-      CPB_CODEGRAPH_ENABLED: "0",
     },
     processSystem: system,
   });

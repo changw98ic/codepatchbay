@@ -3,7 +3,7 @@
   "displayName": "Codex CLI",
   "command": "codex-acp",
   "fallbackCommand": "npx",
-  "fallbackArgs": ["-y", "@zed-industries/codex-acp"],
+  "fallbackArgs": ["-y", "@agentclientprotocol/codex-acp"],
   "args": [],
   "capabilities": ["plan", "execute", "verify", "review"],
   "defaultRoles": ["planner", "verifier", "reviewer"],
@@ -11,7 +11,37 @@
   "envPrefix": "CPB_ACP_CODEX",
   "protocol": "acp",
   "description": "OpenAI Codex CLI in ACP mode",
+  "provider": {
+    "key": "codex",
+    "family": "codex",
+    "credentialEnv": [
+      "OPENAI_API_KEY", "OPENAI_BASE_URL", "AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT",
+      "OPENAI_ORG_ID"
+    ],
+    "capsule": {
+      "nativeExecutable": {
+        "basename": "codex",
+        "pathContains": ["@openai/codex-"],
+        "env": "CPB_CAPSULE_CODEX_PATH",
+        "targetEnv": "CODEX_PATH",
+        "kind": "native"
+      }
+    },
+    "quota": {
+      "region": "global",
+      "timezone": "UTC",
+      "policy": { "type": "per-minute", "description": "OpenAI per-minute rate limit" },
+      "rules": []
+    }
+  },
   "lifecycle": "one-shot",
+  "providerFamily": "codex",
+  "tieBreakPriority": 10,
+  "sandboxPolicy": "native",
+  "inheritFiles": [
+    { "from": "$CODEX_HOME/auth.json", "to": "$HOME/.codex/auth.json", "maxBytes": 1048576 }
+  ],
+  "quarantineFiles": ["$HOME/.codex/config.toml"],
   "resumeCommand": "codex",
   "resumeArgs": ["--resume"]
 }

@@ -1,0 +1,158 @@
+{
+  "version": "1.0.0",
+  "language": "rust",
+  "aliases": ["rs", "rust"],
+  "extensions": [".rs"],
+  "symbolKinds": {
+    "function": "Function declaration (fn)",
+    "method": "Method declaration (impl block)",
+    "struct": "Struct declaration",
+    "enum": "Enum declaration",
+    "enum-variant": "Enum variant",
+    "trait": "Trait declaration",
+    "type": "Type alias (type)",
+    "impl": "Implementation block",
+    "variable": "Variable binding (let)",
+    "constant": "Constant declaration (const)",
+    "static": "Static declaration",
+    "macro": "Macro definition",
+    "module": "Module declaration",
+    "attribute": "Outer or inner attribute",
+    "use-name": "Use declaration import"
+  },
+  "patterns": {
+    "definitions": [
+      {
+        "kind": "function",
+        "pattern": "^(?<visibility>pub(?:\\([^)]+\\))?\\s+)?(?:\\s*async\\s+)?(?:\\s*unsafe\\s+)?(?:\\s*extern\\s+(?:\"[^\"]*\"\\s+)?(?:\\s*\"[^\"]*\"\\s+)?)?fn\\s+(?<name>[a-zA-Z_][a-zA-Z0-9_]*)(?:\\s*<[^>]*>)?\\s*\\(",
+        "description": "Function declaration with optional visibility, async, unsafe, extern"
+      },
+      {
+        "kind": "method",
+        "pattern": "^\\s+(?<visibility>pub(?:\\([^)]+\\))?\\s+)?(?:\\s*async\\s+)?(?:\\s*unsafe\\s+)?fn\\s+(?<name>[a-zA-Z_][a-zA-Z0-9_]*)(?:\\s*<[^>]*>)?\\s*\\(",
+        "description": "Method declaration inside impl block (indented)"
+      },
+      {
+        "kind": "struct",
+        "pattern": "^(?<visibility>pub(?:\\([^)]+\\))?\\s+)?struct\\s+(?<name>[a-zA-Z_][a-zA-Z0-9_]*)(?:\\s*<[^>]*>)?(?:\\s+where\\s+[^{]+)?(?:\\s*\\{|;|\\s*$)",
+        "description": "Struct declaration (named fields, unit, or tuple)"
+      },
+      {
+        "kind": "enum",
+        "pattern": "^(?<visibility>pub(?:\\([^)]+\\))?\\s+)?enum\\s+(?<name>[a-zA-Z_][a-zA-Z0-9_]*)(?:\\s*<[^>]*>)?(?:\\s+where\\s+[^{]+)?\\s*\\{",
+        "description": "Enum declaration"
+      },
+      {
+        "kind": "enum-variant",
+        "pattern": "^\\s+(?<name>[A-Z][a-zA-Z0-9_]*)(?:\\s*\\(|\\s*\\{|\\s*,|\\s*=|\\s*$)",
+        "description": "Enum variant (inside enum block)"
+      },
+      {
+        "kind": "trait",
+        "pattern": "^(?<visibility>pub(?:\\([^)]+\\))?\\s+)?(?:\\s*unsafe\\s+)?trait\\s+(?<name>[a-zA-Z_][a-zA-Z0-9_]*)(?:\\s*<[^>]*>)?(?:\\s*:\\s*[^{]+)?(?:\\s+where\\s+[^{]+)?\\s*(?:\\{|$)",
+        "description": "Trait declaration with optional bounds and where clause"
+      },
+      {
+        "kind": "type",
+        "pattern": "^(?<visibility>pub(?:\\([^)]+\\))?\\s+)?type\\s+(?<name>[a-zA-Z_][a-zA-Z0-9_]*)(?:\\s*<[^>]*>)?\\s*=",
+        "description": "Type alias declaration"
+      },
+      {
+        "kind": "impl",
+        "pattern": "^impl(?:\\s*<[^>]*>)?\\s+(?:(?<trait>[a-zA-Z_][a-zA-Z0-9_:]*)\\s+for\\s+)?(?<name>[a-zA-Z_][a-zA-Z0-9_:]*(?:\\s*<[^>]*>)?)(?:\\s+where\\s+[^{]+)?\\s*\\{",
+        "description": "Impl block (inherent or trait impl)"
+      },
+      {
+        "kind": "variable",
+        "pattern": "^\\s*(?:let\\s+(?:mut\\s+)?(?<name>[a-zA-Z_][a-zA-Z0-9_]*)|static\\s+(?:mut\\s+)?(?<name2>[a-zA-Z_][a-zA-Z0-9_]*))\\s*:",
+        "description": "Let binding or static declaration"
+      },
+      {
+        "kind": "constant",
+        "pattern": "^(?<visibility>pub(?:\\([^)]+\\))?\\s+)?const\\s+(?<name>[a-zA-Z_][a-zA-Z0-9_]*)\\s*:",
+        "description": "Constant declaration"
+      },
+      {
+        "kind": "static",
+        "pattern": "^(?<visibility>pub(?:\\([^)]+\\))?\\s+)?static\\s+(?<name>[a-zA-Z_][a-zA-Z0-9_]*)\\s*:",
+        "description": "Static variable declaration"
+      },
+      {
+        "kind": "macro",
+        "pattern": "^macro_rules!\\s+(?<name>[a-zA-Z_][a-zA-Z0-9_]*)",
+        "description": "Declarative macro definition"
+      },
+      {
+        "kind": "macro",
+        "pattern": "^(?<visibility>pub(?:\\([^)]+\\))?\\s+)?(?:\\s*async\\s+)?(?:\\s*unsafe\\s+)?fn\\s+(?<name>[a-zA-Z_][a-zA-Z0-9_]*)\\s*!",
+        "description": "Procedural macro or macro invocation as definition"
+      },
+      {
+        "kind": "module",
+        "pattern": "^(?<visibility>pub(?:\\([^)]+\\))?\\s+)?mod\\s+(?<name>[a-zA-Z_][a-zA-Z0-9_]*)",
+        "description": "Module declaration"
+      },
+      {
+        "kind": "attribute",
+        "pattern": "^\\s*#\\[\\s*(?<name>[a-zA-Z_][a-zA-Z0-9_:]*)",
+        "description": "Outer attribute"
+      }
+    ],
+    "imports": [
+      {
+        "pattern": "^use\\s+(?<source>[a-zA-Z_][a-zA-Z0-9_:]*(?:::\\s*\\{[^}]+\\}|::\\*|::[a-zA-Z_][a-zA-Z0-9_]*))",
+        "kind": "all",
+        "description": "Use declaration (use path::to::item)"
+      },
+      {
+        "pattern": "^use\\s+\\{(?<names>[^}]+)\\}",
+        "kind": "all",
+        "description": "Use declaration with grouped imports"
+      },
+      {
+        "pattern": "^use\\s+(?<source>[a-zA-Z_][a-zA-Z0-9_:]*)\\s+as\\s+(?<alias>[a-zA-Z_][a-zA-Z0-9_]*)",
+        "kind": "all",
+        "description": "Use with alias (use X as Y)"
+      },
+      {
+        "pattern": "^extern\\s+crate\\s+(?<source>[a-zA-Z_][a-zA-Z0-9_]*)",
+        "kind": "all",
+        "description": "Extern crate declaration (legacy)"
+      }
+    ],
+    "exports": [
+      {
+        "pattern": "^pub\\s+(?:fn|struct|enum|trait|type|const|static|mod)\\s+(?<name>[a-zA-Z_][a-zA-Z0-9_]*)",
+        "kind": "named",
+        "description": "Public item declaration"
+      },
+      {
+        "pattern": "^pub\\s*\\((?<visibility>[^)]+)\\)\\s+(?:fn|struct|enum|trait|type|const|static|mod)\\s+(?<name>[a-zA-Z_][a-zA-Z0-9_]*)",
+        "kind": "named",
+        "description": "Restricted visibility item (pub(crate), pub(super), etc.)"
+      },
+      {
+        "pattern": "^pub\\s+use\\s+(?<source>[a-zA-Z_][a-zA-Z0-9_:]*(?:::[^;]+)?)",
+        "kind": "re-export",
+        "description": "Public use (re-export)"
+      }
+    ],
+    "references": [
+      {
+        "pattern": "\\b(?<name>[a-zA-Z_][a-zA-Z0-9_]*)\\b(?!\\s*::)",
+        "excludeContexts": ["comment", "string", "definition"],
+        "description": "General identifier reference (excluding path qualifiers)"
+      },
+      {
+        "pattern": "(?<name>[a-zA-Z_][a-zA-Z0-9_]*)\\s*!",
+        "excludeContexts": ["comment", "string"],
+        "description": "Macro invocation reference"
+      }
+    ]
+  },
+  "folding": {
+    "startPattern": "\\{\\s*$",
+    "endPattern": "^\\}"
+  },
+  "notes": "Rust rules handle visibility modifiers (pub, pub(crate), pub(super)), lifetime parameters, generics, where clauses, and trait bounds. Enum variants and impl methods are detected at appropriate indentation levels. Macro_rules! definitions and proc-macro functions are both captured as macro symbols."
+}

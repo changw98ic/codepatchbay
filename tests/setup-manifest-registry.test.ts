@@ -20,7 +20,7 @@ describe("D40 manifest registry layout", () => {
     binary: "codex",
     tier: 1,
     recommended: true,
-    roles: ["planner", "verifier", "executor"],
+    roles: ["planner", "verifier", "reviewer", "executor"],
     capabilities: ["repo_inspect", "file_edit", "shell", "verify", "pr_review"],
     sourceUrl: "https://github.com/openai/codex/blob/main/codex-rs/README.md",
     install: {
@@ -242,5 +242,123 @@ describe("D40 manifest registry layout", () => {
       const result = validateSetupAgentManifest(agent);
       assert.equal(result.valid, true, `Agent ${agent.id} should pass validation: ${result.errors.join(", ")}`);
     }
+  });
+
+  it("Codex ACP health uses the manifest probe arguments", async () => {
+    const { checkSetupAgentHealth } = await import("../core/setup/health-check.js");
+    const calls = [];
+    const result = await checkSetupAgentHealth({
+      id: "codex",
+      displayName: "OpenAI Codex CLI",
+      binary: "codex",
+      adapter: { protocol: "acp", command: "codex-acp", args: ["--version"] },
+    }, {
+      runCommand: async (command, args) => {
+        calls.push([command, args]);
+        return { ok: true, stdout: command === "codex-acp" ? "@agentclientprotocol/codex-acp 1.1.7" : "codex-cli 0.145.0" };
+      },
+    });
+    assert.equal(result.status, "ready");
+    assert.deepEqual(calls, [["codex", ["--version"]], ["codex-acp", ["--version"]]]);
+  });
+
+  // ─── B4: defaultRoles ⊆ roles invariant (descriptor vs manifest) ───
+
+  it("for every shipped descriptor with a matching manifest, defaultRoles ⊆ roles", async () => {
+    const { listSetupAgents } = await import("../core/setup/agent-catalog.js");
+    const { readdirSync, readFileSync } = await import("node:fs");
+    const path = await import("node:path");
+    const manifests = listSetupAgents();
+    const descDir = path.join(process.cwd(), "core", "agents", "descriptors");
+    const files = readdirSync(descDir).filter((f: string) => f.endsWith(".json"));
+    const descriptorRoles = new Map<string, string[]>();
+    for (const f of files) {
+      const d = JSON.parse(readFileSync(path.join(descDir, f), "utf8"));
+      if (typeof d.name === "string" && Array.isArray(d.defaultRoles)) {
+        descriptorRoles.set(d.name, d.defaultRoles);
+      }
+    }
+    for (const [name, defaultRoles] of descriptorRoles) {
+      const manifest = manifests.find((m: any) => m.id === name);
+      if (!manifest) continue; // invariant only applies when both exist
+      for (const role of defaultRoles) {
+        assert.ok(
+          (manifest.roles as string[]).includes(role),
+          `descriptor '${name}' defaultRole '${role}' missing from manifest roles ${JSON.stringify(manifest.roles)}`,
+        );
+      }
+    }
+  });
+
+  it("validateDefaultRolesSubset flags a manifest whose roles omit a defaultRole", async () => {
+    const { validateDefaultRolesSubset } = await import("../core/setup/manifest-schema.js");
+    const agents = [{ id: "codex", roles: ["executor"] }];
+    const descriptorRoles = new Map<string, string[]>([["codex", ["planner", "verifier"]]]);
+    const result = validateDefaultRolesSubset(agents as any, descriptorRoles);
+    assert.equal(result.valid, false);
+    assert.ok(result.errors.some((e: string) => /planner/.test(e)));
+    assert.ok(result.errors.some((e: string) => /verifier/.test(e)));
+  });
+
+  it("validateDefaultRolesSubset passes when defaultRoles ⊆ roles", async () => {
+    const { validateDefaultRolesSubset } = await import("../core/setup/manifest-schema.js");
+    const agents = [{ id: "codex", roles: ["planner", "verifier", "executor"] }];
+    const descriptorRoles = new Map<string, string[]>([["codex", ["planner", "verifier"]]]);
+    const result = validateDefaultRolesSubset(agents as any, descriptorRoles);
+    assert.equal(result.valid, true);
+    assert.equal(result.errors.length, 0);
+  });
+
+  it("validateDefaultRolesSubset skips agents that have no descriptor", async () => {
+    const { validateDefaultRolesSubset } = await import("../core/setup/manifest-schema.js");
+    const agents = [{ id: "cursor", roles: ["executor"] }];
+    const descriptorRoles = new Map<string, string[]>(); // no descriptor for cursor
+    const result = validateDefaultRolesSubset(agents as any, descriptorRoles);
+    assert.equal(result.valid, true);
+  });
+
+  it("loadSetupAgentCatalog enforces defaultRoles ⊆ roles in strict mode", async () => {
+    const { loadSetupAgentCatalog } = await import("../core/setup/agent-catalog.js");
+    // Builtin codex descriptor declares defaultRoles=[planner,verifier,reviewer].
+    // Drop reviewer from the manifest roles → invariant violation.
+    const dir = await makeManifestDir({
+      "codex.json": { ...validCodex, roles: ["planner", "verifier", "executor"] },
+    });
+    try {
+      assert.throws(
+        () => loadSetupAgentCatalog({ manifestDir: dir, strict: true }),
+        /defaultRoles/,
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("CPB_SETUP_MANIFESTS_DIR merges user manifests on top of builtin by id", async () => {
+    const { loadSetupAgentCatalog } = await import("../core/setup/agent-catalog.js");
+    const userDir = await makeManifestDir({
+      "codex.json": { ...validCodex, displayName: "Custom Codex Override" },
+    });
+    const prev = process.env.CPB_SETUP_MANIFESTS_DIR;
+    process.env.CPB_SETUP_MANIFESTS_DIR = userDir;
+    try {
+      const agents = loadSetupAgentCatalog({ strict: true });
+      const codex = agents.find((a: any) => a.id === "codex");
+      assert.ok(codex, "codex present after merge");
+      assert.equal(codex.displayName, "Custom Codex Override");
+    } finally {
+      if (prev === undefined) delete process.env.CPB_SETUP_MANIFESTS_DIR;
+      else process.env.CPB_SETUP_MANIFESTS_DIR = prev;
+      await rm(userDir, { recursive: true, force: true });
+    }
+  });
+
+  it("CPB_SETUP_MANIFESTS_DIR absent falls back to builtin-only catalog", async () => {
+    const { loadSetupAgentCatalog } = await import("../core/setup/agent-catalog.js");
+    // Env is cleared by the runner; verify a non-existent user dir is ignored.
+    const agents = loadSetupAgentCatalog({ strict: true });
+    const ids = agents.map((a: any) => a.id);
+    assert.ok(ids.includes("codex"));
+    assert.ok(ids.includes("claude"));
   });
 });

@@ -36,6 +36,12 @@ const gateTests = [
   "dist-tests/tests/runtime-failure-recorder.test.js",
   "dist-tests/tests/scope-guard-runner.test.js",
   "dist-tests/tests/swebench-batch-queue.test.js",
+  "dist-tests/tests/local-code-index-v2-release-scan.test.js",
+  "dist-tests/tests/local-code-index-v2-migration.test.js",
+  "dist-tests/tests/local-code-index-contract.test.js",
+  "dist-tests/tests/local-code-index.test.js",
+  "dist-tests/tests/code-index-capability-map.test.js",
+  "dist-tests/tests/provider-capability-registry.test.js",
 ];
 
 const flagshipWorkerE2ePattern = "managed worker flagship issue to draft PR dry-run uses default checklist decomposition and evidence";

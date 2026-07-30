@@ -28,7 +28,7 @@ test("phase context and verifier evidence restore from the registered project ru
       id: project,
       sourcePath,
       projectRuntimeRoot: dataRoot,
-      skipCodeGraphGate: true,
+      skipLocalCodeIndexGate: true,
     });
 
     const legacyWiki = path.join(cpbRoot, "wiki", "projects", project);

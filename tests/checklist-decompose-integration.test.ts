@@ -5,13 +5,23 @@
  * freezeChecklist (those are covered by the unit suite + kill-switch gate), so
  * the run-node-tests CPB_CHECKLIST_DECOMPOSE=0 default does not affect this file.
  */
+import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
-import { chmod, readFile, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 
 import { FailureKind } from "../core/contracts/failure.js";
-import { decomposeTaskToChecklistItems, resolveCodegraphTaskScope } from "../core/workflow/checklist-decomposer.js";
+import { decomposeTaskToChecklistItems } from "../core/workflow/checklist-decomposer.js";
+import {
+  deriveRepositoryKey,
+  deriveWorktreeKey,
+  deriveSourceKey,
+  canonicalStringify,
+  snapshotIdentityPath,
+  symbolShardPath,
+} from "../core/indexing/local-code-index/index.js";
+import type { LocalCodeIndexRef } from "../core/indexing/local-code-index/index.js";
 import { recordValue } from "../shared/types.js";
 import { tempRoot } from "./helpers.js";
 
@@ -59,6 +69,100 @@ function isAbortError(error) {
   return error instanceof Error && error.name === "AbortError";
 }
 
+/**
+ * Set up a minimal v2 local code index on disk for integration testing.
+ *
+ * Creates the storage structure that `queryLocalCodeIndex` expects:
+ *   <cpbRoot>/indexes/local-code/v2/
+ *     repositories/<repoKey>/objects/symbol-shards/<prefix>/<shardId>.json
+ *     repositories/<repoKey>/objects.lock/
+ *     <worktreeKey>/snapshots/<snapshotId>/identity.json
+ */
+async function setupV2LocalCodeIndex(
+  cpbRoot: string,
+  sourcePath: string,
+  symbols: Array<{ name: string; kind?: string; path?: string }>,
+): Promise<LocalCodeIndexRef> {
+  // sourcePath must already be canonicalized (resolve symlinks before calling).
+  const repoKey = deriveRepositoryKey(sourcePath);
+  const wtKey = deriveWorktreeKey(sourcePath);
+  const srcKey = deriveSourceKey(repoKey, wtKey);
+  const storageRoot = path.join(cpbRoot, "indexes", "local-code", "v2");
+
+  // Build symbol shard entries.
+  const entries = symbols.map((sym) => {
+    const filePath = sym.path ?? "src/partition.ts";
+    return {
+      symbol: sym.name,
+      kind: sym.kind ?? "function",
+      role: "definition" as const,
+      path: filePath,
+      range: { startLine: 1, startColumn: 0, endLine: 1, endColumn: 20 },
+      exported: true,
+      coverage: "ast-grep-structural",
+    };
+  });
+
+  const shard = { entries, fileSummaries: [] };
+  const shardBytes = new TextEncoder().encode(canonicalStringify(shard));
+  const shardId = createHash("sha256").update(shardBytes).digest("hex").slice(0, 16);
+
+  // Write symbol shard.
+  const shardPath = symbolShardPath(storageRoot, repoKey, shardId);
+  await mkdir(path.dirname(shardPath), { recursive: true });
+  await writeFile(shardPath, shardBytes);
+
+  // Build and write snapshot identity.
+  const identity = {
+    schemaVersion: 2 as const,
+    repositoryKey: repoKey,
+    worktreeKey: wtKey,
+    sourceKey: srcKey,
+    sourcePath,
+    git: null,
+    worktreeStateFingerprint: "test-fingerprint",
+    inventory: {
+      "src/partition.ts": {
+        fileObjectId: "test-file-obj",
+        metadata: { size: "100", mtimeMs: "0" },
+      },
+    },
+    extractorFingerprint: "test-extractor",
+    symbolShardIds: [shardId],
+    relationShardIds: [],
+    toolState: {
+      name: "ast-grep" as const,
+      version: "test",
+      extractorFingerprint: "test-extractor",
+      available: true,
+      coverage: { effective: "ast-grep-structural" as const, partial: false, failedFiles: 0, oversizedFiles: 0 },
+      errors: [],
+    },
+    indexMapHash: "test-hash",
+    indexMapByteLength: 0,
+  };
+
+  const identityBytes = new TextEncoder().encode(canonicalStringify(identity));
+  const snapshotId = "idx2-" + createHash("sha256").update(identityBytes).digest("hex").slice(0, 24);
+
+  const identityPath = snapshotIdentityPath(storageRoot, wtKey, snapshotId);
+  await mkdir(path.dirname(identityPath), { recursive: true });
+  await writeFile(identityPath, identityBytes);
+
+  // Note: do NOT pre-create the objects.lock directory.
+  // acquireIndexLock creates it on first use; pre-creating an empty lock
+  // directory causes "index lock exists without valid owner" errors.
+
+  return {
+    schemaVersion: 2,
+    sourcePath,
+    repositoryKey: repoKey,
+    worktreeKey: wtKey,
+    sourceKey: srcKey,
+    snapshotId,
+  };
+}
+
 test("decompose: pool returns valid items -> ok with allowedFiles", async () => {
   const r = await decomposeTaskToChecklistItems({ task: "add --json to status", ctx: makeCtx(makeFakePool(VALID)) });
   assert.equal(r.ok, true);
@@ -91,55 +195,39 @@ test("decompose: prepare_task agent call receives risk budget env", async () => 
   assert.equal(JSON.parse(String(observed.meta.env.CPB_TASK_PHASE_BUDGET_POLICY_JSON)).phases.prepare_task.toolCallBudget, 60);
 });
 
-test("decompose: CodeGraph fast path runs with the explicit job env", async () => {
-  const root = await tempRoot("cpb-checklist-codegraph-env");
-  const command = path.join(root, "codegraph-fixture.sh");
-  await writeFile(command, [
-    "#!/bin/sh",
-    "[ \"$CPB_TEST_MARKER\" = \"job-marker\" ] || exit 11",
-    "[ -z \"$CPB_AMBIENT_SECRET\" ] || exit 12",
-    "printf '%s\\n' '[{\"node\":{\"kind\":\"function\",\"name\":\"partition\",\"filePath\":\"src/partition.ts\"}}]'",
-  ].join("\n") + "\n", "utf8");
-  await chmod(command, 0o755);
+test("decompose: local code index fast path reads the v2 index via query", async () => {
+  const { realpath } = await import("node:fs/promises");
+  const cpbRootRaw = await tempRoot("cpb-checklist-v2-cpb");
+  const sourcePathRaw = await tempRoot("cpb-checklist-v2-src");
+  const cpbRoot = await realpath(cpbRootRaw);
+  const sourcePath = await realpath(sourcePathRaw);
+  const ref = await setupV2LocalCodeIndex(cpbRoot, sourcePath, [
+    { name: "partition", kind: "function" },
+  ]);
 
   const r = await decomposeTaskToChecklistItems({
     task: "Fix partition() without mutating its input.",
     ctx: {
       ...makeCtx(makeFakePool(new Error("agent fallback must not run"))),
-      cpbRoot: root,
-      sourcePath: root,
+      cpbRoot,
+      sourcePath,
       planMode: "light",
-      sourceContext: { riskMap: { riskLevel: "low" } },
-      env: {
-        CPB_CODEGRAPH_COMMAND: command,
-        CPB_TEST_MARKER: "job-marker",
+      sourceContext: {
+        riskMap: { riskLevel: "low" },
+        localCodeIndexReadiness: { available: true, ref },
       },
     },
   });
 
-  assert.equal(r.ok, true);
+  assert.equal(r.ok, true, `expected ok, got reason: ${r.reason}`);
   assert.deepEqual(r.items?.[0].allowedFiles, ["src/partition.ts"]);
-  assert.equal(recordValue(r.diagnostics).source, "codegraph_exact_symbol");
+  assert.equal(recordValue(r.diagnostics).source, "local_code_index_exact_symbol");
+  assert.equal(recordValue(r.diagnostics).indexSnapshotId, ref.snapshotId);
 });
 
-test("decompose: CodeGraph fast path preabort does not query or fall back to agent", async () => {
+test("decompose: local code index fast path preabort does not read or fall back to agent", async () => {
   const controller = new AbortController();
-  controller.abort(new DOMException("preabort codegraph", "AbortError"));
-  let queryCalls = 0;
-
-  await assert.rejects(
-    resolveCodegraphTaskScope({
-      task: "Fix partition() without mutating its input.",
-      cwd: ".",
-      signal: controller.signal,
-      query: async () => {
-        queryCalls += 1;
-        return [];
-      },
-    }),
-    isAbortError,
-  );
-  assert.equal(queryCalls, 0);
+  controller.abort(new DOMException("preabort local index", "AbortError"));
 
   let agentCalls = 0;
   await assert.rejects(
@@ -148,117 +236,26 @@ test("decompose: CodeGraph fast path preabort does not query or fall back to age
       ctx: {
         ...makeCtx(makeFakePool(VALID, () => { agentCalls += 1; })),
         planMode: "light",
-        sourceContext: { riskMap: { riskLevel: "low" } },
+        sourceContext: {
+          riskMap: { riskLevel: "low" },
+          localCodeIndexReadiness: {
+            available: true,
+            ref: {
+              schemaVersion: 2,
+              sourcePath: "/does/not/matter",
+              repositoryKey: "a".repeat(32),
+              worktreeKey: "b".repeat(32),
+              sourceKey: "c".repeat(64),
+              snapshotId: "idx2-" + "d".repeat(24),
+            },
+          },
+        },
         signal: controller.signal,
       },
     }),
     isAbortError,
   );
   assert.equal(agentCalls, 0);
-});
-
-test("decompose: CodeGraph query abort tears down child and grandchild", async () => {
-  const root = await tempRoot("cpb-checklist-codegraph-abort-tree");
-  const command = path.join(root, "codegraph-hang.mjs");
-  const childPidFile = path.join(root, "child.pid");
-  const grandchildPidFile = path.join(root, "grandchild.pid");
-  await writeFile(command, `#!/usr/bin/env node
-import { spawn } from "node:child_process";
-import { writeFileSync } from "node:fs";
-writeFileSync(${JSON.stringify(childPidFile)}, String(process.pid));
-const child = spawn(process.execPath, ["-e", ${JSON.stringify(`require("fs").writeFileSync(${JSON.stringify(grandchildPidFile)}, String(process.pid)); setInterval(() => {}, 1000);`)}], { stdio: "ignore" });
-child.unref();
-setInterval(() => {}, 1000);
-`, "utf8");
-  await chmod(command, 0o755);
-  const controller = new AbortController();
-  const run = resolveCodegraphTaskScope({
-    task: "Fix partition() without mutating its input.",
-    cwd: root,
-    env: {
-      ...process.env,
-      CPB_CODEGRAPH_COMMAND: command,
-      CPB_CHECKLIST_CODEGRAPH_QUERY_TIMEOUT_MS: "10000",
-    },
-    signal: controller.signal,
-  });
-  const waitForPid = async (file) => {
-    const deadline = Date.now() + 5_000;
-    while (Date.now() < deadline) {
-      try {
-        const pid = Number((await readFile(file, "utf8")).trim());
-        if (Number.isInteger(pid) && pid > 0) return pid;
-      } catch {}
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
-    throw new Error(`pid file not written: ${file}`);
-  };
-  const childPid = await waitForPid(childPidFile);
-  const grandchildPid = await waitForPid(grandchildPidFile);
-  controller.abort(new DOMException("stop codegraph tree", "AbortError"));
-  await assert.rejects(run, isAbortError);
-  const eventuallyDead = async (pid) => {
-    const deadline = Date.now() + 5_000;
-    while (Date.now() < deadline) {
-      try {
-        process.kill(pid, 0);
-      } catch {
-        return true;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    return false;
-  };
-  assert.equal(await eventuallyDead(childPid), true);
-  assert.equal(await eventuallyDead(grandchildPid), true);
-});
-
-test("decompose: CodeGraph query timeout is bounded and does not fall back to agent", async () => {
-  const root = await tempRoot("cpb-checklist-codegraph-timeout");
-  const command = path.join(root, "codegraph-timeout.mjs");
-  await writeFile(command, "#!/usr/bin/env node\nsetInterval(() => {}, 1000);\n", "utf8");
-  await chmod(command, 0o755);
-
-  await assert.rejects(
-    decomposeTaskToChecklistItems({
-      task: "Fix partition() without mutating its input.",
-      ctx: {
-        ...makeCtx(makeFakePool(new Error("agent fallback must not run"))),
-        cpbRoot: root,
-        sourcePath: root,
-        planMode: "light",
-        sourceContext: { riskMap: { riskLevel: "low" } },
-        env: {
-          CPB_CODEGRAPH_COMMAND: command,
-          CPB_CHECKLIST_CODEGRAPH_QUERY_TIMEOUT_MS: "25",
-          // The fixture's /usr/bin/env shebang needs the explicit job PATH;
-          // no other ambient variables should be inherited by the child.
-          PATH: process.env.PATH || "",
-        },
-      },
-    }),
-    /timed out/,
-  );
-});
-
-test("decompose: abort after first CodeGraph symbol does not query next symbol or agent", async () => {
-  const controller = new AbortController();
-  let queryCalls = 0;
-  await assert.rejects(
-    resolveCodegraphTaskScope({
-      task: "Fix alpha() and beta()",
-      cwd: ".",
-      signal: controller.signal,
-      query: async (_symbol, _cwd, signal) => {
-        assert.equal(signal, controller.signal);
-        queryCalls += 1;
-        controller.abort(new DOMException("abort after first symbol", "AbortError"));
-        return [];
-      },
-    }),
-    isAbortError,
-  );
-  assert.equal(queryCalls, 1);
 });
 
 test("decompose: pool returns no decomposedItems -> fail-closed", async () => {

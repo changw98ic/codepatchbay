@@ -108,7 +108,7 @@ async function fixture(name: string) {
     entryId: "entry1",
     maxAttempts: 1,
     retryDelayMs: 0,
-    create: async (options) => await createWorktree({ ...options, codegraphEnabled: false }),
+    create: async (options) => await createWorktree(options),
   });
   await writeFile(path.join(managedWorktree.path, "owned.txt"), "owned\n", "utf8");
   return { ...paths, managedWorktree };
@@ -563,7 +563,7 @@ test("terminal success waits for an exact bound cleanup proof before publication
     expectedResultPath: resultPath,
     produceResult: async (capture) => {
       order.push("produce");
-      await capture(resultPath, { status: "completed", cleanup: { codegraph: { ok: true } } });
+      await capture(resultPath, { status: "completed" });
       return { ok: true };
     },
     cleanupWorktree: async () => {

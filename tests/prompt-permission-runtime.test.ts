@@ -35,7 +35,7 @@ test("job prompts use project runtime root and fail closed without a registered 
     await registerProject(hubRoot, {
       id: project,
       sourcePath,
-      skipCodeGraphGate: true,
+      skipLocalCodeIndexGate: true,
     });
 
     const legacyWiki = path.join(cpbRoot, "wiki", "projects", project);

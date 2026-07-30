@@ -24,7 +24,6 @@ const REQUIRED_IGNORES = [
 ];
 
 const WORKTREE_LOCAL_EXCLUDES = [
-  ".codegraph",
   ".claude/",
   ".codex/",
   "node_modules",
@@ -59,14 +58,7 @@ type CommitOptions = {
   allowEmpty?: boolean;
 };
 
-type InitCodegraph = (worktreePath: string) => Promise<unknown>;
-
-type WorktreeRuntimeOptions = LooseRecord & {
-  initCodegraph?: InitCodegraph;
-  codegraphEnabled?: boolean;
-};
-
-type CreateWorktreeOptions = WorktreeRuntimeOptions & {
+type CreateWorktreeOptions = LooseRecord & {
   project?: string;
   jobId?: string;
   slug?: string;
@@ -381,49 +373,6 @@ async function ensureProjectLocalExcludes(project: string) {
   }
 }
 
-function commandFailureMessage(command: string, args: string[], result: RunResult) {
-  const output = `${result.stderr || ""}${result.stdout || ""}`.trim();
-  const suffix = output.length > 0 ? `: ${output}` : "";
-  return `${command} ${args.join(" ")} failed${suffix}`;
-}
-
-async function initCodegraphIndex(worktreePath: string, runCommand = run) {
-  const args = ["init", worktreePath];
-  const result = await runCommand("codegraph", args, { cwd: worktreePath });
-  if (result.code !== 0) {
-    throw new Error(commandFailureMessage("codegraph", args, result));
-  }
-  return true;
-}
-
-async function ensureIsolatedCodegraph(worktreePath: string, { initCodegraph = initCodegraphIndex }: WorktreeRuntimeOptions = {}) {
-  const worktreeCodegraph = path.join(worktreePath, ".codegraph");
-  let resetCodegraph = false;
-
-  try {
-    const existing = await lstat(worktreeCodegraph);
-    if (existing.isSymbolicLink() || !existing.isDirectory()) {
-      throw Object.assign(
-        new Error(`refusing to replace unowned worktree CodeGraph path: ${worktreeCodegraph}`),
-        {
-          code: "WORKTREE_CODEGRAPH_PATH_UNOWNED",
-          committed: false,
-          recoveryPaths: { canonical: worktreeCodegraph },
-        },
-      );
-    }
-  } catch (err: unknown) {
-    if (!err || (err as NodeJS.ErrnoException).code !== "ENOENT") {
-      throw err;
-    }
-    resetCodegraph = true;
-  }
-
-  await initCodegraph(worktreePath);
-
-  return resetCodegraph;
-}
-
 async function ensureSharedNodeModules(project: string, worktreePath: string) {
   const sourceNodeModules = path.join(path.resolve(project), "node_modules");
   const worktreeNodeModules = path.join(worktreePath, "node_modules");
@@ -484,12 +433,8 @@ async function ensureSharedNodeModules(project: string, worktreePath: string) {
   return true;
 }
 
-async function prepareWorktreeRuntime(project: string, worktreePath: string, options: WorktreeRuntimeOptions = {}) {
-  const codegraphEnabled = options.codegraphEnabled ?? (process.env.CPB_CODEGRAPH_ENABLED !== "0");
+async function prepareWorktreeRuntime(project: string, worktreePath: string) {
   await ensureWorktreeLocalExcludes(worktreePath);
-  if (codegraphEnabled) {
-    await ensureIsolatedCodegraph(worktreePath, options);
-  }
   await ensureSharedNodeModules(project, worktreePath);
 }
 
@@ -549,6 +494,9 @@ async function readWorktreeBaseBinding(project: string, branch: string) {
 async function captureSourceBase(project: string): Promise<SourceBase> {
   const branchResult = await git(project, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
   if (branchResult.code !== 0 || !branchResult.stdout.trim()) {
+    const dbgHead = await git(project, ["rev-parse", "--short", "HEAD"]);
+    const dbgBranches = await git(project, ["branch", "--list"]);
+    process.stderr.write(`[captureSourceBase DEBUG] project=${project} symbolic-ref code=${branchResult.code} stdout='${branchResult.stdout}' stderr='${branchResult.stderr}' HEAD=${dbgHead.stdout.trim()} branches=${JSON.stringify(dbgBranches.stdout.trim())}\n`);
     throw new Error("source checkout must have a symbolic base branch before creating a managed worktree");
   }
   const baseBranch = branchResult.stdout.trim();
@@ -624,7 +572,7 @@ function worktreeContext(branch: string, worktreePath: string, ownership: ReadyW
   };
 }
 
-export async function createWorktree({ project, jobId, slug, worktreesRoot, initCodegraph, codegraphEnabled }: CreateWorktreeOptions = {}) {
+export async function createWorktree({ project, jobId, slug, worktreesRoot }: CreateWorktreeOptions = {}) {
   if (!project) throw new Error("missing --project");
   if (!worktreesRoot) throw new Error("missing --worktrees-root");
   validateComponent("job-id", jobId);
@@ -656,7 +604,7 @@ export async function createWorktree({ project, jobId, slug, worktreesRoot, init
         throw new Error(`source checkout no longer matches the managed branch base binding: ${branch}`);
       }
       await assertOwnedWorktreeDirectory(worktreePath, binding);
-      await prepareWorktreeRuntime(project, worktreePath, { initCodegraph, codegraphEnabled });
+      await prepareWorktreeRuntime(project, worktreePath);
       await assertOwnedWorktreeDirectory(worktreePath, binding);
       return worktreeContext(branch, worktreePath, binding);
     }
@@ -697,10 +645,7 @@ export async function createWorktree({ project, jobId, slug, worktreesRoot, init
     directory: await captureWorktreeDirectoryIdentity(worktreePath),
   };
   await persistWorktreeBaseBinding(source, branch, binding);
-  await prepareWorktreeRuntime(project, worktreePath, {
-    initCodegraph,
-    codegraphEnabled,
-  });
+  await prepareWorktreeRuntime(project, worktreePath);
   await assertOwnedWorktreeDirectory(worktreePath, binding);
 
   return worktreeContext(branch, worktreePath, binding);

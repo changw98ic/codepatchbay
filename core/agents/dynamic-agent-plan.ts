@@ -1,5 +1,24 @@
 import { recordValue, type LooseRecord } from "../../shared/types.js";
-const DEFAULT_DYNAMIC_VERIFIER_AGENT = process.env.CPB_DYNAMIC_VERIFIER_AGENT || "codex";
+import { defaultAgentForRole } from "./registry.js";
+
+/**
+ * Default verifier agent for dynamic agent plans (B2c).
+ *
+ * Resolves via the provider-capability registry: the agent whose `defaultRoles`
+ * includes "verifier" with the lowest `tieBreakPriority` (codex wins because it
+ * carries priority 10). `CPB_DYNAMIC_VERIFIER_AGENT` still overrides the
+ * resolution.
+ */
+function defaultDynamicVerifierAgent(): string {
+  const fromEnv = process.env.CPB_DYNAMIC_VERIFIER_AGENT;
+  if (fromEnv && fromEnv.trim()) return fromEnv.trim();
+  try {
+    return defaultAgentForRole("verifier");
+  } catch {
+    // Registry not loaded — fall back to the codex literal.
+    return "codex";
+  }
+}
 
 export const DYNAMIC_AGENT_PLAN_SCHEMA_VERSION = 1;
 
@@ -132,7 +151,7 @@ export function generateDynamicAgentPlan(options: LooseRecord = {}) {
   const requiresIndependentVerifier = options.independentVerifierRequired === true || highRisk(riskMap);
   const generatedAt = new Date().toISOString();
   const agentConfig: LooseRecord = {};
-  const verifierAgent = options.verifierAgent || DEFAULT_DYNAMIC_VERIFIER_AGENT;
+  const verifierAgent = options.verifierAgent || defaultDynamicVerifierAgent();
   const adversarialVerifierAgent = options.adversarialVerifierAgent || verifierAgent;
 
   if (requiresIndependentVerifier) {

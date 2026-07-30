@@ -107,7 +107,7 @@ function responseMatches(resp: ScenarioResponse, text: string): boolean {
       return false;
     }
   }
-  // No match key → always matches (matches test "ACP client audits codegraph..." which omits match).
+  // No match key means the fixture always matches.
   return true;
 }
 

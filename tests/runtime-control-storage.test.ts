@@ -72,7 +72,7 @@ test("review sessions stay in hub control root when project runtime env is pollu
     CPB_HUB_ROOT: hubRoot,
     CPB_PROJECT_RUNTIME_ROOT: projectRuntimeRoot,
   }, async () => {
-    await registerProject(hubRoot, { id: "flow", sourcePath, skipCodeGraphGate: true });
+    await registerProject(hubRoot, { id: "flow", sourcePath, skipLocalCodeIndexGate: true });
 
     const session = await createSession(cpbRoot, { project: "flow", intent: "review runtime root" });
     await updateSession(cpbRoot, session.sessionId, { status: "user_review" }, { hubRoot, skipTransitionCheck: true });

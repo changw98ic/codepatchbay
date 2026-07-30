@@ -132,7 +132,7 @@ test("phase locator job evidence requires registered runtime root and ignores am
       id: "flow",
       sourcePath,
       projectRuntimeRoot: dataRoot,
-      skipCodeGraphGate: true,
+      skipLocalCodeIndexGate: true,
     });
     await appendEvent(cpbRoot, "flow", "job-20260611-101000-phase", {
       type: "job_created",

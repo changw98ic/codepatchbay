@@ -15,13 +15,21 @@ import {
   recordPermissionDenial,
 } from "../permission-matrix.js";
 import { createAgentHome } from "../../../core/agents/isolation.js";
-import { getDescriptor, hasAgent, loadRegistry, resolveAgentEnvPrefix } from "../../../core/agents/registry.js";
+import {
+  getDescriptor,
+  getProviderConfig,
+  hasAgent,
+  loadRegistry,
+  providerCapsuleEnvironmentKeysForAllAgents,
+  resolveAgentEnvPrefix,
+} from "../../../core/agents/registry.js";
 import {
   codexConfiguredSandboxModeForExecution,
   codexExecutionConfigArgs,
   codexSandboxEnforcementForExecution,
   codexSandboxModeForExecution,
   headlessCodexConfigArgs,
+  codexAcpEnvPolicy,
   classifyUiToolRequest,
   mergeHeadlessDenyTools,
 } from "../../../core/acp/policy.js";
@@ -887,65 +895,19 @@ function canonicalPotentialPath(absolutePath: string) {
   return path.join(canonical, ...unresolved);
 }
 
-function resolveCodegraphMcpServer(env: NodeJS.ProcessEnv): McpServerConfig | null {
-  if (env.CPB_CODEGRAPH_ENABLED === "0") return null;
-  const codebaseRoot = path.resolve(
-    env.CPB_CODEGRAPH_ROOT ||
-    env.CPB_ACP_CWD ||
-    env.CPB_CODEBASE_ROOT ||
-    env.CPB_PROJECT_PATH_OVERRIDE ||
-    process.cwd(),
-  );
-  return {
-    name: "codegraph",
-    command: "codegraph",
-    args: ["serve", "--mcp", "--path", codebaseRoot],
-  };
-}
-
-function codexCodegraphMcpServers(env: NodeJS.ProcessEnv): McpServerConfig[] {
-  const server = resolveCodegraphMcpServer(env);
-  return server ? [server] : [];
-}
-
 function isCodexAcpCommand(command: unknown, args: unknown[] = []): boolean {
   const baseCommand = String(command).split("/").pop();
   if (baseCommand === "codex-acp") return true;
-  return baseCommand === "npx" && Array.isArray(args) && args.some((arg) => arg === "@zed-industries/codex-acp");
+  return baseCommand === "npx" && Array.isArray(args) && args.some((arg) => (
+    arg === "@agentclientprotocol/codex-acp"
+  ));
 }
 
-// These bundled transports reject or bypass session/new.mcpServers regardless
-// of registry asset availability. Keep the transport contract fail-closed if
-// descriptors are unavailable during packaging or early bootstrap.
-const BUNDLED_SESSION_MCP_UNSUPPORTED = new Set([
-  "codex",
-  "claude",
-  "claude-glm",
-  "claude-mimo",
-]);
-
-export function buildMcpServers(agent: string, env: NodeJS.ProcessEnv): McpServerConfig[] {
-  const server = resolveCodegraphMcpServer(env);
-  if (!server) return [];
-
-  // Codex ACP rejects non-empty session/new.mcpServers. It receives built-in
-  // CodeGraph through process-local launch config instead.
-  if (BUNDLED_SESSION_MCP_UNSUPPORTED.has(agent)) return [];
-
-  // ACP adapters must opt in to session/new.mcpServers. Some adapters exit
-  // after rejecting this field, so retrying with [] is too late because the
-  // process is already gone.
-  if (getDescriptor(agent)?.sessionMcpServers === false) return [];
-
-  // Claude ACP requires SSE-based MCP servers with a "type" field.
-  // When CPB_CODEGRAPH_PORT is set, expose CodeGraph as an SSE endpoint.
-  const port = Number(env.CPB_CODEGRAPH_PORT);
-  if (Number.isFinite(port) && port > 0) {
-    return [{ name: server.name, type: "sse", url: `http://localhost:${port}` }];
-  }
-
-  // Stdio-based MCP server for adapters that support it.
-  return [{ name: server.name, type: "stdio", command: server.command, args: server.args }];
+export function buildMcpServers(_agent: string, _env: NodeJS.ProcessEnv): McpServerConfig[] {
+  // Code indexing is local and file-backed. CPB does not inject a built-in
+  // MCP server into ACP sessions; adapters may still provide their own
+  // explicit session MCP configuration at a higher-level integration.
+  return [];
 }
 
 /**
@@ -1167,14 +1129,8 @@ function wholeFilesystemToolUpdateSearchReason(update: LooseRecord = {}, env: No
 }
 
 function codexMcpConfigArgs(env: NodeJS.ProcessEnv): string[] {
-  const args: string[] = [];
-  for (const server of codexCodegraphMcpServers(env)) {
-    if (!server?.name || !server.command || !Array.isArray(server.args)) continue;
-    const prefix = `mcp_servers.${server.name}`;
-    args.push("-c", `${prefix}.command=${JSON.stringify(server.command)}`);
-    args.push("-c", `${prefix}.args=${JSON.stringify(server.args)}`);
-  }
-  return args;
+  void env;
+  return [];
 }
 
 function appendCodexLaunchConfigArgs(agent: string, command: string, args: string[], env: NodeJS.ProcessEnv): void {
@@ -1691,21 +1647,41 @@ export class AcpClient {
       throw new Error("ACP agent transport is not reusable because stdin is closed");
     }
 
+    let capsuleKeys: string[] = [];
+    try {
+      capsuleKeys = [...providerCapsuleEnvironmentKeysForAllAgents()];
+    } catch {
+      // A descriptor-less direct client retains only the shipped compatibility
+      // handoff names below; registered providers use the dynamic set.
+    }
     const env: NodeJS.ProcessEnv = buildChildEnv(this.env, {}, {
       agent: this.agent,
-      allowKeys: ["CPB_CAPSULE_CODEX_PATH", "CPB_CAPSULE_CLAUDE_CODE_EXECUTABLE"],
+      allowKeys: [
+        "CPB_CAPSULE_CODEX_PATH",
+        "CPB_CAPSULE_CLAUDE_CODE_EXECUTABLE",
+        ...capsuleKeys,
+      ],
     });
-    if (env.CPB_CAPSULE_CODEX_PATH) {
-      if (!path.isAbsolute(env.CPB_CAPSULE_CODEX_PATH)) {
-        throw new Error("CPB_CAPSULE_CODEX_PATH must be absolute");
-      }
-      env.CODEX_PATH = env.CPB_CAPSULE_CODEX_PATH;
+    let nativeCapsule: { env: string; targetEnv: string } | null = null;
+    try {
+      const native = getProviderConfig(this.agent)?.capsule.nativeExecutable;
+      if (native?.env && native.targetEnv) nativeCapsule = { env: native.env, targetEnv: native.targetEnv };
+    } catch {
+      // Registry loading is handled by the CLI entrypoint; keep direct client
+      // calls usable when no descriptor registry exists.
     }
-    if (env.CPB_CAPSULE_CLAUDE_CODE_EXECUTABLE) {
-      if (!path.isAbsolute(env.CPB_CAPSULE_CLAUDE_CODE_EXECUTABLE)) {
-        throw new Error("CPB_CAPSULE_CLAUDE_CODE_EXECUTABLE must be absolute");
+    const capsuleEnv = nativeCapsule || (
+      env.CPB_CAPSULE_CODEX_PATH
+        ? { env: "CPB_CAPSULE_CODEX_PATH", targetEnv: "CODEX_PATH" }
+        : env.CPB_CAPSULE_CLAUDE_CODE_EXECUTABLE
+          ? { env: "CPB_CAPSULE_CLAUDE_CODE_EXECUTABLE", targetEnv: "CLAUDE_CODE_EXECUTABLE" }
+          : null
+    );
+    if (capsuleEnv && env[capsuleEnv.env]) {
+      if (!path.isAbsolute(env[capsuleEnv.env] as string)) {
+        throw new Error(`${capsuleEnv.env} must be absolute`);
       }
-      env.CLAUDE_CODE_EXECUTABLE = env.CPB_CAPSULE_CLAUDE_CODE_EXECUTABLE;
+      env[capsuleEnv.targetEnv] = env[capsuleEnv.env];
     }
     if (process.platform === "darwin" && !env.SSL_CERT_FILE && existsSync("/etc/ssl/cert.pem")) {
       // sandbox-exec cannot expose the user's login keychain without widening
@@ -1722,6 +1698,14 @@ export class AcpClient {
       // drop the inner provider sandbox regardless of the inherited mode.
       env.CPB_AGENT_SANDBOX = "off";
       env.CPB_AGENT_SANDBOX_MODE = "off";
+    }
+    if (this.agent === "codex") {
+      // The @agentclientprotocol/codex-acp adapter reads phase policy from env
+      // (CODEX_CONFIG + INITIAL_AGENT_MODE), not -c launch args. Without these
+      // a read-only phase launches with the adapter default (workspace-write).
+      const codexPolicy = codexAcpEnvPolicy(env);
+      if (codexPolicy.CODEX_CONFIG) env.CODEX_CONFIG = codexPolicy.CODEX_CONFIG;
+      if (codexPolicy.INITIAL_AGENT_MODE) env.INITIAL_AGENT_MODE = codexPolicy.INITIAL_AGENT_MODE;
     }
     const isolateAgentHome = shouldIsolateAgentHome(this.agent, env);
     if (isolateAgentHome) {
@@ -1752,10 +1736,8 @@ export class AcpClient {
       xdgCacheHome: isolateAgentHome ? env.XDG_CACHE_HOME || null : null,
     };
     const { command, args } = await resolveAgentCommand(this.agent, env);
-    const launchCodegraphServers = this.agent === "codex"
-      ? codexCodegraphMcpServers(env)
-      : buildMcpServers(this.agent, env);
-    const launchCodegraphSummary = summarizeMcpServers(launchCodegraphServers, {
+    const launchMcpServers = buildMcpServers(this.agent, env);
+    const launchMcpSummary = summarizeMcpServers(launchMcpServers, {
       includeArgs: !this.auditEnv.CPB_PROVIDER_PREFLIGHT_NONCE,
     });
     const launch = buildAgentSandboxLaunch(command, args, { env, cwd: this.cwd });
@@ -1764,9 +1746,8 @@ export class AcpClient {
       : [];
     await this.recordAudit("agent_launch", {
       command: path.basename(command),
-      mcpServers: launchCodegraphSummary,
-      mcpServerNames: launchCodegraphSummary.map((server) => server.name).filter(Boolean),
-      codegraphSseUrl: null,
+      mcpServers: launchMcpSummary,
+      mcpServerNames: launchMcpSummary.map((server) => server.name).filter(Boolean),
       livePreflightPolicy: livePreflightPolicySummary(env, this.toolPolicy),
       runtimeGuards: {
         ...resolveAcpRuntimeGuards(env),

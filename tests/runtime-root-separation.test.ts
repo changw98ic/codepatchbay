@@ -22,7 +22,7 @@ describe('AC1: registerProject defaults projectRuntimeRoot', () => {
     const hubRoot = await mkdtemp(path.join(tmpdir(), 'cpb-ac1-'));
     const srcDir = await mkdtemp(path.join(tmpdir(), 'cpb-ac1-src-'));
     try {
-      await registerProject(hubRoot, { skipCodeGraphGate: true, name: 'my-proj', sourcePath: srcDir, id: 'my-proj' });
+      await registerProject(hubRoot, { skipLocalCodeIndexGate: true, name: 'my-proj', sourcePath: srcDir, id: 'my-proj' });
       const project = await getProject(hubRoot, 'my-proj');
       const expected = path.join(path.resolve(hubRoot), 'projects', 'my-proj');
       assert.equal(project.projectRuntimeRoot, expected);
@@ -38,7 +38,7 @@ describe('AC1: registerProject defaults projectRuntimeRoot', () => {
     const customRuntime = await mkdtemp(path.join(tmpdir(), 'cpb-ac1-rt-'));
     try {
       await assert.rejects(
-        registerProject(hubRoot, { skipCodeGraphGate: true, name: 'my-proj', sourcePath: srcDir, id: 'my-proj', projectRuntimeRoot: customRuntime }),
+        registerProject(hubRoot, { skipLocalCodeIndexGate: true, name: 'my-proj', sourcePath: srcDir, id: 'my-proj', projectRuntimeRoot: customRuntime }),
         /invalid projectRuntimeRoot/,
       );
       assert.equal(await getProject(hubRoot, 'my-proj'), null);
@@ -54,7 +54,7 @@ describe('AC1: registerProject defaults projectRuntimeRoot', () => {
     const srcDir = await mkdtemp(path.join(tmpdir(), 'cpb-ac1-src-'));
     try {
       const runtimeRoot = path.join(path.resolve(hubRoot), 'projects', 'my-proj');
-      await registerProject(hubRoot, { skipCodeGraphGate: true, name: 'my-proj', sourcePath: srcDir, id: 'my-proj', projectRuntimeRoot: runtimeRoot });
+      await registerProject(hubRoot, { skipLocalCodeIndexGate: true, name: 'my-proj', sourcePath: srcDir, id: 'my-proj', projectRuntimeRoot: runtimeRoot });
       const project = await getProject(hubRoot, 'my-proj');
       assert.equal(project.projectRuntimeRoot, runtimeRoot);
     } finally {
@@ -98,7 +98,7 @@ describe('AC3: root-resolution primitives are distinct', () => {
     const srcDir = await mkdtemp(path.join(tmpdir(), 'cpb-ac3-src-'));
     const poisonedRoot = await mkdtemp(path.join(tmpdir(), 'cpb-ac3-poisoned-'));
     try {
-      const project = await registerProject(hubRoot, { skipCodeGraphGate: true, name: 'my-proj', sourcePath: srcDir, id: 'my-proj' });
+      const project = await registerProject(hubRoot, { skipLocalCodeIndexGate: true, name: 'my-proj', sourcePath: srcDir, id: 'my-proj' });
       assert.equal(
         await resolveProjectDataRoot(cpbRoot, 'my-proj', { hubRoot, dataRoot: project.projectRuntimeRoot }),
         project.projectRuntimeRoot,
@@ -143,8 +143,8 @@ describe('AC4: listProjects reads from Hub registry', () => {
     const srcA = await mkdtemp(path.join(tmpdir(), 'cpb-ac4-a-'));
     const srcB = await mkdtemp(path.join(tmpdir(), 'cpb-ac4-b-'));
     try {
-      await registerProject(hubRoot, { skipCodeGraphGate: true, name: 'alpha', sourcePath: srcA, id: 'alpha' });
-      await registerProject(hubRoot, { skipCodeGraphGate: true, name: 'beta', sourcePath: srcB, id: 'beta' });
+      await registerProject(hubRoot, { skipLocalCodeIndexGate: true, name: 'alpha', sourcePath: srcA, id: 'alpha' });
+      await registerProject(hubRoot, { skipLocalCodeIndexGate: true, name: 'beta', sourcePath: srcB, id: 'beta' });
       const projects = await listProjects(hubRoot);
       assert.equal(projects.length, 2);
       const names = projects.map(p => p.name).sort();
@@ -164,7 +164,7 @@ describe('AC5: artifact-locator hub runtime root hard cut', () => {
     const cpbRoot = await mkdtemp(path.join(tmpdir(), 'cpb-ac5-'));
     const hubRoot = await mkdtemp(path.join(tmpdir(), 'cpb-ac5-hub-'));
     try {
-      await registerProject(hubRoot, { skipCodeGraphGate: true, name: 'legacy-proj', sourcePath: cpbRoot, id: 'legacy-proj' });
+      await registerProject(hubRoot, { skipLocalCodeIndexGate: true, name: 'legacy-proj', sourcePath: cpbRoot, id: 'legacy-proj' });
       const wikiDir = await resolveWikiDir(hubRoot, cpbRoot, 'legacy-proj');
       assert.equal(wikiDir, path.join(hubRoot, 'projects', 'legacy-proj', 'wiki'));
 
@@ -193,7 +193,7 @@ describe('AC6: parent plan cache runtime root', () => {
     const hubRoot = await mkdtemp(path.join(tmpdir(), 'cpb-ac6-hub-'));
     try {
       const project = await registerProject(hubRoot, {
-        skipCodeGraphGate: true,
+        skipLocalCodeIndexGate: true,
         name: 'flow',
         sourcePath: cpbRoot,
         id: 'flow',

@@ -51,7 +51,7 @@ export interface IdempotencyQueueEntry {
  *
  * This is the SOURCE OF TRUTH for terminality in the dedupe rule. It is a
  * deliberate, narrow set: everything else (pending, scheduled, in_progress,
- * needs_issue_link, codegraph_unavailable, ...) is treated as in-flight and
+ * needs_issue_link, local_code_index_unavailable, ...) is treated as in-flight and
  * therefore dedupe-eligible. Aligns with `TERMINAL_TASK_STATES` in
  * task-view.ts at the product-facing layer.
  */

@@ -227,7 +227,6 @@ export function buildSolverLaneInput({
 }
 
 export function nativeCodexArgs(task: CodingComparisonTask, worktree: string) {
-  const codegraphArgs = ["serve", "--mcp", "--no-watch", "-p", worktree];
   return [
     "exec",
     "--json",
@@ -245,8 +244,6 @@ export function nativeCodexArgs(task: CodingComparisonTask, worktree: string) {
     "-c", 'plugins."browser@openai-bundled".enabled=false',
     "-c", 'plugins."chrome@openai-bundled".enabled=false',
     "-c", "notify=[]",
-    "-c", 'mcp_servers.codegraph.command="codegraph"',
-    "-c", `mcp_servers.codegraph.args=${JSON.stringify(codegraphArgs)}`,
     "--cd", worktree,
     task.task,
   ];
@@ -385,8 +382,6 @@ function cpbLaneEnv(input: SolverLaneInput): NodeJS.ProcessEnv {
     CPB_HUB_ROOT: input.hubRoot,
     CPB_EXECUTOR_ROOT: CPB_ROOT,
     CPB_AGENT_ISOLATE_HOME: "1",
-    CPB_CODEGRAPH_ENABLED: "1",
-    CPB_CODEGRAPH_INDEX_ONLY_OK: "1",
     CPB_ACP_DISABLE_WEB_TOOLS: "1",
     CPB_ACP_PERSISTENT_PROCESS: "1",
     CPB_ACP_TIMEOUT_MS: String(input.timeoutMs),
@@ -461,11 +456,6 @@ async function resolveRepository(repository: string, manifestDir: string, root: 
   const clonePath = path.join(root, "repositories", `${taskId}.git`);
   await mkdir(path.dirname(clonePath), { recursive: true });
   await checkedCommand("git", ["clone", "--mirror", source, clonePath], root, { timeoutMs: 10 * 60_000 });
-  const excludePath = path.join(clonePath, "info", "exclude");
-  const existing = await readFile(excludePath, "utf8").catch(() => "");
-  if (!existing.split("\n").includes(".codegraph/")) {
-    await writeFile(excludePath, `${existing}${existing && !existing.endsWith("\n") ? "\n" : ""}.codegraph/\n`, "utf8");
-  }
   return clonePath;
 }
 
@@ -480,26 +470,7 @@ async function createComparisonWorktree(repository: string, baseSha: string) {
     revision: baseSha,
     prefix: "cpb-coding-comparison-worktree-",
   });
-  try {
-    await checkedCommand("codegraph", ["init", workspace.worktreePath], workspace.worktreePath, { timeoutMs: 5 * 60_000 });
-    await checkedCommand("codegraph", ["sync", workspace.worktreePath], workspace.worktreePath, { timeoutMs: 5 * 60_000 });
-    return workspace;
-  } catch (primaryError) {
-    try {
-      await workspace.cleanup();
-    } catch (cleanupError) {
-      throw Object.assign(new AggregateError(
-        [primaryError, cleanupError],
-        "comparison worktree preparation and cleanup both failed",
-        { cause: primaryError },
-      ), {
-        code: "CODING_COMPARISON_WORKTREE_PREPARE_CLEANUP_FAILED",
-        primaryError,
-        cleanupError,
-      });
-    }
-    throw primaryError;
-  }
+  return workspace;
 }
 
 type ComparisonWorkspaceCleanup = {
@@ -635,8 +606,8 @@ async function runCpbSolver(input: SolverLaneInput, runtimeRoot: string) {
     "--cpb-lane-output", outputPath,
   ], {
     cwd: CPB_ROOT,
-    // Several production policies (including CodeGraph readiness and retry
-    // defaults) are resolved from process.env during module initialization.
+    // Several production policies are resolved from process.env during module
+    // initialization.
     // The isolated worker must therefore start with the same lane environment
     // that runJobWithServices receives, not install it only after imports.
     env: cpbLaneEnv(input),
@@ -662,14 +633,7 @@ async function registerComparisonProject(hubRoot: string, input: {
   sourcePath: string;
   cpbRoot: string;
 }) {
-  const previous = process.env.CPB_CODEGRAPH_INDEX_ONLY_OK;
-  process.env.CPB_CODEGRAPH_INDEX_ONLY_OK = "1";
-  try {
-    return await registerProject(hubRoot, input);
-  } finally {
-    if (previous === undefined) delete process.env.CPB_CODEGRAPH_INDEX_ONLY_OK;
-    else process.env.CPB_CODEGRAPH_INDEX_ONLY_OK = previous;
-  }
+  return await registerProject(hubRoot, input);
 }
 
 async function versionEvidence(command: string, args: string[]) {
@@ -858,8 +822,8 @@ export async function runCodingComparison(options: CliOptions) {
     versions = {
       codex: await versionEvidence("codex", ["--version"]),
       codexAcp: await versionEvidence(process.env.CPB_ACP_CODEX_COMMAND || "codex-acp", ["--version"]),
-      codexAcpPackage: await versionEvidence("npm", ["list", "-g", "@zed-industries/codex-acp", "--depth=0", "--json"]),
-      codegraph: await versionEvidence("codegraph", ["--version"]),
+      codexAcpPackage: await versionEvidence("npm", ["list", "-g", "@agentclientprotocol/codex-acp", "--depth=0", "--json"]),
+      localCodeIndex: await versionEvidence(process.env.CPB_AST_GREP_BIN || "ast-grep", ["--version"]),
       node: process.version,
     };
     for (const [taskIndex, task] of manifest.tasks.entries()) {

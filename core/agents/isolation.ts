@@ -1,9 +1,15 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
-import { constants, existsSync } from "node:fs";
+import { constants, existsSync, lstatSync, realpathSync } from "node:fs";
 import { chmod, lstat, mkdir, open, readdir, rename } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import {
+  getCapability,
+  isBuiltinDescriptor,
+  loadRegistry,
+  type AgentCapability,
+} from "./registry.js";
 
 const CLEANUP_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
 type StringRecord = Record<string, string | undefined>;
@@ -67,17 +73,18 @@ export function __withAgentIsolationTestHooks<T>(
 function currentAgentIsolationTestHooks() {
   return agentIsolationTestHookStorage.getStore() || {};
 }
-// Authentication is portable across Codex/ACP versions. User-level
-// config.toml is not: model, MCP, plugin, and feature settings can target a
-// newer Codex than the installed ACP adapter and make every job fail before
-// execution. CPB supplies runtime configuration explicitly instead.
-const CODEX_SHARED_CONFIG_FILES = ["auth.json"];
-const CLAUDE_SHARED_HOME_FILES = [".claude.json"];
-const CLAUDE_SHARED_CONFIG_FILES = [".credentials.json", "credentials.json", "auth.json"];
 const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const INVALID_RUNTIME_ROOT_SENTINELS = new Set(["undefined", "null"]);
 const PRESERVED_HOME_QUARANTINE = /\.quarantine-\d+-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MAX_INHERITED_AUTH_BYTES = 1024 * 1024;
+// §6.2 untrusted-descriptor credential filename allowlist. User-registered
+// descriptors may only inherit credentials whose basename matches this set;
+// anything else is fail-closed before the copy reaches copyRegularFileNoFollow.
+const CREDENTIAL_FILENAME_ALLOWLIST = new Set([
+  "auth.json",
+  ".credentials.json",
+  "credentials.json",
+]);
 
 export function isolatedAgentToolPath(parentPath = process.env.PATH || "") {
   const preferred = process.platform === "darwin"
@@ -202,17 +209,71 @@ function sanitizedInstanceSegment(value: unknown) {
   return segment;
 }
 
-function assertContained(root: string, candidate: string, label: string) {
+function assertContained(
+  root: string,
+  candidate: string,
+  label: string,
+  { allowRoot = false, checkFinalComponent = true }: { allowRoot?: boolean; checkFinalComponent?: boolean } = {},
+) {
   const resolvedRoot = path.resolve(root);
   const resolvedCandidate = path.resolve(candidate);
   const relative = path.relative(resolvedRoot, resolvedCandidate);
-  if (relative === "" || relative.startsWith("..") || path.isAbsolute(relative)) {
+  const canonicalRoot = canonicalPathWithExistingPrefix(resolvedRoot);
+  const canonicalCandidate = canonicalPathWithExistingPrefix(
+    checkFinalComponent ? resolvedCandidate : path.dirname(resolvedCandidate),
+  );
+  const canonicalRelative = canonicalRoot && canonicalCandidate
+    ? path.relative(canonicalRoot, canonicalCandidate)
+    : null;
+  if (
+    (!allowRoot && relative === "")
+    || relative.startsWith("..")
+    || path.isAbsolute(relative)
+    || !canonicalRoot
+    || !canonicalCandidate
+    || (!allowRoot && canonicalRelative === "")
+    || canonicalRelative?.startsWith("..")
+    || (canonicalRelative ? path.isAbsolute(canonicalRelative) : false)
+  ) {
     throw isolationError(`${label} escapes isolated agent runtime root: ${resolvedCandidate}`, "CPB_AGENT_HOME_PATH_ESCAPE", {
       root: resolvedRoot,
       candidate: resolvedCandidate,
+      canonicalRoot,
+      canonicalCandidate,
     });
   }
   return resolvedCandidate;
+}
+
+/**
+ * Resolve the existing prefix of a path through symlinks while preserving any
+ * not-yet-created suffix. Lexical `path.relative` checks and O_NOFOLLOW on the
+ * final file do not protect against a symlink in an intermediate directory.
+ */
+function canonicalPathWithExistingPrefix(value: string): string | null {
+  let current = path.resolve(value);
+  const unresolved: string[] = [];
+  while (true) {
+    try {
+      lstatSync(current);
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") return null;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    unresolved.unshift(path.basename(current));
+    current = parent;
+  }
+  let canonical = current;
+  try {
+    canonical = realpathSync(current);
+  } catch {
+    // A dangling symlink or a disappearing prefix is unsafe to treat as a
+    // lexically contained path. Callers fail closed on the null result.
+    return null;
+  }
+  return path.join(canonical, ...unresolved);
 }
 
 async function isolateOwnedRegularFileNoFollow(filePath: string) {
@@ -318,7 +379,11 @@ async function isolateOwnedRegularFileNoFollow(filePath: string) {
   return true;
 }
 
-async function copyRegularFileNoFollow(source: string, target: string) {
+async function copyRegularFileNoFollow(source: string, target: string, maxBytes: number = MAX_INHERITED_AUTH_BYTES) {
+  const effectiveMaxBytes = Math.min(
+    Number.isFinite(maxBytes) && maxBytes > 0 ? Math.floor(maxBytes) : MAX_INHERITED_AUTH_BYTES,
+    MAX_INHERITED_AUTH_BYTES,
+  );
   let sourceInfo;
   try {
     sourceInfo = await lstat(source);
@@ -331,7 +396,7 @@ async function copyRegularFileNoFollow(source: string, target: string) {
       recoveryPaths: { source, target },
     });
   }
-  if (sourceInfo.size > MAX_INHERITED_AUTH_BYTES) {
+  if (sourceInfo.size > effectiveMaxBytes) {
     throw isolationError(`refusing oversized auth source: ${source}`, "CPB_AGENT_HOME_AUTH_TOO_LARGE", {
       recoveryPaths: { source, target },
     });
@@ -370,7 +435,7 @@ async function copyRegularFileNoFollow(source: string, target: string) {
     const chunks: Buffer[] = [];
     let total = 0;
     while (true) {
-      const remaining = MAX_INHERITED_AUTH_BYTES + 1 - total;
+      const remaining = effectiveMaxBytes + 1 - total;
       if (remaining <= 0) {
         throw isolationError(`refusing oversized auth source: ${source}`, "CPB_AGENT_HOME_AUTH_TOO_LARGE", {
           recoveryPaths: { source, target },
@@ -380,7 +445,7 @@ async function copyRegularFileNoFollow(source: string, target: string) {
       const { bytesRead } = await sourceHandle.read(chunk, 0, chunk.length, total);
       if (bytesRead === 0) break;
       total += bytesRead;
-      if (total > MAX_INHERITED_AUTH_BYTES || total > openedSource.size) {
+      if (total > effectiveMaxBytes || total > openedSource.size) {
         throw isolationError(`auth source changed while reading: ${source}`, "CPB_AGENT_HOME_AUTHORITY_CHANGED", {
           recoveryPaths: { source, target },
         });
@@ -416,10 +481,6 @@ async function copyRegularFileNoFollow(source: string, target: string) {
     await sourceHandle?.close().catch(() => undefined);
   }
   return true;
-}
-
-async function maybeCopyFile(source: string, target: string) {
-  return copyRegularFileNoFollow(source, target);
 }
 
 async function syncDirectory(directory: string) {
@@ -574,44 +635,286 @@ async function isolateAgentHomeDirectory(jobDir: string, generation: PathGenerat
   return quarantineDir;
 }
 
-async function inheritCodexConfig(targetHome: string, parentEnv: StringRecord = {}) {
-  const sourceCodexHome = resolveSourceCodexHome(parentEnv);
-  const targetCodexHome = path.join(targetHome, ".codex");
-  await mkdir(targetCodexHome, { recursive: true });
-  if (!sourceCodexHome) return targetCodexHome;
-
-  // Isolate config left by an older CPB run and preserve it for recovery.
-  await isolateOwnedRegularFileNoFollow(path.join(targetCodexHome, "config.toml"));
-
-  await Promise.all(CODEX_SHARED_CONFIG_FILES.map(async (fileName) => {
-    const source = path.join(sourceCodexHome, fileName);
-    const target = path.join(targetCodexHome, fileName);
-    return copyRegularFileNoFollow(source, target);
-  }));
-  return targetCodexHome;
+/**
+ * Substitute a `$CODEX_HOME` / `$HOME` prefix from `parentEnv` into an inherit
+ * template path. `$CODEX_HOME` resolves via `resolveSourceCodexHome` so the
+ * env-aware codex root (`CODEX_HOME` ‖ `$HOME/.codex`) is honored; falling back
+ * to `$HOME` for everything else. Bare paths (no prefix) are returned as-is and
+ * get containment-checked later by the caller.
+ */
+function substituteInheritPath(template: string, parentEnv: StringRecord): string {
+  if (template.startsWith("$CODEX_HOME/")) {
+    const root = resolveSourceCodexHome(parentEnv);
+    if (!root) {
+      throw isolationError(
+        `cannot resolve $CODEX_HOME for inherit path: ${template}`,
+        "CPB_AGENT_HOME_INHERIT_SOURCE_UNRESOLVED",
+        { template },
+      );
+    }
+    return path.join(root, template.slice("$CODEX_HOME/".length));
+  }
+  if (template.startsWith("$HOME/")) {
+    const home = resolveSourceHome(parentEnv);
+    if (!home) {
+      throw isolationError(
+        `cannot resolve $HOME for inherit path: ${template}`,
+        "CPB_AGENT_HOME_INHERIT_SOURCE_UNRESOLVED",
+        { template },
+      );
+    }
+    return path.join(home, template.slice("$HOME/".length));
+  }
+  return template;
 }
 
-async function inheritClaudeConfig(targetHome: string, parentEnv: StringRecord = {}) {
-  const sourceHome = resolveSourceHome(parentEnv);
-  const targetClaudeHome = path.join(targetHome, ".claude");
-  await mkdir(targetClaudeHome, { recursive: true });
-  if (!sourceHome) return targetClaudeHome;
+/**
+ * Resolve a `to` / quarantineFile template against the isolated HOME, requiring
+ * the result to stay strictly inside `targetHome`. `$HOME/` (and a bare
+ * `$HOME`) are rewritten to `targetHome`; bare relative paths are joined under
+ * `targetHome`; absolute paths and `..` escapes are fail-closed regardless of
+ * descriptor trust level — `O_NOFOLLOW` only blocks symlink traversal, not
+ * absolute-path escapes, so the containment check is explicit (§6.2).
+ */
+function resolveInheritTarget(toTemplate: string, targetHome: string): string {
+  let rel: string;
+  if (toTemplate === "$HOME") {
+    rel = ".";
+  } else if (toTemplate.startsWith("$HOME/")) {
+    rel = toTemplate.slice("$HOME/".length);
+  } else {
+    rel = toTemplate;
+  }
+  const resolved = path.resolve(targetHome, rel);
+  if (resolved === path.resolve(targetHome)) {
+    assertContained(targetHome, resolved, "isolated agent HOME inherit target");
+  } else {
+    // Validate the full lexical path, but canonicalize only its parent chain.
+    // A final symlink is rejected by copy/quarantine no-follow checks so its
+    // established UNSAFE_AUTH_TARGET error remains observable to callers.
+    assertContained(
+      targetHome,
+      resolved,
+      "isolated agent HOME inherit target",
+      { allowRoot: true, checkFinalComponent: false },
+    );
+  }
+  return resolved;
+}
 
-  await Promise.all([
-    ...CLAUDE_SHARED_HOME_FILES.map((fileName) =>
-      maybeCopyFile(
-        path.join(sourceHome, fileName),
-        path.join(targetHome, fileName),
-      )
-    ),
-    ...CLAUDE_SHARED_CONFIG_FILES.map((fileName) =>
-      maybeCopyFile(
-        path.join(sourceHome, ".claude", fileName),
-        path.join(targetClaudeHome, fileName),
-      )
-    ),
-  ]);
-  return targetClaudeHome;
+/**
+ * §6.2 untrusted-descriptor source gate. The resolved `from` must (1) sit
+ * inside a trusted env root (`$CODEX_HOME` ‖ `$HOME/.codex`, or `$HOME` for
+ * other families) and (2) carry a credential allowlist basename. Any violation
+ * is fail-closed before the copy reaches `copyRegularFileNoFollow`. Builtin
+ * descriptors bypass this gate (their `from`/`to` are CPB-authored).
+ */
+function assertTrustedInheritSource(fromResolved: string, parentEnv: StringRecord): void {
+  const trustedRoots: string[] = [];
+  const codexRoot = resolveSourceCodexHome(parentEnv);
+  const canonicalCodexRoot = codexRoot ? canonicalPathWithExistingPrefix(codexRoot) : null;
+  if (canonicalCodexRoot) trustedRoots.push(canonicalCodexRoot);
+  const homeRoot = resolveSourceHome(parentEnv);
+  const canonicalHomeRoot = homeRoot ? canonicalPathWithExistingPrefix(homeRoot) : null;
+  if (canonicalHomeRoot) trustedRoots.push(canonicalHomeRoot);
+
+  const canonicalSource = canonicalPathWithExistingPrefix(fromResolved);
+  let insideTrusted = false;
+  if (canonicalSource) for (const root of trustedRoots) {
+    const rel = path.relative(root, canonicalSource);
+    if (rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel)) {
+      insideTrusted = true;
+      break;
+    }
+  }
+  if (!insideTrusted) {
+    throw isolationError(
+      `refusing inherit source outside trusted env root: ${fromResolved}`,
+      "CPB_AGENT_HOME_UNTRUSTED_INHERIT_SOURCE",
+      { from: fromResolved },
+    );
+  }
+  const filename = path.basename(fromResolved);
+  if (!CREDENTIAL_FILENAME_ALLOWLIST.has(filename)) {
+    throw isolationError(
+      `refusing inherit of non-credential file: ${filename}`,
+      "CPB_AGENT_HOME_UNTRUSTED_INHERIT_FILE",
+      { from: fromResolved, filename },
+    );
+  }
+}
+
+export type InheritFileEntry = { from: string; to: string; maxBytes?: number };
+type ResolvedInheritEntry = { fromResolved: string; toResolved: string; maxBytes: number };
+
+/**
+ * Resolve + gate a single `quarantineFiles` entry against `targetHome` (pure
+ * path math, no I/O). Throws fail-closed if the entry is malformed or its
+ * resolved target escapes `targetHome` (§6.2 `to` containment).
+ */
+function resolveQuarantineEntry(entry: unknown, targetHome: string): string {
+  if (typeof entry !== "string" || !entry) {
+    throw isolationError(
+      "quarantineFiles entry must be a non-empty string",
+      "CPB_AGENT_HOME_INHERIT_ENTRY_INVALID",
+    );
+  }
+  return resolveInheritTarget(entry, targetHome);
+}
+
+/**
+ * Resolve + gate a single `inheritFiles` entry (pure path math, no I/O).
+ * Substitutes `$CODEX_HOME`/`$HOME` into `from`, canonicalizes `to` under
+ * `targetHome`, clamps `maxBytes` to `MAX_INHERITED_AUTH_BYTES`, and — for
+ * untrusted descriptors — runs the §6.2 source gate (trusted-env-root +
+ * credential-filename allowlist). Throws fail-closed on any violation.
+ */
+function resolveInheritEntry(
+  entry: unknown,
+  parentEnv: StringRecord,
+  targetHome: string,
+  { trusted }: { trusted: boolean },
+): ResolvedInheritEntry {
+  if (!entry || typeof entry !== "object") {
+    throw isolationError(
+      "inheritFiles entry must be an object with from/to",
+      "CPB_AGENT_HOME_INHERIT_ENTRY_INVALID",
+    );
+  }
+  const record = entry as { from?: unknown; to?: unknown; maxBytes?: unknown };
+  const from = typeof record.from === "string" ? record.from : "";
+  const to = typeof record.to === "string" ? record.to : "";
+  if (!from || !to) {
+    throw isolationError(
+      "inheritFiles entry missing from/to",
+      "CPB_AGENT_HOME_INHERIT_ENTRY_INVALID",
+    );
+  }
+  const declaredMax = typeof record.maxBytes === "number" && Number.isFinite(record.maxBytes) && record.maxBytes > 0
+    ? Math.floor(record.maxBytes)
+    : MAX_INHERITED_AUTH_BYTES;
+  const maxBytes = Math.min(declaredMax, MAX_INHERITED_AUTH_BYTES);
+
+  const fromResolved = substituteInheritPath(from, parentEnv);
+  const toResolved = resolveInheritTarget(to, targetHome);
+
+  if (!trusted) {
+    assertTrustedInheritSource(fromResolved, parentEnv);
+  }
+  return { fromResolved, toResolved, maxBytes };
+}
+
+/**
+ * Derive provider-specific home variables from the descriptor's declared
+ * inherit mapping. For example, `$CODEX_HOME/auth.json` copied to
+ * `$HOME/.codex/auth.json` means the child must see `CODEX_HOME` rooted at the
+ * isolated `.codex` directory. This keeps the mapping descriptor-driven for
+ * future providers instead of reintroducing an agent-name switch.
+ */
+function isolatedProviderHomeEnv(
+  descriptor: Pick<AgentCapability, "inheritFiles">,
+  targetHome: string,
+): StringRecord {
+  const env: StringRecord = {};
+  for (const entry of descriptor.inheritFiles) {
+    if (!entry || typeof entry.from !== "string" || typeof entry.to !== "string") continue;
+    const sourceMatch = /^\$([A-Za-z_][A-Za-z0-9_]*)\/(.+)$/.exec(entry.from);
+    if (!sourceMatch || sourceMatch[1] === "HOME" || !entry.to.startsWith("$HOME/")) continue;
+    const sourceSuffix = sourceMatch[2];
+    const targetSuffix = entry.to.slice("$HOME/".length);
+    const suffix = `/${sourceSuffix}`;
+    let rootSuffix = "";
+    if (targetSuffix === sourceSuffix) continue;
+    if (targetSuffix.endsWith(suffix)) {
+      rootSuffix = targetSuffix.slice(0, -suffix.length);
+    }
+    if (!rootSuffix) continue;
+    const isolatedRoot = resolveInheritTarget(`$HOME/${rootSuffix}`, targetHome);
+    const existing = env[sourceMatch[1]];
+    if (existing && existing !== isolatedRoot) {
+      delete env[sourceMatch[1]];
+      continue;
+    }
+    env[sourceMatch[1]] = isolatedRoot;
+  }
+  return env;
+}
+
+/**
+ * Validate every `inheritFiles` / `quarantineFiles` entry declared by a
+ * descriptor against the §6.2 security gate WITHOUT performing any copy or
+ * isolation (no filesystem I/O). Shared between `inheritFilesIntoHome` (runtime
+ * copy) and `registerDescriptor` (registration-time validation) so the gate has
+ * a single source of truth. Throws fail-closed on the first violation.
+ *
+ * `targetHome` is any concrete directory used to validate `to` containment;
+ * because `$HOME` / `$HOME/...` templates are rewritten relative to it and
+ * absolute / `..` escapes are rejected by `assertContained`, the accept/reject
+ * decision for a template is identical regardless of which concrete root is
+ * supplied — callers that have no real isolated HOME yet (registration) may
+ * pass a placeholder directory.
+ */
+export function assertInheritFilesSafe(
+  descriptor: {
+    inheritFiles?: InheritFileEntry[];
+    quarantineFiles?: string[];
+  },
+  parentEnv: StringRecord,
+  targetHome: string,
+  { trusted = false }: { trusted?: boolean } = {},
+): void {
+  const quarantine = Array.isArray(descriptor.quarantineFiles) ? descriptor.quarantineFiles : [];
+  for (const entry of quarantine) {
+    resolveQuarantineEntry(entry, targetHome);
+  }
+  const files = Array.isArray(descriptor.inheritFiles) ? descriptor.inheritFiles : [];
+  for (const entry of files) {
+    resolveInheritEntry(entry, parentEnv, targetHome, { trusted });
+  }
+}
+
+/**
+ * Descriptor-driven HOME inheritance (B2b, RFC §6.2). Loops generically over
+ * `descriptor.inheritFiles` plus `quarantineFiles` instead of branching on
+ * `agentName === "codex"` / `=== "claude"` literals.
+ *
+ * Declared quarantine files are isolated first (so a stale config left by an
+ * older CPB run cannot poison the fresh auth copy), then each inherit entry is
+ * copied with `O_NOFOLLOW` / `lstat` symlink refusal and the per-file
+ * `maxBytes` cap (clamped to `MAX_INHERITED_AUTH_BYTES`).
+ *
+ * `trusted` selects between builtin descriptors (CPB-authored, source allowlist
+ * skipped) and user-registered/auto-discovered descriptors (§6.2 source gate
+ * enforced, fail-closed on violation). `to` containment is enforced for both.
+ * Gate logic is shared with `assertInheritFilesSafe` (registration-time) via
+ * `resolveQuarantineEntry` / `resolveInheritEntry` so the runtime copy path and
+ * the registration validation path cannot drift.
+ */
+export async function inheritFilesIntoHome(
+  targetHome: string,
+  parentEnv: StringRecord,
+  descriptor: {
+    inheritFiles?: InheritFileEntry[];
+    quarantineFiles?: string[];
+  },
+  { trusted = false }: { trusted?: boolean } = {},
+): Promise<void> {
+  const quarantine = Array.isArray(descriptor.quarantineFiles) ? descriptor.quarantineFiles : [];
+  for (const entry of quarantine) {
+    const target = resolveQuarantineEntry(entry, targetHome);
+    await isolateOwnedRegularFileNoFollow(target);
+  }
+
+  const files = Array.isArray(descriptor.inheritFiles) ? descriptor.inheritFiles : [];
+  for (const entry of files) {
+    const { fromResolved, toResolved, maxBytes } = resolveInheritEntry(
+      entry,
+      parentEnv,
+      targetHome,
+      { trusted },
+    );
+    await copyRegularFileNoFollow(fromResolved, toResolved, maxBytes);
+  }
 }
 
 function resolveAgentHomeRoot(_cpbRoot: string, { dataRoot, parentEnv = {} }: { dataRoot?: string | null; parentEnv?: StringRecord } = {}) {
@@ -677,10 +980,32 @@ export async function createAgentHome(cpbRoot: string, agentName: string, jobId:
     env.TMP = tempDir;
     env.TEMP = tempDir;
   }
-  if (agentName === "codex" && !parentEnv.CODEX_HOME) {
-    env.CODEX_HOME = await inheritCodexConfig(baseDir, parentEnv);
-  } else if (agentName === "claude") {
-    await inheritClaudeConfig(baseDir, parentEnv);
+  // Descriptor-driven HOME inheritance (B2b): every descriptor's
+  // inheritFiles/quarantineFiles is looped generically instead of branching on
+  // `agentName === "codex"/"claude"` literals. When the registry is not loaded
+  // (e.g. focused unit tests that import createAgentHome directly without
+  // loadRegistry) no capability is found and nothing is inherited.
+  let cap: AgentCapability | null = null;
+  try {
+    // Ensure builtin descriptors (codex/claude auth inheritance) are loaded
+    // even when the caller (e.g. a managed-worker process) did not call
+    // loadRegistry. Idempotent: loadRegistry("") is a no-op after first load.
+    await loadRegistry("");
+    cap = getCapability(agentName);
+  } catch {
+    cap = null;
+  }
+  if (cap) {
+    let trusted = false;
+    try {
+      trusted = isBuiltinDescriptor(agentName);
+    } catch {
+      trusted = false;
+    }
+    if (cap.inheritFiles.length || cap.quarantineFiles.length) {
+      await inheritFilesIntoHome(baseDir, parentEnv, cap, { trusted });
+    }
+    Object.assign(env, isolatedProviderHomeEnv(cap, baseDir));
   }
   return env;
 }

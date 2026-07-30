@@ -22,7 +22,7 @@ test("stream job panel exposes completion report and runtime policy without brea
       id: project,
       name: project,
       sourcePath,
-      skipCodeGraphGate: true,
+      skipLocalCodeIndexGate: true,
     });
     const dataRoot = registeredProject.projectRuntimeRoot;
     const job = await createJob(cpbRoot, {

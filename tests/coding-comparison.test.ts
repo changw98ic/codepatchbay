@@ -130,7 +130,7 @@ test("solver lane input excludes every post-terminal evaluator field", () => {
   assert.equal(input.planMode, "light");
 });
 
-test("native Codex uses the same headless worktree-write contract and CodeGraph tool", () => {
+test("native Codex uses the same headless worktree-write contract without an injected MCP", () => {
   const task = validateCodingComparisonManifest(manifest()).tasks[0];
   const args = nativeCodexArgs(task, "/tmp/worktree");
   assert.deepEqual(args.slice(0, 4), ["exec", "--json", "--ephemeral", "--ignore-user-config"]);
@@ -139,7 +139,7 @@ test("native Codex uses the same headless worktree-write contract and CodeGraph 
   assert.ok(args.includes("features.apps=false"));
   assert.ok(args.includes("features.plugins=false"));
   assert.ok(args.includes("features.remote_plugin=false"));
-  assert.ok(args.some((arg) => arg.includes("mcp_servers.codegraph")));
+  assert.equal(args.some((arg) => arg.includes("mcp_servers.")), false);
   assert.equal(args.some((arg) => arg.includes("test.js")), false);
 });
 

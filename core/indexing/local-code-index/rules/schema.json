@@ -1,0 +1,186 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "cpb-local-code-index-extraction-rules-v1",
+  "title": "CodePatchbay Local Code Index Extraction Rules",
+  "description": "Versioned language-specific symbol extraction rules for the local code index. Each rule file defines patterns for identifying definitions, references, imports, and exports in source files.",
+  "version": "1.0.0",
+
+  "type": "object",
+  "required": ["version", "language", "extensions", "symbolKinds", "patterns"],
+  "additionalProperties": false,
+
+  "properties": {
+    "version": {
+      "type": "string",
+      "const": "1.0.0",
+      "description": "Rule schema version. Breaking changes increment the major version."
+    },
+    "language": {
+      "type": "string",
+      "description": "Canonical language identifier (lowercase, hyphen-separated)."
+    },
+    "aliases": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Alternative names for this language (e.g., 'ts' for TypeScript)."
+    },
+    "extensions": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^\\." },
+      "minItems": 1,
+      "description": "File extensions associated with this language, including the leading dot."
+    },
+    "symbolKinds": {
+      "type": "object",
+      "description": "Enumeration of symbol kinds this language supports. Keys are kind identifiers, values are human-readable descriptions.",
+      "additionalProperties": { "type": "string" }
+    },
+    "patterns": {
+      "type": "object",
+      "required": ["definitions", "imports", "exports"],
+      "additionalProperties": false,
+      "properties": {
+        "definitions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/DefinitionPattern" },
+          "description": "Ordered list of patterns for extracting symbol definitions. First match wins."
+        },
+        "imports": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ImportPattern" },
+          "description": "Patterns for extracting import statements."
+        },
+        "exports": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ExportPattern" },
+          "description": "Patterns for identifying exported symbols."
+        },
+        "references": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ReferencePattern" },
+          "description": "Optional patterns for extracting symbol references (usages)."
+        }
+      }
+    },
+    "folding": {
+      "type": "object",
+      "description": "Optional block folding rules for scope detection.",
+      "properties": {
+        "startPattern": { "type": "string", "description": "Regex matching the start of a foldable block." },
+        "endPattern": { "type": "string", "description": "Regex matching the end of a foldable block." }
+      }
+    },
+    "notes": {
+      "type": "string",
+      "description": "Implementation notes or caveats for this language's rules."
+    }
+  },
+
+  "$defs": {
+    "DefinitionPattern": {
+      "type": "object",
+      "required": ["kind", "pattern"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "description": "The symbol kind this pattern produces (must be a key in symbolKinds)."
+        },
+        "pattern": {
+          "type": "string",
+          "description": "Regex pattern with named capture groups. Required group: 'name'. Optional: 'exported', 'async', 'generics'."
+        },
+        "flags": {
+          "type": "string",
+          "description": "Regex flags (default: 'gm')."
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description of what this pattern matches."
+        },
+        "requiresLineStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether the pattern must match at the start of a line."
+        }
+      }
+    },
+
+    "ImportPattern": {
+      "type": "object",
+      "required": ["pattern"],
+      "additionalProperties": false,
+      "properties": {
+        "pattern": {
+          "type": "string",
+          "description": "Regex pattern with named capture groups. Required group: 'source'. Optional: 'names', 'default', 'namespace'."
+        },
+        "flags": {
+          "type": "string",
+          "description": "Regex flags (default: 'gm')."
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["static", "dynamic", "require", "all"],
+          "default": "all",
+          "description": "Import binding kind."
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description."
+        }
+      }
+    },
+
+    "ExportPattern": {
+      "type": "object",
+      "required": ["pattern"],
+      "additionalProperties": false,
+      "properties": {
+        "pattern": {
+          "type": "string",
+          "description": "Regex pattern identifying an export. Should capture 'name' when applicable."
+        },
+        "flags": {
+          "type": "string",
+          "description": "Regex flags (default: 'gm')."
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["named", "default", "re-export", "all"],
+          "default": "all",
+          "description": "Export binding kind."
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description."
+        }
+      }
+    },
+
+    "ReferencePattern": {
+      "type": "object",
+      "required": ["pattern"],
+      "additionalProperties": false,
+      "properties": {
+        "pattern": {
+          "type": "string",
+          "description": "Regex pattern for symbol references. Should capture 'name'."
+        },
+        "flags": {
+          "type": "string",
+          "description": "Regex flags (default: 'gm')."
+        },
+        "excludeContexts": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Contexts to exclude (e.g., 'comment', 'string', 'definition')."
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description."
+        }
+      }
+    }
+  }
+}

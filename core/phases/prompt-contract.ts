@@ -9,8 +9,8 @@ export function phaseExecutionContract(
   }[phase] || "Stay inside this phase boundary.";
 
   const lookupGuidance = options.flexibleToolChoice
-    ? "- Choose the narrowest available repository lookup that fits the task. Use indexed CodeGraph for broad or ambiguous discovery; direct focused file/symbol lookup is valid for small explicit scopes."
-    : "- Start with CodeGraph lookup when available; otherwise use focused rg/rg --files.\n- If a CodeGraph MCP tool is available, call it first (for example codegraph_context or mcp__codegraph__codegraph_context) before shell/file fallback.";
+    ? "- Choose the narrowest available repository lookup that fits the task. Use the local code index for broad or ambiguous discovery; direct focused file/symbol lookup is valid for small explicit scopes."
+    : "- Start with the local code index when available; otherwise use focused rg/rg --files.\n- The local index is file-backed and does not expose an MCP server.";
 
   return `## Execution Intensity Contract
 ${phaseBoundary}

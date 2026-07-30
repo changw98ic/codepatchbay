@@ -1,4 +1,9 @@
 import { recordValue, type LooseRecord } from "../contracts/types.js";
+import {
+  defaultAgentForRole,
+  getCapability,
+  listAgents,
+} from "../agents/registry.js";
 
 export type AssuranceAgent = string | {
   agent: string;
@@ -61,6 +66,52 @@ function boundedCritiqueRounds(value: unknown): number {
   return Math.max(1, Math.min(2, Math.floor(numeric)));
 }
 
+/**
+ * Resolve a high-assurance fallback agent via the provider-capability registry
+ * (B2c): the lowest-`tieBreakPriority` agent that owns `role`. The explicit
+ * `legacy` literal survives only the "registry not loaded" case (e.g. unit
+ * tests that never call `loadRegistry`); otherwise the registry drives
+ * resolution.
+ */
+function registryRoleFallback(role: string, legacy: string): string {
+  try {
+    return defaultAgentForRole(role);
+  } catch {
+    return legacy;
+  }
+}
+
+/**
+ * Pure fail-closed predicate (B2c): whether at least one registered verifier
+ * family differs from the execution agent's family. Extracted as a pure
+ * function over family lists so the independence guarantee is unit-testable
+ * without manipulating the global descriptor registry.
+ */
+export function hasDistinctFamilyVerifier(
+  verifierFamilies: Array<string | null>,
+  executionFamily: string | null,
+): boolean {
+  return verifierFamilies.some((family) => family !== executionFamily);
+}
+
+/**
+ * Registry-backed projection of `hasDistinctFamilyVerifier`. Returns true
+ * (no enforcement) when the registry is not loaded, matching the pre-B2c
+ * behavior where no such check existed.
+ */
+function registryHasIndependentVerifier(executionAgentName: string): boolean {
+  try {
+    const execFamily = getCapability(executionAgentName)?.providerFamily ?? null;
+    const verifierFamilies = listAgents()
+      .filter((d) => Array.isArray(d.defaultRoles) && d.defaultRoles.includes("verifier"))
+      .map((d) => getCapability(d.name)?.providerFamily ?? null);
+    return hasDistinctFamilyVerifier(verifierFamilies, execFamily);
+  } catch {
+    // Registry not loaded — cannot enforce independence; allow.
+    return true;
+  }
+}
+
 export function resolveHighAssurancePolicy(ctx: LooseRecord = {}): HighAssurancePolicy {
   const assurance = assuranceRecord(ctx);
   const mode = assuranceMode(ctx, assurance);
@@ -70,27 +121,44 @@ export function resolveHighAssurancePolicy(ctx: LooseRecord = {}): HighAssurance
   const rawCandidates = Array.isArray(planning.candidates) ? planning.candidates : [];
   // Ordinary agents/routing configuration must not silently redefine the
   // quality-first role split.  High-assurance overrides live only inside the
-  // explicit assurance policy.
-  const candidateA = normalizeAgent(rawCandidates[0] || planning.candidateA, "codex");
-  const candidateB = normalizeAgent(rawCandidates[1] || planning.candidateB, "claude-glm");
+  // explicit assurance policy. The fallback literals are resolved through the
+  // provider-capability registry (B2c): codex wins planner/verifier (priority
+  // 10) and claude wins executor (priority 20).
+  const candidateA = normalizeAgent(rawCandidates[0] || planning.candidateA, registryRoleFallback("planner", "codex"));
+  const candidateB = normalizeAgent(rawCandidates[1] || planning.candidateB, registryRoleFallback("executor", "claude-glm"));
+  const arbiter = normalizeAgent(planning.arbiter, registryRoleFallback("planner", "codex"));
+  const executionAgent = normalizeAgent(execution.agent, registryRoleFallback("executor", "claude-glm"));
+  const verificationAgent = normalizeAgent(verification.agent, registryRoleFallback("verifier", "codex"));
+  const verificationIndependent = verification.independent !== false;
+
+  // Fail-closed (B2c): high mode with independent verification must not enter
+  // when the registry cannot supply a verifier whose providerFamily differs
+  // from the execution agent's family.
+  if (mode === "high" && verificationIndependent) {
+    if (!registryHasIndependentVerifier(assuranceAgentName(executionAgent))) {
+      throw new Error(
+        "high-assurance verification.independent requires a verifier from a provider family distinct from execution.agent; none registered",
+      );
+    }
+  }
 
   return {
     enabled: mode === "high",
     mode,
     planning: {
       candidates: [candidateA, candidateB],
-      arbiter: normalizeAgent(planning.arbiter, "codex"),
+      arbiter,
       critiqueRounds: boundedCritiqueRounds(planning.critiqueRounds),
     },
     execution: {
-      agent: normalizeAgent(execution.agent, "claude-glm"),
+      agent: executionAgent,
       required: execution.required !== false,
     },
     verification: {
-      agent: normalizeAgent(verification.agent, "codex"),
+      agent: verificationAgent,
       required: verification.required !== false,
       blind: verification.blind !== false,
-      independent: verification.independent !== false,
+      independent: verificationIndependent,
     },
   };
 }

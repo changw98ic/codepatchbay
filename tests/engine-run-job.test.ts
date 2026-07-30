@@ -519,7 +519,6 @@ test("concurrent runJob executions keep job env isolated without mutating ambien
         CPB_TEST_MARKER: marker,
         CPB_CHECKLIST_DECOMPOSE: "1",
         CPB_CHECKLIST_DECOMPOSE_RETRY_MAX: "0",
-        CPB_CHECKLIST_CODEGRAPH_FAST_PATH: "0",
         CPB_ASSURANCE_MODE: "standard",
         CPB_ACP_PHASE_TIMEOUT_MS: String(timeoutMs),
         CPB_PHASE_RETRY_MAX: "0",

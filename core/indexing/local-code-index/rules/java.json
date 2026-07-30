@@ -1,0 +1,115 @@
+{
+  "version": "1.0.0",
+  "language": "java",
+  "aliases": ["java"],
+  "extensions": [".java"],
+  "symbolKinds": {
+    "class": "Class declaration",
+    "interface": "Interface declaration",
+    "enum": "Enum declaration",
+    "record": "Record declaration (Java 14+)",
+    "method": "Method declaration",
+    "constructor": "Constructor declaration",
+    "field": "Field declaration",
+    "variable": "Local variable declaration",
+    "annotation": "Annotation type declaration",
+    "enum-constant": "Enum constant",
+    "package": "Package declaration",
+    "import-name": "Imported type or static member"
+  },
+  "patterns": {
+    "definitions": [
+      {
+        "kind": "class",
+        "pattern": "^(?<modifiers>(?:(?:public|protected|private|static|final|abstract|strictfp)\\s+)*)(?:sealed\\s+)?class\\s+(?<name>[a-zA-Z_$][a-zA-Z0-9_$]*)(?:\\s*<[^>]*>)?(?:\\s+extends\\s+[^{]+)?(?:\\s+implements\\s+[^{]+)?\\s*\\{",
+        "description": "Class declaration with modifiers, generics, extends, implements"
+      },
+      {
+        "kind": "interface",
+        "pattern": "^(?<modifiers>(?:(?:public|protected|private|static|abstract)\\s+)*)(?:sealed\\s+)?interface\\s+(?<name>[a-zA-Z_$][a-zA-Z0-9_$]*)(?:\\s*<[^>]*>)?(?:\\s+extends\\s+[^{]+)?\\s*\\{",
+        "description": "Interface declaration"
+      },
+      {
+        "kind": "enum",
+        "pattern": "^(?<modifiers>(?:(?:public|protected|private|static)\\s+)*)enum\\s+(?<name>[a-zA-Z_$][a-zA-Z0-9_$]*)(?:\\s+implements\\s+[^{]+)?\\s*\\{",
+        "description": "Enum declaration"
+      },
+      {
+        "kind": "enum-constant",
+        "pattern": "^\\s+(?<name>[A-Z][A-Z0-9_]*)(?:\\s*\\([^)]*\\))?\\s*[,;]",
+        "description": "Enum constant (SCREAMING_CASE or PascalCase)"
+      },
+      {
+        "kind": "record",
+        "pattern": "^(?<modifiers>(?:(?:public|protected|private|static|final|abstract)\\s+)*)record\\s+(?<name>[a-zA-Z_$][a-zA-Z0-9_$]*)(?:\\s*<[^>]*>)?\\s*\\(",
+        "description": "Record declaration (Java 14+)"
+      },
+      {
+        "kind": "method",
+        "pattern": "^\\s+(?<modifiers>(?:(?:public|protected|private|static|final|abstract|synchronized|native|default|strictfp)\\s+)*)(?<generics><[^>]*>\\s+)?(?:[a-zA-Z_$][a-zA-Z0-9_$<>\\[\\]]*(?:\\s*\\.{3})?)\\s+(?<name>[a-zA-Z_$][a-zA-Z0-9_$]*)\\s*(?:<[^>]*>)?\\s*\\(",
+        "description": "Method declaration with modifiers and return type"
+      },
+      {
+        "kind": "constructor",
+        "pattern": "^\\s+(?<modifiers>(?:(?:public|protected|private)\\s+)*)?(?<name>[a-zA-Z_$][a-zA-Z0-9_$]*)\\s*\\(",
+        "description": "Constructor declaration (matches class name)"
+      },
+      {
+        "kind": "field",
+        "pattern": "^\\s+(?<modifiers>(?:(?:public|protected|private|static|final|transient|volatile)\\s+)*)(?<type>[a-zA-Z_$][a-zA-Z0-9_$<>,\\[\\]\\s]*?)\\s+(?<name>[a-zA-Z_$][a-zA-Z0-9_$]*)\\s*(?:=|;)",
+        "description": "Field declaration with modifiers and type"
+      },
+      {
+        "kind": "annotation",
+        "pattern": "^\\s*(?<modifiers>(?:(?:public|protected|private|static|abstract)\\s+)*)@interface\\s+(?<name>[a-zA-Z_$][a-zA-Z0-9_$]*)",
+        "description": "Annotation type declaration"
+      },
+      {
+        "kind": "variable",
+        "pattern": "^\\s+(?<type>[a-zA-Z_$][a-zA-Z0-9_$<>,\\[\\]\\s]*?)\\s+(?<name>[a-zA-Z_$][a-zA-Z0-9_$]*)\\s*(?:=|;)",
+        "description": "Local variable declaration (inside methods)"
+      }
+    ],
+    "imports": [
+      {
+        "pattern": "^import\\s+(?:static\\s+)?(?<source>[a-zA-Z_][a-zA-Z0-9_.]*(?:\\.\\*)?)\\s*;",
+        "kind": "all",
+        "description": "Import statement (import pkg.Type or import static pkg.Member)"
+      },
+      {
+        "pattern": "^import\\s+static\\s+(?<source>[a-zA-Z_][a-zA-Z0-9_.]*)\\s*;",
+        "kind": "all",
+        "description": "Static import"
+      }
+    ],
+    "exports": [
+      {
+        "pattern": "^public\\s+(?:abstract\\s+|sealed\\s+|final\\s+|static\\s+)*?(?:class|interface|enum|record|@interface)\\s+(?<name>[a-zA-Z_$][a-zA-Z0-9_$]*)",
+        "kind": "named",
+        "description": "Public type declaration"
+      },
+      {
+        "pattern": "^public\\s+(?:static\\s+)?(?:final\\s+)?(?:<[^>]*>\\s+)?(?:[a-zA-Z_$][a-zA-Z0-9_$<>\\[\\]]*\\s+)?(?<name>[a-zA-Z_$][a-zA-Z0-9_$]*)\\s*(?:\\(|=|;)",
+        "kind": "named",
+        "description": "Public method or field"
+      },
+      {
+        "pattern": "^package\\s+(?<name>[a-zA-Z_][a-zA-Z0-9_.]*)\\s*;",
+        "kind": "named",
+        "description": "Package declaration (implicit export namespace)"
+      }
+    ],
+    "references": [
+      {
+        "pattern": "\\b(?<name>[a-zA-Z_][a-zA-Z0-9_$]*)\\b(?!\\s*\\.)",
+        "excludeContexts": ["comment", "string", "definition"],
+        "description": "General identifier reference"
+      }
+    ]
+  },
+  "folding": {
+    "startPattern": "\\{\\s*$",
+    "endPattern": "^\\s*\\}"
+  },
+  "notes": "Java rules handle all standard visibility modifiers (public, protected, package-private, private). Constructors are detected by matching the method name against the enclosing class name. Records (Java 14+), sealed classes (Java 17+), and pattern matching constructs are supported. Enum constants follow the SCREAMING_CASE convention by default."
+}

@@ -34,6 +34,8 @@ Rules:
 type ResolvedAgent = {
   agent: string;
   variant: string | null;
+  provider: string | null;
+  model: string | null;
 };
 
 const PLAN_CARRY_FORWARD_EVENT_LIMIT = 12;
@@ -449,9 +451,14 @@ function resolveAgent(ctx: LooseRecord, fallback: string) {
   const raw = agents[role] || agents.planner || ctx.agent || fallback;
   if (raw !== null && typeof raw === "object" && !Array.isArray(raw)) {
     const record = recordValue(raw);
-    return { agent: stringValue(record.agent, fallback), variant: stringValue(record.variant) || null };
+    return {
+      agent: stringValue(record.agent, fallback),
+      variant: stringValue(record.variant) || null,
+      provider: stringValue(record.provider) || null,
+      model: stringValue(record.model) || null,
+    };
   }
-  return { agent: stringValue(raw, fallback), variant: null };
+  return { agent: stringValue(raw, fallback), variant: null, provider: null, model: null };
 }
 
 function buildRetrySection(sourceContext: LooseRecord) {

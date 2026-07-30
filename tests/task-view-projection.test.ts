@@ -369,16 +369,16 @@ test("(d) blocked job projects to blocked with a wait next action", async () => 
   assertOnlyPublicFields(view, "blocked");
 });
 
-test("(d) codegraph_unavailable queue entry projects to blocked (runtime gate)", async () => {
-  const root = await tempRoot("cpb-task-view-codegraph");
+test("(d) local_code_index_unavailable queue entry projects to blocked (runtime gate)", async () => {
+  const root = await tempRoot("cpb-task-view-local-index");
   const hubRoot = path.join(root, "hub");
   const dataRoot = path.join(root, "data");
-  await seedQueue(hubRoot, [queueEntry({ status: "codegraph_unavailable" })]);
+  await seedQueue(hubRoot, [queueEntry({ status: "local_code_index_unavailable" })]);
 
   const view = await projectTaskView(root, PROJECT, TASK_ID, { hubRoot, dataRoot });
   assert.ok(view);
   assert.equal(view.state, TaskState.Blocked);
-  assertOnlyPublicFields(view, "codegraph-blocked");
+  assertOnlyPublicFields(view, "local-index-blocked");
 });
 
 // ─── (f) seeded forbidden fields are fully sanitized in output ───────────────

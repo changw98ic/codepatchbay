@@ -1,11 +1,15 @@
 import type { LooseRecord } from "../../shared/types.js";
 import { recordValue } from "../contracts/types.js";
 import { normalizeAllowedAgentNames, providerFamilyFor } from "../agents/outcome-routing.js";
+import { getDescriptor } from "../agents/registry.js";
+import { providerKeyForDescriptor, providerKeyForSelection } from "../agents/provider-config.js";
 
 type AgentObject = {
   agent?: string | null;
   name?: string | null;
   variant?: string | null;
+  provider?: string | null;
+  model?: string | null;
 };
 
 export type ProviderAgent = string | AgentObject | null | undefined;
@@ -20,7 +24,7 @@ export type ProviderPool = {
     meta: LooseRecord,
   ) => Promise<unknown> | unknown;
   releaseWorktree?: (cwd: string, reason: string, options?: LooseRecord) => Promise<unknown> | unknown;
-  providerKey?: (agent: string | null | undefined, variant: string | null) => string | null | undefined;
+  providerKey?: (agent: string | null | undefined, variant: string | null, provider?: string | null, model?: string | null) => string | null | undefined;
   fallbackCandidates?: (
     agent: string,
     currentVariant: string | null | undefined,
@@ -32,6 +36,8 @@ type ProviderAvailabilityPayload = {
   providerKey: string | null;
   agent: string;
   variant: string | null;
+  provider?: string | null;
+  model?: string | null;
   phase: string;
   role: string;
 };
@@ -114,6 +120,8 @@ type FallbackCandidate = {
   providerKey: string;
   agent: string;
   variant?: string | null;
+  provider?: string | null;
+  model?: string | null;
   providerFallback?: boolean;
 };
 
@@ -132,7 +140,7 @@ export function resolveRawAgent(
   agent: string | null | undefined,
   role: string,
   phase: string,
-): { agent: string; variant: string | null } {
+): { agent: string; variant: string | null; provider?: string | null; model?: string | null } {
   const raw = agents?.[role] || agent;
   if (!raw) {
     throw new Error(`agent is required for phase ${phase} (${role})`);
@@ -142,10 +150,13 @@ export function resolveRawAgent(
     if (!resolvedAgent) {
       throw new Error(`agent name is required for phase ${phase} (${role})`);
     }
-    return {
+    const resolved: { agent: string; variant: string | null; provider?: string | null; model?: string | null } = {
       agent: resolvedAgent,
       variant: raw.variant || null,
     };
+    if (raw.provider) resolved.provider = raw.provider;
+    if (raw.model) resolved.model = raw.model;
+    return resolved;
   }
   if (typeof raw !== "string" || !raw) {
     throw new Error(`agent name is required for phase ${phase} (${role})`);
@@ -160,16 +171,35 @@ export function resolveProviderKey(
 ): string | null {
   let selectedAgent: string | null | undefined;
   let variant: string | null;
+  let provider: string | null;
+  let model: string | null;
   if (typeof rawAgent === "object" && rawAgent !== null) {
     selectedAgent = rawAgent.agent || defaultAgent;
     variant = rawAgent.variant || null;
+    provider = rawAgent.provider || null;
+    model = rawAgent.model || null;
   } else {
     selectedAgent = typeof rawAgent === "string" ? rawAgent : defaultAgent;
     variant = null;
+    provider = null;
+    model = null;
   }
-  if (pool?.providerKey) return pool.providerKey(selectedAgent, variant) || null;
-  if (variant && selectedAgent === "claude") return `claude:${variant}`;
-  return selectedAgent || null;
+  if (pool?.providerKey) return pool.providerKey(selectedAgent, variant, provider, model) || null;
+  // Provider identity and variant namespacing belong to the descriptor. This
+  // path is used only when a pool callback is unavailable (for example in a
+  // pure unit test); it still consults the same configuration before using a
+  // deterministic generic key.
+  if (selectedAgent) {
+    try {
+      const descriptor = getDescriptor(selectedAgent);
+      if (descriptor) return providerKeyForSelection(selectedAgent, descriptor, provider, variant, model);
+    } catch {
+      // The registry is optional at this low-level boundary.
+    }
+  }
+  return selectedAgent
+    ? (variant ? `${selectedAgent}:${variant}` : selectedAgent)
+    : null;
 }
 
 export function normalizeProviderServices(services: unknown = {}): ProviderServices {
@@ -224,7 +254,7 @@ export async function preflightProvider({
   const assertProviderAvailable = providerServices?.assertProviderAvailable;
   if (typeof assertProviderAvailable !== "function" || !hubRoot) return null;
 
-  const { agent: resolvedAgent, variant } = resolveRawAgent(agents, agent, role, phase);
+  const { agent: resolvedAgent, variant, provider, model } = resolveRawAgent(agents, agent, role, phase);
   const providerKey = resolveProviderKey(pool, agents?.[role], agent);
   const normalizedAllowedAgents = normalizeAllowedAgentNames(allowedAgents);
   const allowedSet = normalizedAllowedAgents === null ? null : new Set(normalizedAllowedAgents);
@@ -241,6 +271,8 @@ export async function preflightProvider({
         providerKey,
         agent: resolvedAgent,
         variant,
+        provider,
+        model,
         phase,
         role,
       });
@@ -268,11 +300,18 @@ export async function preflightProvider({
         providerKey: candidate.providerKey,
         agent: candidate.agent,
         variant: candidate.variant || null,
+        provider: candidate.provider || null,
+        model: candidate.model || null,
         phase,
         role,
       });
       const selectedAgent = candidate.variant
-        ? { agent: candidate.agent, variant: candidate.variant }
+        ? {
+          agent: candidate.agent,
+          variant: candidate.variant,
+          ...(candidate.provider ? { provider: candidate.provider } : {}),
+          ...(candidate.model ? { model: candidate.model } : {}),
+        }
         : candidate.agent;
       return {
         available: true,

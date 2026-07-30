@@ -70,7 +70,7 @@ async function fixture(
     name: project,
     sourcePath: cpbRoot,
     projectRuntimeRoot: dataRoot,
-    skipCodeGraphGate: true,
+    skipLocalCodeIndexGate: true,
   });
   const job = await createJob(cpbRoot, {
     project,

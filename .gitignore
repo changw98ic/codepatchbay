@@ -17,6 +17,7 @@ server/dist/
 # CodePatchbay runtime state
 flow-task/
 cpb-task/
+cpb-test/
 .cpb-evaluations/
 .cpb-recovery/
 logs/
@@ -53,6 +54,5 @@ marketing/
 # Hyperframes video project
 hyperframes-video/
 
-.codegraph/
 CPB.md
 dist-baseline/

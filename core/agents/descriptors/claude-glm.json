@@ -13,9 +13,97 @@
   "protocol": "acp",
   "transport": "claude-cli",
   "description": "Claude Code ACP runner configured through the Zhipu/GLM Anthropic-compatible variant",
+  "provider": {
+    "keyTemplate": "claude:${variant}",
+    "variant": "glm",
+    "variantAliases": ["glm-compatible", "zhipu"],
+    "family": "glm",
+    "credentialEnv": [
+      "ZHIPU_BASE_URL", "GLM_BASE_URL",
+      "ZHIPU_API_KEY", "ZHIPU_AUTH_TOKEN", "GLM_API_KEY", "GLM_AUTH_TOKEN",
+      "ZHIPU_MODEL", "GLM_MODEL"
+    ],
+    "environment": {
+      "ANTHROPIC_BASE_URL": ["ZHIPU_BASE_URL", "GLM_BASE_URL"],
+      "ANTHROPIC_API_KEY": ["ZHIPU_API_KEY", "ZHIPU_AUTH_TOKEN", "GLM_API_KEY", "GLM_AUTH_TOKEN"],
+      "ANTHROPIC_AUTH_TOKEN": ["ZHIPU_API_KEY", "ZHIPU_AUTH_TOKEN", "GLM_API_KEY", "GLM_AUTH_TOKEN"],
+      "ANTHROPIC_MODEL": ["ZHIPU_MODEL", "GLM_MODEL"]
+    },
+    "derived": {
+      "ANTHROPIC_CUSTOM_MODEL_OPTION": "ANTHROPIC_MODEL",
+      "ANTHROPIC_DEFAULT_SONNET_MODEL": "ANTHROPIC_MODEL",
+      "ANTHROPIC_DEFAULT_OPUS_MODEL": "ANTHROPIC_MODEL",
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL": "ANTHROPIC_MODEL",
+      "CLAUDE_CODE_SUBAGENT_MODEL": "ANTHROPIC_MODEL"
+    },
+    "required": ["ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_MODEL"],
+    "normalizers": {
+      "ANTHROPIC_MODEL": "strip-trailing-bracket-suffix",
+      "ANTHROPIC_CUSTOM_MODEL_OPTION": "strip-trailing-bracket-suffix",
+      "ANTHROPIC_DEFAULT_SONNET_MODEL": "strip-trailing-bracket-suffix",
+      "ANTHROPIC_DEFAULT_OPUS_MODEL": "strip-trailing-bracket-suffix",
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL": "strip-trailing-bracket-suffix",
+      "CLAUDE_CODE_SUBAGENT_MODEL": "strip-trailing-bracket-suffix"
+    },
+    "values": {
+      "CPB_CLAUDE_VARIANT": "${variant}",
+      "CPB_ACTIVE_CLAUDE_VARIANT": "${variant}",
+      "CLAUDE_CODE_ATTRIBUTION_HEADER": "0"
+    },
+    "runtimeEnv": [
+      "CPB_CLAUDE_PLAN_MAX_TEXT_CHARS", "CPB_CLAUDE_PLAN_MAX_THINKING_TOKENS",
+      "CPB_CLAUDE_PLAN_MAX_TURNS", "CPB_CLAUDE_MAX_INTERNAL_API_RETRIES",
+      "MAX_THINKING_TOKENS", "CLAUDE_CODE_MAX_OUTPUT_TOKENS"
+    ],
+    "cli": {
+      "command": "claude",
+      "commandEnv": "CPB_CLAUDE_CLI_COMMAND",
+      "modelEnv": "ANTHROPIC_MODEL",
+      "modelArg": "--model"
+    },
+    "capsule": {
+      "nativeExecutable": {
+        "basename": "claude",
+        "pathContains": ["@anthropic-ai/claude-agent-sdk-"],
+        "env": "CPB_CAPSULE_CLAUDE_CODE_EXECUTABLE",
+        "targetEnv": "CLAUDE_CODE_EXECUTABLE",
+        "kind": "native"
+      }
+    },
+    "quota": {
+      "region": "cn",
+      "timezone": "Asia/Shanghai",
+      "policy": { "type": "per-minute", "description": "GLM Anthropic-compatible rate limit" },
+      "rules": [
+        {
+          "pattern": "rate.?limit|quota|限额|额度|访问量|频率|过载|overload",
+          "status": "rate_limited",
+          "confidence": 0.85
+        }
+      ]
+    },
+    "homeAgent": "claude",
+    "fallbacks": [
+      {
+        "providerKey": "claude:mimo-v2.5pro",
+        "agent": "claude-mimo",
+        "variant": "mimo-v2.5pro"
+      }
+    ]
+  },
   "providerKey": "claude:glm",
   "providerVariant": "glm",
   "lifecycle": "one-shot",
+  "providerFamily": "glm",
+  "tieBreakPriority": 30,
+  "sandboxPolicy": "cpb-required",
+  "inheritFiles": [
+    { "from": "$HOME/.claude.json", "to": "$HOME/.claude.json" },
+    { "from": "$HOME/.claude/.credentials.json", "to": "$HOME/.claude/.credentials.json" },
+    { "from": "$HOME/.claude/credentials.json", "to": "$HOME/.claude/credentials.json" },
+    { "from": "$HOME/.claude/auth.json", "to": "$HOME/.claude/auth.json" }
+  ],
+  "quarantineFiles": [],
   "resumeCommand": "claude",
   "resumeArgs": ["--resume"]
 }

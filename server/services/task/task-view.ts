@@ -370,7 +370,7 @@ function deriveStateFromQueueEntry(entry: LooseRecord): ProjectedState {
       return { state: TaskState.NeedsInput, verified: false, reachedTerminal: false };
     case "blocked":
       return { state: TaskState.Blocked, verified: false, reachedTerminal: false };
-    case "codegraph_unavailable":
+    case "local_code_index_unavailable":
       // Runtime indexing is unavailable; the user can only wait for the
       // index to recover. Surfaced as `blocked` (runtime gate), not failed.
       return { state: TaskState.Blocked, verified: false, reachedTerminal: false };

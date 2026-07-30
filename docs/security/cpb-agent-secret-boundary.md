@@ -138,6 +138,13 @@ serve mixed Codex/Claude/Gemini work. Each ACP adapter launch and CPB-brokered
 terminal command then narrows that snapshot to the requested agent before the
 child process starts.
 
+Global provider mappings are read from `~/.cpb/providers.json` (or the paths
+selected by `CPB_HOME`/`CPB_PROVIDERS_FILE`). The file contains environment
+variable names and non-secret routing metadata; project selection is read from
+`~/.cpb/<project>/project.json`. CPB does not write API keys or OAuth tokens to
+either file. A selected provider adds only its declared credential inputs and
+transport targets to the child allowlist.
+
 ### Output Redaction
 
 All CPB output surfaces redact secrets before persistence or emission:

@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codepatchbay/schemas/cpb-envelope.schema.json",
+  "title": "CPB Agent Output Envelope",
+  "description": "Agent 在输出中吐出的 fenced JSON envelope。schemaVersion 缺省=legacy v0(照常接受)。",
+  "type": "object",
+  "required": ["status"],
+  "properties": {
+    "status": { "type": "string", "enum": ["ok", "error", "fail", "partial"] },
+    "schemaVersion": { "type": "integer", "enum": [1] },
+    "reason": { "type": "string" },
+    "error": { "type": "string" },
+    "planMarkdown": { "type": "string", "description": "planner 必填" },
+    "summary": { "type": "string" },
+    "deliverablePath": { "type": "string" },
+    "checklistVerdict": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["itemId", "status"],
+        "properties": {
+          "itemId": { "type": "string" },
+          "status": { "type": "string", "enum": ["pass", "fail", "partial"] },
+          "reason": { "type": "string" }
+        }
+      }
+    }
+  }
+}

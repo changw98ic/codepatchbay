@@ -105,7 +105,7 @@ async function registerTestProject(hubRoot: string, projectId = "flow") {
   return await registerProject(hubRoot, {
     id: projectId,
     sourcePath,
-    skipCodeGraphGate: true,
+    skipLocalCodeIndexGate: true,
   });
 }
 

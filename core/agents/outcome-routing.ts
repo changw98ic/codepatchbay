@@ -1,4 +1,11 @@
 import { recordValue, type LooseRecord } from "../../shared/types.js";
+import { getCapability, listAgents } from "./registry.js";
+import {
+  normalizeProviderConfig,
+  providerKeyForDescriptor,
+  providerVariantFromKey,
+} from "./provider-config.js";
+import { configuredProviderForKey } from "./provider-catalog.js";
 
 const MIN_SAMPLES = 12;
 const MIN_CONFIDENCE = 0.6;
@@ -106,18 +113,90 @@ export function resolveAllowedAgentNames(...contexts: unknown[]): string[] | nul
   return null;
 }
 
+/**
+ * Registry-declared tie-break priority for an agent, or null when the registry
+ * is not yet loaded or the agent is unknown. Callers fall back to the
+ * deterministic literal/regex heuristic in every null case, so behavior is
+ * preserved in unit tests that never load the registry.
+ */
+function registryTieBreakPriority(agent: string): number | null {
+  try {
+    return getCapability(agent)?.tieBreakPriority ?? null;
+  } catch {
+    // Registry not loaded — fall through to the deterministic tie-break below.
+    return null;
+  }
+}
+
 function rankPolicyCandidates(candidates: CandidateScore[]): CandidateScore | null {
   return [...candidates].sort((a, b) => {
     if (b.eligible !== a.eligible) return Number(b.eligible) - Number(a.eligible);
     if (b.value !== a.value) return b.value - a.value;
-    if (a.agent === "codex") return -1;
-    if (b.agent === "codex") return 1;
+    const pa = registryTieBreakPriority(a.agent);
+    const pb = registryTieBreakPriority(b.agent);
+    if (pa !== null && pb !== null && pa !== pb) return pa - pb;
+    // Deterministic fallback when the registry cannot rank the pair. The
+    // descriptor's tieBreakPriority is authoritative whenever available;
+    // unknown agents use stable lexical ordering rather than a provider name.
     return a.agent.localeCompare(b.agent);
   })[0] || null;
 }
 
 export function providerFamilyFor(agent: unknown, providerKey: unknown = null): string {
+  // An execution provider key may identify a variant that is not the same as
+  // the public agent descriptor (for example claude + claude:glm). Resolve an
+  // exact registry provider-key match before falling back to the base agent.
   const key = (text(providerKey) || "").toLowerCase();
+  if (key) {
+    const configured = configuredProviderForKey(text(providerKey));
+    const configuredFamily = configured ? text(configured.config.family) || text(configured.config.providerFamily) : null;
+    if (configuredFamily) return configuredFamily;
+    try {
+      const descriptors = listAgents();
+      // Prefer an exact configured identity. Multiple descriptors may use the
+      // same key template (for example `vendor:${variant}`), so a generic
+      // template match must never let the first descriptor claim another
+      // descriptor's canonical variant.
+      for (const descriptor of descriptors) {
+        const name = typeof descriptor?.name === "string" ? descriptor.name : "";
+        if (!name) continue;
+        if (providerKeyForDescriptor(name, descriptor).toLowerCase() !== key) continue;
+        const family = getCapability(name)?.providerFamily;
+        if (family) return family;
+      }
+      for (const descriptor of listAgents()) {
+        const name = typeof descriptor?.name === "string" ? descriptor.name : "";
+        if (!name) continue;
+        const configuredVariant = providerVariantFromKey(name, descriptor, key);
+        const config = normalizeProviderConfig(name, descriptor);
+        const canonicalVariant = config.variant?.toLowerCase() || "";
+        if (!config.keyTemplate || !configuredVariant || (
+          configuredVariant.toLowerCase() !== canonicalVariant
+          && !config.variantAliases.includes(configuredVariant.toLowerCase())
+        )) continue;
+        const family = getCapability(name)?.providerFamily;
+        if (family) return family;
+      }
+    } catch {
+      // Registry not loaded — use the stable provider-key heuristic below.
+    }
+  }
+
+  // Known provider-key variants must take precedence over the base descriptor
+  // family even when no separate descriptor advertises the exact key.
+  if (key === "claude:glm" || key.startsWith("glm:") || key.startsWith("zhipu:")) return "glm";
+  if (key.startsWith("claude:mimo") || key.startsWith("mimo:") || key.startsWith("xiaomi:")) return "mimo";
+
+  const resolved = agentName(agent);
+  if (resolved) {
+    try {
+      const family = getCapability(resolved)?.providerFamily;
+      if (family) return family;
+    } catch {
+      // Registry not loaded — fall through to the regex heuristic below.
+    }
+  }
+  // Regex heuristic over providerKey / agent name (registry-not-loaded path).
   const name = (agentName(agent) || "unknown").toLowerCase();
   if (key === "claude:glm" || key.startsWith("glm:") || key.startsWith("zhipu:") || name === "claude-glm" || name.startsWith("glm-")) return "glm";
   if (key.startsWith("claude:") || key.startsWith("anthropic:") || key === "anthropic" || name === "claude" || name.startsWith("claude-")) return "claude";

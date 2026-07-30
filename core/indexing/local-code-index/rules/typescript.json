@@ -1,0 +1,156 @@
+{
+  "version": "1.0.0",
+  "language": "typescript",
+  "aliases": ["ts", "tsx"],
+  "extensions": [".ts", ".tsx", ".mts", ".cts"],
+  "symbolKinds": {
+    "function": "Function declaration or arrow function assigned to a const/let",
+    "class": "Class declaration",
+    "interface": "Interface declaration",
+    "type": "Type alias declaration",
+    "enum": "Enum declaration",
+    "enum-member": "Enum member (constant)",
+    "variable": "Variable declaration (const/let/var)",
+    "namespace": "Namespace or module declaration",
+    "method": "Class method",
+    "property": "Class property",
+    "parameter": "Function parameter (when destructured at top level)",
+    "decorator": "Decorator declaration"
+  },
+  "patterns": {
+    "definitions": [
+      {
+        "kind": "function",
+        "pattern": "(?:(?<exported>export)\\s+)?(?:(?<async>async)\\s+)?(?:function\\s*(?<generator>\\*)?\\s*)(?<name>[a-zA-Z_$][a-zA-Z0-9_$]*)(?<generics><[^>]*>)?\\s*\\(",
+        "description": "Named function declaration with optional export and async"
+      },
+      {
+        "kind": "function",
+        "pattern": "(?:(?<exported>export)\\s+)?(?:export\\s+)?(?:default\\s+)?(?:const|let|var)\\s+(?<name>[a-zA-Z_$][a-zA-Z0-9_$]*)\\s*(?::\\s*[^=]+)?=\\s*(?:(?<async>async)\\s+)?(?:function\\s*(?<generator>\\*)?\\s*(?:[a-zA-Z_$][a-zA-Z0-9_$]*)?)?\\s*(?:<[^>]*>)?\\s*\\(",
+        "description": "Arrow function or function expression assigned to a variable"
+      },
+      {
+        "kind": "class",
+        "pattern": "(?:(?<exported>export)\\s+)?(?:export\\s+)?(?:default\\s+)?(?:abstract\\s+)?class\\s+(?<name>[a-zA-Z_$][a-zA-Z0-9_$]*)(?<generics><[^>]*>)?(?:\\s+extends\\s+[^{]+)?(?:\\s+implements\\s+[^{]+)?\\s*\\{",
+        "description": "Class declaration with optional export, abstract, generics, extends, implements"
+      },
+      {
+        "kind": "interface",
+        "pattern": "(?:(?<exported>export)\\s+)?(?:export\\s+)?interface\\s+(?<name>[a-zA-Z_$][a-zA-Z0-9_$]*)(?<generics><[^>]*>)?(?:\\s+extends\\s+[^{]+)?\\s*\\{",
+        "description": "Interface declaration"
+      },
+      {
+        "kind": "type",
+        "pattern": "(?:(?<exported>export)\\s+)?(?:export\\s+)?type\\s+(?<name>[a-zA-Z_$][a-zA-Z0-9_$]*)(?<generics><[^>]*>)?\\s*=",
+        "description": "Type alias declaration"
+      },
+      {
+        "kind": "enum",
+        "pattern": "(?:(?<exported>export)\\s+)?(?:export\\s+)?(?:const\\s+)?enum\\s+(?<name>[a-zA-Z_$][a-zA-Z0-9_$]*)\\s*\\{",
+        "description": "Enum declaration (including const enum)"
+      },
+      {
+        "kind": "enum-member",
+        "pattern": "^\\s*(?<name>[a-zA-Z_$][a-zA-Z0-9_$]*)(?:\\s*=\\s*[^,}]+)?\\s*[,;]?",
+        "requiresLineStart": false,
+        "description": "Enum member (extracted within enum blocks)"
+      },
+      {
+        "kind": "variable",
+        "pattern": "(?:(?<exported>export)\\s+)?(?:export\\s+)?(?:default\\s+)?(?:const|let|var)\\s+(?<name>[a-zA-Z_$][a-zA-Z0-9_$]*)",
+        "description": "Top-level variable declaration"
+      },
+      {
+        "kind": "namespace",
+        "pattern": "(?:(?<exported>export)\\s+)?(?:export\\s+)?(?:declare\\s+)?namespace\\s+(?<name>[a-zA-Z_$][a-zA-Z0-9_$]*(?:\\.[a-zA-Z_$][a-zA-Z0-9_$]*)*)",
+        "description": "Namespace declaration"
+      },
+      {
+        "kind": "method",
+        "pattern": "^\\s*(?:(?<access>public|private|protected)\\s+)?(?:(?<static>static)\\s+)?(?:(?<abstract>abstract)\\s+)?(?:(?<override>override)\\s+)?(?:(?<async>async)\\s+)?(?<name>[a-zA-Z_$][a-zA-Z0-9_$]*)\\s*(?<generics><[^>]*>)?\\s*\\(",
+        "description": "Class method declaration"
+      },
+      {
+        "kind": "property",
+        "pattern": "^\\s*(?:(?<access>public|private|protected)\\s+)?(?:(?<static>static)\\s+)?(?:(?<readonly>readonly)\\s+)?(?<name>[a-zA-Z_$][a-zA-Z0-9_$]*)\\s*[?:]",
+        "description": "Class property declaration"
+      },
+      {
+        "kind": "decorator",
+        "pattern": "^\\s*@(?<name>[a-zA-Z_$][a-zA-Z0-9_$]*(?:\\.[a-zA-Z_$][a-zA-Z0-9_$]*)*)",
+        "description": "Decorator usage (class, method, property decorators)"
+      }
+    ],
+    "imports": [
+      {
+        "pattern": "import\\s+(?:type\\s+)?(?:\\{\\s*(?<names>[^}]+)\\s*\\}|(?<default>[a-zA-Z_$][a-zA-Z0-9_$]*)\\s*,?\\s*(?:\\{\\s*(?<names2>[^}]+)\\s*\\})?|\\*\\s+as\\s+(?<namespace>[a-zA-Z_$][a-zA-Z0-9_$]*))\\s+from\\s+['\"](?<source>[^'\"]+)['\"]",
+        "kind": "static",
+        "description": "ES module import statement (named, default, namespace)"
+      },
+      {
+        "pattern": "import\\s+['\"](?<source>[^'\"]+)['\"]",
+        "kind": "static",
+        "description": "Side-effect-only import"
+      },
+      {
+        "pattern": "(?:const|let|var)\\s+(?<default>[a-zA-Z_$][a-zA-Z0-9_$]*)\\s*=\\s*require\\s*\\(\\s*['\"](?<source>[^'\"]+)['\"]\\s*\\)",
+        "kind": "require",
+        "description": "CommonJS require()"
+      },
+      {
+        "pattern": "(?:const|let|var)\\s+\\{\\s*(?<names>[^}]+)\\s*\\}\\s*=\\s*require\\s*\\(\\s*['\"](?<source>[^'\"]+)['\"]\\s*\\)",
+        "kind": "require",
+        "description": "CommonJS require() with destructuring"
+      },
+      {
+        "pattern": "import\\s*\\(\\s*['\"](?<source>[^'\"]+)['\"]\\s*\\)",
+        "kind": "dynamic",
+        "description": "Dynamic import() expression"
+      }
+    ],
+    "exports": [
+      {
+        "pattern": "export\\s+(?:default\\s+)?(?:function|class|interface|type|enum|const|let|var|abstract\\s+class|declare\\s+namespace)\\s+(?<name>[a-zA-Z_$][a-zA-Z0-9_$]*)",
+        "kind": "named",
+        "description": "Direct export of a declaration"
+      },
+      {
+        "pattern": "export\\s+default\\s+(?<name>[a-zA-Z_$][a-zA-Z0-9_$]*)",
+        "kind": "default",
+        "description": "Default export of an identifier"
+      },
+      {
+        "pattern": "export\\s+\\{\\s*(?<names>[^}]+)\\s*\\}",
+        "kind": "named",
+        "description": "Export list (re-exports or named exports)"
+      },
+      {
+        "pattern": "export\\s+\\*\\s+from\\s+['\"](?<source>[^'\"]+)['\"]",
+        "kind": "re-export",
+        "description": "Wildcard re-export from another module"
+      },
+      {
+        "pattern": "export\\s+\\{[^}]+\\}\\s+from\\s+['\"](?<source>[^'\"]+)['\"]",
+        "kind": "re-export",
+        "description": "Named re-export from another module"
+      },
+      {
+        "pattern": "export\\s+\\*\\s+as\\s+(?<name>[a-zA-Z_$][a-zA-Z0-9_$]*)\\s+from\\s+['\"](?<source>[^'\"]+)['\"]",
+        "kind": "re-export",
+        "description": "Namespace re-export"
+      }
+    ],
+    "references": [
+      {
+        "pattern": "(?<!\\.)(?<!['\"])\\b(?<name>[a-zA-Z_$][a-zA-Z0-9_$]*)\\b(?!\\s*[:=])",
+        "excludeContexts": ["comment", "string", "definition"],
+        "description": "General identifier reference (excludes property access and assignments)"
+      }
+    ]
+  },
+  "folding": {
+    "startPattern": "\\{\\s*$",
+    "endPattern": "^\\s*\\}"
+  },
+  "notes": "TypeScript rules cover .ts, .tsx, .mts, and .cts files. The patterns use regex with named capture groups and are designed for lexical fallback when ast-grep is unavailable. For structural analysis, prefer ast-grep with its native TypeScript parser."
+}
