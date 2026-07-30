@@ -19,8 +19,11 @@ import {
   deriveSourceKey,
   canonicalStringify,
   snapshotIdentityPath,
+  snapshotIndexMapPath,
   symbolShardPath,
 } from "../core/indexing/local-code-index/index.js";
+import { resolveStorageAuthority } from "../core/indexing/local-code-index/paths.js";
+import { symbolBucketKey } from "../core/indexing/local-code-index/shards.js";
 import type { LocalCodeIndexRef } from "../core/indexing/local-code-index/index.js";
 import { recordValue } from "../shared/types.js";
 import { tempRoot } from "./helpers.js";
@@ -87,7 +90,10 @@ async function setupV2LocalCodeIndex(
   const repoKey = deriveRepositoryKey(sourcePath);
   const wtKey = deriveWorktreeKey(sourcePath);
   const srcKey = deriveSourceKey(repoKey, wtKey);
-  const storageRoot = path.join(cpbRoot, "indexes", "local-code", "v2");
+  const storage = await resolveStorageAuthority({ cpbRoot });
+  if (storage.ok === false) throw new Error(storage.reason);
+  assert.equal(storage.ok, true);
+  const storageRoot = storage.authority;
 
   // Build symbol shard entries.
   const entries = symbols.map((sym) => {
@@ -148,6 +154,19 @@ async function setupV2LocalCodeIndex(
   const identityPath = snapshotIdentityPath(storageRoot, wtKey, snapshotId);
   await mkdir(path.dirname(identityPath), { recursive: true });
   await writeFile(identityPath, identityBytes);
+  const symbolShards = Object.fromEntries(
+    symbols.map((symbol) => [`sym-${symbolBucketKey(symbol.name)}`, shardId]),
+  );
+  await writeFile(
+    snapshotIndexMapPath(storageRoot, wtKey, snapshotId),
+    new TextEncoder().encode(canonicalStringify({
+      schemaVersion: 2,
+      snapshotId,
+      symbolShards,
+      relationShards: {},
+      fileSummaryShards: {},
+    })),
+  );
 
   // Note: do NOT pre-create the objects.lock directory.
   // acquireIndexLock creates it on first use; pre-creating an empty lock

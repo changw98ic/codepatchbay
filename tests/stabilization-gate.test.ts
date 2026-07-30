@@ -89,13 +89,28 @@ test("main-flow profile excludes specialized and process integration suites", as
   const runner = await readFile(path.join(repoRoot, "scripts", "run-node-tests.ts"), "utf8");
   assert.match(runner, /const mainFlowFiles = discoveredFiles\.filter/);
   assert.match(runner, /!specializedTestFiles\.has\(file\)/);
+  assert.match(runner, /!dedicatedLocalIndexTestFiles\.has\(file\)/);
   assert.match(runner, /!file\.startsWith\("tests\/integration\/"\)/);
   assert.match(runner, /const allFiles = mainOnly\s*\n\s*\? mainFlowFiles/);
+});
+
+test("node test runner reports terminating signals and bounds slow-suite concurrency", async () => {
+  const runner = await readFile(path.join(repoRoot, "scripts", "run-node-tests.ts"), "utf8");
+  assert.match(runner, /child\.on\("close", \(code, signal\) =>/);
+  assert.match(runner, /child\.on\("close", \(code, signal\) => \{\s*[\s\S]*?killTree\(\);/);
+  assert.match(runner, /terminated by signal \$\{signal\}/);
+  assert.match(runner, /async function runTestFilesSerially/);
+  assert.match(runner, /await runTests\(\[file\]/);
+  assert.match(runner, /await runTestFilesSerially\(slowUnitTestFiles,\s*"unit tests \(slow\)"\)/);
 });
 
 test("CI cannot reinstall the removed web toolchain outside the reviewed lockfile", async () => {
   const workflow = await readFile(path.join(repoRoot, ".github", "workflows", "test.yml"), "utf8");
   assert.match(workflow, /run: npm run test:main/);
+  assert.match(
+    workflow,
+    /run: node dist-tests\/scripts\/run-node-tests\.js tests\/local-code-index-publication\.test\.ts tests\/local-code-index\.test\.ts/,
+  );
   assert.doesNotMatch(workflow, /^\s+run: npm test$/m);
   assert.doesNotMatch(workflow, /run: npm run verify:stabilization/);
   assert.doesNotMatch(workflow, /\bnpx\s+playwright\b/);

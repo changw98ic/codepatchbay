@@ -105,19 +105,35 @@ async function runTests(files: string[], opts: LooseRecord = {}) {
       reject(new Error(`${label} timed out after ${timeoutMs}ms`));
     }, timeoutMs) : null;
 
-    child.on("close", (code) => {
+    child.on("close", (code, signal) => {
+      // A completed node:test coordinator can leave detached grandchildren in
+      // its process group. Retire that group before starting the next batch so
+      // leaked Git/npm/ACP helpers cannot accumulate memory across the suite.
+      killTree();
       if (watchdog) clearTimeout(watchdog);
       process.off("SIGTERM", onTerm);
       process.off("SIGINT", onInt);
       process.off("SIGHUP", onHup);
       process.off("exit", onExit);
-      if (code !== 0) {
+      if (signal !== null) {
+        reject(new Error(`${label} terminated by signal ${signal}`));
+      } else if (code !== 0) {
         reject(new Error(`${label} exited with code ${code}`));
       } else {
         resolve(code);
       }
     });
   });
+}
+
+async function runTestFilesSerially(files: string[], label: string) {
+  for (let index = 0; index < files.length; index += 1) {
+    const file = files[index];
+    await runTests([file], {
+      concurrency: 1,
+      label: `${label} (${index + 1}/${files.length}): ${file}`,
+    });
+  }
 }
 
 const requestedFiles = process.argv.slice(2)
@@ -147,6 +163,13 @@ const specializedTestFiles = new Set([
   "tests/swebench-three-way-runner.test.js",
 ]);
 
+// This service-level index suite has its own four-way OS/Node CI matrix. Keep
+// it off the already process-heavy generic unit runners so those jobs cannot
+// exhaust their VM before reaching it.
+const dedicatedLocalIndexTestFiles = new Set([
+  "tests/local-code-index.test.js",
+]);
+
 const mainOnly = process.argv.includes("--main");
 const specializedOnly = process.argv.includes("--specialized");
 const integrationOnly = process.argv.includes("--integration");
@@ -162,6 +185,7 @@ if ((mainOnly ? 1 : 0) + (specializedOnly ? 1 : 0) + (integrationOnly ? 1 : 0) >
 // fault-injection and authority-boundary checks.
 const mainFlowFiles = discoveredFiles.filter((file) => (
   !specializedTestFiles.has(file)
+  && !dedicatedLocalIndexTestFiles.has(file)
   && !file.startsWith("tests/integration/")
 ));
 
@@ -282,7 +306,8 @@ const isolatedUnitFiles = new Set([
 // `node --test`; 67 files, measured 2026-07-24). They are spawn/git/npm/ACP
 // E2E-flavored tests that live under tests/ (not tests/integration/) for
 // historical reasons. --unit skips them for fast feedback; the default full
-// run still executes them in a parallel batch, so CI coverage is unchanged.
+// run still executes every file in a fresh serial child, so CI coverage is
+// unchanged without retaining the full batch's peak memory.
 // Five real-process files that need concurrency:1 isolation (rather than the
 // parallel slow batch) live in isolatedUnitFiles above. Re-measure before
 // editing: `node scripts/bench-test-files.mjs` (per-file, 30s cap each).
@@ -400,7 +425,7 @@ try {
       await runTests(parallelUnitFiles, { label: "unit tests (fast)" });
     }
     if (slowUnitTestFiles.length > 0) {
-      await runTests(slowUnitTestFiles, { concurrency: 4, label: "unit tests (slow)" });
+      await runTestFilesSerially(slowUnitTestFiles, "unit tests (slow)");
     }
     if (isolatedUnitTestFiles.length > 0) {
       await runTests(isolatedUnitTestFiles, { concurrency: 1, label: "isolated unit tests" });

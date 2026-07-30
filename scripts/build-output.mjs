@@ -540,6 +540,8 @@ if ret < size or info.pbi_pid != pid:
     sys.exit(2)
 print(f"{info.pbi_start_tvsec}:{info.pbi_start_tvusec}:{info.pbi_pgid}")
 `.trim();
+const DARWIN_PROC_PIDINFO_ATTEMPTS = 3;
+const DARWIN_PROC_PIDINFO_RETRY_MS = 25;
 
 function processIdentityError(message, cause = null) {
   return Object.assign(new Error(message, cause ? { cause } : undefined), {
@@ -578,6 +580,23 @@ function captureDarwinProcPidInfoIdentity(pid) {
   );
 }
 
+function captureDarwinProcPidInfoIdentityWithRetry(pid) {
+  for (let attempt = 1; attempt <= DARWIN_PROC_PIDINFO_ATTEMPTS; attempt += 1) {
+    const identity = captureDarwinProcPidInfoIdentity(pid);
+    if (identity) return identity;
+    if (!processIsAlive(pid)) return null;
+    if (attempt < DARWIN_PROC_PIDINFO_ATTEMPTS) {
+      Atomics.wait(
+        new Int32Array(new SharedArrayBuffer(4)),
+        0,
+        0,
+        DARWIN_PROC_PIDINFO_RETRY_MS,
+      );
+    }
+  }
+  return null;
+}
+
 function captureProcessIdentity(pid) {
   if (!Number.isSafeInteger(pid) || pid <= 0) return null;
   if (!processIsAlive(pid)) return null;
@@ -594,7 +613,7 @@ function captureProcessIdentity(pid) {
       );
     }
     if (process.platform === "darwin") {
-      const identity = captureDarwinProcPidInfoIdentity(pid);
+      const identity = captureDarwinProcPidInfoIdentityWithRetry(pid);
       if (identity) return identity;
       throw processIdentityError(`Darwin process ${pid} has no exact proc_pidinfo start time`);
     }

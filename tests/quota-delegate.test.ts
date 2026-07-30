@@ -172,6 +172,25 @@ async function closeServer(server: net.Server) {
   });
 }
 
+async function createQuotaFenceTestListener(
+  prefix: string,
+  onConnection: (socket: net.Socket) => void,
+) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const hubRoot = await mkdtemp(path.join(os.tmpdir(), `${prefix}-${attempt}-`));
+    const [firstPort] = _internalQuotaDelegateMutationFenceForTests(hubRoot).ports;
+    const server = net.createServer(onConnection);
+    server.unref();
+    try {
+      await listenOnLocalPort(server, firstPort);
+      return { hubRoot, firstPort, server };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EADDRINUSE") throw error;
+    }
+  }
+  throw new Error(`could not reserve a quota-fence test port for ${prefix}`);
+}
+
 async function readLocalPortLine(port: number) {
   return await new Promise<string>((resolve, reject) => {
     const socket = net.createConnection({ host: "127.0.0.1", port });
@@ -764,14 +783,13 @@ test("quota delegate preserves mutation claims with noncanonical timestamps", as
 });
 
 test("quota delegate mutation fence skips an unrelated listener on the first candidate port", async (t) => {
-  const hubRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-quota-delegate-fence-unrelated-"));
-  const [firstPort] = _internalQuotaDelegateMutationFenceForTests(hubRoot).ports;
-  const unrelated = net.createServer((socket) => {
+  const { hubRoot, server: unrelated } = await createQuotaFenceTestListener(
+    "cpb-quota-delegate-fence-unrelated",
+    (socket) => {
     socket.on("error", () => undefined);
     socket.end("unrelated-service\n");
-  });
-  unrelated.unref();
-  await listenOnLocalPort(unrelated, firstPort);
+    },
+  );
   t.after(() => closeServer(unrelated).catch(() => undefined));
 
   const receipt = await acquireQuotaDelegateLock(hubRoot, { ownerToken: "fence-unrelated-owner" });
@@ -839,13 +857,12 @@ test("quota delegate mutation fence rejects an existing owner with the same fenc
 });
 
 test("quota delegate mutation fence fails closed when an occupied port will not identify itself", async (t) => {
-  const hubRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-quota-delegate-fence-unresponsive-"));
-  const [firstPort] = _internalQuotaDelegateMutationFenceForTests(hubRoot).ports;
-  const unresponsive = net.createServer((socket) => {
-    socket.on("error", () => undefined);
-  });
-  unresponsive.unref();
-  await listenOnLocalPort(unresponsive, firstPort);
+  const { hubRoot, server: unresponsive } = await createQuotaFenceTestListener(
+    "cpb-quota-delegate-fence-unresponsive",
+    (socket) => {
+      socket.on("error", () => undefined);
+    },
+  );
   t.after(() => closeServer(unresponsive).catch(() => undefined));
 
   await assert.rejects(

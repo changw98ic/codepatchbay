@@ -806,10 +806,12 @@ describe("publication atomicity", () => {
         ensureLocalCodeIndex({
           sourcePath: sourceRoot,
           cpbRoot: storageRoot,
+          astGrepBinaryPath: path.join(sourceRoot, "must-not-spawn"),
           signal: abortController.signal,
         }),
       (err: unknown) => {
         assert.ok(err instanceof Error);
+        assert.strictEqual(err.name, "AbortError");
         return true;
       },
     );
