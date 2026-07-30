@@ -163,6 +163,13 @@ const specializedTestFiles = new Set([
   "tests/swebench-three-way-runner.test.js",
 ]);
 
+// This service-level index suite has its own four-way OS/Node CI matrix. Keep
+// it off the already process-heavy generic unit runners so those jobs cannot
+// exhaust their VM before reaching it.
+const dedicatedLocalIndexTestFiles = new Set([
+  "tests/local-code-index.test.js",
+]);
+
 const mainOnly = process.argv.includes("--main");
 const specializedOnly = process.argv.includes("--specialized");
 const integrationOnly = process.argv.includes("--integration");
@@ -178,6 +185,7 @@ if ((mainOnly ? 1 : 0) + (specializedOnly ? 1 : 0) + (integrationOnly ? 1 : 0) >
 // fault-injection and authority-boundary checks.
 const mainFlowFiles = discoveredFiles.filter((file) => (
   !specializedTestFiles.has(file)
+  && !dedicatedLocalIndexTestFiles.has(file)
   && !file.startsWith("tests/integration/")
 ));
 
