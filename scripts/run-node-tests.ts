@@ -106,6 +106,10 @@ async function runTests(files: string[], opts: LooseRecord = {}) {
     }, timeoutMs) : null;
 
     child.on("close", (code, signal) => {
+      // A completed node:test coordinator can leave detached grandchildren in
+      // its process group. Retire that group before starting the next batch so
+      // leaked Git/npm/ACP helpers cannot accumulate memory across the suite.
+      killTree();
       if (watchdog) clearTimeout(watchdog);
       process.off("SIGTERM", onTerm);
       process.off("SIGINT", onInt);

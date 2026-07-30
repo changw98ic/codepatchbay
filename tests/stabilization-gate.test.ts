@@ -96,6 +96,7 @@ test("main-flow profile excludes specialized and process integration suites", as
 test("node test runner reports terminating signals and bounds slow-suite concurrency", async () => {
   const runner = await readFile(path.join(repoRoot, "scripts", "run-node-tests.ts"), "utf8");
   assert.match(runner, /child\.on\("close", \(code, signal\) =>/);
+  assert.match(runner, /child\.on\("close", \(code, signal\) => \{\s*[\s\S]*?killTree\(\);/);
   assert.match(runner, /terminated by signal \$\{signal\}/);
   assert.match(runner, /async function runTestFilesSerially/);
   assert.match(runner, /await runTests\(\[file\]/);
