@@ -12,6 +12,78 @@
   "envPrefix": "CPB_ACP_CLAUDE_MIMO",
   "protocol": "acp",
   "description": "Claude Code ACP runner configured through the MiMo Anthropic-compatible variant",
+  "provider": {
+    "keyTemplate": "claude:${variant}",
+    "variant": "mimo-v2.5pro",
+    "variantAliases": ["mimo", "xiaomi"],
+    "family": "mimo",
+    "credentialEnv": [
+      "XIAOMI_BASE_URL", "MIMO_BASE_URL",
+      "XIAOMI_API_KEY", "XIAOMI_AUTH_TOKEN", "MIMO_API_KEY", "MIMO_AUTH_TOKEN",
+      "XIAOMI_MODEL", "MIMO_MODEL"
+    ],
+    "environment": {
+      "ANTHROPIC_BASE_URL": ["XIAOMI_BASE_URL", "MIMO_BASE_URL"],
+      "ANTHROPIC_API_KEY": ["XIAOMI_API_KEY", "XIAOMI_AUTH_TOKEN", "MIMO_API_KEY", "MIMO_AUTH_TOKEN"],
+      "ANTHROPIC_AUTH_TOKEN": ["XIAOMI_API_KEY", "XIAOMI_AUTH_TOKEN", "MIMO_API_KEY", "MIMO_AUTH_TOKEN"],
+      "ANTHROPIC_MODEL": ["XIAOMI_MODEL", "MIMO_MODEL"]
+    },
+    "derived": {
+      "ANTHROPIC_CUSTOM_MODEL_OPTION": "ANTHROPIC_MODEL",
+      "ANTHROPIC_DEFAULT_SONNET_MODEL": "ANTHROPIC_MODEL",
+      "ANTHROPIC_DEFAULT_OPUS_MODEL": "ANTHROPIC_MODEL",
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL": "ANTHROPIC_MODEL",
+      "CLAUDE_CODE_SUBAGENT_MODEL": "ANTHROPIC_MODEL"
+    },
+    "required": ["ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_MODEL"],
+    "normalizers": {
+      "ANTHROPIC_MODEL": "strip-trailing-bracket-suffix",
+      "ANTHROPIC_CUSTOM_MODEL_OPTION": "strip-trailing-bracket-suffix",
+      "ANTHROPIC_DEFAULT_SONNET_MODEL": "strip-trailing-bracket-suffix",
+      "ANTHROPIC_DEFAULT_OPUS_MODEL": "strip-trailing-bracket-suffix",
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL": "strip-trailing-bracket-suffix",
+      "CLAUDE_CODE_SUBAGENT_MODEL": "strip-trailing-bracket-suffix"
+    },
+    "values": {
+      "CPB_CLAUDE_VARIANT": "${variant}",
+      "CPB_ACTIVE_CLAUDE_VARIANT": "${variant}",
+      "CLAUDE_CODE_ATTRIBUTION_HEADER": "0"
+    },
+    "runtimeEnv": [
+      "CPB_CLAUDE_PLAN_MAX_TEXT_CHARS", "CPB_CLAUDE_PLAN_MAX_THINKING_TOKENS",
+      "CPB_CLAUDE_PLAN_MAX_TURNS", "CPB_CLAUDE_MAX_INTERNAL_API_RETRIES",
+      "MAX_THINKING_TOKENS", "CLAUDE_CODE_MAX_OUTPUT_TOKENS"
+    ],
+    "cli": {
+      "command": "claude",
+      "commandEnv": "CPB_CLAUDE_CLI_COMMAND",
+      "modelEnv": "ANTHROPIC_MODEL",
+      "modelArg": "--model"
+    },
+    "capsule": {
+      "nativeExecutable": {
+        "basename": "claude",
+        "pathContains": ["@anthropic-ai/claude-agent-sdk-"],
+        "env": "CPB_CAPSULE_CLAUDE_CODE_EXECUTABLE",
+        "targetEnv": "CLAUDE_CODE_EXECUTABLE",
+        "kind": "native"
+      }
+    },
+    "quota": {
+      "region": "cn",
+      "timezone": "Asia/Shanghai",
+      "policy": {
+        "type": "5h-window",
+        "description": "MiMo 5-hour usage window, weekly cap",
+        "windowHours": 5
+      },
+      "rules": [
+        { "pattern": "weekly|week.?limit", "status": "weekly_exhausted", "confidence": 0.9 },
+        { "pattern": "window|quota|exhaust|5.?hour", "status": "window_exhausted", "confidence": 0.9 }
+      ]
+    },
+    "homeAgent": "claude"
+  },
   "providerKey": "claude:mimo-v2.5pro",
   "providerVariant": "mimo-v2.5pro",
   "transport": "claude-cli",

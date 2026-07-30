@@ -40,7 +40,7 @@ before(async () => {
   const registeredProject = await registerProject(hubRoot, {
     id: project,
     sourcePath,
-    skipCodeGraphGate: true,
+    skipLocalCodeIndexGate: true,
   });
   dataRoot = registeredProject.projectRuntimeRoot;
 });

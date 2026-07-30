@@ -1,0 +1,124 @@
+{
+  "version": "1.0.0",
+  "language": "javascript",
+  "aliases": ["js", "jsx", "mjs", "cjs"],
+  "extensions": [".js", ".jsx", ".mjs", ".cjs"],
+  "symbolKinds": {
+    "function": "Function declaration or function expression",
+    "class": "Class declaration",
+    "variable": "Variable declaration (const/let/var)",
+    "method": "Class method or object method shorthand",
+    "property": "Class property or object property",
+    "parameter": "Function parameter (when destructured at top level)"
+  },
+  "patterns": {
+    "definitions": [
+      {
+        "kind": "function",
+        "pattern": "(?:(?<exported>export)\\s+)?(?:(?<async>async)\\s+)?function\\s*(?<generator>\\*)?\\s*(?<name>[a-zA-Z_$][a-zA-Z0-9_$]*)\\s*(?:<[^>]*>)?\\s*\\(",
+        "description": "Named function declaration"
+      },
+      {
+        "kind": "function",
+        "pattern": "(?:(?<exported>export)\\s+)?(?:const|let|var)\\s+(?<name>[a-zA-Z_$][a-zA-Z0-9_$]*)\\s*=\\s*(?:(?<async>async)\\s+)?(?:function\\s*(?<generator>\\*)?\\s*(?:[a-zA-Z_$][a-zA-Z0-9_$]*)?\\s*\\(|\\([^)]*\\)\\s*=>|(?<single>[a-zA-Z_$][a-zA-Z0-9_$]*)\\s*=>)",
+        "description": "Arrow function or function expression assigned to a variable"
+      },
+      {
+        "kind": "class",
+        "pattern": "(?:(?<exported>export)\\s+)?(?:export\\s+)?(?:default\\s+)?class\\s+(?<name>[a-zA-Z_$][a-zA-Z0-9_$]*)(?:\\s+extends\\s+[^{]+)?\\s*\\{",
+        "description": "Class declaration"
+      },
+      {
+        "kind": "variable",
+        "pattern": "(?:(?<exported>export)\\s+)?(?:const|let|var)\\s+(?<name>[a-zA-Z_$][a-zA-Z0-9_$]*)",
+        "description": "Top-level variable declaration"
+      },
+      {
+        "kind": "method",
+        "pattern": "^\\s*(?:(?<async>async)\\s+)?(?<name>[a-zA-Z_$][a-zA-Z0-9_$]*)\\s*\\(",
+        "description": "Class method or object method shorthand"
+      },
+      {
+        "kind": "property",
+        "pattern": "^\\s*(?<name>[a-zA-Z_$][a-zA-Z0-9_$]*)\\s*:",
+        "description": "Object property or class field"
+      }
+    ],
+    "imports": [
+      {
+        "pattern": "import\\s+(?:\\{\\s*(?<names>[^}]+)\\s*\\}|(?<default>[a-zA-Z_$][a-zA-Z0-9_$]*)\\s*,?\\s*(?:\\{\\s*(?<names2>[^}]+)\\s*\\})?|\\*\\s+as\\s+(?<namespace>[a-zA-Z_$][a-zA-Z0-9_$]*))\\s+from\\s+['\"](?<source>[^'\"]+)['\"]",
+        "kind": "static",
+        "description": "ES module import (named, default, namespace)"
+      },
+      {
+        "pattern": "import\\s+['\"](?<source>[^'\"]+)['\"]",
+        "kind": "static",
+        "description": "Side-effect-only import"
+      },
+      {
+        "pattern": "(?:const|let|var)\\s+(?<default>[a-zA-Z_$][a-zA-Z0-9_$]*)\\s*=\\s*require\\s*\\(\\s*['\"](?<source>[^'\"]+)['\"]\\s*\\)",
+        "kind": "require",
+        "description": "CommonJS require()"
+      },
+      {
+        "pattern": "(?:const|let|var)\\s+\\{\\s*(?<names>[^}]+)\\s*\\}\\s*=\\s*require\\s*\\(\\s*['\"](?<source>[^'\"]+)['\"]\\s*\\)",
+        "kind": "require",
+        "description": "CommonJS require() with destructuring"
+      },
+      {
+        "pattern": "import\\s*\\(\\s*['\"](?<source>[^'\"]+)['\"]\\s*\\)",
+        "kind": "dynamic",
+        "description": "Dynamic import() expression"
+      }
+    ],
+    "exports": [
+      {
+        "pattern": "export\\s+(?:default\\s+)?(?:function|class|const|let|var)\\s+(?<name>[a-zA-Z_$][a-zA-Z0-9_$]*)",
+        "kind": "named",
+        "description": "Direct export of a declaration"
+      },
+      {
+        "pattern": "export\\s+default\\s+(?<name>[a-zA-Z_$][a-zA-Z0-9_$]*)",
+        "kind": "default",
+        "description": "Default export of an identifier"
+      },
+      {
+        "pattern": "export\\s+\\{\\s*(?<names>[^}]+)\\s*\\}",
+        "kind": "named",
+        "description": "Export list"
+      },
+      {
+        "pattern": "export\\s+\\*\\s+from\\s+['\"](?<source>[^'\"]+)['\"]",
+        "kind": "re-export",
+        "description": "Wildcard re-export"
+      },
+      {
+        "pattern": "export\\s+\\{[^}]+\\}\\s+from\\s+['\"](?<source>[^'\"]+)['\"]",
+        "kind": "re-export",
+        "description": "Named re-export"
+      },
+      {
+        "pattern": "module\\.exports\\s*=\\s*(?<name>[a-zA-Z_$][a-zA-Z0-9_$]*)",
+        "kind": "default",
+        "description": "CommonJS module.exports assignment"
+      },
+      {
+        "pattern": "exports\\.(?<name>[a-zA-Z_$][a-zA-Z0-9_$]*)\\s*=",
+        "kind": "named",
+        "description": "CommonJS exports.property assignment"
+      }
+    ],
+    "references": [
+      {
+        "pattern": "(?<!\\.)(?<!['\"])\\b(?<name>[a-zA-Z_$][a-zA-Z0-9_$]*)\\b(?!\\s*[:=])",
+        "excludeContexts": ["comment", "string", "definition"],
+        "description": "General identifier reference"
+      }
+    ]
+  },
+  "folding": {
+    "startPattern": "\\{\\s*$",
+    "endPattern": "^\\s*\\}"
+  },
+  "notes": "JavaScript rules cover .js, .jsx, .mjs, and .cjs files. JSX-specific patterns (self-closing tags, component references) are handled by the JSX extension. CommonJS patterns (require/exports) are included for Node.js compatibility."
+}

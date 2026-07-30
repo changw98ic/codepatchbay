@@ -108,9 +108,15 @@ function configuredAgentForRole(agents: LooseRecord | null | undefined, role: st
   if (typeof raw === "string" && raw.trim()) return raw.trim();
   const entry = recordValue(raw);
   if (typeof entry.agent === "string" && entry.agent.trim()) {
-    return entry.variant
-      ? { agent: entry.agent.trim(), variant: entry.variant }
-      : entry.agent.trim();
+    if (entry.variant || entry.provider || entry.model) {
+      return {
+        agent: entry.agent.trim(),
+        ...(entry.variant ? { variant: entry.variant } : {}),
+        ...(entry.provider ? { provider: entry.provider } : {}),
+        ...(entry.model ? { model: entry.model } : {}),
+      };
+    }
+    return entry.agent.trim();
   }
   return null;
 }

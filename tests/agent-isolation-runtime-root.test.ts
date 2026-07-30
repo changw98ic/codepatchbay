@@ -683,7 +683,6 @@ test("AcpClient.start fails closed for project job env without runtime root", as
       CPB_ACP_CPB_ROOT: cpbRoot,
       CPB_ACP_PROJECT: "flow",
       CPB_ACP_JOB_ID: "job-client-missing-root",
-      CPB_CODEGRAPH_ENABLED: "0",
       CPB_ACP_CODEX_COMMAND: process.execPath,
       CPB_ACP_CODEX_ARGS: JSON.stringify(["-e", "process.exit(0)"]),
     },
@@ -712,7 +711,6 @@ test("AcpClient startup failures retain a bounded redacted stderr tail", async (
       ...process.env,
       CPB_AGENT_ISOLATE_HOME: "0",
       CPB_AGENT_SANDBOX: "off",
-      CPB_CODEGRAPH_ENABLED: "0",
       CPB_ACP_CODEX_COMMAND: process.execPath,
       CPB_ACP_CODEX_ARGS: JSON.stringify([
         "-e",
@@ -749,7 +747,6 @@ test("AcpClient retains an exact canonical child identity when HOME isolation is
       ...process.env,
       CPB_AGENT_ISOLATE_HOME: "0",
       CPB_AGENT_SANDBOX: "off",
-      CPB_CODEGRAPH_ENABLED: "0",
       CPB_ACP_CODEX_COMMAND: process.execPath,
       CPB_ACP_CODEX_ARGS: JSON.stringify([
         "-e",
@@ -780,7 +777,6 @@ test("AcpClient attributes concurrent fast startup exits consistently without EP
       ...process.env,
       CPB_AGENT_ISOLATE_HOME: "0",
       CPB_AGENT_SANDBOX: "off",
-      CPB_CODEGRAPH_ENABLED: "0",
       CPB_ACP_CODEX_COMMAND: process.execPath,
       CPB_ACP_CODEX_ARGS: JSON.stringify([
         "-e",

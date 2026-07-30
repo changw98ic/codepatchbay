@@ -32,6 +32,7 @@ import {
   type ProcessTreeSystem,
 } from "../../core/runtime/process-tree.js";
 import { createTemporaryWorkspace } from "../../core/runtime/temporary-workspace.js";
+import { ensureLocalCodeIndex as buildLocalCodeIndex } from "../../core/indexing/local-code-index/index.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -418,7 +419,6 @@ export async function runFakeAcpSmoke({
   executorRoot = path.resolve(__dirnameLocal, "..", ".."),
   keepTemp = false,
   project = "local-smoke",
-  codegraph = false,
 } = {}) {
   const root = path.resolve(executorRoot);
   const workspace = await createTemporaryWorkspace({ prefix: "cpb-local-smoke-" });
@@ -500,26 +500,29 @@ export async function runFakeAcpSmoke({
       CPB_ACP_FAKE_ACP_COMMAND: process.execPath,
       CPB_ACP_FAKE_ACP_ARGS: testAgentArgs,
       CPB_USE_WORKTREE: "0",
-      ...(codegraph ? {} : { CPB_CODEGRAPH_ENABLED: "0" }),
     };
 
     const cli = path.join(root, "cli", "cpb.js");
     await runCommand(process.execPath, [cli, "init", sourcePath, project], { cwd: root, env });
     await runCommand("git", ["add", "--all"], { cwd: sourcePath, env: gitEnv });
-    await runCommand(
-      "git",
-      [
-        "-c",
-        "user.name=CodePatchBay Local Smoke",
-        "-c",
-        "user.email=local-smoke@invalid.example",
-        "commit",
-        "-q",
-        "-m",
-        "Record initialized CPB smoke project",
-      ],
-      { cwd: sourcePath, env: gitEnv },
-    );
+    const initializedStatus = await runCommand("git", ["status", "--porcelain=v1"], { cwd: sourcePath, env: gitEnv });
+    if (String(initializedStatus.stdout || "").trim()) {
+      await runCommand(
+        "git",
+        [
+          "-c",
+          "user.name=CodePatchBay Local Smoke",
+          "-c",
+          "user.email=local-smoke@invalid.example",
+          "commit",
+          "-q",
+          "-m",
+          "Record initialized CPB smoke project",
+        ],
+        { cwd: sourcePath, env: gitEnv },
+      );
+    }
+    await buildLocalCodeIndex({ cpbRoot, sourcePath, force: true });
     const { writeProjectAgents } = await import("./agent/agent-config.js");
     await writeProjectAgents(path.join(hubRoot, "projects", project), project, {
       default: "fake-acp",
@@ -552,15 +555,13 @@ export async function runFakeAcpSmoke({
     }
 
     const transcriptEvents = await collectTranscriptEvents(transcriptFile);
-    if (codegraph) {
-      const codegraphSession = transcriptEvents.find((event: LooseRecord) =>
-        event.event === "session/new" &&
-        Array.isArray(event.mcpServers) &&
-        event.mcpServers.some((server) => recordValue(server).name === "codegraph")
-      );
-      if (!codegraphSession) {
-        throw new Error("fake ACP smoke did not receive codegraph MCP server in session/new");
-      }
+    const sessionsWithMcp = transcriptEvents.filter((event: LooseRecord) =>
+      event.event === "session/new"
+      && Array.isArray(event.mcpServers)
+      && event.mcpServers.length > 0
+    ).length;
+    if (sessionsWithMcp > 0) {
+      throw new Error("fake ACP smoke unexpectedly received a built-in MCP server in session/new");
     }
 
     return {
@@ -571,10 +572,7 @@ export async function runFakeAcpSmoke({
       hubRoot,
       sourcePath,
       artifacts,
-      codegraph: {
-        enabled: Boolean(codegraph),
-        sessionsWithMcp: transcriptEvents.filter((event: LooseRecord) => event.event === "session/new" && Array.isArray(event.mcpServers) && event.mcpServers.length > 0).length,
-      },
+      mcp: { sessionsWithMcp },
       keptTemp: keepTemp,
     };
   } finally {
@@ -4353,7 +4351,7 @@ export function snapshotForJob(result: Partial<IndexFreshnessResult> | null | un
         indexDirty: result?.indexDirty ?? true,
         indexStale: result?.indexStale ?? false,
         worktreeDirty: result?.worktreeDirty ?? false,
-        dirtyReasons: result?.dirtyReasons ?? ["codegraph_unavailable"],
+        dirtyReasons: result?.dirtyReasons ?? ["local_code_index_unavailable"],
       },
     };
   }
@@ -4371,5 +4369,9 @@ export function snapshotForJob(result: Partial<IndexFreshnessResult> | null | un
 }
 
 // ── Re-exports from merged modules ──
-export { CodeGraphUnavailableError, checkCodeGraphReady } from "./readiness-checks.js";
+export {
+  LocalCodeIndexUnavailableError,
+  ensureLocalCodeIndex,
+  localCodeIndexStatus,
+} from "../../core/indexing/local-code-index/index.js";
 export { classifyDeleteRisk, formatDeleteBlockedMessage, logDeleteBlock } from "./permission-matrix.js";

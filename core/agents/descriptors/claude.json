@@ -12,6 +12,49 @@
   "envPrefix": "CPB_ACP_CLAUDE",
   "protocol": "acp",
   "description": "Anthropic Claude Code in ACP mode",
+  "provider": {
+    "key": "claude",
+    "family": "claude",
+    "credentialEnv": [
+      "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL",
+      "ANTHROPIC_CUSTOM_MODEL_OPTION", "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME", "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION",
+      "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+      "CLAUDE_CODE_SUBAGENT_MODEL", "CPB_CLAUDE_CLI_COMMAND"
+    ],
+    "runtimeEnv": [
+      "CPB_CLAUDE_PLAN_MAX_TEXT_CHARS", "CPB_CLAUDE_PLAN_MAX_THINKING_TOKENS",
+      "CPB_CLAUDE_PLAN_MAX_TURNS", "CPB_CLAUDE_MAX_INTERNAL_API_RETRIES",
+      "MAX_THINKING_TOKENS", "CLAUDE_CODE_MAX_OUTPUT_TOKENS", "CLAUDE_CODE_ATTRIBUTION_HEADER"
+    ],
+    "cli": {
+      "command": "claude",
+      "commandEnv": "CPB_CLAUDE_CLI_COMMAND",
+      "modelEnv": "ANTHROPIC_MODEL",
+      "modelArg": "--model"
+    },
+    "capsule": {
+      "nativeExecutable": {
+        "basename": "claude",
+        "pathContains": ["@anthropic-ai/claude-agent-sdk-"],
+        "env": "CPB_CAPSULE_CLAUDE_CODE_EXECUTABLE",
+        "targetEnv": "CLAUDE_CODE_EXECUTABLE",
+        "kind": "native"
+      }
+    },
+    "quota": {
+      "region": "global",
+      "timezone": "UTC",
+      "policy": { "type": "per-minute", "description": "Anthropic per-minute rate limit" },
+      "rules": [
+        {
+          "pattern": "\\b529\\b|访问量过大|模型当前访问量|当前访问量过大",
+          "status": "rate_limited",
+          "confidence": 0.95
+        }
+      ]
+    },
+    "homeAgent": "claude"
+  },
   "lifecycle": "one-shot",
   "providerFamily": "claude",
   "tieBreakPriority": 20,

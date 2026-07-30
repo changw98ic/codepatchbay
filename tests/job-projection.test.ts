@@ -19,7 +19,7 @@ test("project pipeline state keeps the newest non-running job instead of driftin
       id: "flow",
       name: "flow",
       sourcePath,
-      skipCodeGraphGate: true,
+      skipLocalCodeIndexGate: true,
     });
     const dataRoot = project.projectRuntimeRoot;
 
@@ -67,7 +67,7 @@ test("jobs report exposes completion and runtime policy visibility panels", asyn
       id: "flow",
       name: "flow",
       sourcePath,
-      skipCodeGraphGate: true,
+      skipLocalCodeIndexGate: true,
     });
     const dataRoot = project.projectRuntimeRoot;
     const job = await createJob(cpbRoot, {

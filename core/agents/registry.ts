@@ -3,6 +3,14 @@ import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { autoDiscoverAgents } from "./auto-discover.js";
 import { assertInheritFilesSafe, type InheritFileEntry } from "./isolation.js";
+import {
+  isValidProviderConfig,
+  providerCredentialInputKeys,
+  normalizeProviderConfig,
+  providerEnvironmentKeys,
+  providerVariantForDescriptor,
+  type NormalizedProviderConfig,
+} from "./provider-config.js";
 
 const DESCRIPTORS_DIR = path.join(import.meta.dirname, "descriptors");
 const SQUADS_FILE = path.join(import.meta.dirname, "squads.json");
@@ -76,6 +84,7 @@ function isValidCapabilityShape(d: LooseRecord): boolean {
   }
   if (d.inheritFiles !== undefined && !Array.isArray(d.inheritFiles)) return false;
   if (d.quarantineFiles !== undefined && !Array.isArray(d.quarantineFiles)) return false;
+  if (!isValidProviderConfig(d.provider)) return false;
   return true;
 }
 
@@ -116,6 +125,23 @@ async function loadUserDescriptors(configDir: string) {
       const raw = await readFile(path.join(dir, f), "utf8");
       const d = JSON.parse(raw);
       if (validateDescriptor(d)) {
+        try {
+          assertInheritFilesSafe(
+            d as { inheritFiles?: InheritFileEntry[]; quarantineFiles?: string[] },
+            process.env as Record<string, string | undefined>,
+            path.join(dir, ".descriptor-validation-home"),
+            { trusted: false },
+          );
+        } catch {
+          // User-supplied descriptor inheritance is rejected at load time as
+          // well as at registration time. Keep the shipped builtin (if any)
+          // active instead of letting an unsafe override shadow it.
+          continue;
+        }
+        // A user descriptor with the same public name as a builtin is still
+        // untrusted. Remove the builtin provenance marker when the override is
+        // accepted so runtime isolation cannot silently bypass the source gate.
+        _builtinNames.delete(d.name);
         _registry.set(d.name, d);
       }
     } catch {
@@ -216,6 +242,7 @@ export type AgentCapability = {
   sandboxPolicy: "native" | "cpb-required" | "none";
   inheritFiles: Array<{ from: string; to: string; maxBytes?: number }>;
   quarantineFiles: string[];
+  provider: NormalizedProviderConfig;
 };
 
 export function getCapability(name: string): AgentCapability | null {
@@ -223,7 +250,7 @@ export function getCapability(name: string): AgentCapability | null {
   const d = _registry.get(name) || _discovered.get(name);
   if (!d) return null;
   return {
-    providerFamily: typeof d.providerFamily === "string" ? d.providerFamily : null,
+    providerFamily: normalizeProviderConfig(name, d).family,
     tieBreakPriority:
       typeof d.tieBreakPriority === "number" && Number.isFinite(d.tieBreakPriority)
         ? d.tieBreakPriority
@@ -233,7 +260,82 @@ export function getCapability(name: string): AgentCapability | null {
       : "cpb-required",
     inheritFiles: Array.isArray(d.inheritFiles) ? d.inheritFiles : [],
     quarantineFiles: Array.isArray(d.quarantineFiles) ? d.quarantineFiles : [],
+    provider: normalizeProviderConfig(name, d),
   };
+}
+
+/**
+ * Return the provider execution configuration declared by an agent
+ * descriptor. Provider endpoint names, output environment mappings, model
+ * normalization, CLI transport settings, and fallback candidates all live in
+ * this descriptor-owned object; runtime code does not need a provider-name
+ * switch to support a new entry.
+ */
+export function getProviderConfig(name: string): NormalizedProviderConfig | null {
+  ensureLoaded();
+  const descriptor = _registry.get(name) || _discovered.get(name);
+  return descriptor ? normalizeProviderConfig(name, descriptor) : null;
+}
+
+/** Return the environment keys that are safe for this agent's provider. */
+export function providerEnvironmentKeysForAgent(name: string): Set<string> {
+  const config = getProviderConfig(name);
+  return config ? providerEnvironmentKeys(config) : new Set<string>();
+}
+
+/** Return only the parent-environment inputs that may carry credentials. */
+export function providerCredentialInputKeysForAgent(name: string): Set<string> {
+  const config = getProviderConfig(name);
+  return config ? providerCredentialInputKeys(config) : new Set<string>();
+}
+
+/** Return all descriptor-declared provider environment keys. */
+export function providerEnvironmentKeysForAllAgents(): Set<string> {
+  ensureLoaded();
+  const keys = new Set<string>();
+  for (const name of listAgentNames()) {
+    for (const key of providerEnvironmentKeysForAgent(name)) keys.add(key);
+  }
+  return keys;
+}
+
+/** Return only descriptor-declared capsule handoff variables. */
+export function providerCapsuleEnvironmentKeysForAllAgents(): Set<string> {
+  ensureLoaded();
+  const keys = new Set<string>();
+  for (const name of listAgentNames()) {
+    const config = getProviderConfig(name);
+    const native = config?.capsule.nativeExecutable;
+    if (native?.env) keys.add(native.env);
+  }
+  return keys;
+}
+
+/**
+ * Resolve a configured provider variant to its agent descriptor. Variant
+ * aliases are descriptor data, so adding a new compatible endpoint does not
+ * require a name switch in the phase runner or ACP pool.
+ */
+export function agentForProviderVariant(
+  variant: string | null | undefined,
+  preferredAgent: string | null | undefined = null,
+): string | null {
+  ensureLoaded();
+  const requested = typeof variant === "string" ? variant.trim().toLowerCase() : "";
+  if (!requested) return preferredAgent || null;
+  const names = listAgentNames();
+  const ordered = preferredAgent && names.includes(preferredAgent)
+    ? [preferredAgent, ...names.filter((name) => name !== preferredAgent)]
+    : names;
+  for (const name of ordered) {
+    const descriptor = getDescriptor(name);
+    const config = normalizeProviderConfig(name, descriptor);
+    const canonical = providerVariantForDescriptor(descriptor);
+    if (canonical?.toLowerCase() === requested || config.variantAliases.includes(requested)) {
+      return name;
+    }
+  }
+  return preferredAgent || null;
 }
 
 /**

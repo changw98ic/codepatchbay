@@ -4,11 +4,30 @@
  * decomposedItems path (allowedFiles non-empty).
  */
 import assert from "node:assert/strict";
+import { mkdir, writeFile, realpath } from "node:fs/promises";
+import path from "node:path";
 import { test } from "node:test";
 
 import { validateDecomposedItems, buildAcceptanceChecklist } from "../core/workflow/acceptance-checklist.js";
-import { buildDecomposePrompt, resolveCodegraphTaskScope } from "../core/workflow/checklist-decomposer.js";
+import { buildDecomposePrompt, resolveLocalCodeIndexTaskScope } from "../core/workflow/checklist-decomposer.js";
 import { parseAgentJson } from "../core/agents/response-parser.js";
+import {
+  deriveRepositoryKey,
+  deriveWorktreeKey,
+  deriveSourceKey,
+  canonicalStringify,
+  symbolShardPath,
+  publishSnapshot,
+  queryLocalCodeIndex,
+  exactSymbolFilesFromQuery,
+} from "../core/indexing/local-code-index/index.js";
+import {
+  deriveShardObjectId,
+  symbolBucketKey,
+} from "../core/indexing/local-code-index/shards.js";
+import type { LocalCodeIndexRef } from "../core/indexing/local-code-index/index.js";
+import { recordValue } from "../shared/types.js";
+import { tempRoot } from "./helpers.js";
 
 function validItem(overrides = {}) {
   return {
@@ -63,6 +82,107 @@ test("validateDecomposedItems: rejects invalid repo-relative path", () => {
   assert.match(r.reason, /invalid repo-relative/);
 });
 
+/**
+ * Set up a minimal v2 local code index on disk for unit testing
+ * resolveLocalCodeIndexTaskScope against the real query engine.
+ */
+async function setupV2Index(
+  cpbRoot: string,
+  sourcePath: string,
+  symbols: Array<{ name: string; kind?: string; path?: string }>,
+): Promise<LocalCodeIndexRef> {
+  const repoKey = deriveRepositoryKey(sourcePath);
+  const wtKey = deriveWorktreeKey(sourcePath);
+  const srcKey = deriveSourceKey(repoKey, wtKey);
+  const storageRoot = path.join(cpbRoot, "indexes", "local-code", "v2");
+  // The production storage contract requires the authority directory itself
+  // to be private. This fixture writes the snapshot directly, so it must
+  // establish the same authority instead of relying on mkdir's 0755 default.
+  await mkdir(storageRoot, { recursive: true, mode: 0o700 });
+
+  const entries = symbols.map((sym) => {
+    const filePath = sym.path ?? "src/partition.ts";
+    return {
+      symbol: sym.name,
+      kind: sym.kind ?? "function",
+      role: "definition" as const,
+      path: filePath,
+      range: { startLine: 1, startColumn: 0, endLine: 1, endColumn: 20 },
+      exported: true,
+      coverage: "ast-grep-structural",
+    };
+  });
+
+  const bucket = symbolBucketKey(symbols[0]?.name ?? "partition");
+  const shard = { bucket, entries };
+  const shardBytes = new TextEncoder().encode(canonicalStringify(shard));
+  const shardId = deriveShardObjectId(shard);
+
+  const shardFilePath = symbolShardPath(storageRoot, repoKey, shardId);
+  await mkdir(path.dirname(shardFilePath), { recursive: true });
+  await writeFile(shardFilePath, shardBytes);
+
+  const identityInput = {
+    schemaVersion: 2 as const,
+    repositoryKey: repoKey,
+    worktreeKey: wtKey,
+    sourceKey: srcKey,
+    sourcePath,
+    git: null,
+    worktreeStateFingerprint: "test-fingerprint",
+    inventory: Object.fromEntries(
+      [...new Set(symbols.map((s) => s.path ?? "src/partition.ts"))].map((p) => [
+        p,
+        {
+          sourceContentId: "a".repeat(64),
+          fileObjectId: "b".repeat(64),
+          metadata: {
+            device: "1",
+            inode: "1",
+            size: "100",
+            mtimeNs: "0",
+            ctimeNs: "0",
+            mode: 0o100644,
+          },
+        },
+      ]),
+    ),
+    extractorFingerprint: "test-extractor",
+    symbolShardIds: [shardId],
+    relationShardIds: [],
+    toolState: {
+      name: "ast-grep" as const,
+      version: "test",
+      extractorFingerprint: "test-extractor",
+      available: true,
+      coverage: "ast-grep-structural" as const,
+      errors: [],
+    },
+  };
+  const publication = await publishSnapshot({
+    storageRoot,
+    worktreeKey: wtKey,
+    ownerToken: `checklist-decomposer-${process.pid}`,
+    identityInput,
+    indexMap: {
+      schemaVersion: 2,
+      snapshotId: "",
+      symbolShards: { [`sym-${bucket}`]: shardId },
+      relationShards: {},
+      fileSummaryShards: {},
+    },
+  });
+
+  return {
+    schemaVersion: 2,
+    sourcePath,
+    repositoryKey: repoKey,
+    worktreeKey: wtKey,
+    sourceKey: srcKey,
+    snapshotId: publication.snapshotId,
+  };
+}
+
 // ── buildDecomposePrompt ──
 
 test("buildDecomposePrompt: embeds task + JSON contract for decomposedItems/allowedFiles", () => {
@@ -106,14 +226,27 @@ test("buildDecomposePrompt: named tests are verification targets, not static rew
   );
 });
 
-test("CodeGraph fast path builds one scoped item only for one exact production symbol", async () => {
-  const items = await resolveCodegraphTaskScope({
+test("local code index fast path builds one scoped item only for one exact production symbol (v2 query)", async () => {
+  const cpbRoot = await tempRoot("cpb-decomposer-v2-cpb");
+  const sourcePath = await realpath(await tempRoot("cpb-decomposer-v2-src"));
+  const ref = await setupV2Index(cpbRoot, sourcePath, [
+    { name: "partition", kind: "function", path: "src/partition.js" },
+    { name: "partition", kind: "function", path: "test/partition.test.js" },
+  ]);
+
+  const query = async (symbol: string, _cwd: string) => {
+    const result = await queryLocalCodeIndex(ref, {
+      kind: "definitions",
+      symbol,
+      match: "exact",
+      limit: 10,
+    }, { cpbRoot });
+    return exactSymbolFilesFromQuery(result, symbol);
+  };
+  const items = await resolveLocalCodeIndexTaskScope({
     task: "Fix partition() without mutating its input.",
-    cwd: "/repo",
-    query: async (symbol) => symbol === "partition" ? [
-      { node: { kind: "function", name: "partition", filePath: "src/partition.js" } },
-      { node: { kind: "file", name: "partition.test.js", filePath: "test/partition.test.js" } },
-    ] : [],
+    cwd: sourcePath,
+    query,
   });
 
   assert.equal(items?.length, 1);
@@ -122,14 +255,27 @@ test("CodeGraph fast path builds one scoped item only for one exact production s
   assert.equal(items?.[0].evidenceOrigin, "deterministic_probe");
 });
 
-test("CodeGraph fast path falls back when a symbol is ambiguous across production files", async () => {
-  const items = await resolveCodegraphTaskScope({
+test("local code index fast path falls back when a symbol is ambiguous across production files (v2 query)", async () => {
+  const cpbRoot = await tempRoot("cpb-decomposer-v2-ambig-cpb");
+  const sourcePath = await realpath(await tempRoot("cpb-decomposer-v2-ambig-src"));
+  const ref = await setupV2Index(cpbRoot, sourcePath, [
+    { name: "render", kind: "function", path: "src/a.ts" },
+    { name: "render", kind: "function", path: "src/b.ts" },
+  ]);
+
+  const query = async (symbol: string, _cwd: string) => {
+    const result = await queryLocalCodeIndex(ref, {
+      kind: "definitions",
+      symbol,
+      match: "exact",
+      limit: 10,
+    }, { cpbRoot });
+    return exactSymbolFilesFromQuery(result, symbol);
+  };
+  const items = await resolveLocalCodeIndexTaskScope({
     task: "Fix render() behavior.",
-    cwd: "/repo",
-    query: async () => [
-      { node: { kind: "method", name: "render", filePath: "src/a.ts" } },
-      { node: { kind: "method", name: "render", filePath: "src/b.ts" } },
-    ],
+    cwd: sourcePath,
+    query,
   });
 
   assert.equal(items, null);

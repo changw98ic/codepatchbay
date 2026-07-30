@@ -277,42 +277,6 @@ function controlPlaneAuditRef({
   };
 }
 
-function codeGraphCleanupProof() {
-  return {
-    generator: "runtime/worker/managed-worker.ts#stopAssignmentCodeGraphRuntime",
-    assignmentId: "assignment-provider-preflight",
-    attempt: 1,
-    attemptToken: "attempt-token-provider-preflight",
-    entryId: "provider-preflight",
-    projectId: "proj-provider-preflight",
-    jobId: "job-provider-preflight",
-    workerId: "w-live-release",
-    orchestratorEpoch: 1,
-    context: "before_terminal_publication",
-    cleanupAttempt: 1,
-    ok: true,
-    cleanupVerified: true,
-    processTreeStopped: true,
-    stateRemoved: true,
-    statePath: "/tmp/assignment-provider-preflight/.codegraph/daemon.pid",
-    worktreePath: "/tmp/assignment-provider-preflight",
-    startup: {
-      ok: true,
-      source: "fake_codegraph_daemon",
-      pid: 12345,
-      processPid: 12345,
-      statePath: "/tmp/assignment-provider-preflight/.codegraph/daemon.pid",
-      startedAt: "2026-07-20T10:00:00.000Z",
-      readyAt: "2026-07-20T10:00:01.000Z",
-    },
-    startupSource: "fake_codegraph_daemon",
-    pid: 12345,
-    processPid: 12345,
-    cleanupStartedAt: "2026-07-20T10:00:02.000Z",
-    cleanupCompletedAt: "2026-07-20T10:00:03.000Z",
-  };
-}
-
 function completedPhaseEvidence(phase: string, index: number) {
   const fragment = phase === "prepare_task" ? prepareTaskRiskmapEvent() : null;
   const raw = `phase:${phase}`;
@@ -528,9 +492,6 @@ function providerEvidence({ weak = false } = {}) {
           verify: completedPhaseEvidence("verify", 4),
           adversarial_verify: completedPhaseEvidence("adversarial_verify", 5),
         },
-        cleanup: {
-          codegraph: codeGraphCleanupProof(),
-        },
         jobId: "job-provider-preflight",
       },
     },
@@ -686,6 +647,11 @@ async function bindProviderArtifacts(root: string, provider: Record<string, unkn
     report: provider,
     artifactBaseDir: root,
   });
+  assert.equal(
+    (provider.validation as { valid?: boolean }).valid,
+    true,
+    JSON.stringify(provider.validation, null, 2),
+  );
 }
 
 async function writeReleaseEvidence(root: string) {

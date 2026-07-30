@@ -136,12 +136,12 @@ type QueueMetadata = LooseRecord & {
     available?: boolean;
     reason?: string;
   };
-  codegraphReadiness?: {
+  localCodeIndexReadiness?: {
     available?: boolean;
     reason?: string;
     details?: LooseRecord | null;
     sourcePath?: string;
-    indexFile?: string;
+    ref?: LocalCodeIndexRef;
   };
   indexSnapshot?: LooseRecord;
 };
@@ -215,7 +215,7 @@ type QueueClaimOptions = QueueEntryInput & {
   requireIssueLink?: boolean;
   getProjectFn?: ((hubRoot: string, projectId: string) => Promise<QueueProjectRecord | null | undefined>) | null;
   cpbRoot?: string | null;
-  codegraphUnavailableRetryMs?: number;
+  localCodeIndexUnavailableRetryMs?: number;
   assignmentStore?: AssignmentStoreLike | null;
 };
 
@@ -227,7 +227,7 @@ type ProjectQueueStatus = {
   failed: number;
   blocked: number;
   cancelled: number;
-  codegraphUnavailable: number;
+  localCodeIndexUnavailable: number;
   activeMutating: number;
   busy: boolean;
   busyReason: string | null;
@@ -255,7 +255,7 @@ type QueueStatusSummary = {
   blocked: number;
   cancelled: number;
   needsIssueLink: number;
-  codegraphUnavailable: number;
+  localCodeIndexUnavailable: number;
   failedEntries: number;
   failedTargets: number;
   retryingFailedTargets: number;
@@ -364,7 +364,7 @@ function errnoCode(err: unknown) {
 function errorDetails(err: unknown) {
   const record = isRecord(err) ? err : {};
   const details = isRecord(record.details) ? record.details : null;
-  const reason = String(details?.reason || record.code || "codegraph_unavailable");
+  const reason = String(details?.reason || record.code || "local_code_index_unavailable");
   return { reason, details };
 }
 
@@ -404,8 +404,8 @@ function nowIso(nowMs = Date.now()) {
   return new Date(nowMs).toISOString();
 }
 
-export function isCodegraphUnavailableStatus(status: string) {
-  return status === "codegraph_unavailable";
+export function isLocalCodeIndexUnavailableStatus(status: string) {
+  return status === "local_code_index_unavailable";
 }
 
 /**
@@ -492,14 +492,14 @@ export async function recoverStaleInProgressAsync(entries: QueueEntry[], opts: Q
 }
 
 /**
- * Recover codegraph_unavailable entries whose retry window has elapsed.
+ * Recover local_code_index_unavailable entries whose retry window has elapsed.
  */
-export function recoverCodegraphUnavailable(entries: QueueEntry[], retryMs: number, nowMs = Date.now()) {
+export function recoverLocalCodeIndexUnavailable(entries: QueueEntry[], retryMs: number, nowMs = Date.now()) {
   if (!retryMs || retryMs <= 0) return { recovered: [] };
   const now = nowMs;
   const recovered = [];
   for (const e of entries) {
-    if (!isCodegraphUnavailableStatus(e.status)) continue;
+    if (!isLocalCodeIndexUnavailableStatus(e.status)) continue;
     const updatedAt = e.updatedAt ? new Date(e.updatedAt).getTime() : 0;
     if (!Number.isFinite(updatedAt) || now - updatedAt < retryMs) continue;
     e.status = "pending";
@@ -533,7 +533,10 @@ import {
 } from "../../../core/runtime/durable-directory-lock.js";
 import { ensureIndexFresh } from "../infra.js";
 import { projectCapabilityMapGate } from "../project/project-index.js";
-import { checkCodeGraphReady } from "../infra.js";
+import {
+  localCodeIndexStatus,
+  type LocalCodeIndexRef,
+} from "../../../core/indexing/local-code-index/index.js";
 import { resolveAgentsForEntry } from "../agent/agent-config.js";
 import { getProject } from "./hub-registry.js";
 import {
@@ -1720,7 +1723,7 @@ export async function queueStatus(hubRoot: string) {
     blocked: 0,
     cancelled: 0,
     needsIssueLink: 0,
-    codegraphUnavailable: 0,
+    localCodeIndexUnavailable: 0,
     ...failedTargetStatus,
     activeMutatingTotal: 0,
     projects: {},
@@ -1737,8 +1740,8 @@ export async function queueStatus(hubRoot: string) {
     else if (e.status === "blocked") counts.blocked++;
     else if (e.status === "cancelled") counts.cancelled++;
     else if (e.status === "needs_issue_link") counts.needsIssueLink++;
-    else if (isCodegraphUnavailableStatus(e.status)) {
-      counts.codegraphUnavailable++;
+    else if (isLocalCodeIndexUnavailableStatus(e.status)) {
+      counts.localCodeIndexUnavailable++;
     }
   }
   const hubLimits = await resolveHubConcurrencyLimits(hubRoot);
@@ -1840,7 +1843,7 @@ export function buildProjectQueueStatus(entries: QueueEntry[], {
     if (!byProject[e.projectId]) {
       const limit = limitForProject(projectLimits, e.projectId, maxActivePerProject);
       byProject[e.projectId] = {
-        pending: 0, scheduled: 0, inProgress: 0, completed: 0, failed: 0, blocked: 0, cancelled: 0, codegraphUnavailable: 0,
+        pending: 0, scheduled: 0, inProgress: 0, completed: 0, failed: 0, blocked: 0, cancelled: 0, localCodeIndexUnavailable: 0,
         activeMutating: 0, busy: false, busyReason: null,
         maxActivePerProject: limit,
         claimedBy: null, claimedAt: null, workerId: null,
@@ -1856,8 +1859,8 @@ export function buildProjectQueueStatus(entries: QueueEntry[], {
     else if (e.status === "failed") ps.failed++;
     else if (e.status === "blocked") ps.blocked++;
     else if (e.status === "cancelled") ps.cancelled++;
-    else if (isCodegraphUnavailableStatus(e.status)) {
-      ps.codegraphUnavailable++;
+    else if (isLocalCodeIndexUnavailableStatus(e.status)) {
+      ps.localCodeIndexUnavailable++;
     }
     if (isActiveEntry(e) && isMutatingEntry(e)) {
       ps.activeMutating++;
@@ -1905,7 +1908,7 @@ export async function claimEligible(hubRoot: string, opts: QueueClaimOptions = {
     requireIssueLink = false,
     getProjectFn = null,
     cpbRoot = null,
-    codegraphUnavailableRetryMs = 300_000,
+    localCodeIndexUnavailableRetryMs = 300_000,
     assignmentStore = null,
   } = opts;
 
@@ -1919,9 +1922,13 @@ export async function claimEligible(hubRoot: string, opts: QueueClaimOptions = {
       assignmentStore,
       nowMs: authorityNowMs,
     });
-    const { recovered: recoveredCodegraph } = recoverCodegraphUnavailable(queue.entries, codegraphUnavailableRetryMs, authorityNowMs);
-    if (recoveredCodegraph.length > 0) {
-      recovered.push(...recoveredCodegraph);
+    const { recovered: recoveredLocalCodeIndex } = recoverLocalCodeIndexUnavailable(
+      queue.entries,
+      localCodeIndexUnavailableRetryMs,
+      authorityNowMs,
+    );
+    if (recoveredLocalCodeIndex.length > 0) {
+      recovered.push(...recoveredLocalCodeIndex);
     }
 
     const hubLimits = await resolveHubConcurrencyLimits(hubRoot, {
@@ -1973,7 +1980,7 @@ export async function claimEligible(hubRoot: string, opts: QueueClaimOptions = {
       if (getProjectFn) {
         const project = await getProjectFn(hubRoot, candidate.projectId);
         if (project && (!project.sourcePath || !project.projectRuntimeRoot)) {
-          candidate.status = "codegraph_unavailable";
+          candidate.status = "local_code_index_unavailable";
           candidate.updatedAt = nowIso();
           candidate.metadata = {
             ...candidate.metadata,
@@ -1990,7 +1997,7 @@ export async function claimEligible(hubRoot: string, opts: QueueClaimOptions = {
         if (project?.sourcePath && project.projectRuntimeRoot) {
           const capabilityGate = projectCapabilityMapGate(project);
           if (!capabilityGate.available) {
-            candidate.status = "codegraph_unavailable";
+            candidate.status = "local_code_index_unavailable";
             candidate.updatedAt = nowIso();
             candidate.metadata = {
               ...candidate.metadata,
@@ -2006,19 +2013,19 @@ export async function claimEligible(hubRoot: string, opts: QueueClaimOptions = {
             continue;
           }
 
-          let codegraphReadiness;
+          let localCodeIndexStatusResult;
           try {
-            codegraphReadiness = await checkCodeGraphReady({
+            localCodeIndexStatusResult = await localCodeIndexStatus({
               cpbRoot: cpbRoot || project.cpbRoot || project.metadata?.cpbRoot || project.sourcePath,
               sourcePath: project.sourcePath,
             });
           } catch (err) {
             const { reason, details } = errorDetails(err);
-            candidate.status = "codegraph_unavailable";
+            candidate.status = "local_code_index_unavailable";
             candidate.updatedAt = nowIso();
             candidate.metadata = {
               ...candidate.metadata,
-              codegraphReadiness: {
+              localCodeIndexReadiness: {
                 available: false,
                 reason,
                 details,
@@ -2034,9 +2041,29 @@ export async function claimEligible(hubRoot: string, opts: QueueClaimOptions = {
             continue;
           }
 
+          if (!localCodeIndexStatusResult.available) {
+            candidate.status = "local_code_index_unavailable";
+            candidate.updatedAt = nowIso();
+            candidate.metadata = {
+              ...candidate.metadata,
+              localCodeIndexReadiness: {
+                available: false,
+                reason: localCodeIndexStatusResult.reason,
+              },
+              indexFreshness: {
+                available: false,
+                indexDirty: true,
+                indexStale: false,
+                worktreeDirty: false,
+                dirtyReasons: [localCodeIndexStatusResult.reason],
+              },
+            };
+            continue;
+          }
+
           const fresh = await ensureIndexFresh(project);
           if (!fresh.available) {
-            candidate.status = "codegraph_unavailable";
+            candidate.status = "local_code_index_unavailable";
             candidate.updatedAt = nowIso();
             candidate.metadata = {
               ...candidate.metadata,
@@ -2045,7 +2072,7 @@ export async function claimEligible(hubRoot: string, opts: QueueClaimOptions = {
                 indexDirty: fresh.indexDirty ?? true,
                 indexStale: fresh.indexStale ?? false,
                 worktreeDirty: fresh.worktreeDirty ?? false,
-                dirtyReasons: fresh.dirtyReasons ?? ["codegraph_unavailable"],
+                dirtyReasons: fresh.dirtyReasons ?? ["local_code_index_unavailable"],
               },
             };
             continue;
@@ -2053,10 +2080,10 @@ export async function claimEligible(hubRoot: string, opts: QueueClaimOptions = {
           candidate.indexSnapshotId = fresh.indexSnapshotId;
           candidate.metadata = {
             ...candidate.metadata,
-            codegraphReadiness: {
+            localCodeIndexReadiness: {
               available: true,
-              sourcePath: codegraphReadiness.sourcePath,
-              indexFile: codegraphReadiness.indexFile,
+              sourcePath: localCodeIndexStatusResult.ref.sourcePath,
+              ref: localCodeIndexStatusResult.ref,
             },
             indexSnapshot: {
               indexSnapshotId: fresh.indexSnapshotId,
@@ -2111,7 +2138,7 @@ export async function claimEligible(hubRoot: string, opts: QueueClaimOptions = {
       .map(([pid, ps]) => ({ projectId: pid, ...ps }));
 
     return { entry: chosen, reason: null, recovered, activeProjects, skippedBusy };
-  // Readiness preparation can refresh CodeGraph manifests. Do not replay that
+  // Readiness preparation can refresh local code index manifests. Do not replay that
   // external work after a queue CAS loss; the caller will retry on its next
   // poll with a fresh queue snapshot.
   }, { maxAttempts: 1 });
@@ -2559,4 +2586,23 @@ export async function completeInboxMessage(cpbRoot: string, project: string, id:
 
     return messageToOutput(parsed.meta);
   });
+}
+
+// ─── Migration entry point ─────────────────────────────────────────────────
+
+/**
+ * Expose the queue lock for the local-code-index-v2 migration module.
+ *
+ * The migration callback receives the mutable queue snapshot (already reread
+ * under the lock).  The lock owner handles persistence: the callback mutates
+ * the snapshot in-place and the lock saves it on success.
+ *
+ * This is intentionally a thin passthrough — the migration module owns all
+ * validation, backup, and transform logic.
+ */
+export async function withQueueLockForMigration<T>(
+  hubRoot: string,
+  callback: (queue: QueueState) => Promise<T>,
+): Promise<T> {
+  return withQueueLock(hubRoot, callback);
 }

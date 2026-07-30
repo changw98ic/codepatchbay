@@ -76,7 +76,6 @@ import {
   type HarnessInstanceResult,
 } from "../scripts/run-swebench-three-way.js";
 import {
-  cleanupScopedCodegraphDaemons,
   runCommand as runProductValidationCommand,
   runManagedWorker,
 } from "../scripts/run-swebench-product-validation.js";
@@ -1656,74 +1655,6 @@ test("product validation command timeout waits for identity-bound tree teardown"
   await assert.rejects(pending, /timed out after 30ms/);
   assert.equal(cleanupFinished, true);
   assert.equal(isProcessIdentityAlive(identity), false);
-});
-
-test("scoped Codegraph cleanup refuses a PID successor before invoking teardown", async () => {
-  const worktreePath = await tempRoot("cpb-codegraph-successor");
-  const fixture = await spawnExactIdentityFixture();
-  const originalIdentity = fixture.identity;
-  const successorIdentity = {
-    ...originalIdentity,
-    birthId: `${originalIdentity.birthId}:simulated-successor`,
-    incarnation: `${originalIdentity.pid}:${originalIdentity.birthId}:simulated-successor`,
-  };
-  let captureCount = 0;
-  let teardownInvoked = false;
-
-  try {
-    await assert.rejects(
-      () => cleanupScopedCodegraphDaemons(worktreePath, {
-        listProcesses: async () => `${originalIdentity.pid} codegraph serve --mcp ${worktreePath}\n`,
-        readProcessCommand: async () => `codegraph serve --mcp ${worktreePath}`,
-        captureIdentity: () => captureCount++ === 0 ? originalIdentity : successorIdentity,
-        isIdentityAlive: () => true,
-        teardownProcessTree: async () => { teardownInvoked = true; },
-      }),
-      (error: unknown) => nestedErrorMatches(error, /refusing to signal successor/),
-    );
-    assert.equal(teardownInvoked, false);
-  } finally {
-    await fixture.stop();
-  }
-});
-
-test("scoped Codegraph cleanup awaits teardown and propagates permission errors", async () => {
-  const worktreePath = await tempRoot("cpb-codegraph-cleanup-settle");
-  const fixture = await spawnExactIdentityFixture();
-  const identity = fixture.identity;
-  const command = `codegraph serve --mcp ${worktreePath}`;
-  let alive = true;
-  let cleanupFinished = false;
-  try {
-    const result = await cleanupScopedCodegraphDaemons(worktreePath, {
-      listProcesses: async () => `${identity.pid} ${command}\n`,
-      readProcessCommand: async () => command,
-      captureIdentity: () => identity,
-      isIdentityAlive: () => alive,
-      teardownProcessTree: async (_pid, { expectedRootIdentity }) => {
-        assert.equal(expectedRootIdentity, identity);
-        await new Promise((resolve) => setTimeout(resolve, 40));
-        alive = false;
-        cleanupFinished = true;
-      },
-    });
-    assert.equal(cleanupFinished, true);
-    assert.deepEqual(result.killedPids, [identity.pid]);
-
-    const permissionError = Object.assign(new Error("operation not permitted during cleanup"), { code: "EPERM" });
-    await assert.rejects(
-      () => cleanupScopedCodegraphDaemons(worktreePath, {
-        listProcesses: async () => `${identity.pid} ${command}\n`,
-        readProcessCommand: async () => command,
-        captureIdentity: () => identity,
-        isIdentityAlive: () => true,
-        teardownProcessTree: async () => { throw permissionError; },
-      }),
-      (error: unknown) => nestedErrorMatches(error, /operation not permitted during cleanup/),
-    );
-  } finally {
-    await fixture.stop();
-  }
 });
 
 async function writeFakeManagedWorkerDist(root: string) {

@@ -485,7 +485,6 @@ test("prepare-time checklist decomposition uses the job-local phase timeout befo
     env: {
       CPB_CHECKLIST_DECOMPOSE: "1",
       CPB_CHECKLIST_DECOMPOSE_RETRY_MAX: "0",
-      CPB_CHECKLIST_CODEGRAPH_FAST_PATH: "0",
       CPB_ACP_PHASE_TIMEOUT_MS: "12345",
     },
     agents: { planner: "fake", executor: "fake", verifier: "fake" },

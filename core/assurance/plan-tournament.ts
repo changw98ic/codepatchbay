@@ -218,7 +218,7 @@ export function validatePlanProposalRepositoryContract(
  * Freeze repository evidence locators from a proposal only after the same
  * proposal has passed the frozen-HEAD repository contract. This permits
  * read-only evidence outside edit scope without relying on brittle substring
- * matches against the bounded CodeGraph evidence pack.
+ * matches against the bounded local-code-index evidence pack.
  */
 export function freezePlanRepositoryEvidenceLocators(
   proposal: PlanProposal,

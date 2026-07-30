@@ -172,62 +172,6 @@ function controlPlaneAuditRef(phase: string, role: string, summary: unknown, out
   };
 }
 
-function codeGraphCleanupProof({
-  assignmentId = "assignment-provider-preflight",
-  attempt = 1,
-  attemptToken = "attempt-token-provider-preflight",
-  entryId = "provider-preflight",
-  projectId = "proj-provider-preflight",
-  jobId = "job-provider-preflight",
-  workerId = "w-live-release",
-  orchestratorEpoch = 1,
-  cleanupAttempt = 1,
-}: {
-  assignmentId?: string;
-  attempt?: number;
-  attemptToken?: string;
-  entryId?: string;
-  projectId?: string;
-  jobId?: string;
-  workerId?: string;
-  orchestratorEpoch?: number;
-  cleanupAttempt?: number;
-} = {}) {
-  return {
-    generator: "runtime/worker/managed-worker.ts#stopAssignmentCodeGraphRuntime",
-    assignmentId,
-    attempt,
-    attemptToken,
-    entryId,
-    projectId,
-    jobId,
-    workerId,
-    orchestratorEpoch,
-    context: "before_terminal_publication",
-    cleanupAttempt,
-    ok: true,
-    cleanupVerified: true,
-    processTreeStopped: true,
-    stateRemoved: true,
-    statePath: `/tmp/${assignmentId}/.codegraph/daemon.pid`,
-    worktreePath: `/tmp/${assignmentId}`,
-    startup: {
-      ok: true,
-      source: "fake_codegraph_daemon",
-      pid: 12345,
-      processPid: 12345,
-      statePath: `/tmp/${assignmentId}/.codegraph/daemon.pid`,
-      startedAt: "2026-07-20T10:00:00.000Z",
-      readyAt: "2026-07-20T10:00:01.000Z",
-    },
-    startupSource: "fake_codegraph_daemon",
-    pid: 12345,
-    processPid: 12345,
-    cleanupStartedAt: "2026-07-20T10:00:02.000Z",
-    cleanupCompletedAt: "2026-07-20T10:00:03.000Z",
-  };
-}
-
 function stableJson(value: unknown): string {
   if (Array.isArray(value)) {
     return `[${value.map((item) => stableJson(item)).join(",")}]`;
@@ -575,7 +519,6 @@ function validProviderEvidence() {
           canonicalCommandsMissing: [],
         },
         cleanup: {
-          codegraph: codeGraphCleanupProof(),
         },
         jobId: "job-provider-preflight",
       },
@@ -738,111 +681,6 @@ test("live release evidence rejects noncanonical or cross-run provider and draft
   assert.equal(crossRun.ok, false);
   assert.ok(crossRun.violations.some((item) => item.path === "draftPrRehearsal.evidenceBundleRef"
     && /same canonical live-release run directory/.test(item.reason)));
-});
-
-test("live release evidence rejects CodeGraph cleanup proof identity drift from source manifest authority", async () => {
-  const identityMutations = [
-    { field: "assignmentId", value: "other-assignment", pattern: /assignment identity|source manifest assignment identity/ },
-    { field: "attempt", value: 2, pattern: /attempt identity|source manifest attempt identity/ },
-    { field: "attemptToken", value: "other-token", pattern: /attempt token|source manifest attempt token/ },
-    { field: "entryId", value: "other-entry", pattern: /entry identity|source manifest entry identity/ },
-    { field: "projectId", value: "other-project", pattern: /project identity|source manifest project identity/ },
-    { field: "jobId", value: "other-job", pattern: /job identity|terminal job identity/ },
-    { field: "workerId", value: "other-worker", pattern: /worker identity|source manifest worker identity/ },
-    { field: "orchestratorEpoch", value: 2, pattern: /orchestrator epoch|source manifest orchestrator epoch/ },
-  ] as const;
-
-  for (const mutation of identityMutations) {
-    const root = await tempRoot(`cpb-live-release-cleanup-${mutation.field}`);
-    const provider = validProviderEvidence();
-    ((provider.jobs[0] as Record<string, Record<string, unknown>>).cleanup.codegraph as Record<string, unknown>)[mutation.field] = mutation.value;
-    await writeValidEvidence(root, { provider });
-
-    const result = await verifyLiveReleaseEvidenceFile({ root, referenceTime });
-
-    assert.equal(result.ok, false, mutation.field);
-    assert.match(result.violations.map((item) => item.reason).join("\n"), mutation.pattern, mutation.field);
-  }
-});
-
-test("live release evidence rejects non-native numeric CodeGraph cleanup identities", async () => {
-  const numericMutations = [
-    { field: "attempt", value: "1", path: "providerConnectivity.jobs[0].cleanup.codegraph.attempt" },
-    { field: "cleanupAttempt", value: "1", path: "providerConnectivity.jobs[0].cleanup.codegraph.cleanupAttempt" },
-    { field: "orchestratorEpoch", value: "1", path: "providerConnectivity.jobs[0].cleanup.codegraph.orchestratorEpoch" },
-    { field: "pid", value: "12345", path: "providerConnectivity.jobs[0].cleanup.codegraph.pid" },
-    { field: "processPid", value: 0, path: "providerConnectivity.jobs[0].cleanup.codegraph.processPid" },
-    { field: "startup.pid", value: "12345", path: "providerConnectivity.jobs[0].cleanup.codegraph.startup.pid" },
-    { field: "startup.processPid", value: null, path: "providerConnectivity.jobs[0].cleanup.codegraph.startup.processPid" },
-  ] as const;
-
-  for (const mutation of numericMutations) {
-    const root = await tempRoot(`cpb-live-release-cleanup-number-${mutation.field.replace(".", "-")}`);
-    const provider = validProviderEvidence();
-    const proof = ((provider.jobs[0] as Record<string, Record<string, unknown>>).cleanup.codegraph as Record<string, unknown>);
-    if (mutation.field.startsWith("startup.")) {
-      (proof.startup as Record<string, unknown>)[mutation.field.split(".")[1]] = mutation.value;
-    } else {
-      proof[mutation.field] = mutation.value;
-    }
-    await writeValidEvidence(root, { provider });
-
-    const result = await verifyLiveReleaseEvidenceFile({ root, referenceTime });
-
-    assert.equal(result.ok, false, mutation.field);
-    assert.ok(result.violations.some((item) => item.path === mutation.path), mutation.field);
-  }
-});
-
-test("live release evidence rejects invalid or conflicting numeric authority values", async () => {
-  const invalidRoot = await tempRoot("cpb-live-release-authority-string-attempt");
-  const invalidProvider = validProviderEvidence();
-  const invalidSourceManifest = invalidProvider.sourceManifest as Record<string, unknown>;
-  (((invalidSourceManifest.assignments as Array<Record<string, unknown>>)[0]).queued as Record<string, unknown>).attempt = null;
-  await writeValidEvidence(invalidRoot, { provider: invalidProvider });
-
-  const invalid = await verifyLiveReleaseEvidenceFile({ root: invalidRoot, referenceTime });
-  assert.equal(invalid.ok, false);
-  assert.ok(invalid.violations.some((item) => item.path === "providerConnectivity.jobs[0].cleanup.codegraph.attempt"
-    && /authority values must be native positive safe integers/.test(item.reason)));
-
-  const jobCountRoot = await tempRoot("cpb-live-release-authority-job-attempt-count");
-  const jobCountProvider = validProviderEvidence();
-  (jobCountProvider.jobs[0] as Record<string, unknown>).attempts = { count: 2 };
-  await writeValidEvidence(jobCountRoot, { provider: jobCountProvider });
-
-  const jobCount = await verifyLiveReleaseEvidenceFile({ root: jobCountRoot, referenceTime });
-  assert.equal(jobCount.ok, false);
-  assert.ok(jobCount.violations.some((item) => item.path === "providerConnectivity.jobs[0].cleanup.codegraph.attempt"
-    && /authority values must agree/.test(item.reason)));
-
-  const conflictRoot = await tempRoot("cpb-live-release-authority-conflict-epoch");
-  const conflictProvider = validProviderEvidence();
-  const conflictSourceManifest = conflictProvider.sourceManifest as Record<string, unknown>;
-  (((conflictSourceManifest.assignments as Array<Record<string, unknown>>)[0]).queued as Record<string, unknown>).orchestratorEpoch = 1;
-  ((conflictSourceManifest.terminalStates as Array<Record<string, unknown>>)[0]).orchestratorEpoch = 2;
-  await writeValidEvidence(conflictRoot, { provider: conflictProvider });
-
-  const conflict = await verifyLiveReleaseEvidenceFile({ root: conflictRoot, referenceTime });
-  assert.equal(conflict.ok, false);
-  assert.ok(conflict.violations.some((item) => item.path === "providerConnectivity.jobs[0].cleanup.codegraph.orchestratorEpoch"
-    && /authority values must agree/.test(item.reason)));
-});
-
-test("live release evidence fails closed when cleanup proof lacks source epoch authority", async () => {
-  const root = await tempRoot("cpb-live-release-cleanup-missing-epoch");
-  const provider = validProviderEvidence();
-  const sourceManifest = provider.sourceManifest as Record<string, unknown>;
-  const assignment = (sourceManifest.assignments as Array<Record<string, unknown>>)[0];
-  delete (assignment.queued as Record<string, unknown>).orchestratorEpoch;
-  delete assignment.orchestratorEpoch;
-  delete ((sourceManifest.terminalStates as Array<Record<string, unknown>>)[0]).orchestratorEpoch;
-  await writeValidEvidence(root, { provider });
-
-  const result = await verifyLiveReleaseEvidenceFile({ root, referenceTime });
-
-  assert.equal(result.ok, false);
-  assert.ok(result.violations.some((item) => item.path === "providerConnectivity.jobs[0].cleanup.codegraph.orchestratorEpoch"));
 });
 
 test("live release evidence rejects top-level live bundle symlinks that resolve outside live release evidence", async () => {
@@ -1261,28 +1099,6 @@ test("live release evidence rejects retries and retained retry failure kinds", a
   assert.ok(result.violations.some((item) => item.path === "providerConnectivity.jobs[0].phaseEvidence.execute.retryFailureKinds"));
 });
 
-test("live release evidence rejects missing or non-first CodeGraph cleanup proof", async () => {
-  const missingRoot = await tempRoot("cpb-live-release-missing-codegraph-cleanup");
-  const missingProvider = validProviderEvidence();
-  delete (((missingProvider.jobs[0] as Record<string, unknown>).cleanup as Record<string, unknown>).codegraph);
-  await writeValidEvidence(missingRoot, { provider: missingProvider });
-
-  const missing = await verifyLiveReleaseEvidenceFile({ root: missingRoot, referenceTime });
-  assert.equal(missing.ok, false);
-  assert.ok(missing.violations.some((item) => item.path === "providerConnectivity.jobs[0].cleanup.codegraph"
-    && /CodeGraph cleanup proof/.test(item.reason)));
-
-  const retryRoot = await tempRoot("cpb-live-release-retried-codegraph-cleanup");
-  const retryProvider = validProviderEvidence();
-  const proof = (((retryProvider.jobs[0] as Record<string, unknown>).cleanup as Record<string, unknown>).codegraph as Record<string, unknown>);
-  proof.cleanupAttempt = 2;
-  await writeValidEvidence(retryRoot, { provider: retryProvider });
-
-  const retry = await verifyLiveReleaseEvidenceFile({ root: retryRoot, referenceTime });
-  assert.equal(retry.ok, false);
-  assert.ok(retry.violations.some((item) => item.path === "providerConnectivity.jobs[0].cleanup.codegraph.cleanupAttempt"));
-});
-
 test("live release evidence rejects provider reports with multiple representative jobs", async () => {
   const root = await tempRoot("cpb-live-release-multi-job");
   const valid = validProviderEvidence();
@@ -1375,14 +1191,14 @@ test("live release evidence rejects structural source provider preflight mode", 
   assert.ok(result.violations.some((item) => item.path === "providerConnectivity.sourceManifest.providerPreflightMode"));
 });
 
-test("live release evidence rejects CodeGraph unavailable jobs as release evidence", async () => {
-  const root = await tempRoot("cpb-live-release-codegraph-unavailable");
+test("live release evidence rejects local code index unavailable jobs as release evidence", async () => {
+  const root = await tempRoot("cpb-live-release-local-index-unavailable");
   const valid = validProviderEvidence();
   const sourceManifest = structuredClone(valid.sourceManifest);
   sourceManifest.terminalStates = [{
     assignmentId: "assignment-provider-preflight",
     status: "failed",
-    failureKind: "codegraph_unavailable",
+    failureKind: "local_code_index_unavailable",
     attempt: 1,
   }];
   const provider = buildSweBenchBatchReport({

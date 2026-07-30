@@ -36,6 +36,7 @@ import {
 } from "../../../core/runtime/process-tree.js";
 import { withDirectoryProcessFence } from "../../../core/runtime/durable-directory-lock.js";
 import type { QuotaDelegateLockReceipt } from "../quota-delegate-client.js";
+import type { LocalCodeIndexRef } from "../../../core/indexing/local-code-index/index.js";
 
 const REGISTRY_VERSION = 1;
 const SAFE_ID = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
@@ -112,7 +113,7 @@ type HubRecord = LooseRecord & {
   description?: string;
   task?: string;
   priority?: string;
-  codegraphReadiness?: HubRecord;
+  localCodeIndexReadiness?: HubRecord;
   indexFreshness?: HubRecord;
   dirtyReasons?: unknown[];
   rateLimitReason?: string;
@@ -139,7 +140,7 @@ type HubRecord = LooseRecord & {
   code?: string;
   message?: string;
   count?: number;
-  codegraphUnavailable?: number;
+  localCodeIndexUnavailable?: number;
   agentRateLimited?: number;
   agent_rate_limited?: number;
   primaryEvidenceId?: string;
@@ -1540,10 +1541,10 @@ function receiptDeepEqual(left: unknown, right: unknown) {
 
 export async function registerProjectWithReceipt(hubRoot: string, input: HubRecord = {}): Promise<ProjectRegistrationResult> {
   const sourcePath = await canonicalSourcePath(input.sourcePath || process.cwd());
-  const generatedMetadata = input.skipCodeGraphGate
+  const generatedMetadata = input.skipLocalCodeIndexGate
     ? {}
     : await generateProjectCapabilityMaps({
-      cpbRoot: input.cpbRoot || sourcePath,
+      cpbRoot: input.cpbRoot || hubRoot,
       sourcePath,
     });
   try {
@@ -2007,7 +2008,7 @@ export function buildHubControlPlaneEnv(
     CPB_PORT: port == null ? undefined : String(port),
     CPB_HOST: host,
     CPB_ORCHESTRATOR_START_TOKEN: startupToken,
-  }, { allowKeys: ["CPB_ORCHESTRATOR_START_TOKEN", "CPB_WORKER_DISPATCH_ENABLED", "CPB_CODEGRAPH_INDEX_ONLY_OK", "CPB_HUB_WORKER_BROKER_URL"] });
+  }, { allowKeys: ["CPB_ORCHESTRATOR_START_TOKEN", "CPB_WORKER_DISPATCH_ENABLED", "CPB_HUB_WORKER_BROKER_URL"] });
 }
 
 export function buildHubServerEnv(parentEnv = process.env, options: HubRecord = {}) {
@@ -3036,7 +3037,7 @@ const SEVERITY_RANK = { critical: 0, warning: 1, info: 2 };
 const KIND_RANK = {
   jobs_index_divergent: 0,
   stale_runtime: 1,
-  codegraph_unavailable: 2,
+  local_code_index_unavailable: 2,
   agent_rate_limited: 3,
   workflow_failed: 4,
   dag_node_failed: 5,
@@ -3045,7 +3046,7 @@ const KIND_RANK = {
 };
 const PRIORITY_RANK = { P0: 0, P1: 1, P2: 2 };
 
-const CODEGRAPH_CODES = new Set(["codegraph_unavailable", "missing_codegraph_state", "missing_codegraph_index"]);
+const LOCAL_CODE_INDEX_CODES = new Set(["local_code_index_unavailable"]);
 const RATE_LIMIT_CODES = new Set(["agent_rate_limited", "rate_limited"]);
 
 function priorityRank(priority: unknown) {
@@ -3182,10 +3183,10 @@ function attentionItem({
 function queueItem(entry: HubRecord, kind: string, severity: string) {
   const project = entry.projectId || entry.project || null;
   const title = text(entry.description || entry.metadata?.task, "Queued work needs attention");
-  const reason = kind === "codegraph_unavailable"
-    ? text(entry.metadata?.codegraphReadiness?.reason || entry.metadata?.indexFreshness?.dirtyReasons?.[0], "CodeGraph is unavailable for this queued work")
+  const reason = kind === "local_code_index_unavailable"
+    ? text(entry.metadata?.localCodeIndexReadiness?.reason || entry.metadata?.indexFreshness?.dirtyReasons?.[0], "The local code index is unavailable for this queued work")
     : text(entry.metadata?.rateLimitReason || entry.metadata?.reason, "Agent provider rate limit is blocking this queued work");
-  const action = kind === "codegraph_unavailable"
+  const action = kind === "local_code_index_unavailable"
     ? { kind: "repair_runtime", label: "Repair runtime", href: "/hub/queue" }
     : { kind: "retry", label: "Retry when capacity is available", href: "/hub/queue" };
   return attentionItem({
@@ -3207,7 +3208,7 @@ function queueItem(entry: HubRecord, kind: string, severity: string) {
 function jobBlockerItem(job: HubRecord, kind: string, severity: string) {
   const project = job.project || null;
   const title = text(job.task, "Workflow needs attention");
-  const action = kind === "codegraph_unavailable"
+  const action = kind === "local_code_index_unavailable"
     ? { kind: "repair_runtime", label: "Repair runtime", href: `/inbox/${job.jobId}` }
     : kind === "agent_rate_limited"
       ? { kind: "retry", label: "Retry when capacity is available", href: `/inbox/${job.jobId}` }
@@ -3313,17 +3314,17 @@ function runtimeItems(runtimeHealth: HubRecord | null | undefined) {
     }));
   }
 
-  const codegraphCount = numberValue(runtimeHealth.queueBlockingCounts?.codegraph_unavailable || runtimeHealth.queueBlockingCounts?.codegraphUnavailable);
-  if (codegraphCount > 0) {
+  const localCodeIndexCount = numberValue(runtimeHealth.queueBlockingCounts?.local_code_index_unavailable);
+  if (localCodeIndexCount > 0) {
     items.push(attentionItem({
-      kind: "codegraph_unavailable",
+      kind: "local_code_index_unavailable",
       severity: "warning",
-      title: "CodeGraph unavailable",
-      reason: `${codegraphCount} queued item(s) are blocked by CodeGraph readiness.`,
-      impact: "Workers cannot start affected queue entries until CodeGraph is available.",
-      nextHumanAction: { kind: "repair_runtime", label: "Repair CodeGraph", href: "/hub/queue" },
-      primaryEvidenceId: "codegraph",
-      evidence: [evidence("runtime_health", "codegraph")],
+      title: "Local code index unavailable",
+      reason: `${localCodeIndexCount} queued item(s) are blocked by local code index readiness.`,
+      impact: "Workers cannot start affected queue entries until the local code index is available.",
+      nextHumanAction: { kind: "repair_runtime", label: "Repair local code index", href: "/hub/queue" },
+      primaryEvidenceId: "local-code-index",
+      evidence: [evidence("runtime_health", "local-code-index")],
     }));
   }
 
@@ -3417,8 +3418,8 @@ export function buildAttentionProjection({
     if (!entry?.id) continue;
     const status = normalizeStatus(entry.status);
     const approvalStatus = normalizeStatus(entry.metadata?.approval?.status);
-    if (status === "codegraph_unavailable") {
-      addDeduped(deduped, queueItem(entry, "codegraph_unavailable", "warning"));
+    if (status === "local_code_index_unavailable") {
+      addDeduped(deduped, queueItem(entry, "local_code_index_unavailable", "warning"));
     } else if (status === "agent_rate_limited" || status === "rate_limited") {
       addDeduped(deduped, queueItem(entry, "agent_rate_limited", "warning"));
     } else if (status === "waiting_approval" || approvalStatus === "waiting_approval") {
@@ -3430,8 +3431,8 @@ export function buildAttentionProjection({
     if (!job?.jobId) continue;
     const code = codeForJob(job);
     const status = normalizeStatus(job.status);
-    if (CODEGRAPH_CODES.has(code)) {
-      addDeduped(deduped, jobBlockerItem(job, "codegraph_unavailable", "critical"));
+    if (LOCAL_CODE_INDEX_CODES.has(code)) {
+      addDeduped(deduped, jobBlockerItem(job, "local_code_index_unavailable", "critical"));
     } else if (RATE_LIMIT_CODES.has(code) || status === "agent_rate_limited") {
       addDeduped(deduped, jobBlockerItem(job, "agent_rate_limited", "warning"));
     } else if (status === "waiting_approval" || code === "waiting_approval" || code === "approval_required") {
@@ -3450,4 +3451,23 @@ export function buildAttentionProjection({
   }
 
   return [...new Set(deduped.values())].sort(sortAttention).map(publicItem);
+}
+
+// ─── Migration entry point ─────────────────────────────────────────────────
+
+/**
+ * Expose the registry lock for the local-code-index-v2 migration module.
+ *
+ * The migration callback receives the mutable registry snapshot (already reread
+ * under the lock).  The lock owner handles persistence: the callback mutates
+ * the snapshot in-place and the lock saves it on success.
+ *
+ * This is intentionally a thin passthrough — the migration module owns all
+ * validation, backup, and transform logic.
+ */
+export async function mutateRegistryForMigration<T>(
+  hubRoot: string,
+  callback: (registry: RegistryRecord) => Promise<T> | T,
+): Promise<T> {
+  return mutateRegistry(hubRoot, callback);
 }

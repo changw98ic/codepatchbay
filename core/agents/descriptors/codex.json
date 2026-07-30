@@ -11,6 +11,29 @@
   "envPrefix": "CPB_ACP_CODEX",
   "protocol": "acp",
   "description": "OpenAI Codex CLI in ACP mode",
+  "provider": {
+    "key": "codex",
+    "family": "codex",
+    "credentialEnv": [
+      "OPENAI_API_KEY", "OPENAI_BASE_URL", "AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT",
+      "OPENAI_ORG_ID"
+    ],
+    "capsule": {
+      "nativeExecutable": {
+        "basename": "codex",
+        "pathContains": ["@openai/codex-"],
+        "env": "CPB_CAPSULE_CODEX_PATH",
+        "targetEnv": "CODEX_PATH",
+        "kind": "native"
+      }
+    },
+    "quota": {
+      "region": "global",
+      "timezone": "UTC",
+      "policy": { "type": "per-minute", "description": "OpenAI per-minute rate limit" },
+      "rules": []
+    }
+  },
   "lifecycle": "one-shot",
   "providerFamily": "codex",
   "tieBreakPriority": 10,

@@ -107,3 +107,111 @@ jobs:
           find dist/bridges dist/cli dist/core dist/runtime dist/server -name '*.js' | while read -r f; do
             node --check "$f" || exit 1
           done
+
+  # ── Local-index platform matrix ──────────────────────────────────────
+  # Each job targets a specific local-code-index subsystem to catch
+  # OS-specific regressions (file locking, path handling, process
+  # teardown, observer behaviour) on both macOS and Ubuntu across
+  # the supported Node LTS range.
+
+  local-index-safe-files:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node-version: [20, 22]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node-version }}
+      - run: npm ci
+      - run: npm run build:node && npm run build:tests
+      - run: node dist-tests/scripts/run-node-tests.js tests/local-code-index-safe-files.test.ts
+
+  local-index-lock:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node-version: [20, 22]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node-version }}
+      - run: npm ci
+      - run: npm run build:node && npm run build:tests
+      - run: node dist-tests/scripts/run-node-tests.js tests/local-code-index-lock.test.ts tests/local-code-index-lock-process.test.ts
+
+  local-index-publication:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node-version: [20, 22]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node-version }}
+      - run: npm ci
+      - run: npm run build:node && npm run build:tests
+      - run: node dist-tests/scripts/run-node-tests.js tests/local-code-index-publication.test.ts
+
+  local-index-git-observer:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node-version: [20, 22]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node-version }}
+      - run: npm ci
+      - run: npm run build:node && npm run build:tests
+      - run: node dist-tests/scripts/run-node-tests.js tests/local-code-index-git-observer.test.ts
+
+  local-index-race:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node-version: [20, 22]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node-version }}
+      - run: npm ci
+      - run: npm run build:node && npm run build:tests
+      - run: node dist-tests/scripts/run-node-tests.js tests/local-code-index-source-race.test.ts
+
+  local-index-release-scan:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node-version: [20, 22]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node-version }}
+      - run: npm ci
+      - run: npm run build:node && npm run build:tests
+      - run: node dist-tests/scripts/run-node-tests.js tests/local-code-index-v2-release-scan.test.ts

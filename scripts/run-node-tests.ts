@@ -271,6 +271,11 @@ const isolatedUnitFiles = new Set([
   "tests/managed-worker-worktree-cleanup.test.js",
   "tests/review-dispatch-cancellation.test.js",
   "tests/review-dispatch-worktree-safety.test.js",
+  // Local-code-index v2 tests that spawn subprocesses or exercise concurrent
+  // filesystem locks. Parallel process pressure can starve their temp-dir
+  // cleanup or race lock acquisition into a false conflict.
+  "tests/local-code-index-source-race.test.js",
+  "tests/code-index-cli.test.js",
 ]);
 
 // Bench-measured slow unit files (>1s standalone OR >30s timeout via per-file
@@ -341,6 +346,11 @@ const slowUnitFiles = new Set([
   "tests/verification-infrastructure.test.js",
   "tests/verify-plan-mode-contract.test.js",
   "tests/worker-store-lifecycle.test.js",
+  // Local-code-index v2 tests with heavy filesystem I/O (>1s standalone).
+  "tests/local-code-index-v2-release-scan.test.js",
+  "tests/local-code-index-v2-migration.test.js",
+  "tests/local-code-index.test.js",
+  "tests/local-code-index-concurrency.test.js",
 ]);
 
 const isolatedIntegrationFiles = new Set([

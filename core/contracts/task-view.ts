@@ -33,7 +33,7 @@ export type TaskViewSchemaVersion = typeof TASK_VIEW_SCHEMA_VERSION;
  *
  * These are the ONLY states a public TaskView may report. They are projected
  * from the richer internal queue/job statuses (pending, scheduled,
- * in_progress, completed, failed, needs_issue_link, codegraph_unavailable,
+ * in_progress, completed, failed, needs_issue_link, local_code_index_unavailable,
  * ...) but collapse implementation detail into a user-comprehensible shape.
  *
  * Lifecycle:

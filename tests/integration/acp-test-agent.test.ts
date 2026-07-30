@@ -33,15 +33,21 @@ type ProcessExitStatus = {
 };
 
 async function runClient(prompt, testAgentArgs = [], envOverrides = {}) {
+  const launchArgs = [...testAgentArgs];
+  const scenarioIndex = launchArgs.indexOf("--scenario-file");
+  const inlineScenario = scenarioIndex >= 0 && launchArgs[scenarioIndex + 1]
+    ? readFileSync(launchArgs[scenarioIndex + 1], "utf8")
+    : null;
+  if (scenarioIndex >= 0) launchArgs.splice(scenarioIndex, 2);
   return new Promise<ClientRunResult>((resolve, reject) => {
     const child = spawn(process.execPath, [acpClient, "--agent", "fake-acp", "--cwd", repoRoot], {
       cwd: repoRoot,
       env: {
         ...process.env,
         CPB_AGENT_ISOLATE_HOME: "0",
-        CPB_CODEGRAPH_ENABLED: "0",
         CPB_ACP_FAKE_ACP_COMMAND: process.execPath,
-        CPB_ACP_FAKE_ACP_ARGS: JSON.stringify([testAgent, ...testAgentArgs]),
+        CPB_ACP_FAKE_ACP_ARGS: JSON.stringify([testAgent, ...launchArgs]),
+        ...(inlineScenario ? { CPB_ACP_TEST_SCENARIO_JSON: inlineScenario } : {}),
         ...envOverrides,
       },
       stdio: ["pipe", "pipe", "pipe"],
@@ -202,7 +208,7 @@ test("configurable ACP test agent can write scenario artifacts through ACP fs to
   );
 });
 
-test("ACP client audits codegraph MCP injection and tool call updates", async () => {
+test("ACP client audits tool call updates without injecting a built-in MCP server", async () => {
   const tmp = await tempRoot("cpb-acp-audit");
   const auditPath = path.join(tmp, "audit.jsonl");
   const scenarioPath = path.join(tmp, "scenario.json");
@@ -214,8 +220,8 @@ test("ACP client audits codegraph MCP injection and tool call updates", async ()
           output: "audited-response",
           toolCalls: [
             {
-              toolCallId: "cg-lookup-1",
-              title: "mcp__codegraph__codegraph_context",
+              toolCallId: "repo-lookup-1",
+              title: "repository_lookup",
               status: "completed",
             },
           ],
@@ -230,9 +236,7 @@ test("ACP client audits codegraph MCP injection and tool call updates", async ()
     "utf8",
   );
 
-  const result = await runClient("use codegraph first", ["--scenario-file", scenarioPath], {
-    CPB_CODEGRAPH_ENABLED: "1",
-    CPB_CODEGRAPH_PORT: "43101",
+  const result = await runClient("inspect the repository", ["--scenario-file", scenarioPath], {
     CPB_ACP_AUDIT_FILE: auditPath,
     CPB_ACP_PROJECT: "proj",
     CPB_ACP_JOB_ID: "job-acp-audit",
@@ -263,28 +267,22 @@ test("ACP client audits codegraph MCP injection and tool call updates", async ()
   assert.equal(agentLaunch?.runtimeGuards?.taskRiskPolicy?.riskLevel, "high");
   assert.deepEqual(agentLaunch?.runtimeGuards?.taskRiskPolicy?.evidenceRequirements, ["canonical_command", "real_path_trace", "adversarial_verdict"]);
   const sessionNewRequest = events.find((event) => event.event === "session_new_request");
-  assert.deepEqual(sessionNewRequest?.mcpServers?.[0], {
-    name: "codegraph",
-    type: "sse",
-    url: "http://localhost:43101",
-    command: null,
-    args: null,
-  });
+  assert.deepEqual(sessionNewRequest?.mcpServers, []);
   assert.ok(
     events.some((event) =>
       event.event === "session_new" &&
       Array.isArray(event.mcpServerNames) &&
-      event.mcpServerNames.includes("codegraph")
+      event.mcpServerNames.length === 0
     ),
-    "session_new audit should record codegraph MCP injection",
+    "session_new audit should record that no built-in MCP server was injected",
   );
   assert.ok(
     events.some((event) =>
       event.event === "tool_call" &&
-      event.toolCallId === "cg-lookup-1" &&
-      /codegraph/.test(event.title || "")
+      event.toolCallId === "repo-lookup-1" &&
+      event.title === "repository_lookup"
     ),
-    "tool_call audit should record the codegraph tool call",
+    "tool_call audit should record the repository tool call",
   );
   assert.ok(
     events.some((event) =>
@@ -306,12 +304,11 @@ test("ACP client audits codegraph MCP injection and tool call updates", async ()
   );
 });
 
-test("ACP live-preflight audit keeps MCP identity but omits launch arguments", async () => {
+test("ACP live-preflight audit does not invent MCP servers", async () => {
   const tmp = await tempRoot("cpb-acp-live-preflight-audit-redaction");
   const auditPath = path.join(tmp, "audit.jsonl");
 
   const result = await runClient("preflight", ["--response", "CPB_PROVIDER_PREFLIGHT_OK"], {
-    CPB_CODEGRAPH_ENABLED: "1",
     CPB_ACP_AUDIT_FILE: auditPath,
     CPB_ACP_PROJECT: "cpb-provider-live-preflight",
     CPB_ACP_JOB_ID: "provider-preflight-planner-fake-acp",
@@ -323,7 +320,7 @@ test("ACP live-preflight audit keeps MCP identity but omits launch arguments", a
   assert.equal(result.stdout, "CPB_PROVIDER_PREFLIGHT_OK");
   const events = await readJsonl(auditPath);
   const summaries = events.flatMap((event) => Array.isArray(event.mcpServers) ? event.mcpServers : []);
-  assert.ok(summaries.some((server) => server.name === "codegraph" && server.command === "codegraph"));
+  assert.deepEqual(summaries, []);
   assert.ok(summaries.every((server) => !Object.hasOwn(server, "args")));
   assert.ok(events.every((event) => event.correlationNonce === "a".repeat(32)));
 });
@@ -341,7 +338,6 @@ test("ACP client audits and redacts session-close request errors", async () => {
       CPB_ACP_AUDIT_FILE: auditPath,
       CPB_AGENT_ISOLATE_HOME: "0",
       CPB_AGENT_SANDBOX: "off",
-      CPB_CODEGRAPH_ENABLED: "0",
       CPB_ACP_FAKE_ACP_COMMAND: process.execPath,
       CPB_ACP_FAKE_ACP_ARGS: JSON.stringify([testAgent, "--response", "close-error-response"]),
     },
@@ -377,7 +373,6 @@ test("ACP client does not infer a session-update timeout from task identity", ()
       CPB_ACP_PHASE: "execute",
       CPB_ACP_IDLE_TIMEOUT_MS: "4321",
       CPB_AGENT_ISOLATE_HOME: "0",
-      CPB_CODEGRAPH_ENABLED: "0",
     },
   });
   const planClient = new AcpClient({
@@ -389,7 +384,6 @@ test("ACP client does not infer a session-update timeout from task identity", ()
       CPB_ACP_PHASE: "plan",
       CPB_ACP_IDLE_TIMEOUT_MS: "4321",
       CPB_AGENT_ISOLATE_HOME: "0",
-      CPB_CODEGRAPH_ENABLED: "0",
     },
   });
 
@@ -411,21 +405,19 @@ test("ACP client can configure a generic execute no-edit idle timeout", () => {
       CPB_ACP_IDLE_TIMEOUT_MS: "4321",
       CPB_ACP_EXECUTE_NO_EDIT_IDLE_TIMEOUT_MS: "89",
       CPB_AGENT_ISOLATE_HOME: "0",
-      CPB_CODEGRAPH_ENABLED: "0",
     },
   });
 
   assert.equal(client.executeNoEditIdleTimeoutMs, 89);
 });
 
-test("Codex ACP receives direct codegraph stdio config outside session mcpServers", async () => {
-  const tmp = await tempRoot("cpb-codex-codegraph-direct");
+test("Codex ACP receives no built-in MCP launch config", async () => {
+  const tmp = await tempRoot("cpb-codex-no-built-in-mcp");
   const { args } = await resolveAgentCommand("codex", {
     ...process.env,
     CPB_ACP_CODEX_COMMAND: "codex-acp",
     CPB_ACP_CODEX_ARGS: "[]",
     CPB_AGENT_ISOLATE_HOME: "0",
-    CPB_CODEGRAPH_ENABLED: "1",
     CPB_PROJECT_PATH_OVERRIDE: tmp,
   });
 
@@ -436,11 +428,7 @@ test("Codex ACP receives direct codegraph stdio config outside session mcpServer
     launchConfig.set(key, valueParts.join("="));
   }
 
-  assert.equal(launchConfig.get("mcp_servers.codegraph.command"), JSON.stringify("codegraph"));
-  assert.deepEqual(
-    JSON.parse(launchConfig.get("mcp_servers.codegraph.args")),
-    ["serve", "--mcp", "--path", tmp],
-  );
+  assert.equal([...launchConfig.keys()].some((key) => key.startsWith("mcp_servers.")), false);
   assert.ok(!args.some((arg) => /supergateway|--sse/.test(String(arg))));
 });
 
@@ -537,7 +525,6 @@ test("resolved Codex ACP command pins the phase sandbox after inherited args", a
     CPB_ACP_PHASE: "execute",
     CPB_ACP_ROLE: "executor",
     CPB_AGENT_SANDBOX: "required",
-    CPB_CODEGRAPH_ENABLED: "0",
   });
 
   assert.equal(args.at(-4), "-c");
@@ -552,7 +539,7 @@ test("explicit empty ACP write allowlist remains deny-all across context updates
     cwd: repoRoot,
     prompt: "",
     writeAllowPaths: [],
-    env: { ...process.env, CPB_AGENT_ISOLATE_HOME: "0", CPB_CODEGRAPH_ENABLED: "0" },
+    env: { ...process.env, CPB_AGENT_ISOLATE_HOME: "0" },
   });
 
   assert.deepEqual(client.writeAllowPaths, []);
@@ -562,15 +549,14 @@ test("explicit empty ACP write allowlist remains deny-all across context updates
   assert.throws(() => client.validateWritePath(path.join(repoRoot, "still-blocked.txt")), /write path not allowed/);
 });
 
-test("Codex ACP codegraph config prefers current ACP cwd over stale project override", async () => {
-  const stale = await tempRoot("cpb-codex-codegraph-stale");
-  const current = await tempRoot("cpb-codex-codegraph-current");
+test("Codex ACP cwd overrides do not create a built-in MCP config", async () => {
+  const stale = await tempRoot("cpb-codex-mcp-stale");
+  const current = await tempRoot("cpb-codex-mcp-current");
   const { args } = await resolveAgentCommand("codex", {
     ...process.env,
     CPB_ACP_CODEX_COMMAND: "codex-acp",
     CPB_ACP_CODEX_ARGS: "[]",
     CPB_AGENT_ISOLATE_HOME: "0",
-    CPB_CODEGRAPH_ENABLED: "1",
     CPB_PROJECT_PATH_OVERRIDE: stale,
     CPB_ACP_CWD: current,
   });
@@ -582,10 +568,7 @@ test("Codex ACP codegraph config prefers current ACP cwd over stale project over
     launchConfig.set(key, valueParts.join("="));
   }
 
-  assert.deepEqual(
-    JSON.parse(launchConfig.get("mcp_servers.codegraph.args")),
-    ["serve", "--mcp", "--path", current],
-  );
+  assert.equal([...launchConfig.keys()].some((key) => key.startsWith("mcp_servers.")), false);
 });
 
 test("Claude-compatible variant ACP args survive child env filtering", async () => {
@@ -648,7 +631,6 @@ test("ACP terminal commands launch through RTK when available", async () => {
       CPB_ACP_AUDIT_FILE: auditPath,
       CPB_ACP_RTK_ENABLED: "1",
       CPB_AGENT_ISOLATE_HOME: "0",
-      CPB_CODEGRAPH_ENABLED: "0",
     },
   });
 
@@ -689,7 +671,6 @@ test("ACP terminal exit audit bounds and redacts captured output", async () => {
       CPB_ACP_AUDIT_FILE: auditPath,
       CPB_ACP_RTK_ENABLED: "0",
       CPB_AGENT_ISOLATE_HOME: "0",
-      CPB_CODEGRAPH_ENABLED: "0",
     },
   });
 
@@ -722,7 +703,6 @@ test("ACP terminal denies whole-filesystem find commands", async () => {
       CPB_ACP_AUDIT_FILE: auditPath,
       CPB_ACP_RTK_ENABLED: "0",
       CPB_AGENT_ISOLATE_HOME: "0",
-      CPB_CODEGRAPH_ENABLED: "0",
     },
   });
 
@@ -763,7 +743,6 @@ test("ACP terminal denies mutating git commands in read-only phases", async () =
       CPB_ACP_PHASE: "verify",
       CPB_ACP_RTK_ENABLED: "0",
       CPB_AGENT_ISOLATE_HOME: "0",
-      CPB_CODEGRAPH_ENABLED: "0",
     },
   });
 
@@ -823,7 +802,6 @@ test("ACP terminal exact-test policy denies commands outside the allowlist", asy
       CPB_CANONICAL_TEST_COMMANDS_JSON: JSON.stringify([canonical]),
       CPB_ACP_RTK_ENABLED: "0",
       CPB_AGENT_ISOLATE_HOME: "0",
-      CPB_CODEGRAPH_ENABLED: "0",
     },
   });
 
@@ -871,7 +849,6 @@ test("ACP terminal exact-test policy rejects transformed test commands", async (
       CPB_CANONICAL_TEST_COMMANDS_JSON: JSON.stringify([canonical]),
       CPB_ACP_RTK_ENABLED: "0",
       CPB_AGENT_ISOLATE_HOME: "0",
-      CPB_CODEGRAPH_ENABLED: "0",
     },
   });
 
@@ -916,7 +893,6 @@ test("ACP terminal exact-test policy allows listed diagnostic commands only by e
       CPB_DIAGNOSTIC_TEST_COMMANDS_JSON: JSON.stringify([diagnostic]),
       CPB_ACP_RTK_ENABLED: "0",
       CPB_AGENT_ISOLATE_HOME: "0",
-      CPB_CODEGRAPH_ENABLED: "0",
     },
   });
 
@@ -961,7 +937,6 @@ test("ACP session update fail-fast blocks disabled web tools", async () => {
       CPB_ACP_AUDIT_FILE: auditPath,
       CPB_ACP_DISABLE_WEB_TOOLS: "1",
       CPB_AGENT_ISOLATE_HOME: "0",
-      CPB_CODEGRAPH_ENABLED: "0",
     },
   });
 
@@ -996,7 +971,6 @@ test("ACP session update fail-fast blocks whole-filesystem search titles", async
       ...process.env,
       CPB_ACP_AUDIT_FILE: auditPath,
       CPB_AGENT_ISOLATE_HOME: "0",
-      CPB_CODEGRAPH_ENABLED: "0",
     },
   });
 
@@ -1033,7 +1007,6 @@ test("ACP session updates allow execute terminal tools when generic policy permi
       CPB_ACP_AUDIT_FILE: auditPath,
       CPB_ACP_PHASE: "execute",
       CPB_AGENT_ISOLATE_HOME: "0",
-      CPB_CODEGRAPH_ENABLED: "0",
     },
   });
 
@@ -1066,7 +1039,6 @@ test("ACP session update fail-fast blocks configured execute read/search loops w
       CPB_ACP_PHASE: "execute",
       CPB_ACP_EXECUTE_NO_EDIT_TOOL_LIMIT: "2",
       CPB_AGENT_ISOLATE_HOME: "0",
-      CPB_CODEGRAPH_ENABLED: "0",
     },
   });
 
@@ -1127,7 +1099,6 @@ test("ACP session update fail-fast blocks ordinary execute read/search loops wit
       CPB_ACP_PHASE: "execute",
       CPB_ACP_EXECUTE_NO_EDIT_TOOL_LIMIT: "1",
       CPB_AGENT_ISOLATE_HOME: "0",
-      CPB_CODEGRAPH_ENABLED: "0",
     },
   });
 
@@ -1179,7 +1150,6 @@ test("ACP session update no-edit idle guard fails configured stalled execute rea
       CPB_ACP_EXECUTE_NO_EDIT_TOOL_LIMIT: "5",
       CPB_ACP_EXECUTE_NO_EDIT_IDLE_TIMEOUT_MS: "25",
       CPB_AGENT_ISOLATE_HOME: "0",
-      CPB_CODEGRAPH_ENABLED: "0",
     },
   });
 
@@ -1230,7 +1200,6 @@ test("ACP session update no-edit guard stops after execute edits", async () => {
       CPB_ACP_EXECUTE_NO_EDIT_TOOL_LIMIT: "2",
       CPB_ACP_EXECUTE_NO_EDIT_IDLE_TIMEOUT_MS: "25",
       CPB_AGENT_ISOLATE_HOME: "0",
-      CPB_CODEGRAPH_ENABLED: "0",
     },
   });
   let idleRejected = false;
@@ -1316,7 +1285,6 @@ test("ACP session update exact-test policy blocks non-exact test command titles"
       CPB_ACP_EXACT_TEST_COMMAND_GUARD: "1",
       CPB_CANONICAL_TEST_COMMANDS_JSON: JSON.stringify([canonical]),
       CPB_AGENT_ISOLATE_HOME: "0",
-      CPB_CODEGRAPH_ENABLED: "0",
     },
   });
 
@@ -1378,7 +1346,6 @@ test("ACP session update exact-test policy blocks ad hoc test scripts", async ()
       CPB_ACP_EXACT_TEST_COMMAND_GUARD: "1",
       CPB_CANONICAL_TEST_COMMANDS_JSON: JSON.stringify([canonical]),
       CPB_AGENT_ISOLATE_HOME: "0",
-      CPB_CODEGRAPH_ENABLED: "0",
     },
   });
 
@@ -1417,7 +1384,6 @@ test("ACP session update exact-test policy blocks inline Python test probes", as
       CPB_ACP_EXACT_TEST_COMMAND_GUARD: "1",
       CPB_CANONICAL_TEST_COMMANDS_JSON: JSON.stringify([canonical]),
       CPB_AGENT_ISOLATE_HOME: "0",
-      CPB_CODEGRAPH_ENABLED: "0",
     },
   });
 
@@ -1454,7 +1420,6 @@ test("ACP session update fail-fast blocks normalized tool-call budget exceed", a
       CPB_ACP_AUDIT_FILE: auditPath,
       CPB_ACP_TOOL_CALL_BUDGET: "1",
       CPB_AGENT_ISOLATE_HOME: "0",
-      CPB_CODEGRAPH_ENABLED: "0",
     },
   });
 
@@ -1510,7 +1475,6 @@ test("ACP session update fail-fast blocks normalized tool-event budget exceed", 
       CPB_ACP_AUDIT_FILE: auditPath,
       CPB_ACP_TOOL_EVENT_BUDGET: "2",
       CPB_AGENT_ISOLATE_HOME: "0",
-      CPB_CODEGRAPH_ENABLED: "0",
     },
   });
 
@@ -1563,7 +1527,6 @@ test("ACP tool-event budget ignores duplicate partial updates for one tool state
       CPB_ACP_AUDIT_FILE: auditPath,
       CPB_ACP_TOOL_EVENT_BUDGET: "2",
       CPB_AGENT_ISOLATE_HOME: "0",
-      CPB_CODEGRAPH_ENABLED: "0",
     },
   });
 
@@ -1603,7 +1566,6 @@ test("ACP session update fail-fast blocks read-only mutating terminal titles", a
       CPB_ACP_AUDIT_FILE: auditPath,
       CPB_ACP_PHASE: "verify",
       CPB_AGENT_ISOLATE_HOME: "0",
-      CPB_CODEGRAPH_ENABLED: "0",
     },
   });
 
@@ -1663,7 +1625,6 @@ test("ACP client close terminates registered terminal processes", async () => {
       ...process.env,
       CPB_ACP_RTK_ENABLED: "0",
       CPB_AGENT_ISOLATE_HOME: "0",
-      CPB_CODEGRAPH_ENABLED: "0",
     },
   });
 
@@ -1708,8 +1669,8 @@ test("AcpPool passes job metadata and reports the automatic ACP audit file", asy
           output: "pool-audited-response",
           toolCalls: [
             {
-              toolCallId: "cg-pool-lookup",
-              title: "mcp__codegraph__codegraph_context",
+              toolCallId: "repo-pool-lookup",
+              title: "repository_lookup",
               status: "completed",
             },
           ],
@@ -1731,8 +1692,6 @@ test("AcpPool passes job metadata and reports the automatic ACP audit file", asy
     env: {
       ...process.env,
       CPB_AGENT_ISOLATE_HOME: "0",
-      CPB_CODEGRAPH_ENABLED: "1",
-      CPB_CODEGRAPH_PORT: "43101",
       CPB_PROJECT_RUNTIME_ROOT: dataRoot,
       CPB_ACP_FAKE_ACP_COMMAND: process.execPath,
       CPB_ACP_FAKE_ACP_ARGS: JSON.stringify([testAgent, "--scenario-file", scenarioPath]),
@@ -1740,7 +1699,7 @@ test("AcpPool passes job metadata and reports the automatic ACP audit file", asy
   });
 
   try {
-    const result = await pool.execute("fake-acp", "use codegraph first", repoRoot, 10_000, {
+    const result = await pool.execute("fake-acp", "inspect the repository", repoRoot, 10_000, {
       projectId: "proj",
       jobId: "job-pool-audit",
       phase: "plan",
@@ -1757,15 +1716,15 @@ test("AcpPool passes job metadata and reports the automatic ACP audit file", asy
     assert.match(result.acpAuditFile, /job-pool-audit\.jsonl$/);
     const events = await readJsonl(result.acpAuditFile);
     assert.ok(events.every((event) => event.project === "proj" && event.jobId === "job-pool-audit"));
-    assert.ok(events.some((event) => event.event === "session_new" && event.mcpServerNames.includes("codegraph")));
-    assert.ok(events.some((event) => event.event === "tool_call" && event.toolCallId === "cg-pool-lookup"));
+    assert.ok(events.some((event) => event.event === "session_new" && event.mcpServerNames.length === 0));
+    assert.ok(events.some((event) => event.event === "tool_call" && event.toolCallId === "repo-pool-lookup"));
     assert.ok(
       progressEvents.some((event) =>
         event.type === "agent_activity" &&
         event.phase === "plan" &&
         event.role === "planner" &&
         event.jobId === "job-pool-audit" &&
-        event.message.includes("mcp__codegraph__codegraph_context")
+        event.message.includes("repository_lookup")
       ),
       "ACP tool activity should be propagated to pool progress",
     );
@@ -1793,7 +1752,6 @@ test("AcpPool agent launch audit records isolated HOME under project runtime roo
     hubRoot,
     env: {
       ...process.env,
-      CPB_CODEGRAPH_ENABLED: "0",
       CPB_ACP_RTK_ENABLED: "0",
       CPB_PROJECT_RUNTIME_ROOT: dataRoot,
       CPB_ACP_FAKE_ACP_COMMAND: process.execPath,
@@ -1840,7 +1798,6 @@ test("AcpPool runs fake-acp even when the inherited outer sandbox is required", 
     env: {
       ...process.env,
       CPB_AGENT_ISOLATE_HOME: "0",
-      CPB_CODEGRAPH_ENABLED: "0",
       CPB_AGENT_SANDBOX: "required",
       CPB_ACP_FAKE_ACP_COMMAND: process.execPath,
       CPB_ACP_FAKE_ACP_ARGS: JSON.stringify([testAgent, "--scenario-file", scenarioPath]),
@@ -2034,7 +1991,6 @@ test("AcpPool one-shot creates runtime roots before spawning the ACP client", as
     hubRoot,
     env: {
       ...process.env,
-      CPB_CODEGRAPH_ENABLED: "0",
       CPB_ACP_RTK_ENABLED: "0",
       CPB_PROJECT_RUNTIME_ROOT: dataRoot,
       CPB_ACP_FAKE_ACP_COMMAND: process.execPath,
@@ -2930,7 +2886,6 @@ test("persistent verifier ACP requests cannot write worktree files", async () =>
     env: {
       ...process.env,
       CPB_AGENT_ISOLATE_HOME: "0",
-      CPB_CODEGRAPH_ENABLED: "0",
       CPB_ACP_RTK_ENABLED: "0",
       CPB_ACP_PERSISTENT_PROCESS: "1",
       CPB_ACP_FAKE_ACP_COMMAND: process.execPath,
@@ -2984,7 +2939,6 @@ test("AcpPool never reuses a Codex process across effective permission lanes", a
       ...process.env,
       CPB_AGENT_ISOLATE_HOME: "0",
       CPB_AGENT_SANDBOX: "off",
-      CPB_CODEGRAPH_ENABLED: "0",
       CPB_ACP_RTK_ENABLED: "0",
       CPB_ACP_PERSISTENT_PROCESS: "1",
       CPB_ACP_CODEX_COMMAND: process.execPath,
@@ -3052,7 +3006,7 @@ test("AcpPool persistent ACP reuses one provider process while keeping per-job a
           output: "persistent-response",
           toolCalls: [
             {
-              title: "mcp__codegraph__codegraph_context",
+              title: "repository_lookup",
               status: "completed",
             },
           ],
@@ -3074,7 +3028,6 @@ test("AcpPool persistent ACP reuses one provider process while keeping per-job a
       ...process.env,
       ...sandboxTempEnv(tmp),
       CPB_AGENT_ISOLATE_HOME: "0",
-      CPB_CODEGRAPH_ENABLED: "0",
       CPB_ACP_RTK_ENABLED: "0",
       CPB_ACP_PERSISTENT_PROCESS: "1",
       CPB_PROJECT_RUNTIME_ROOT: dataRoot,
@@ -3156,7 +3109,6 @@ test("AcpPool closeProvider worktree release frees persistent provider lease", a
       ...process.env,
       ...sandboxTempEnv(tmp),
       CPB_AGENT_ISOLATE_HOME: "0",
-      CPB_CODEGRAPH_ENABLED: "0",
       CPB_ACP_RTK_ENABLED: "0",
       CPB_ACP_PERSISTENT_PROCESS: "1",
       CPB_ACP_FAKE_ACP_COMMAND: process.execPath,
@@ -3225,7 +3177,6 @@ test("AcpPool job release closes every conversation across replay worktrees", as
     env: {
       ...process.env,
       ...sandboxTempEnv(tmp),
-      CPB_CODEGRAPH_ENABLED: "0",
       CPB_ACP_RTK_ENABLED: "0",
       CPB_ACP_PERSISTENT_PROCESS: "1",
       CPB_PROJECT_RUNTIME_ROOT: dataRoot,
@@ -3295,7 +3246,6 @@ test("AcpPool one-shot ACP scopes isolated homes per conversation", async () => 
     env: {
       ...process.env,
       ...sandboxTempEnv(tmp),
-      CPB_CODEGRAPH_ENABLED: "0",
       CPB_ACP_RTK_ENABLED: "0",
       CPB_PROJECT_RUNTIME_ROOT: dataRoot,
       CPB_ACP_FAKE_ACP_COMMAND: process.execPath,
@@ -3351,7 +3301,6 @@ test("AcpPool stop terminates persistent provider when session close hangs", asy
       ...process.env,
       ...sandboxTempEnv(tmp),
       CPB_AGENT_ISOLATE_HOME: "0",
-      CPB_CODEGRAPH_ENABLED: "0",
       CPB_ACP_RTK_ENABLED: "0",
       CPB_ACP_PERSISTENT_PROCESS: "1",
       CPB_ACP_CLOSE_SESSION_TIMEOUT_MS: "100",
@@ -3402,7 +3351,6 @@ test("AcpPool queued acquire abort removes the waiter and rejects AbortError", a
       ...process.env,
       ...sandboxTempEnv(tmp),
       CPB_AGENT_ISOLATE_HOME: "0",
-      CPB_CODEGRAPH_ENABLED: "0",
       CPB_ACP_RTK_ENABLED: "0",
     },
   });
@@ -3441,7 +3389,6 @@ test("AcpPool stop terminates active one-shot provider child", async () => {
       ...process.env,
       ...sandboxTempEnv(tmp),
       CPB_AGENT_ISOLATE_HOME: "0",
-      CPB_CODEGRAPH_ENABLED: "0",
       CPB_ACP_RTK_ENABLED: "0",
       CPB_ACP_PERSISTENT_PROCESS: "0",
       CPB_ACP_FAKE_ACP_COMMAND: process.execPath,
@@ -3497,7 +3444,6 @@ test("AcpPool one-shot abort terminates the provider child and rejects AbortErro
       ...process.env,
       ...sandboxTempEnv(tmp),
       CPB_AGENT_ISOLATE_HOME: "0",
-      CPB_CODEGRAPH_ENABLED: "0",
       CPB_ACP_RTK_ENABLED: "0",
       CPB_ACP_PERSISTENT_PROCESS: "0",
       CPB_ACP_FAKE_ACP_COMMAND: process.execPath,
@@ -3552,7 +3498,6 @@ test("AcpPool persistent request abort closes the reusable client and rejects Ab
       ...process.env,
       ...sandboxTempEnv(tmp),
       CPB_AGENT_ISOLATE_HOME: "0",
-      CPB_CODEGRAPH_ENABLED: "0",
       CPB_ACP_RTK_ENABLED: "0",
       CPB_ACP_PERSISTENT_PROCESS: "1",
       CPB_ACP_FAKE_ACP_COMMAND: process.execPath,
@@ -3605,7 +3550,6 @@ test("AcpPool persistent abort cannot lose to a prompt that resolves during canc
       ...process.env,
       ...sandboxTempEnv(tmp),
       CPB_AGENT_ISOLATE_HOME: "0",
-      CPB_CODEGRAPH_ENABLED: "0",
       CPB_ACP_RTK_ENABLED: "0",
       CPB_ACP_PERSISTENT_PROCESS: "1",
       CPB_ACP_FAKE_ACP_COMMAND: process.execPath,
@@ -3664,7 +3608,6 @@ test("AcpPool one-shot uses ACP idle timeout before total phase timeout", async 
       ...process.env,
       ...sandboxTempEnv(tmp),
       CPB_AGENT_ISOLATE_HOME: "0",
-      CPB_CODEGRAPH_ENABLED: "0",
       CPB_ACP_RTK_ENABLED: "0",
       CPB_ACP_PERSISTENT_PROCESS: "0",
       CPB_ACP_IDLE_TIMEOUT_MS: "300",
@@ -3718,7 +3661,6 @@ test("AcpPool one-shot uses session-update idle timeout despite provider stderr 
       ...process.env,
       ...sandboxTempEnv(tmp),
       CPB_AGENT_ISOLATE_HOME: "0",
-      CPB_CODEGRAPH_ENABLED: "0",
       CPB_ACP_RTK_ENABLED: "0",
       CPB_ACP_PERSISTENT_PROCESS: "0",
       CPB_ACP_IDLE_TIMEOUT_MS: "5000",
@@ -3803,7 +3745,6 @@ setInterval(() => {}, 1000);
       ...process.env,
       ...sandboxTempEnv(tmp),
       CPB_AGENT_ISOLATE_HOME: "0",
-      CPB_CODEGRAPH_ENABLED: "0",
       CPB_ACP_PERSISTENT_PROCESS: "0",
       CPB_ACP_CLIENT: customClient,
     },
@@ -3871,7 +3812,6 @@ test("AcpPool persistent ACP reuses the provider process across isolated worktre
       ...process.env,
       ...sandboxTempEnv(tmp),
       CPB_AGENT_ISOLATE_HOME: "0",
-      CPB_CODEGRAPH_ENABLED: "0",
       CPB_ACP_RTK_ENABLED: "0",
       CPB_ACP_PERSISTENT_PROCESS: "1",
       CPB_PROJECT_RUNTIME_ROOT: dataRoot,

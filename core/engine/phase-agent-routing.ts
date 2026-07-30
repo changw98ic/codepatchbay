@@ -75,8 +75,13 @@ function normalizeDynamicAgentEntry(entry: unknown): DynamicAgent | null {
   if (!Object.keys(entryRecord).length) return null;
   const selectedAgent = entryRecord.agent || entryRecord.name || entryRecord.selectedAgent || null;
   if (!selectedAgent) return null;
-  const normalizedAgent = entryRecord.variant
-    ? { agent: selectedAgent, variant: entryRecord.variant }
+  const normalizedAgent = (entryRecord.variant || entryRecord.provider || entryRecord.model)
+    ? {
+      agent: selectedAgent,
+      ...(entryRecord.variant ? { variant: entryRecord.variant } : {}),
+      ...(entryRecord.provider ? { provider: entryRecord.provider } : {}),
+      ...(entryRecord.model ? { model: entryRecord.model } : {}),
+    }
     : selectedAgent;
   return {
     selectedAgent: normalizedAgent,

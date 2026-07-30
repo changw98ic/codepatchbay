@@ -1,4 +1,19 @@
 import type { LooseRecord } from "../../shared/types.js";
+import {
+  providerCredentialInputKeysForAgent,
+  providerEnvironmentKeysForAgent,
+  providerEnvironmentKeysForAllAgents,
+} from "../agents/registry.js";
+import {
+  getConfiguredProvider,
+  providerEnvironmentKeysFromConfig,
+  configuredProviderCredentialInputKeys,
+  configuredProviderEnvironmentKeys,
+} from "../agents/provider-catalog.js";
+import {
+  providerCredentialInputKeysForSelection,
+  providerEnvironmentKeysForSelection,
+} from "../agents/provider-config.js";
 // Shared child-process environment policy.
 // Keep this in core so runtime, bridges, and server entrypoints enforce the
 // same secret boundary without importing server modules.
@@ -18,9 +33,10 @@ const RUNTIME_BASICS = new Set([
 ]);
 
 const CPB_RUNTIME_ENV = new Set([
-  "CPB_ROOT", "CPB_EXECUTOR_ROOT", "CPB_HUB_ROOT",
+  "CPB_ROOT", "CPB_EXECUTOR_ROOT", "CPB_HUB_ROOT", "CPB_HOME", "CPB_PROVIDERS_FILE",
   "CPB_INSTALL_ROOT", "CPB_PROJECT_RUNTIME_ROOT", "CPB_PROJECT_PATH_OVERRIDE",
   "CPB_WORKFLOW", "CPB_PLAN_MODE", "CPB_TRIAGE_MODE",
+  "CPB_PROVIDER", "CPB_PROVIDER_ID", "CPB_MODEL", "CPB_MODEL_NAME", "CPB_PROVIDER_AGENT",
   "CPB_QUEUE_ENTRY_ID", "CPB_SESSION_ID", "CPB_WORKER_ID",
   "CPB_SOURCE_CONTEXT_JSON", "CPB_CONTEXT_PACK_PATH",
   "CPB_PARENT_PLAN_CACHE_JSON", "CPB_INDEX_SNAPSHOT_JSON",
@@ -29,7 +45,7 @@ const CPB_RUNTIME_ENV = new Set([
   "CPB_GITHUB_PR_AFTER_PASS", "CPB_GITHUB_PR_DRY_RUN", "CPB_GITHUB_BRANCH_PUSHED",
   "CPB_TEAM_POLICY_JSON", "CPB_APPROVAL_POLL_MS", "CPB_APPROVAL_TIMEOUT_MS",
   "CPB_VERSION", "CPB_DANGEROUS",
-  "CPB_CODEGRAPH_ENABLED", "CPB_CODEGRAPH_PORT", "CPB_CODEGRAPH_MCP_STDIO", "CPB_CODEGRAPH_INDEX_ONLY_OK", "CPB_WORKTREE_CODEGRAPH_INIT", "CPB_PERMISSION_MODE",
+  "CPB_PERMISSION_MODE",
   "CPB_STALE_GRACE_COUNT", "CPB_ACTIVITY_STALE_MS", "CPB_PROJECT_CACHE",
   "CPB_RETRY_COUNT", "CPB_PREVIOUS_VERDICT_ID", "CPB_PREVIOUS_VERDICT_PATH",
   "CPB_LEASE_TTL_MS", "CPB_LEASE_RENEW_INTERVAL_MS",
@@ -69,137 +85,22 @@ const ACP_RUNTIME_ENV = new Set([
   "CPB_AGENT_FS_BOUNDARY_JSON",
   "CPB_VERIFIER_REPLAY_WORKSPACE_WRITE",
   "CPB_CODEX_VERIFIER_WORKSPACE_WRITE",
-  "CPB_ACP_CODEX_COMMAND", "CPB_ACP_CODEX_ARGS",
-  "CPB_ACP_CLAUDE_COMMAND", "CPB_ACP_CLAUDE_ARGS",
-  "CPB_ACP_CLAUDE_GLM_COMMAND", "CPB_ACP_CLAUDE_GLM_ARGS", "CPB_ACP_CLAUDE_GLM_VARIANT",
-  "CPB_ACP_CLAUDE_MIMO_COMMAND", "CPB_ACP_CLAUDE_MIMO_ARGS", "CPB_ACP_CLAUDE_MIMO_VARIANT",
-  "CPB_CLAUDE_CLI_COMMAND", "CPB_CLAUDE_PLAN_MAX_TEXT_CHARS", "CPB_CLAUDE_PLAN_MAX_THINKING_TOKENS",
-  "CPB_CLAUDE_PLAN_MAX_TURNS",
-  "CPB_CLAUDE_MAX_INTERNAL_API_RETRIES",
-  "MAX_THINKING_TOKENS", "CLAUDE_CODE_MAX_OUTPUT_TOKENS", "CLAUDE_CODE_ATTRIBUTION_HEADER",
   "CPB_CLAUDE_VARIANT", "CPB_BUILDER_VARIANT", "CPB_ACP_CLAUDE_VARIANT",
-  "CPB_ACTIVE_CLAUDE_VARIANT",
   "CPB_SUPERVISOR_INTERVAL_MS", "CPB_SUPERVISOR_MAX_CONCURRENT",
 ]);
 
-const PROVIDER_CREDENTIALS = new Set([
-  "OPENAI_API_KEY",
-  "ANTHROPIC_API_KEY",
-  "ANTHROPIC_AUTH_TOKEN",
-  "ANTHROPIC_BASE_URL",
-  "ANTHROPIC_MODEL",
-  "ANTHROPIC_CUSTOM_MODEL_OPTION",
-  "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME",
-  "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION",
-  "ANTHROPIC_DEFAULT_SONNET_MODEL",
-  "ANTHROPIC_DEFAULT_OPUS_MODEL",
-  "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-  "CLAUDE_CODE_SUBAGENT_MODEL",
-  "GEMINI_API_KEY",
-  "GOOGLE_API_KEY",
-  "AZURE_OPENAI_API_KEY",
-  "AZURE_OPENAI_ENDPOINT",
-  "AWS_ACCESS_KEY_ID",
-  "AWS_SECRET_ACCESS_KEY",
-  "AWS_SESSION_TOKEN",
-  "AWS_REGION",
-  "AWS_DEFAULT_REGION",
-  // Xiaomi / MiMo variant
-  "XIAOMI_BASE_URL", "MIMO_BASE_URL",
-  "XIAOMI_API_KEY", "XIAOMI_AUTH_TOKEN",
-  "MIMO_API_KEY", "MIMO_AUTH_TOKEN",
-  "XIAOMI_MODEL", "MIMO_MODEL",
-  // Zhipu / GLM variant
-  "ZHIPU_BASE_URL", "GLM_BASE_URL",
-  "ZHIPU_API_KEY", "ZHIPU_AUTH_TOKEN",
-  "GLM_API_KEY", "GLM_AUTH_TOKEN",
-  "ZHIPU_MODEL", "GLM_MODEL",
-]);
-
-const OPENAI_COMPATIBLE_CREDENTIALS = new Set([
-  "OPENAI_API_KEY",
-  "AZURE_OPENAI_API_KEY",
-  "AZURE_OPENAI_ENDPOINT",
-]);
-
-const ANTHROPIC_COMPATIBLE_CREDENTIALS = new Set([
-  "ANTHROPIC_API_KEY",
-  "ANTHROPIC_AUTH_TOKEN",
-  "ANTHROPIC_BASE_URL",
-  "ANTHROPIC_MODEL",
-  "ANTHROPIC_CUSTOM_MODEL_OPTION",
-  "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME",
-  "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION",
-  "ANTHROPIC_DEFAULT_SONNET_MODEL",
-  "ANTHROPIC_DEFAULT_OPUS_MODEL",
-  "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-  "CLAUDE_CODE_SUBAGENT_MODEL",
-]);
-
-const AWS_BEDROCK_CREDENTIALS = new Set([
-  "AWS_ACCESS_KEY_ID",
-  "AWS_SECRET_ACCESS_KEY",
-  "AWS_SESSION_TOKEN",
-  "AWS_REGION",
-  "AWS_DEFAULT_REGION",
-  "ANTHROPIC_MODEL",
-  "ANTHROPIC_DEFAULT_SONNET_MODEL",
-  "ANTHROPIC_DEFAULT_OPUS_MODEL",
-  "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-  "CLAUDE_CODE_SUBAGENT_MODEL",
-]);
-
-// Variant adapters receive only their raw provider configuration. The trusted
-// adapter converts it to ANTHROPIC_* after launch, so an ambient Anthropic key
-// cannot accompany a GLM or MiMo credential into the child.
-const MIMO_COMPATIBLE_CREDENTIALS = new Set([
-  "XIAOMI_BASE_URL", "MIMO_BASE_URL",
-  "XIAOMI_API_KEY", "XIAOMI_AUTH_TOKEN",
-  "MIMO_API_KEY", "MIMO_AUTH_TOKEN",
-  "XIAOMI_MODEL", "MIMO_MODEL",
-]);
-
-const GLM_COMPATIBLE_CREDENTIALS = new Set([
-  "ZHIPU_BASE_URL", "GLM_BASE_URL",
-  "ZHIPU_API_KEY", "ZHIPU_AUTH_TOKEN",
-  "GLM_API_KEY", "GLM_AUTH_TOKEN",
-  "ZHIPU_MODEL", "GLM_MODEL",
-]);
-
-const GEMINI_COMPATIBLE_CREDENTIALS = new Set([
-  "GEMINI_API_KEY",
-  "GOOGLE_API_KEY",
-]);
-
-const PROVIDER_CREDENTIALS_BY_AGENT = new Map([
-  ["codex", OPENAI_COMPATIBLE_CREDENTIALS],
-  ["openai", OPENAI_COMPATIBLE_CREDENTIALS],
-  ["openai-codex", OPENAI_COMPATIBLE_CREDENTIALS],
-  ["claude", ANTHROPIC_COMPATIBLE_CREDENTIALS],
-  ["anthropic", ANTHROPIC_COMPATIBLE_CREDENTIALS],
-  ["claude-anthropic", ANTHROPIC_COMPATIBLE_CREDENTIALS],
-  ["claude-bedrock", AWS_BEDROCK_CREDENTIALS],
-  ["bedrock", AWS_BEDROCK_CREDENTIALS],
-  ["aws-bedrock", AWS_BEDROCK_CREDENTIALS],
-  ["claude-glm", GLM_COMPATIBLE_CREDENTIALS],
-  ["glm", GLM_COMPATIBLE_CREDENTIALS],
-  ["glm-compatible", GLM_COMPATIBLE_CREDENTIALS],
-  ["zhipu", GLM_COMPATIBLE_CREDENTIALS],
-  ["claude-mimo", MIMO_COMPATIBLE_CREDENTIALS],
-  ["mimo", MIMO_COMPATIBLE_CREDENTIALS],
-  ["mimo-v2.5pro", MIMO_COMPATIBLE_CREDENTIALS],
-  ["xiaomi", MIMO_COMPATIBLE_CREDENTIALS],
-  ["gemini", GEMINI_COMPATIBLE_CREDENTIALS],
-  ["google", GEMINI_COMPATIBLE_CREDENTIALS],
-]);
-
 const NO_PROVIDER_CREDENTIALS = new Set<string>();
+
+// A pool is a trusted CPB process boundary, not an agent child. Before the
+// descriptor registry is loaded it still needs to retain conventional provider
+// variables so the later descriptor-scoped filter can select them. The child
+// boundary never uses this pattern; it only accepts descriptor-declared keys.
+const PROVIDER_ENV_NAME_PATTERN = /(?:API_KEY|AUTH_TOKEN|BASE_URL|ENDPOINT|MODEL|ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN)$/;
 
 const ALLOWED_ENV = new Set([
   ...RUNTIME_BASICS,
   ...CPB_RUNTIME_ENV,
   ...ACP_RUNTIME_ENV,
-  ...PROVIDER_CREDENTIALS,
 ]);
 
 const EXPLICIT_ONLY_CHILD_ENV = new Set([
@@ -244,42 +145,114 @@ function normalizeAgentName(agent: unknown): string {
 
 function agentNameFromOptions(options: ChildEnvOptions = {}) {
   if (typeof options === "string") return normalizeAgentName(options);
-  return normalizeAgentName(options.agent || options.agentName || options.provider);
+  return normalizeAgentName(options.agent || options.agentName);
 }
 
-export function providerCredentialKeysForAgent(agent: unknown): Set<string> {
+function providerNameFromOptions(options: ChildEnvOptions = {}) {
+  if (typeof options === "string") return "";
+  return normalizeAgentName(options.provider || options.providerId);
+}
+
+function providerKeysFromOptions(options: ChildEnvOptions = {}) {
+  if (typeof options === "string" || !Array.isArray(options.providerCredentialKeys)) return new Set<string>();
+  return new Set(options.providerCredentialKeys.filter((key: unknown): key is string => typeof key === "string"));
+}
+
+export function providerCredentialKeysForAgent(
+  agent: unknown,
+  provider: unknown = null,
+  model: unknown = null,
+  providerEnv: Record<string, string | undefined> = process.env,
+): Set<string> {
   const normalized = normalizeAgentName(agent);
-  const scoped = PROVIDER_CREDENTIALS_BY_AGENT.get(normalized);
-  return new Set(scoped || NO_PROVIDER_CREDENTIALS);
+  if (!normalized) return new Set();
+  try {
+    const providerName = typeof provider === "string" ? provider.trim() : "";
+    return providerName
+      ? new Set(providerEnvironmentKeysForSelection(normalized, null, providerName, typeof model === "string" ? model : null, providerEnv))
+      : new Set(providerEnvironmentKeysForAgent(normalized));
+  } catch {
+    return new Set(NO_PROVIDER_CREDENTIALS);
+  }
 }
 
-function allowedProviderCredentialsForOptions(options: ChildEnvOptions = {}) {
+export function providerCredentialInputKeysForAgentName(
+  agent: unknown,
+  provider: unknown = null,
+  model: unknown = null,
+  providerEnv: Record<string, string | undefined> = process.env,
+): Set<string> {
+  const normalized = normalizeAgentName(agent);
+  if (!normalized) return new Set();
+  try {
+    const providerName = typeof provider === "string" ? provider.trim() : "";
+    return providerName
+      ? new Set(providerCredentialInputKeysForSelection(normalized, null, providerName, typeof model === "string" ? model : null, providerEnv))
+      : new Set(providerCredentialInputKeysForAgent(normalized));
+  } catch {
+    return new Set();
+  }
+}
+
+function allowedProviderCredentialsForOptions(
+  options: ChildEnvOptions = {},
+  providerEnv: Record<string, string | undefined> = process.env,
+) {
   if (typeof options !== "string" && options.includeProviderCredentials === false) {
     return NO_PROVIDER_CREDENTIALS;
   }
+  const explicit = providerKeysFromOptions(options);
   const agent = agentNameFromOptions(options);
-  if (!agent) return PROVIDER_CREDENTIALS;
-  return PROVIDER_CREDENTIALS_BY_AGENT.get(agent) || NO_PROVIDER_CREDENTIALS;
+  const provider = providerNameFromOptions(options);
+  const providerConfig = provider ? getConfiguredProvider(provider, providerEnv) : null;
+  const selectedProviderKeys = providerConfig ? providerEnvironmentKeysFromConfig(providerConfig) : new Set<string>();
+  if (!agent && explicit.size === 0) {
+    try {
+      return new Set([
+        ...providerEnvironmentKeysForAllAgents(),
+        ...configuredProviderEnvironmentKeys(providerEnv),
+        ...selectedProviderKeys,
+      ]);
+    } catch {
+      return new Set([...configuredProviderEnvironmentKeys(providerEnv), ...selectedProviderKeys]);
+    }
+  }
+  return new Set([
+    ...explicit,
+    ...providerCredentialKeysForAgent(agent, provider, typeof options === "string" ? null : options.model, providerEnv),
+    ...selectedProviderKeys,
+  ]);
 }
 
 function isAcpPoolNumericEntry(key: string, value: unknown): boolean {
   return (ACP_POOL_ENV.has(key) || isDynamicAcpPoolEnvKey(key)) && isNumericEnvValue(value);
 }
 
-function shouldCopyAcpPoolEnvEntry(key: string, value: unknown): boolean {
+function shouldCopyAcpPoolEnvEntry(
+  key: string,
+  value: unknown,
+  providerEnv: Record<string, string | undefined> = process.env,
+): boolean {
   if (key === "CPB_ACP_POOL_LEASE_ROOT") return typeof value === "string" && value.trim().length > 0;
   if (key === "CPB_ACP_PROVIDER_FALLBACKS") return typeof value === "string" && value.trim().length > 0;
-  return isAcpPoolNumericEntry(key, value) || isAllowedChildEnvKey(key);
+  return isAcpPoolNumericEntry(key, value) || isAllowedChildEnvKey(key, {}, providerEnv);
 }
 
-function shouldCopyChildEnvEntry(key: string, value: unknown, options: ChildEnvOptions = {}): boolean {
-  return isAcpPoolNumericEntry(key, value) || isAllowedChildEnvKey(key, options);
+function shouldCopyChildEnvEntry(
+  key: string,
+  value: unknown,
+  options: ChildEnvOptions = {},
+  providerEnv: Record<string, string | undefined> = process.env,
+): boolean {
+  return isAcpPoolNumericEntry(key, value) || isAllowedChildEnvKey(key, options, providerEnv);
 }
 
-export function isAllowedChildEnvKey(key: string, options: ChildEnvOptions = {}): boolean {
-  if (PROVIDER_CREDENTIALS.has(key)) {
-    return allowedProviderCredentialsForOptions(options).has(key);
-  }
+export function isAllowedChildEnvKey(
+  key: string,
+  options: ChildEnvOptions = {},
+  providerEnv: Record<string, string | undefined> = process.env,
+): boolean {
+  if (allowedProviderCredentialsForOptions(options, providerEnv).has(key)) return true;
   return ALLOWED_ENV.has(key) || isDynamicAllowedEnvKey(key) || isDynamicAcpPoolEnvKey(key);
 }
 
@@ -302,7 +275,8 @@ function _filterEnv(parentEnv: EnvMap = {}, extra: EnvMap = {}, predicate: (key:
 
 export function buildChildEnv(parentEnv: EnvMap = {}, extra: EnvMap = {}, options: ChildEnvOptions = {}) {
   const allowKeys = allowKeysFromOptions(options);
-  return _filterEnv(parentEnv, extra, (k, v) => allowKeys.has(k) || shouldCopyChildEnvEntry(k, v, options));
+  const providerEnv = { ...process.env, ...parentEnv, ...extra };
+  return _filterEnv(parentEnv, extra, (k, v) => allowKeys.has(k) || shouldCopyChildEnvEntry(k, v, options, providerEnv));
 }
 
 export function buildRuntimeEnv(parentEnv: EnvMap = {}, extra: EnvMap = {}) {
@@ -310,7 +284,28 @@ export function buildRuntimeEnv(parentEnv: EnvMap = {}, extra: EnvMap = {}) {
 }
 
 export function buildAcpPoolEnv(parentEnv: EnvMap = {}, extra: EnvMap = {}) {
-  return _filterEnv(parentEnv, extra, (k, v) => shouldCopyAcpPoolEnvEntry(k, v));
+  const providerEnv = { ...process.env, ...parentEnv, ...extra };
+  let configured = new Set<string>();
+  try {
+    for (const key of configuredProviderEnvironmentKeys(providerEnv)) configured.add(key);
+    for (const key of configuredProviderCredentialInputKeys(providerEnv)) configured.add(key);
+  } catch {
+    // A malformed or unreadable providers.json contributes no keys.
+  }
+  try {
+    configured = providerEnvironmentKeysForAllAgents();
+    for (const key of configuredProviderEnvironmentKeys(providerEnv)) configured.add(key);
+    for (const key of configuredProviderCredentialInputKeys(providerEnv)) configured.add(key);
+  } catch {
+    // The pool can be constructed before async registry initialization. The
+    // conventional-name pass keeps those values in the trusted pool only;
+    // child processes still require a descriptor declaration.
+  }
+  return _filterEnv(parentEnv, extra, (k, v) => (
+    shouldCopyAcpPoolEnvEntry(k, v, providerEnv)
+    || configured.has(k)
+    || PROVIDER_ENV_NAME_PATTERN.test(k)
+  ));
 }
 
 export {
@@ -318,13 +313,5 @@ export {
   CPB_RUNTIME_ENV,
   ACP_RUNTIME_ENV,
   ACP_POOL_ENV,
-  PROVIDER_CREDENTIALS,
-  OPENAI_COMPATIBLE_CREDENTIALS,
-  ANTHROPIC_COMPATIBLE_CREDENTIALS,
-  AWS_BEDROCK_CREDENTIALS,
-  MIMO_COMPATIBLE_CREDENTIALS,
-  GLM_COMPATIBLE_CREDENTIALS,
-  GEMINI_COMPATIBLE_CREDENTIALS,
-  PROVIDER_CREDENTIALS_BY_AGENT,
   ALLOWED_ENV,
 };

@@ -38,7 +38,7 @@ async function fullTestFixture() {
   await writeFile(path.join(sourcePath, "package.json"), JSON.stringify({
     type: "module",
     scripts: {
-      test: "node -e \"if (process.env.CPB_VERIFY_FULL) process.exit(11); if (process.env.CPB_AMBIENT_SECRET) process.exit(12); process.exit(process.env.CPB_CODEGRAPH_ENABLED === 'job-env' ? 7 : 0)\"",
+      test: "node -e \"if (process.env.CPB_VERIFY_FULL) process.exit(11); if (process.env.CPB_AMBIENT_SECRET) process.exit(12); process.exit(process.env.CPB_SESSION_ID === 'job-env' ? 7 : 0)\"",
     },
   }), "utf8");
   await writeFile(path.join(sourcePath, "feature.js"), "export const value = 1;\n", "utf8");
@@ -93,7 +93,7 @@ test("verify hard gates use ctx.env for full-test decisions and child env over a
       HOME: process.env.HOME,
       TMPDIR: process.env.TMPDIR,
       CPB_VERIFY_FULL: "1",
-      CPB_CODEGRAPH_ENABLED: "job-env",
+      CPB_SESSION_ID: "job-env",
     },
     pool: {
       async execute() {

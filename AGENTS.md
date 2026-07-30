@@ -3,10 +3,10 @@
 ## Project Structure & Module Organization
 CodePatchBay is a pure Node.js ESM CLI tool with runtime workers. The root `cpb` launcher and `cli/cpb.ts` dispatch commands from `cli/commands/`. Core workflow contracts and engines live in `core/`; orchestration services in `server/`; worker helpers in `runtime/`; bridge entrypoints in `bridges/`; shared utilities in `shared/`. The only HTTP endpoint is `cpb stream` (Node native `http` + SSE). Tests live in `tests/`, docs in `docs/` and `wiki/`, and support assets in `assets/`, `templates/`, and `skills/`.
 
-## Codegraph & Repository Lookup
-For repository understanding tasks, prefer Codegraph before shell/file fallback. Use Codegraph first for symbol lookup, call graphs, architecture tracing, impact analysis, and "where/how does this work" questions. Use direct file reads or shell search only to confirm a specific detail Codegraph does not cover, to inspect files reported stale, or when Codegraph is unavailable.
+## Local Code Index & Repository Lookup
+For repository understanding tasks, use `cpb code-index` and the repository-owned local index. The index is stored outside the source tree; it does not use MCP, a daemon, a PID file, a socket, or source-tree index state.
 
-Before every Codegraph-backed lookup, run the currently available Codegraph sync step first, then verify index status. If the index reports pending or stale files, wait for sync or rerun the sync step before trusting Codegraph results. If sync is unavailable or still stale, say so briefly and read the affected files directly instead of presenting stale index results as authoritative.
+Before relying on indexed results, run `cpb code-index status -s .`. If it does not report `available: true` and `fresh: true`, run `cpb code-index build -s .`, then check status again. Use `cpb code-index query definitions --symbol <name>` for symbol definitions, `cpb code-index query references --symbol <name>` for references, `cpb code-index query inventory` for file listings, and direct file reads for exact source text. If the index tool is unavailable, the index may explicitly fall back to a Git/file inventory; report that limitation and do not claim symbol or call-graph coverage. Never treat the mere presence of an index file as proof that it is fresh.
 
 ## Build, Test, and Development Commands
 - `npm ci`: install dependencies.

@@ -172,7 +172,7 @@ flowchart TD
   F --> G["轮询 liveness"]
   G --> H{"启动成功？"}
   H -->|"否"| I["打印失败并退出 1"]
-  H -->|"是"| J["按需启动 orchestrator、quota delegate、codegraph"]
+  H -->|"是"| J["按需启动 orchestrator、quota delegate"]
 
   K["cpb ui"] --> L["启动 node server/index.js"]
   L --> M{"存在 Web 源码？"}

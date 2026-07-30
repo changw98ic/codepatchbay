@@ -58,6 +58,8 @@
     "compare:coding": "npm run build:node && node dist/scripts/run-coding-comparison.js",
     "queue:swebench-batch": "npm run build:node && node dist/scripts/queue-swebench-batch.js",
     "compare:swebench-three-way": "npm run build:node && node dist/scripts/run-swebench-three-way.js",
+    "bench:local-code-index": "node dist/scripts/bench-local-code-index-v2.js --output artifacts/bench/local-code-index-v2.json",
+    "verify:v2-release-scan": "npm run build:node && node dist/scripts/verify-local-code-index-v2-release.js",
     "verify:stabilization": "npm run build && npm run build:tests && node dist/scripts/verify-stabilization.js",
     "report:release-readiness": "npm run build:node && node dist/scripts/release-readiness-report.js",
     "verify:live-release-evidence": "npm run build:node && node dist/scripts/verify-live-release-evidence.js",

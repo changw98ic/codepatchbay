@@ -1,0 +1,121 @@
+{
+  "version": "1.0.0",
+  "language": "go",
+  "aliases": ["golang"],
+  "extensions": [".go"],
+  "symbolKinds": {
+    "function": "Function declaration (top-level or method)",
+    "method": "Method declaration (with receiver)",
+    "struct": "Struct type declaration",
+    "interface": "Interface type declaration",
+    "type": "Type alias or type declaration",
+    "variable": "Variable declaration (var or short assignment)",
+    "constant": "Constant declaration (const)",
+    "import-name": "Imported package name"
+  },
+  "patterns": {
+    "definitions": [
+      {
+        "kind": "function",
+        "pattern": "^func\\s+(?<name>[a-zA-Z_][a-zA-Z0-9_]*)\\s*(?:\\[[^\\]]*\\])?\\s*\\(",
+        "description": "Top-level function declaration"
+      },
+      {
+        "kind": "method",
+        "pattern": "^func\\s+\\((?<receiver>[^)]+)\\)\\s*(?<name>[a-zA-Z_][a-zA-Z0-9_]*)\\s*(?:\\[[^\\]]*\\])?\\s*\\(",
+        "description": "Method declaration with receiver"
+      },
+      {
+        "kind": "struct",
+        "pattern": "^type\\s+(?<name>[a-zA-Z_][a-zA-Z0-9_]*)\\s+struct\\s*\\{",
+        "description": "Struct type declaration"
+      },
+      {
+        "kind": "interface",
+        "pattern": "^type\\s+(?<name>[a-zA-Z_][a-zA-Z0-9_]*)\\s+interface\\s*\\{",
+        "description": "Interface type declaration"
+      },
+      {
+        "kind": "type",
+        "pattern": "^type\\s+(?<name>[a-zA-Z_][a-zA-Z0-9_]*)\\s+(?!struct|interface)(?:\\[[^\\]]*\\])?\\S",
+        "description": "Type alias or custom type declaration"
+      },
+      {
+        "kind": "variable",
+        "pattern": "^var\\s+(?<name>[a-zA-Z_][a-zA-Z0-9_]*)\\s",
+        "description": "Package-level variable declaration"
+      },
+      {
+        "kind": "variable",
+        "pattern": "^var\\s+\\((?<block>[^)]+)\\)",
+        "description": "Variable block declaration"
+      },
+      {
+        "kind": "constant",
+        "pattern": "^const\\s+(?<name>[a-zA-Z_][a-zA-Z0-9_]*)\\s",
+        "description": "Package-level constant declaration"
+      },
+      {
+        "kind": "constant",
+        "pattern": "^const\\s+\\((?<block>[^)]+)\\)",
+        "description": "Constant block declaration"
+      }
+    ],
+    "imports": [
+      {
+        "pattern": "^import\\s+\\((?<block>[^)]+)\\)",
+        "kind": "all",
+        "description": "Import block (multiple imports)"
+      },
+      {
+        "pattern": "^import\\s+(?:(?<alias>[a-zA-Z_][a-zA-Z0-9_]*)\\s+)?[\"'](?<source>[^\"']+)[\"']",
+        "kind": "all",
+        "description": "Single import statement with optional alias"
+      },
+      {
+        "pattern": "^import\\s+\\.(?<source>[a-zA-Z_][a-zA-Z0-9_.]*)",
+        "kind": "all",
+        "description": "Dot import (import . \"package\")"
+      }
+    ],
+    "exports": [
+      {
+        "pattern": "^func\\s+(?<name>[A-Z][a-zA-Z0-9_]*)",
+        "kind": "named",
+        "description": "Exported function (starts with uppercase)"
+      },
+      {
+        "pattern": "^func\\s+\\([^)]+\\)\\s*(?<name>[A-Z][a-zA-Z0-9_]*)",
+        "kind": "named",
+        "description": "Exported method"
+      },
+      {
+        "pattern": "^type\\s+(?<name>[A-Z][a-zA-Z0-9_]*)\\s",
+        "kind": "named",
+        "description": "Exported type (struct, interface, or alias)"
+      },
+      {
+        "pattern": "^var\\s+(?<name>[A-Z][a-zA-Z0-9_]*)\\s",
+        "kind": "named",
+        "description": "Exported variable"
+      },
+      {
+        "pattern": "^const\\s+(?<name>[A-Z][a-zA-Z0-9_]*)\\s",
+        "kind": "named",
+        "description": "Exported constant"
+      }
+    ],
+    "references": [
+      {
+        "pattern": "\\b(?<name>[a-zA-Z_][a-zA-Z0-9_]*)\\b",
+        "excludeContexts": ["comment", "string", "definition"],
+        "description": "General identifier reference"
+      }
+    ]
+  },
+  "folding": {
+    "startPattern": "\\{\\s*$",
+    "endPattern": "^\\}"
+  },
+  "notes": "Go rules follow Go's visibility convention: identifiers starting with uppercase are exported (public), lowercase are unexported (package-private). The receiver capture group enables method-to-type association. Import blocks and const/var blocks are handled as single patterns with nested parsing."
+}

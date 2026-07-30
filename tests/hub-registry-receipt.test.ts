@@ -615,7 +615,7 @@ test("project registration receipt is JSON-normalized, immutable, and generation
     id: "receipt-new",
     sourcePath,
     metadata,
-    skipCodeGraphGate: true,
+    skipLocalCodeIndexGate: true,
   });
 
   metadata.nested.label = "input-mutated";
@@ -649,7 +649,7 @@ test("project registration compensation restores a cloned previous project", asy
     id: "receipt-existing",
     sourcePath,
     metadata: { nested: { label: "previous" }, stable: true },
-    skipCodeGraphGate: true,
+    skipLocalCodeIndexGate: true,
   });
 
   const updateMetadata = { nested: { label: "updated" }, added: { value: "new" } };
@@ -657,7 +657,7 @@ test("project registration compensation restores a cloned previous project", asy
     id: "receipt-existing",
     sourcePath,
     metadata: updateMetadata,
-    skipCodeGraphGate: true,
+    skipLocalCodeIndexGate: true,
   });
 
   updateMetadata.nested.label = "input-mutated";
@@ -681,12 +681,12 @@ test("an unrelated project update does not block registration compensation", asy
   const registration = await registerProjectWithReceipt(hubRoot, {
     id: "compensated-project",
     sourcePath,
-    skipCodeGraphGate: true,
+    skipLocalCodeIndexGate: true,
   });
   await registerProjectWithReceipt(hubRoot, {
     id: "unrelated-project",
     sourcePath: otherSource,
-    skipCodeGraphGate: true,
+    skipLocalCodeIndexGate: true,
   });
   await updateProject(hubRoot, "unrelated-project", { metadata: { advanced: true } });
 
@@ -709,12 +709,12 @@ test("saveRegistry advances only project revisions whose values changed", async 
   await registerProjectWithReceipt(hubRoot, {
     id: "saved-project",
     sourcePath,
-    skipCodeGraphGate: true,
+    skipLocalCodeIndexGate: true,
   });
   await registerProjectWithReceipt(hubRoot, {
     id: "saved-unrelated",
     sourcePath: otherSource,
-    skipCodeGraphGate: true,
+    skipLocalCodeIndexGate: true,
   });
   const snapshot = await loadRegistry(hubRoot);
   const changedRevision = snapshot.projectRevisions["saved-project"];
@@ -740,7 +740,7 @@ test("post-rename durability failure returns a blocking committed warning and ty
     id: "post-rename",
     sourcePath,
     metadata: { nested: { label: "committed" } },
-    skipCodeGraphGate: true,
+    skipLocalCodeIndexGate: true,
   }));
 
   assert.equal(result.commitWarnings.length, 1);
@@ -763,7 +763,7 @@ test("post-rename durability failure returns a blocking committed warning and ty
   }, () => registerProject(hubRoot, {
     id: "ordinary-warning",
     sourcePath: ordinarySource,
-    skipCodeGraphGate: true,
+    skipLocalCodeIndexGate: true,
   })).catch((error: unknown) => { failure = error; });
 
   assert.equal(isHubRegistryCommittedError(failure), true);
@@ -781,7 +781,7 @@ test("lock release failure returns a blocking warning and does not block the nex
     id: "release-failed",
     sourcePath,
     metadata: { release: "committed" },
-    skipCodeGraphGate: true,
+    skipLocalCodeIndexGate: true,
   }));
 
   assert.equal(result.commitWarnings.length, 1);
@@ -792,7 +792,7 @@ test("lock release failure returns a blocking warning and does not block the nex
   const successor = await registerProjectWithReceipt(hubRoot, {
     id: "release-successor",
     sourcePath: successorSource,
-    skipCodeGraphGate: true,
+    skipLocalCodeIndexGate: true,
   });
   assert.deepEqual(successor.commitWarnings, []);
   assert.ok((await loadRegistry(hubRoot)).projects["release-successor"]);
@@ -811,7 +811,7 @@ test("failed release cleanup never removes a successor lock token", async (t) =>
   }, () => registerProjectWithReceipt(hubRoot, {
     id: "release-successor-fence",
     sourcePath,
-    skipCodeGraphGate: true,
+    skipLocalCodeIndexGate: true,
   }));
 
   assert.equal(result.commitWarnings.length, 1);
@@ -825,7 +825,7 @@ test("same-value successor write advances the project revision and blocks stale 
     id: "same-value",
     sourcePath,
     metadata: { stable: true },
-    skipCodeGraphGate: true,
+    skipLocalCodeIndexGate: true,
   });
 
   await mutateRegistry(hubRoot, (registry) => {
@@ -881,7 +881,7 @@ test("fault hooks are isolated between concurrent async operations", async (t) =
     }, () => registerProjectWithReceipt(left.hubRoot, {
       id: "left-project",
       sourcePath: left.sourcePath,
-      skipCodeGraphGate: true,
+      skipLocalCodeIndexGate: true,
     })),
     withHubRegistryTestHooks({
       afterAtomicRename(filePath) {
@@ -892,7 +892,7 @@ test("fault hooks are isolated between concurrent async operations", async (t) =
     }, () => registerProjectWithReceipt(right.hubRoot, {
       id: "right-project",
       sourcePath: right.sourcePath,
-      skipCodeGraphGate: true,
+      skipLocalCodeIndexGate: true,
     })),
   ]);
 

@@ -401,8 +401,8 @@ function executionIntensitySection(phase: string): string {
 
   return `\n## Execution Intensity Contract (MANDATORY)
 ${phaseLine}
-- Start with CodeGraph lookup when available; otherwise use \`rg --files\` and focused \`rg\`. Avoid broad recursive reading.
-- If a CodeGraph MCP tool is available, call it first (for example codegraph_context or mcp__codegraph__codegraph_context) before shell/file fallback.
+- Start with the local code index when available; otherwise use \`rg --files\` and focused \`rg\`. Avoid broad recursive reading.
+- The local code index is file-backed and does not expose an MCP server.
 - Inspect as many relevant files and symbols as needed to establish the exact scope and acceptance probes; do not stop discovery because of an arbitrary lookup count.
 - Prefer loaded role skills/profile guidance when relevant; record which index/skill path you used in the artifact.
 - Create 2-5 task-specific acceptance probes from the request before broad regression. A generic \`npm test\` pass is not enough when the request asks for a concrete artifact/API/UI behavior.
@@ -638,7 +638,7 @@ Valid requested.workflow values are "standard" and "complex"; use "complex" for 
 
 ## Instructions
 1. Read the event log to reconstruct the task goal${noPlan ? "." : " and plan phase output."}
-2. ${contextPack?.path ? "Read the job-specific context pack locator above before selecting files to inspect." : "Use CodeGraph or focused repository inspection before selecting files to inspect."}
+2. ${contextPack?.path ? "Read the job-specific context pack locator above before selecting files to inspect." : "Use the local code index or focused repository inspection before selecting files to inspect."}
 3. ${noPlan ? "Use the task text, source context, and repository state as the implementation brief." : "Read the plan from the plans directory (audit context, not sole truth)."}
 4. Verify current job/task state from the locators above.
 5. Implement the requested code changes.

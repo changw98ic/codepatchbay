@@ -30,6 +30,7 @@
     "node_modules",
     "dist",
     "web",
-    "tests"
+    "tests",
+    "scripts/workflows/**"
   ]
 }

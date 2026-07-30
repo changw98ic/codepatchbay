@@ -18,9 +18,13 @@
 import { runAgent } from "../agents/agent-runner.js";
 import { parseAgentJson } from "../agents/response-parser.js";
 import { FailureKind } from "../contracts/failure.js";
-import { runCommandTree } from "../runtime/process-tree.js";
 import type { LooseRecord } from "../contracts/types.js";
 import type { RunJobPorts, RunJobState } from "../engine/run-job-ports.js";
+import {
+  exactSymbolFilesFromQuery,
+  queryLocalCodeIndex,
+} from "../indexing/local-code-index/index.js";
+import type { LocalCodeIndexRef } from "../indexing/local-code-index/index.js";
 import { buildRiskBudgetAcpEnv } from "../policy/phase-budget.js";
 import { validateDecomposedItems } from "./acceptance-checklist.js";
 import { extractTaskRequirementSlices } from "./checklist-build.js";
@@ -28,8 +32,6 @@ import { isRecord, recordValue, text } from "./checklist-shared.js";
 
 const DEFAULT_DECOMPOSE_RETRY_MAX = 2;
 const DEFAULT_DECOMPOSE_RETRY_BASE_DELAY_MS = 0;
-const DEFAULT_CODEGRAPH_QUERY_TIMEOUT_MS = 30_000;
-const DEFAULT_CODEGRAPH_QUERY_MAX_BUFFER_BYTES = 4 * 1024 * 1024;
 const CHECKLIST_DECOMPOSE_ROLE = "checklist_decomposer";
 const CHECKLIST_DECOMPOSE_PHASE = "prepare_task";
 
@@ -137,79 +139,44 @@ function isProductionCodePath(value: string) {
     && !/(?:^|\/)[^/]+\.(?:test|spec)\.[^/]+$/i.test(value);
 }
 
-async function queryCodegraphSymbol(
-  symbol: string,
-  cwd: string,
-  env: NodeJS.ProcessEnv = process.env,
-  signal?: AbortSignal,
-) {
-  throwIfAbortSignal(signal, "CodeGraph task-scope query aborted before spawn");
-  const timeoutMs = Math.max(1, Math.floor(numericEnv(env, "CPB_CHECKLIST_CODEGRAPH_QUERY_TIMEOUT_MS", DEFAULT_CODEGRAPH_QUERY_TIMEOUT_MS)));
-  const maxBufferBytes = Math.max(1024, Math.floor(numericEnv(env, "CPB_CHECKLIST_CODEGRAPH_QUERY_MAX_BUFFER_BYTES", DEFAULT_CODEGRAPH_QUERY_MAX_BUFFER_BYTES)));
-  const result = await runCommandTree(
-    env.CPB_CODEGRAPH_COMMAND || "codegraph",
-    ["query", symbol, "--path", cwd, "--limit", "10", "--json"],
-    { cwd, env, signal, timeoutMs, maxBufferBytes },
-  );
-  const primaryError = result.aborted || signal?.aborted
-    ? createAbortError(signal, "CodeGraph task-scope query aborted")
-    : result.timedOut
-      ? Object.assign(new Error(`CodeGraph query timed out after ${timeoutMs}ms`), { code: "CODEGRAPH_QUERY_TIMEOUT" })
-      : result.error;
-  if (result.cleanupPromise) {
-    const cleanup = await result.cleanupPromise;
-    if (cleanup.error) {
-      if (primaryError) {
-        const aggregate = Object.assign(
-          new AggregateError([primaryError, cleanup.error], primaryError.message, { cause: primaryError }),
-          {
-            code: "CODEGRAPH_QUERY_CLEANUP_FAILED",
-            primaryError,
-            cleanupError: cleanup.error,
-          },
-        );
-        aggregate.name = primaryError.name;
-        throw aggregate;
-      }
-      throw cleanup.error;
-    }
-  }
-  if (primaryError) throw primaryError;
-  if (result.exitCode !== 0) return [];
-  const parsed = JSON.parse(result.stdout);
-  return Array.isArray(parsed) ? parsed : [];
+function localCodeIndexRefFromSourceContext(value: unknown): LocalCodeIndexRef | null {
+  const readiness = recordValue(recordValue(value).localCodeIndexReadiness);
+  const ref = recordValue(readiness.ref);
+  if (
+    readiness.available !== true
+    || ref.schemaVersion !== 2
+    || !text(ref.sourcePath)
+    || !text(ref.repositoryKey)
+    || !text(ref.worktreeKey)
+    || !text(ref.sourceKey)
+    || !text(ref.snapshotId)
+  ) return null;
+  return ref as unknown as LocalCodeIndexRef;
 }
 
-export async function resolveCodegraphTaskScope({
+export async function resolveLocalCodeIndexTaskScope({
   task,
   cwd,
   query,
-  env = process.env,
   signal,
 }: {
   task: string;
   cwd: string;
-  query?: (symbol: string, cwd: string, signal?: AbortSignal) => Promise<unknown>;
-  env?: NodeJS.ProcessEnv;
+  query: (symbol: string, cwd: string, signal?: AbortSignal) => Promise<readonly string[]>;
   signal?: AbortSignal;
 }): Promise<DecomposedItem[] | null> {
-  throwIfAbortSignal(signal, "CodeGraph task-scope resolution aborted before start");
-  const querySymbol = query ?? ((symbol: string, queryCwd: string, querySignal?: AbortSignal) => queryCodegraphSymbol(symbol, queryCwd, env, querySignal));
+  throwIfAbortSignal(signal, "Local code index task-scope resolution aborted before start");
   const symbols = taskSymbolCandidates(task);
   if (symbols.length === 0) return null;
   const matchedFiles = new Set<string>();
   const matchedSymbols: string[] = [];
   for (const symbol of symbols) {
-    throwIfAbortSignal(signal, "CodeGraph task-scope resolution aborted before query");
-    const rawResults = await querySymbol(symbol, cwd, signal);
-    throwIfAbortSignal(signal, "CodeGraph task-scope resolution aborted after query");
-    const results = Array.isArray(rawResults) ? rawResults : [];
+    throwIfAbortSignal(signal, "Local code index task-scope resolution aborted before query");
+    const results = await query(symbol, cwd, signal);
+    throwIfAbortSignal(signal, "Local code index task-scope resolution aborted after query");
     const exactFiles = new Set(
       results
-        .map((entry) => recordValue(recordValue(entry).node))
-        .filter((node) => ["function", "method", "class"].includes(text(node.kind)))
-        .filter((node) => text(node.name).toLowerCase() === symbol.toLowerCase())
-        .map((node) => text(node.filePath))
+        .map((entry) => text(entry))
         .filter(isProductionCodePath),
     );
     if (exactFiles.size !== 1) continue;
@@ -225,7 +192,7 @@ export async function resolveCodegraphTaskScope({
     allowedFiles: [...matchedFiles],
     sourceRefs: [{ kind: "task_text", locator: "task:0" }],
     area: "core",
-    expectedEvidence: `The implementation changes the unique CodeGraph definition of ${symbol}.`,
+    expectedEvidence: `The implementation changes the unique local code index definition of ${symbol}.`,
     evidenceClass: "static",
     evidenceOrigin: "deterministic_probe",
     requiresRealPathEvidence: false,
@@ -378,28 +345,38 @@ export async function decomposeTaskToChecklistItems({
   const sourceContext = recordValue(ctx.sourceContext);
   const riskMap = recordValue(sourceContext.riskMap);
   const riskLevel = text(riskMap.riskLevel).toLowerCase();
-  const codegraphFastPathAllowed = ctx.planMode === "light"
+  const localIndexFastPathAllowed = ctx.planMode === "light"
     && documents.length === 0
-    && runtimeEnv.CPB_CHECKLIST_CODEGRAPH_FAST_PATH !== "0"
+    && runtimeEnv.CPB_CHECKLIST_LOCAL_CODE_INDEX_FAST_PATH !== "0"
     && riskLevel !== "high"
     && riskLevel !== "critical"
     && riskMap.adversarialRequired !== true;
-  if (codegraphFastPathAllowed) {
-    const items = await resolveCodegraphTaskScope({
-      task,
-      cwd: text(ctx.sourcePath) || text(ctx.cpbRoot),
-      env: runtimeEnv,
-      signal: ctx.signal,
-    });
-    if (items) {
-      return {
-        ok: true,
-        items,
-        diagnostics: {
-          source: "codegraph_exact_symbol",
-          allowedFiles: items.flatMap((item) => item.allowedFiles),
+  if (localIndexFastPathAllowed) {
+    const ref = localCodeIndexRefFromSourceContext(ctx.sourceContext);
+    if (ref) {
+      const items = await resolveLocalCodeIndexTaskScope({
+        task,
+        cwd: text(ctx.sourcePath) || text(ctx.cpbRoot),
+        signal: ctx.signal,
+        query: async (symbol, _cwd, signal) => {
+          const result = await queryLocalCodeIndex(
+            ref,
+            { kind: "definitions", symbol, match: "exact", limit: 10 },
+            { cpbRoot: ctx.cpbRoot, signal },
+          );
+          return exactSymbolFilesFromQuery(result, symbol);
         },
-      };
+      });
+      if (items) {
+        return {
+          ok: true,
+          items,
+          diagnostics: {
+            source: "local_code_index_exact_symbol",
+            allowedFiles: items.flatMap((item) => item.allowedFiles),
+          },
+        };
+      }
     }
   }
   const { agent, variant } = resolvePlanner(ctx);

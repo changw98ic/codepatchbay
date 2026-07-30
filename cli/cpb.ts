@@ -61,6 +61,7 @@ async function usage() {
   console.log(`  ${CYAN}stream${NC} [--port PORT] [--host HOST]       Start streaming server`);
   console.log(`  ${CYAN}cancel${NC} <project> <jobId> [reason]      Cancel a running job`);
   console.log(`  ${CYAN}redirect${NC} <project> <jobId> "<msg>"     Redirect a job`);
+  console.log(`  ${CYAN}code-index${NC} [status|build|query]         Local code index management`);
   console.log(`  ${CYAN}version${NC}                                 Show version`);
   console.log("");
   console.log(`${BOLD}Global flags:${NC}`);
@@ -105,6 +106,7 @@ const COMMANDS = {
   cancel: "cancel-redirect.js",
   redirect: "cancel-redirect.js",
   version: "version.js",
+  "code-index": "code-index.js",
 };
 
 // --- Main ---

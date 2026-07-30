@@ -781,7 +781,7 @@ test("Reconciler marks verification failures without actionable retry scope as f
       failure: {
         kind: FailureKind.VERIFICATION_FAILED,
         phase: "verify",
-        reason: "runtime-only files changed: .claude/settings.local.json, cpb-task/codegraph-state.json",
+        reason: "runtime-only files changed: .claude/settings.local.json, cpb-task/local-index-state.json",
         retryable: true,
         cause: {
           verdict: {

@@ -122,36 +122,17 @@ export async function initProject(args: string[], { cpbRoot, executorRoot }: Loo
     process.exit(1);
   }
 
-  // Index the source with CodeGraph so the capability map can be generated at registration
-  let codegraphReady = false;
+  // Build the external, file-backed local code index so the capability map can
+  // be generated at registration. The index has no daemon, PID file, socket,
+  // or source-tree state.
+  let localCodeIndexReady = false;
   try {
-    const { spawnSync } = await import("node:child_process");
-    const cgInit = spawnSync("codegraph", ["init", resolvedPath], {
-      stdio: ["ignore", "pipe", "pipe"],
-      timeout: 300_000,
-    });
-    if (cgInit.status !== 0) {
-      console.log(`${YELLOW}Warning: CodeGraph init failed; capability map may be incomplete${NC}`);
-    } else {
-      const cgSync = spawnSync("codegraph", ["sync", resolvedPath], {
-        stdio: ["ignore", "pipe", "pipe"],
-        timeout: 300_000,
-      });
-      if (cgSync.status === 0) {
-        console.log(`${GREEN}CodeGraph indexed: ${resolvedPath}${NC}`);
-        codegraphReady = true;
-      } else {
-        console.log(`${YELLOW}Warning: CodeGraph sync failed; capability map may be incomplete${NC}`);
-      }
-    }
-  } catch {
-    console.log(`${YELLOW}Warning: CodeGraph not available; capability map may be incomplete${NC}`);
-  }
-
-  // Allow capability map generation with index-only (no daemon required at init time).
-  // The codegraph daemon starts on-demand when the engine runs a phase.
-  if (codegraphReady) {
-    process.env.CPB_CODEGRAPH_INDEX_ONLY_OK = "1";
+    const { ensureLocalCodeIndex } = await import("../../core/indexing/local-code-index/index.js");
+    const indexed = await ensureLocalCodeIndex({ cpbRoot, sourcePath: resolvedPath, force: true });
+    console.log(`${GREEN}Local code index built: ${indexed.stats.discoveredFiles} files (${resolvedPath})${NC}`);
+    localCodeIndexReady = true;
+  } catch (error) {
+    console.log(`${YELLOW}Warning: local code index unavailable; capability map may be incomplete (${error instanceof Error ? error.message : String(error)})${NC}`);
   }
 
   const { registerProject, resolveHubRoot } = await import("../../server/services/hub/hub-registry.js");
@@ -159,16 +140,7 @@ export async function initProject(args: string[], { cpbRoot, executorRoot }: Loo
   const registered = await registerProject(hubRoot, {
     name: projectName,
     sourcePath: resolvedPath,
-    skipCodeGraphGate: !codegraphReady,
-    metadata: {
-      agents: {
-        planner: "codex",
-        executor: "claude",
-        verifier: "codex",
-        reviewer: "codex",
-        remediator: "claude",
-      },
-    },
+    skipLocalCodeIndexGate: !localCodeIndexReady,
   });
   if (!registered?.projectRuntimeRoot) {
     throw new Error(`Hub registration did not assign a runtime root for '${projectName}'`);
@@ -195,6 +167,16 @@ export async function initProject(args: string[], { cpbRoot, executorRoot }: Loo
     initAt: new Date().toISOString(),
   };
   await writeFile(path.join(wikiDir, "project.json"), JSON.stringify(meta, null, 2));
+  // Keep project agent/provider/model selection in the canonical per-project
+  // config. It starts empty: role defaults are resolved by the registry and
+  // no model/provider is bound during project initialization.
+  const { writeProjectJson } = await import("../../server/services/agent/agent-config.js");
+  await writeProjectJson(dataRoot, projectName, meta);
+  const { ensureProviderCatalog } = await import("../../core/agents/provider-catalog.js");
+  await ensureProviderCatalog({
+    ...process.env,
+    CPB_HUB_ROOT: hubRoot,
+  });
 
   // 2. Replace placeholders
   for (const f of ["context.md", "tasks.md", "decisions.md", "log.md"]) {
@@ -245,7 +227,7 @@ export async function initProject(args: string[], { cpbRoot, executorRoot }: Loo
   console.log(`Project '${projectName}' ready.`);
   console.log(`Wiki: ${wikiDir}`);
   console.log(`Registered with Hub: ${hubRoot}`);
-  console.log(`Agent config stored in project record (planner=codex, executor=claude, verifier=codex)`);
+  console.log("Agent config stored in project.json (default agent has no provider/model binding)");
   console.log("");
   console.log(`Next: cpb pipeline ${projectName} "<task>"`);
 }

@@ -55,35 +55,94 @@ function highConfidenceCapabilityMetadata() {
   };
 }
 
-async function sourceWithCodeGraphIndexButNoLiveState(prefix) {
+/**
+ * Migration input: create a source directory with no local-code-index state.
+ * Used to test queue gating when the index is unavailable.
+ */
+async function sourceWithNoLocalCodeIndex(prefix) {
+  return tempRoot(prefix);
+}
+
+/**
+ * Register a project with a working v2 local-code-index so the queue
+ * readiness gate passes.  Creates a minimal on-disk index structure
+ * under `cpbRoot` (the orchestrator's runtime root).
+ */
+async function registerReadyProject(hubRoot, id, prefix, cpbRoot) {
   const sourcePath = await tempRoot(prefix);
-  await mkdir(path.join(sourcePath, ".codegraph"), { recursive: true });
-  await writeFile(path.join(sourcePath, ".codegraph", "codegraph.db"), Buffer.alloc(2048, 1));
-  return sourcePath;
-}
-
-async function sourceWithLiveCodeGraphState(prefix) {
-  const sourcePath = await sourceWithCodeGraphIndexButNoLiveState(prefix);
-  const processIdentity = captureProcessIdentity(process.pid, { strict: true });
-  assert.ok(processIdentity, "expected current process identity");
-  await writeJson(path.join(sourcePath, ".codegraph", "daemon.pid"), {
-    pid: process.pid,
-    processIdentity,
-    codebaseRoot: sourcePath,
-    source: "test",
-  });
-  return sourcePath;
-}
-
-async function registerReadyProject(hubRoot, id, prefix) {
-  const sourcePath = await sourceWithLiveCodeGraphState(prefix);
+  const indexRoot = cpbRoot || await tempRoot(`${prefix}-cpb`);
+  await writeMinimalV2LocalCodeIndex(indexRoot, sourcePath);
   await registerProject(hubRoot, {
     id,
     sourcePath,
-    skipCodeGraphGate: true,
+    cpbRoot: indexRoot,
+    skipLocalCodeIndexGate: true,
     metadata: highConfidenceCapabilityMetadata(),
   });
   return sourcePath;
+}
+
+/**
+ * Write a minimal v2 local-code-index on disk so localCodeIndexStatus()
+ * returns { available: true } for the given sourcePath.
+ */
+async function writeMinimalV2LocalCodeIndex(cpbRoot, sourcePath) {
+  const { createHash } = await import("node:crypto");
+  const { computeKeys, resolveStorageRoot } = await import("../core/indexing/local-code-index/paths.js");
+  const { canonicalStringify } = await import("../core/indexing/local-code-index/canonical-json.js");
+
+  const { repositoryKey, worktreeKey } = computeKeys(sourcePath, sourcePath);
+  const snapshotId = "idx2-ready0000000000000000001";
+
+  const identity = {
+    schemaVersion: 2,
+    repositoryKey,
+    worktreeKey,
+    sourceKey: "fake-source-key",
+    sourcePath,
+    git: null,
+    worktreeStateFingerprint: "fake-fingerprint",
+    inventory: {},
+    extractorFingerprint: "fake-extractor",
+    symbolShardIds: [],
+    relationShardIds: [],
+    toolState: {
+      name: "ast-grep",
+      version: null,
+      extractorFingerprint: "fake-extractor",
+      available: false,
+      coverage: "file-inventory-only",
+      errors: [],
+    },
+    indexMapHash: createHash("sha256").update("fake-index-map").digest("hex"),
+    indexMapByteLength: 0,
+  };
+
+  // Use canonicalStringify (same as localCodeIndexStatus) so the hash matches.
+  const identityBytes = new TextEncoder().encode(canonicalStringify(identity));
+  const identityHash = createHash("sha256").update(identityBytes).digest("hex");
+
+  const currentPointer = {
+    schemaVersion: 1,
+    worktreeKey,
+    snapshotId,
+    identityHash,
+    ownerToken: "test-owner-token",
+    publishedAt: new Date().toISOString(),
+    previousSnapshotIds: [],
+  };
+
+  const storageRoot = await resolveStorageRoot(cpbRoot, sourcePath);
+  const wtDir = path.join(storageRoot, "worktrees", worktreeKey);
+  const snapDir = path.join(wtDir, "snapshots", snapshotId);
+
+  await mkdir(snapDir, { recursive: true });
+  await writeFile(
+    path.join(wtDir, "current.json"),
+    canonicalStringify(currentPointer),
+    "utf8",
+  );
+  await writeFile(path.join(snapDir, "identity.json"), identityBytes);
 }
 
 function workerIdentity(pid, birthId) {
@@ -1043,7 +1102,7 @@ test("claimEligible applies issue-link and index-unavailable gates", async () =>
   assert.equal(indexGate.entry, null);
 
   const gated = (await listQueue(indexHubRoot)).find((entry) => entry.id === staleIndex.id);
-  assert.equal(gated.status, "codegraph_unavailable");
+  assert.equal(gated.status, "local_code_index_unavailable");
   assert.equal(gated.metadata.indexFreshness.available, false);
   assert.deepEqual(gated.metadata.indexFreshness.dirtyReasons, ["missing_source_or_runtime_root"]);
 });
@@ -1069,23 +1128,23 @@ test("claimEligible blocks registered projects without high-confidence capabilit
 
   assert.equal(result.entry, null);
   const gated = (await listQueue(hubRoot)).find((entry) => entry.id === pending.id);
-  assert.equal(gated.status, "codegraph_unavailable");
+  assert.equal(gated.status, "local_code_index_unavailable");
   assert.equal(gated.metadata.capabilityMap.available, false);
   assert.equal(gated.metadata.capabilityMap.reason, "missing_project_capability_map");
 });
 
-test("claimEligible blocks high-confidence projects when live CodeGraph readiness is missing", async () => {
-  const hubRoot = await tempRoot("cpb-queue-live-codegraph");
-  const sourcePath = await sourceWithCodeGraphIndexButNoLiveState("cpb-queue-live-codegraph-source");
-  const projectRuntimeRoot = await tempRoot("cpb-queue-live-codegraph-runtime");
+test("claimEligible blocks high-confidence projects when local code index is unavailable", async () => {
+  const hubRoot = await tempRoot("cpb-queue-no-local-code-index");
+  const sourcePath = await sourceWithNoLocalCodeIndex("cpb-queue-no-local-code-index-source");
+  const projectRuntimeRoot = await tempRoot("cpb-queue-no-local-code-index-runtime");
   const pending = await enqueue(hubRoot, {
     projectId: "flow",
     sourcePath,
-    description: "needs live CodeGraph",
+    description: "needs local code index",
   });
 
   const result = await claimEligible(hubRoot, {
-    workerId: "w-live-codegraph",
+    workerId: "w-no-local-code-index",
     assignmentStore: noAssignmentStore,
     getProjectFn: async (_hubRoot, projectId) => (
       projectId === "flow"
@@ -1101,34 +1160,38 @@ test("claimEligible blocks high-confidence projects when live CodeGraph readines
 
   assert.equal(result.entry, null);
   const gated = (await listQueue(hubRoot)).find((entry) => entry.id === pending.id);
-  assert.equal(gated.status, "codegraph_unavailable");
-  assert.equal(gated.metadata.codegraphReadiness.available, false);
-  assert.equal(gated.metadata.codegraphReadiness.reason, "missing_codegraph_state");
-  assert.deepEqual(gated.metadata.indexFreshness.dirtyReasons, ["missing_codegraph_state"]);
+  assert.equal(gated.status, "local_code_index_unavailable");
+  assert.equal(gated.metadata.localCodeIndexReadiness.available, false);
+  // Without a separate cpbRoot, localCodeIndexStatus falls back to sourcePath
+  // which triggers unsafe_storage_root (storage root cannot be inside source).
+  assert.ok(
+    ["missing_local_code_index", "unsafe_storage_root"].includes(gated.metadata.localCodeIndexReadiness.reason),
+    `unexpected reason: ${gated.metadata.localCodeIndexReadiness.reason}`,
+  );
 });
 
-test("codegraph unavailable counters and recovery use only the canonical status", async () => {
-  const hubRoot = await tempRoot("cpb-queue-codegraph");
-  const current = await enqueue(hubRoot, { projectId: "proj", description: "current codegraph gate" });
+test("local code index unavailable counters and recovery use only the canonical status", async () => {
+  const hubRoot = await tempRoot("cpb-queue-local-code-index");
+  const current = await enqueue(hubRoot, { projectId: "proj", description: "current local code index gate" });
   await updateEntry(hubRoot, current.id, {
-    status: "codegraph_unavailable",
+    status: "local_code_index_unavailable",
     updatedAt: oldIso(),
     metadata: { indexFreshness: { available: false } },
   });
-  const second = await enqueue(hubRoot, { projectId: "proj", description: "second codegraph gate" });
+  const second = await enqueue(hubRoot, { projectId: "proj", description: "second local code index gate" });
   await updateEntry(hubRoot, second.id, {
-    status: "codegraph_unavailable",
+    status: "local_code_index_unavailable",
     updatedAt: oldIso(),
     metadata: { indexFreshness: { available: false } },
   });
 
   const status = await queueStatus(hubRoot);
-  assert.equal(status.codegraphUnavailable, 2);
-  assert.equal(status.projects.proj.codegraphUnavailable, 2);
+  assert.equal(status.localCodeIndexUnavailable, 2);
+  assert.equal(status.projects.proj.localCodeIndexUnavailable, 2);
 
   const first = await claimEligible(hubRoot, {
-    workerId: "w-codegraph",
-    codegraphUnavailableRetryMs: 1,
+    workerId: "w-local-code-index",
+    localCodeIndexUnavailableRetryMs: 1,
     assignmentStore: noAssignmentStore,
   });
 
@@ -1319,9 +1382,9 @@ test("HubOrchestrator scheduler applies provider capacity per provider", async (
     scheduler: { mode: "default" },
     acpPool: { providerMax: 1 },
   });
-  await registerReadyProject(hubRoot, "proj-a", "cpb-orch-provider-a-source");
-  await registerReadyProject(hubRoot, "proj-b", "cpb-orch-provider-b-source");
-  await registerReadyProject(hubRoot, "proj-c", "cpb-orch-provider-c-source");
+  await registerReadyProject(hubRoot, "proj-a", "cpb-orch-provider-a-source", cpbRoot);
+  await registerReadyProject(hubRoot, "proj-b", "cpb-orch-provider-b-source", cpbRoot);
+  await registerReadyProject(hubRoot, "proj-c", "cpb-orch-provider-c-source", cpbRoot);
   const activeCodex = await enqueue(hubRoot, {
     projectId: "proj-a",
     description: "active codex",
@@ -1358,7 +1421,7 @@ test("HubOrchestrator scheduler gates missing project capability maps before dis
   const hubRoot = await tempRoot("cpb-orch-capability-gate");
   const cpbRoot = await tempRoot("cpb-orch-capability-gate-cpb");
   const sourcePath = await tempRoot("cpb-orch-capability-source");
-  await registerProject(hubRoot, { id: "flow", sourcePath, skipCodeGraphGate: true });
+  await registerProject(hubRoot, { id: "flow", sourcePath, skipLocalCodeIndexGate: true });
   const entry = await enqueue(hubRoot, {
     projectId: "flow",
     sourcePath,
@@ -1385,31 +1448,31 @@ test("HubOrchestrator scheduler gates missing project capability maps before dis
   assert.deepEqual(result, { idle: true });
   assert.equal(await orchestrator.assignmentStore.getAssignment(`a-${entry.id}`), null);
   const gated = (await listQueue(hubRoot)).find((candidate) => candidate.id === entry.id);
-  assert.equal(gated.status, "codegraph_unavailable");
+  assert.equal(gated.status, "local_code_index_unavailable");
   assert.equal(gated.metadata.capabilityMap.available, false);
   assert.equal(gated.metadata.capabilityMap.reason, "missing_project_capability_map");
 });
 
-test("HubOrchestrator scheduler gates missing live CodeGraph readiness before dispatch", async () => {
-  const hubRoot = await tempRoot("cpb-orch-live-codegraph");
-  const cpbRoot = await tempRoot("cpb-orch-live-codegraph-cpb");
-  const sourcePath = await sourceWithCodeGraphIndexButNoLiveState("cpb-orch-live-codegraph-source");
+test("HubOrchestrator scheduler gates missing local code index readiness before dispatch", async () => {
+  const hubRoot = await tempRoot("cpb-orch-no-local-code-index");
+  const cpbRoot = await tempRoot("cpb-orch-no-local-code-index-cpb");
+  const sourcePath = await sourceWithNoLocalCodeIndex("cpb-orch-no-local-code-index-source");
   await registerProject(hubRoot, {
     id: "flow",
     sourcePath,
-    skipCodeGraphGate: true,
+    skipLocalCodeIndexGate: true,
     metadata: highConfidenceCapabilityMetadata(),
   });
   const entry = await enqueue(hubRoot, {
     projectId: "flow",
     sourcePath,
-    description: "must not dispatch without live CodeGraph",
+    description: "must not dispatch without local code index",
   });
 
   const orchestrator = new HubOrchestrator(hubRoot, cpbRoot, { executorRoot: process.cwd() });
   await orchestrator.assignmentStore.init();
   await orchestrator.workerStore.init();
-  await orchestrator.workerStore.registerWorker("w-live-codegraph", {
+  await orchestrator.workerStore.registerWorker("w-no-local-code-index", {
     projectId: "flow",
     status: "ready",
   });
@@ -1426,9 +1489,9 @@ test("HubOrchestrator scheduler gates missing live CodeGraph readiness before di
   assert.deepEqual(result, { idle: true });
   assert.equal(await orchestrator.assignmentStore.getAssignment(`a-${entry.id}`), null);
   const gated = (await listQueue(hubRoot)).find((candidate) => candidate.id === entry.id);
-  assert.equal(gated.status, "codegraph_unavailable");
-  assert.equal(gated.metadata.codegraphReadiness.available, false);
-  assert.equal(gated.metadata.codegraphReadiness.reason, "missing_codegraph_state");
+  assert.equal(gated.status, "local_code_index_unavailable");
+  assert.equal(gated.metadata.localCodeIndexReadiness.available, false);
+  assert.equal(gated.metadata.localCodeIndexReadiness.reason, "missing_local_code_index");
 });
 
 test("HubOrchestrator scheduler does not oversubscribe one provider in a single tick", async () => {
@@ -1438,7 +1501,7 @@ test("HubOrchestrator scheduler does not oversubscribe one provider in a single 
     scheduler: { mode: "default" },
     acpPool: { providerMax: 1 },
   });
-  const sourcePath = await registerReadyProject(hubRoot, "flow", "cpb-orch-provider-same-tick-source");
+  const sourcePath = await registerReadyProject(hubRoot, "flow", "cpb-orch-provider-same-tick-source", cpbRoot);
   const first = await enqueue(hubRoot, {
     projectId: "flow",
     sourcePath,
@@ -1484,7 +1547,7 @@ test("HubOrchestrator.tick writes inbox then keeps queue, assignment, and worker
   const hubRoot = await tempRoot("cpb-orch-tick");
   const cpbRoot = await tempRoot("cpb-orch-cpb");
   const sourcePath = await tempRoot("cpb-source");
-  await registerProject(hubRoot, { id: "proj", sourcePath, skipCodeGraphGate: true });
+  await registerProject(hubRoot, { id: "proj", sourcePath, skipLocalCodeIndexGate: true });
   const entry = await enqueue(hubRoot, {
     projectId: "proj",
     sourcePath,

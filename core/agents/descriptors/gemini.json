@@ -13,6 +13,11 @@
   "sandboxPolicy": "cpb-required",
   "defaultRoles": ["executor"],
   "capabilities": ["plan", "execute", "verify", "review"],
+  "provider": {
+    "key": "gemini",
+    "family": "gemini",
+    "credentialEnv": ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
+  },
   "inheritFiles": [
     { "from": "$HOME/.gemini/auth.json", "to": "$HOME/.gemini/auth.json", "maxBytes": 1048576 }
   ],

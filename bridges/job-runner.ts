@@ -22,6 +22,10 @@ import {
 } from "../server/services/infra.js";
 import { pinSessionToJob } from "../core/engine/session-pin.js";
 import { buildChildEnv } from "../core/policy/child-env.js";
+import {
+  loadRegistry,
+  providerCapsuleEnvironmentKeysForAllAgents,
+} from "../core/agents/registry.js";
 
 type GuardedError = Error & { guardResult?: LooseRecord };
 type ChildResult = {
@@ -316,6 +320,20 @@ async function main() {
     }, renewEveryMs);
     heartbeat.unref?.();
 
+    try {
+      await loadRegistry(String(process.env.CPB_AGENTS_CONFIG_DIR || ""));
+    } catch {
+      // Built-in phase execution remains usable when registry discovery is
+      // unavailable; provider children still apply their own fail-closed
+      // descriptor check before launch.
+    }
+    let capsuleKeys: string[] = [];
+    try {
+      capsuleKeys = [...providerCapsuleEnvironmentKeysForAllAgents()];
+    } catch {
+      // The phase runner's built-in handoff names remain available below when
+      // this isolated runner starts before the registry has been loaded.
+    }
     const childEnv = buildChildEnv(process.env, {
       CPB_JOB_ID: jobId,
       CPB_ACP_JOB_ID: jobId,
@@ -324,7 +342,11 @@ async function main() {
       CPB_ACP_CPB_ROOT: cpbRoot,
       CPB_PROJECT_RUNTIME_ROOT: dataRoot,
     }, {
-      allowKeys: ["CPB_CAPSULE_CODEX_PATH", "CPB_CAPSULE_CLAUDE_CODE_EXECUTABLE"],
+      allowKeys: [
+        "CPB_CAPSULE_CODEX_PATH",
+        "CPB_CAPSULE_CLAUDE_CODE_EXECUTABLE",
+        ...capsuleKeys,
+      ],
     });
     const activity = createActivityTracker(cpbRoot, project, jobId, runtimeOpts);
     childResult = await runChild(script, [phase, ...scriptArgs], cpbRoot, (output: string | Buffer) => {

@@ -69,7 +69,7 @@
         {
           "name": "hub-queue.ts",
           "mergedFrom": ["hub-queue.ts", "auto-enqueue.ts", "queue-rules.ts", "inbox-mail.ts"],
-          "exports": ["QUEUE_VERSION", "loadQueue", "validateIssueLink", "enqueue", "peekQueue", "updateEntry", "listQueue", "syncBacklogResult", "queueStatus", "summarizeFailedTargets", "buildProjectQueueStatus", "claimEligible", "matchAutomationRule", "isExcluded", "issueToNormalizedEvent", "autoEnqueueSyncedIssues", "priorityScore", "isMutatingEntry", "isActiveEntry", "clearClaim", "isCodegraphUnavailableStatus", "recoverStaleInProgress", "recoverStaleInProgressAsync", "recoverCodegraphUnavailable", "writeInboxMessage", "listInboxMessages", "readInboxMessage", "ackInboxMessage", "completeInboxMessage"],
+          "exports": ["QUEUE_VERSION", "loadQueue", "validateIssueLink", "enqueue", "peekQueue", "updateEntry", "listQueue", "syncBacklogResult", "queueStatus", "summarizeFailedTargets", "buildProjectQueueStatus", "claimEligible", "matchAutomationRule", "isExcluded", "issueToNormalizedEvent", "autoEnqueueSyncedIssues", "priorityScore", "isMutatingEntry", "isActiveEntry", "clearClaim", "isLocalCodeIndexUnavailableStatus", "recoverStaleInProgress", "recoverStaleInProgressAsync", "recoverLocalCodeIndexUnavailable", "writeInboxMessage", "listInboxMessages", "readInboxMessage", "ackInboxMessage", "completeInboxMessage"],
           "estimatedLines": 1250
         }
       ]
@@ -326,8 +326,8 @@
   "flatFiles": [
     {
       "name": "server/services/readiness-checks.ts",
-      "mergedFrom": ["readiness-checks.ts", "codegraph-readiness.ts", "demo-runner.ts", "audit-export.ts"],
-      "exports": ["deriveSummary", "deriveReadinessLevels", "checkDiskSpace", "buildSetupReadinessChecks", "buildAgentSandboxReadinessChecks", "runAgentSandboxSelfTestCheck", "runReadinessChecks", "runReleaseDoctorChecks", "formatReleaseDoctorHuman", "formatReleaseDoctorJson", "formatReadinessHuman", "formatReadinessJson", "CodeGraphUnavailableError", "checkCodeGraphReady", "runDemo", "buildJobAuditExport", "writeJobAuditExport"],
+      "mergedFrom": ["readiness-checks.ts", "demo-runner.ts", "audit-export.ts"],
+      "exports": ["deriveSummary", "deriveReadinessLevels", "checkDiskSpace", "buildSetupReadinessChecks", "buildAgentSandboxReadinessChecks", "runAgentSandboxSelfTestCheck", "runReadinessChecks", "runReleaseDoctorChecks", "formatReleaseDoctorHuman", "formatReleaseDoctorJson", "formatReadinessHuman", "formatReadinessJson", "runDemo", "buildJobAuditExport", "writeJobAuditExport"],
       "estimatedLines": 1740
     },
     {
@@ -454,7 +454,6 @@
     "server/services/performance-tracker.ts",
     "server/services/diagnostics-bundle.ts",
     "server/services/sdd-automation.ts",
-    "server/services/codegraph-readiness.ts",
     "server/services/approval-gate.ts",
     "server/services/concurrency-limits.ts",
     "server/services/delete-guard.ts",
@@ -536,7 +535,6 @@
     {"file": "server/orchestrator/hub-orchestrator.ts", "oldImport": "./services/hub-registry.js", "newImport": "../services/hub/hub-registry.js"},
     {"file": "server/orchestrator/hub-orchestrator.ts", "oldImport": "./services/hub-queue.js", "newImport": "../services/hub/hub-queue.js"},
     {"file": "server/orchestrator/hub-orchestrator.ts", "oldImport": "./services/executor-root.js", "newImport": "../services/executor-root.js"},
-    {"file": "server/orchestrator/hub-orchestrator.ts", "oldImport": "./services/codegraph-readiness.js", "newImport": "../services/readiness-checks.js"},
     {"file": "server/orchestrator/hub-orchestrator.ts", "oldImport": "./services/concurrency-limits.js", "newImport": "../services/lease-manager.js"},
     {"file": "server/orchestrator/hub-orchestrator.ts", "oldImport": "./services/index-freshness.js", "newImport": "../services/process-registry.js"},
 

@@ -39,7 +39,7 @@ async function setupProjectRuntime(cpbRoot, project) {
     name: project,
     sourcePath,
     cpbRoot,
-    skipCodeGraphGate: true,
+    skipLocalCodeIndexGate: true,
   });
   return { hubRoot, dataRoot: registered.projectRuntimeRoot };
 }

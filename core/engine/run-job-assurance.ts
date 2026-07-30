@@ -19,6 +19,13 @@ import {
   runPlanTournament,
   type PlanRepositoryContract,
 } from "../assurance/plan-tournament.js";
+import {
+  buildLocalCodeIndexEvidence,
+  queryLocalCodeIndex,
+  taskSymbolCandidates,
+  LocalCodeIndexUnavailableError,
+} from "../indexing/local-code-index/index.js";
+import type { LocalCodeIndexRef, LocalCodeIndexQueryResult } from "../indexing/local-code-index/index.js";
 import { trustedProbePredicateIds } from "../workflow/trusted-probe-policy.js";
 import {
   blockPreparedJob,
@@ -112,28 +119,107 @@ async function failAssuranceInterrupted(ctx: AssuranceContext, jobId: string): P
   };
 }
 
-function stripAnsi(value: string) {
-  return value.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
+/**
+ * Extract a validated LocalCodeIndexRef from a sourceContext object.
+ *
+ * v2 stores a full ref (schemaVersion, sourcePath, repositoryKey, etc.)
+ * instead of a bare indexFile path.  Returns null when the context lacks
+ * a valid ref.
+ */
+function localCodeIndexRefFromContext(ctx: unknown): LocalCodeIndexRef | null {
+  if (!ctx || typeof ctx !== "object") return null;
+  const readiness = (ctx as Record<string, unknown>).localCodeIndexReadiness;
+  if (!readiness || typeof readiness !== "object") return null;
+  const r = readiness as Record<string, unknown>;
+  if (r.available !== true) return null;
+  const ref = r.ref as Record<string, unknown> | undefined;
+  if (!ref || typeof ref !== "object") return null;
+  if (ref.schemaVersion !== 2) return null;
+  if (typeof ref.sourcePath !== "string" || !ref.sourcePath) return null;
+  if (typeof ref.repositoryKey !== "string" || !ref.repositoryKey) return null;
+  if (typeof ref.worktreeKey !== "string" || !ref.worktreeKey) return null;
+  if (typeof ref.sourceKey !== "string" || !ref.sourceKey) return null;
+  if (typeof ref.snapshotId !== "string" || !ref.snapshotId) return null;
+  return ref as unknown as LocalCodeIndexRef;
 }
 
 export async function buildEvidencePack(ctx: AssuranceContext) {
-  const cwd = ctx.sourcePath || ctx.cpbRoot;
-  const env = ctx.env ?? process.env;
-  const command = env.CPB_CODEGRAPH_COMMAND || "codegraph";
   throwIfAssuranceAborted(ctx.signal);
-  const result = await runCommandTree(
-    command,
-    ["context", ctx.task, "--path", cwd, "--max-nodes", "40", "--max-code", "10", "--format", "markdown"],
-    { cwd, env, timeoutMs: 30_000, signal: ctx.signal, maxBufferBytes: 256 * 1024 },
-  );
-  if (result.aborted || ctx.signal?.aborted) throw assuranceAbortError(ctx.signal);
-  if (result.error || result.timedOut || result.exitCode !== 0 || !result.stdout.trim()) {
-    return "CodeGraph evidence pack unavailable. Use focused file reads and keep unresolved claims explicit.";
+  const ref = localCodeIndexRefFromContext(ctx.sourceContext);
+  if (!ref) {
+    return "Local code index evidence pack unavailable. Use focused file reads and keep unresolved claims explicit.";
   }
-  const cleaned = stripAnsi(result.stdout).trim();
-  return cleaned.length <= EVIDENCE_PACK_MAX_CHARS
-    ? cleaned
-    : `${cleaned.slice(0, EVIDENCE_PACK_MAX_CHARS)}\n\n[Evidence pack truncated at ${EVIDENCE_PACK_MAX_CHARS} characters.]`;
+  try {
+    // Extract symbol candidates from the task description.
+    const symbols = taskSymbolCandidates(ctx.task);
+
+    // Run queries to gather evidence: definitions for task symbols, inventory, and related files.
+    const queryResults: Record<string, LocalCodeIndexQueryResult> = {};
+
+    // Query definitions for each symbol candidate.
+    for (const symbol of symbols) {
+      throwIfAssuranceAborted(ctx.signal);
+      try {
+        const result = await queryLocalCodeIndex(ref, {
+          kind: "definitions",
+          symbol,
+          match: "exact",
+          limit: 50,
+        }, { cpbRoot: ctx.cpbRoot, signal: ctx.signal });
+        queryResults.definitions = result;
+      } catch {
+        // Symbol not found — continue with other symbols.
+      }
+    }
+
+    // Query inventory for file listing.
+    throwIfAssuranceAborted(ctx.signal);
+    try {
+      const inventoryResult = await queryLocalCodeIndex(ref, {
+        kind: "inventory",
+        limit: 200,
+      }, { cpbRoot: ctx.cpbRoot, signal: ctx.signal });
+      queryResults.inventory = inventoryResult;
+    } catch {
+      // Inventory query failed — continue without it.
+    }
+
+    // Query related files for the first few symbol candidates.
+    if (symbols.length > 0) {
+      throwIfAssuranceAborted(ctx.signal);
+      try {
+        // Use the first symbol as a seed path for related files.
+        const seedPaths: string[] = [];
+        if (queryResults.definitions && queryResults.definitions.kind === "definitions") {
+          for (const occ of queryResults.definitions.occurrences.slice(0, 5)) {
+            if (!seedPaths.includes(occ.path)) {
+              seedPaths.push(occ.path);
+            }
+          }
+        }
+        if (seedPaths.length > 0) {
+          const relatedResult = await queryLocalCodeIndex(ref, {
+            kind: "related-files",
+            paths: seedPaths,
+            symbols: symbols.slice(0, 3),
+            limit: 50,
+          }, { cpbRoot: ctx.cpbRoot, signal: ctx.signal });
+          queryResults["related-files"] = relatedResult;
+        }
+      } catch {
+        // Related files query failed — continue without it.
+      }
+    }
+
+    throwIfAssuranceAborted(ctx.signal);
+    return buildLocalCodeIndexEvidence(queryResults, ctx.task, EVIDENCE_PACK_MAX_CHARS);
+  } catch (error) {
+    if (ctx.signal?.aborted || isAssuranceAbortError(error)) throw error;
+    if (error instanceof LocalCodeIndexUnavailableError) {
+      return "Local code index evidence pack unavailable. Use focused file reads and keep unresolved claims explicit.";
+    }
+    return "Local code index evidence pack unavailable. Use focused file reads and keep unresolved claims explicit.";
+  }
 }
 
 async function gitText(cwd: string, args: string[], env: NodeJS.ProcessEnv, signal?: AbortSignal) {
@@ -337,7 +423,9 @@ export async function runHighAssurancePlanning(
     metadata: {
       assuranceMode: "high",
       maxChars: EVIDENCE_PACK_MAX_CHARS,
-      source: evidencePack.startsWith("CodeGraph evidence pack unavailable") ? "fallback" : "codegraph_context",
+      source: evidencePack.startsWith("Local code index evidence pack unavailable")
+        ? "fallback"
+        : "local_code_index",
     },
   });
   throwIfAssuranceAborted(ctx.signal);
@@ -378,10 +466,7 @@ export async function runHighAssurancePlanning(
       throwIfAssuranceAborted(ctx.signal);
       const agentEnv = buildPhaseAcpEnv(ctx, "plan");
       // Repository retrieval is frozen once into the bounded evidence pack.
-      // Re-opening repository MCP tools in any tournament round multiplies
-      // context consumption and gives later agents evidence their opponent did
-      // not see. Focused ACP file reads remain available when necessary.
-      agentEnv.CPB_CODEGRAPH_ENABLED = "0";
+      // Focused ACP file reads remain available when the pack omits a detail.
       const result = recordValue(await runAgent({
         phase: "plan",
         role: run.role,

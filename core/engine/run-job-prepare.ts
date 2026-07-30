@@ -3,6 +3,7 @@ import { resolveDynamicAgentPlan } from "./phase-agent-routing.js";
 import { derivePhaseBudgetPolicy } from "../policy/phase-budget.js";
 
 import { isRecord, recordValue, type LooseRecord } from "../contracts/types.js";
+import type { LocalCodeIndexRef } from "../indexing/local-code-index/index.js";
 import { parseManagedWorktreeContext } from "../contracts/worktree-ownership.js";
 import type { RunJobPorts, RunJobState } from "./run-job-ports.js";
 import { setJobId, setAttemptId } from "./run-job-bookkeeping.js";
@@ -48,8 +49,8 @@ function normalizePrepareFailure(err: unknown) {
     || errObj?.message
     || (typeof err === "string" && err.length > 0 ? err : "prepareTask service is unavailable");
   return failure({
-    kind: code === FailureKind.CODEGRAPH_UNAVAILABLE
-      ? FailureKind.CODEGRAPH_UNAVAILABLE
+    kind: code === FailureKind.LOCAL_CODE_INDEX_UNAVAILABLE
+      ? FailureKind.LOCAL_CODE_INDEX_UNAVAILABLE
       : FailureKind.UNKNOWN,
     phase: "prepare_task",
     reason,
@@ -63,6 +64,34 @@ function normalizePrepareFailure(err: unknown) {
 
 function normalizeRiskMapResult(result: LooseRecord | null | undefined) {
   return result?.riskMap || result?.riskmap || result || null;
+}
+
+/**
+ * Validate and normalize a localCodeIndexReadiness value from a prepareTask
+ * result into the v2 shape (with `ref: LocalCodeIndexRef`).
+ *
+ * Returns null when the input is missing, not available, or lacks a valid v2 ref.
+ * This replaces the v1 pattern of storing a bare `indexFile` path.
+ */
+function normalizeLocalCodeIndexReadiness(
+  readiness: unknown,
+): { available: true; ref: LocalCodeIndexRef; sourcePath: string } | null {
+  if (!readiness || typeof readiness !== "object") return null;
+  const r = readiness as Record<string, unknown>;
+  if (r.available !== true) return null;
+  const ref = r.ref as Record<string, unknown> | undefined;
+  if (!ref || typeof ref !== "object") return null;
+  if (ref.schemaVersion !== 2) return null;
+  if (typeof ref.sourcePath !== "string" || !ref.sourcePath) return null;
+  if (typeof ref.repositoryKey !== "string" || !ref.repositoryKey) return null;
+  if (typeof ref.worktreeKey !== "string" || !ref.worktreeKey) return null;
+  if (typeof ref.sourceKey !== "string" || !ref.sourceKey) return null;
+  if (typeof ref.snapshotId !== "string" || !ref.snapshotId) return null;
+  return {
+    available: true,
+    ref: ref as unknown as LocalCodeIndexRef,
+    sourcePath: ref.sourcePath,
+  };
 }
 
 /**
@@ -240,7 +269,22 @@ export async function prepareTaskAndRiskMap(
       planMode,
       sourceContext: { ...(sourceContext || {}), riskMap },
     });
-    phaseSourceContext = { ...(sourceContext || {}), riskMap, phaseBudgetPolicy, ...(dynamicAgentPlan ? { dynamicAgentPlan } : {}), ...(prepareRecord.acceptanceChecklist ? { acceptanceChecklist: prepareRecord.acceptanceChecklist } : {}), ...(prepareRecord.requirementClassification ? { requirementClassification: prepareRecord.requirementClassification } : {}) };
+    const normalizedReadiness = normalizeLocalCodeIndexReadiness(prepareRecord.localCodeIndexReadiness);
+    phaseSourceContext = {
+      ...(sourceContext || {}),
+      riskMap,
+      phaseBudgetPolicy,
+      ...(dynamicAgentPlan ? { dynamicAgentPlan } : {}),
+      ...(normalizedReadiness
+        ? { localCodeIndexReadiness: normalizedReadiness }
+        : {}),
+      ...(prepareRecord.acceptanceChecklist
+        ? { acceptanceChecklist: prepareRecord.acceptanceChecklist }
+        : {}),
+      ...(prepareRecord.requirementClassification
+        ? { requirementClassification: prepareRecord.requirementClassification }
+        : {}),
+    };
 
     await appendEvent(cpbRoot, project, jobId, {
       type: "phase_started",

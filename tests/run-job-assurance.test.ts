@@ -1,9 +1,7 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
-import { chmod, readFile, readdir, writeFile } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
-import { promisify } from "node:util";
 
 import {
   buildEvidencePack,
@@ -12,28 +10,110 @@ import {
 } from "../core/engine/run-job-assurance.js";
 import { withArtifactStoreTestHooks } from "../core/artifacts/artifact-store.js";
 import { FailureKind } from "../core/contracts/failure.js";
+import {
+  buildLocalCodeIndexEvidence,
+  taskSymbolCandidates,
+} from "../core/indexing/local-code-index/evidence.js";
+import type {
+  LocalCodeIndexQueryResult,
+} from "../core/indexing/local-code-index/contracts.js";
 import { tempRoot } from "./helpers.js";
 
-const execFileAsync = promisify(execFile);
+// ── v2 index ref fixture ──────────────────────────────────────────────────────
 
-async function commandFixture(root: string, name: string, label: string) {
-  const commandPath = path.join(root, name);
-  await writeFile(commandPath, `#!/bin/sh\nprintf '${label} marker=%s' "$CPB_TEST_MARKER"\n`, "utf8");
-  await chmod(commandPath, 0o755);
-  return commandPath;
+async function localIndexFixture(root: string) {
+  // Create a v2-format index ref. The actual index storage is handled by the
+  // v2 service; for testing we use this ref in sourceContext and test the
+  // evidence rendering path directly via buildLocalCodeIndexEvidence.
+  const ref = {
+    schemaVersion: 2 as const,
+    sourcePath: root,
+    repositoryKey: "test-repository-key",
+    worktreeKey: "test-worktree-key",
+    sourceKey: "test-source-key",
+    snapshotId: "snapshot-test",
+  };
+  return ref;
 }
 
-function assuranceContext(root: string, env?: NodeJS.ProcessEnv): AssuranceContext {
+// ── v2 query result fixtures ──────────────────────────────────────────────────
+
+function definitionsResult(symbols: Array<{ symbol: string; path: string; kind: string }>): LocalCodeIndexQueryResult {
+  return {
+    kind: "definitions",
+    snapshotId: "snapshot-test",
+    coverage: { effective: "ast-grep-structural", partial: false, failedFiles: 0, oversizedFiles: 0 },
+    truncated: false,
+    durationMs: 5,
+    occurrences: symbols.map((s) => ({
+      symbol: s.symbol,
+      kind: s.kind,
+      role: "definition" as const,
+      path: s.path,
+      range: { startLine: 1, startColumn: 0, endLine: 1, endColumn: s.symbol.length },
+      exported: false,
+      coverage: "ast-grep-structural" as const,
+    })),
+  } as LocalCodeIndexQueryResult;
+}
+
+function inventoryResult(files: Array<{ path: string; size: number }>): LocalCodeIndexQueryResult {
+  return {
+    kind: "inventory",
+    snapshotId: "snapshot-test",
+    coverage: { effective: "ast-grep-structural", partial: false, failedFiles: 0, oversizedFiles: 0 },
+    truncated: false,
+    durationMs: 3,
+    files: files.map((f) => ({
+      path: f.path,
+      language: "typescript",
+      size: f.size,
+      coverage: "ast-grep-structural" as const,
+    })),
+    nextCursor: null,
+  } as LocalCodeIndexQueryResult;
+}
+
+function relatedFilesResult(files: Array<{ path: string; score: number }>): LocalCodeIndexQueryResult {
+  return {
+    kind: "related-files",
+    snapshotId: "snapshot-test",
+    coverage: { effective: "ast-grep-structural", partial: false, failedFiles: 0, oversizedFiles: 0 },
+    truncated: false,
+    durationMs: 4,
+    files: files.map((f) => ({
+      path: f.path,
+      score: f.score,
+      evidence: [{
+        fromPath: "src/parser.ts",
+        toPath: f.path,
+        type: "imports" as const,
+        symbol: null,
+        evidence: [],
+        weight: 1,
+      }],
+    })),
+  } as LocalCodeIndexQueryResult;
+}
+
+// ── Context builder ───────────────────────────────────────────────────────────
+
+function assuranceContext(
+  root: string,
+  options: { env?: NodeJS.ProcessEnv; ref?: { schemaVersion: 2; sourcePath: string; repositoryKey: string; worktreeKey: string; sourceKey: string; snapshotId: string } } = {},
+): AssuranceContext {
   return {
     cpbRoot: root,
     project: "project",
     task: "inspect env",
     sourcePath: root,
     dataRoot: null,
-    sourceContext: {},
+    sourceContext: options.ref
+      ? { localCodeIndexReadiness: { available: true, ref: options.ref } }
+      : {},
     agents: null,
     timeouts: {},
-    env,
+    env: options.env,
     scope: null,
     _attemptId: "attempt",
     getPool: () => null,
@@ -54,72 +134,151 @@ async function outputFiles(root: string) {
   }
 }
 
-test("evidence pack command and subprocess env use explicit job env", async () => {
-  const root = await tempRoot("cpb-assurance-env");
-  const jobCommand = await commandFixture(root, "job-codegraph", "job");
-  const pack = await buildEvidencePack(assuranceContext(root, {
-    CPB_CODEGRAPH_COMMAND: jobCommand,
-    CPB_TEST_MARKER: "job-marker",
+// ── v2 evidence rendering tests ───────────────────────────────────────────────
+
+test("v2 evidence renderer produces structured output from query results", () => {
+  // Test buildLocalCodeIndexEvidence directly with v2 query results.
+  // This exercises the v2 rendering path without needing a real index on disk.
+  const queryResults: Record<string, LocalCodeIndexQueryResult> = {
+    definitions: definitionsResult([
+      { symbol: "inspect", path: "src/env-inspector.ts", kind: "function" },
+      { symbol: "inspectEnv", path: "src/cli.ts", kind: "function" },
+    ]),
+    inventory: inventoryResult([
+      { path: "src/env-inspector.ts", size: 512 },
+      { path: "src/cli.ts", size: 1024 },
+      { path: "src/utils.ts", size: 256 },
+    ]),
+    "related-files": relatedFilesResult([
+      { path: "src/config.ts", score: 2.5 },
+      { path: "src/loader.ts", score: 1.0 },
+    ]),
+  };
+
+  const task = "inspect env and `parseConfig()`";
+  const evidence = buildLocalCodeIndexEvidence(queryResults, task);
+
+  // Verify v2 header and snapshot ID.
+  assert.match(evidence, /Local code index evidence \(v2\)/, "should have v2 header");
+  assert.match(evidence, /snapshot-test/, "should include snapshot ID");
+  assert.match(evidence, /inspect env and/, "should include task description");
+
+  // Verify symbol definitions section.
+  assert.match(evidence, /Symbol definitions/, "should have symbol definitions section");
+  assert.match(evidence, /inspect/, "should contain extracted symbol");
+  assert.match(evidence, /env-inspector\.ts/, "should contain definition file path");
+  assert.match(evidence, /function/, "should contain symbol kind");
+
+  // Verify file inventory section.
+  assert.match(evidence, /File inventory \(3 files\)/, "should have file inventory with count");
+  assert.match(evidence, /cli\.ts/, "should contain inventory file");
+  assert.match(evidence, /utils\.ts/, "should contain another inventory file");
+  assert.match(evidence, /512B/, "should show file size");
+
+  // Verify related files section with scores.
+  assert.match(evidence, /Related files/, "should have related files section");
+  assert.match(evidence, /config\.ts/, "should contain related file path");
+  assert.match(evidence, /score: 2\.50/, "should show related file score");
+  assert.match(evidence, /loader\.ts/, "should contain second related file");
+  assert.match(evidence, /score: 1\.00/, "should show second score");
+
+  // Verify coverage summary.
+  assert.match(evidence, /Coverage:/, "should have coverage summary");
+  assert.match(evidence, /ast-grep-structural/, "should show effective coverage level");
+});
+
+test("v2 evidence renderer handles empty definitions gracefully", () => {
+  // When definitions queries return no occurrences, the definitions section
+  // is omitted. The renderer still includes the coverage summary from the
+  // query result, so the output is non-empty but has no symbol data.
+  const emptyDefinitions: LocalCodeIndexQueryResult = {
+    kind: "definitions",
+    snapshotId: "snapshot-test",
+    coverage: { effective: "file-inventory-only", partial: false, failedFiles: 0, oversizedFiles: 0 },
+    truncated: false,
+    durationMs: 1,
+    occurrences: [],
+  } as LocalCodeIndexQueryResult;
+
+  const evidence = buildLocalCodeIndexEvidence({ definitions: emptyDefinitions }, "some task");
+  // No symbol definitions section when occurrences are empty.
+  assert.doesNotMatch(evidence, /Symbol definitions/);
+  // Coverage summary is still present.
+  assert.match(evidence, /Coverage: file-inventory-only/);
+  // Header and task are present.
+  assert.match(evidence, /Local code index evidence \(v2\)/);
+  assert.match(evidence, /some task/);
+});
+
+test("v2 evidence renderer returns no-relevant fallback when no query results at all", () => {
+  // When no query results are provided, the renderer returns the fallback.
+  const evidence = buildLocalCodeIndexEvidence({}, "some task");
+  assert.match(evidence, /No relevant local code index evidence found/);
+});
+
+test("taskSymbolCandidates extracts symbols from task descriptions", () => {
+  // Verify the v2 symbol extraction from task text.
+  const symbols = taskSymbolCandidates("fix the `buildIndex` function and update parseConfig() calls");
+  assert.ok(symbols.includes("buildIndex"), "should extract backtick-quoted identifiers");
+  assert.ok(symbols.includes("parseConfig"), "should extract function-call syntax identifiers");
+  assert.ok(symbols.length <= 5, "should cap at MAX_SYMBOL_CANDIDATES");
+  // Short identifiers (< 3 chars) should be excluded.
+  assert.ok(!symbols.includes("ab"), "should exclude short identifiers");
+});
+
+test("v2 evidence renderer caps output at maxChars with truncation marker", () => {
+  // Build a large evidence pack to verify truncation.
+  const manyFiles = Array.from({ length: 200 }, (_, i) => ({
+    path: `src/file-${i}.ts`,
+    size: 100 + i,
   }));
+  const queryResults: Record<string, LocalCodeIndexQueryResult> = {
+    inventory: inventoryResult(manyFiles),
+  };
 
-  assert.equal(pack, "job marker=job-marker");
+  const evidence = buildLocalCodeIndexEvidence(queryResults, "large task", 500);
+  assert.ok(evidence.length <= 600, "output should be capped near maxChars (allowing for truncation marker)");
+  assert.match(evidence, /truncated/, "should include truncation marker");
 });
 
-test("evidence pack command falls back to ambient env only when job env is absent", async () => {
-  const root = await tempRoot("cpb-assurance-env-fallback");
-  const ambientCommand = await commandFixture(root, "ambient-codegraph", "ambient");
-  const moduleUrl = new URL("../core/engine/run-job-assurance.js", import.meta.url).href;
-  const script = `
-    const { buildEvidencePack } = await import(${JSON.stringify(moduleUrl)});
-    const pack = await buildEvidencePack({
-      cpbRoot: ${JSON.stringify(root)},
-      project: "project",
-      task: "inspect env",
-      sourcePath: ${JSON.stringify(root)},
-      dataRoot: null,
-      sourceContext: {},
-      agents: null,
-      timeouts: {},
-      scope: null,
-      _attemptId: "attempt",
-      getPool: () => null,
-      appendEvent: async () => {},
-      blockJob: async () => {},
-      failJob: async () => {},
-      onProgress: null,
-    });
-    process.stdout.write(pack);
-  `;
-  const { stdout } = await execFileAsync(process.execPath, ["--input-type=module", "-e", script], {
-    cwd: root,
-    env: {
-      ...process.env,
-      CPB_CODEGRAPH_COMMAND: ambientCommand,
-      CPB_TEST_MARKER: "ambient-marker",
-    },
-  });
+// ── buildEvidencePack behavior tests ──────────────────────────────────────────
 
-  assert.equal(stdout, "ambient marker=ambient-marker");
+test("buildEvidencePack returns unavailable fallback when no v2 ref is present", async () => {
+  const root = await tempRoot("cpb-assurance-no-ref");
+
+  // No ref in sourceContext → localCodeIndexRefFromContext returns null
+  // and buildEvidencePack returns the unavailable fallback without querying.
+  const pack = await buildEvidencePack(assuranceContext(root));
+  assert.match(pack, /Local code index evidence pack unavailable/);
 });
 
-test("evidence pack does not launch CodeGraph when the job signal is pre-aborted", async () => {
+test("buildEvidencePack returns fallback when v2 ref points to missing index", async () => {
+  const root = await tempRoot("cpb-assurance-missing-index");
+  const ref = await localIndexFixture(root);
+
+  // The ref is structurally valid but no index exists on disk.
+  // queryLocalCodeIndex will fail with missing_local_code_index → caught → fallback.
+  const pack = await buildEvidencePack(assuranceContext(root, { ref }));
+  assert.match(pack, /No relevant local code index evidence found|Local code index evidence pack unavailable/);
+});
+
+test("buildEvidencePack does not query when the job signal is pre-aborted", async () => {
   const root = await tempRoot("cpb-assurance-pre-abort");
-  const marker = path.join(root, "launched.txt");
-  const command = path.join(root, "must-not-launch");
-  await writeFile(command, `#!/bin/sh\nprintf launched > ${JSON.stringify(marker)}\n`, "utf8");
-  await chmod(command, 0o755);
   const controller = new AbortController();
   controller.abort();
+  const ref = await localIndexFixture(root);
 
+  // throwIfAssuranceAborted fires before any query work.
   await assert.rejects(
     buildEvidencePack({
-      ...assuranceContext(root, { CPB_CODEGRAPH_COMMAND: command }),
+      ...assuranceContext(root, { ref }),
       signal: controller.signal,
     }),
     { name: "AbortError" },
   );
-  assert.equal(await readFile(marker, "utf8").then(() => true, () => false), false);
 });
+
+// ── High-assurance planning flow tests ────────────────────────────────────────
 
 test("disabled high-assurance planning skips even when execution is already aborted", async () => {
   const root = await tempRoot("cpb-assurance-disabled-pre-abort");
@@ -171,7 +330,7 @@ test("enabled high-assurance planning returns runtime_interrupted without event 
 test("high-assurance planning aborts mid artifact commit without final temp or lock residue", async () => {
   const root = await tempRoot("cpb-assurance-mid-write-abort");
   const dataRoot = path.join(root, "runtime");
-  const command = await commandFixture(root, "job-codegraph", "job");
+  const ref = await localIndexFixture(root);
   const controller = new AbortController();
   const failed = [];
   let hookCalls = 0;
@@ -183,10 +342,7 @@ test("high-assurance planning aborts mid artifact commit without final temp or l
       }
     },
   }, () => runHighAssurancePlanning({
-      ...assuranceContext(root, {
-        CPB_CODEGRAPH_COMMAND: command,
-        CPB_TEST_MARKER: "mid-write",
-      }),
+      ...assuranceContext(root, { ref }),
       dataRoot,
       signal: controller.signal,
       failJob: async (_cpbRoot, _project, _jobId, payload) => { failed.push(payload); },

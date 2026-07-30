@@ -10,6 +10,9 @@ type AgentConfigRecord = LooseRecord & {
   acpPool?: AgentConfigRecord;
   agents?: AgentConfigRecord;
   agent?: string | null;
+  provider?: string | null;
+  model?: string | null;
+  modelName?: string | null;
   variant?: unknown;
   default?: unknown;
   phases?: LooseRecord;
@@ -148,11 +151,40 @@ export async function writeHubConfig(hubRoot: string, data: AgentConfigRecord) {
   await writeJson(path.join(hubRoot, HUB_CONFIG_FILE), normalizeHubConfig(data));
 }
 
-// -- Project config ({projectRuntimeRoot}/wiki/project.json -> agents) --
+// -- Project config (~/.cpb/<project>/project.json) --
 
-function projectConfigPath(dataRoot: string) {
+function safeProjectName(project: string) {
+  return project && path.basename(project) === project && project !== "." && project !== ".."
+    ? project
+    : null;
+}
+
+function legacyProjectConfigPath(dataRoot: string) {
   if (!dataRoot) throw new Error("project runtime root required for project config");
   return path.join(path.resolve(dataRoot), "wiki", "project.json");
+}
+
+function canonicalProjectConfigCandidates(dataRoot: string, project: string) {
+  const name = safeProjectName(project);
+  if (!name) return [];
+  const resolved = path.resolve(dataRoot);
+  const candidates: string[] = [];
+  const parent = path.dirname(resolved);
+  // The normal runtime root is <hubRoot>/projects/<project>. Derive the
+  // sibling canonical config without depending on the caller's HOME.
+  if (path.basename(parent) === "projects") {
+    candidates.push(path.join(path.dirname(parent), name, "project.json"));
+  }
+  // This also supports callers that pass the hub root directly in tests and
+  // in small integrations.
+  candidates.push(path.join(resolved, name, "project.json"));
+  const configuredRoot = process.env.CPB_HOME || process.env.CPB_HUB_ROOT;
+  if (configuredRoot) candidates.push(path.join(path.resolve(configuredRoot), name, "project.json"));
+  return [...new Set(candidates)];
+}
+
+export function canonicalProjectConfigPath(dataRoot: string, project: string) {
+  return canonicalProjectConfigCandidates(dataRoot, project)[0] || null;
 }
 
 function uniqueRoots(roots: (string | null | undefined)[]) {
@@ -169,7 +201,28 @@ function uniqueRoots(roots: (string | null | undefined)[]) {
 }
 
 export async function readProjectJson(dataRoot: string, _project: string) {
-  return readJson(projectConfigPath(dataRoot));
+  const legacy = await readJson(legacyProjectConfigPath(dataRoot));
+  let canonical: AgentConfigRecord = {};
+  for (const candidate of canonicalProjectConfigCandidates(dataRoot, _project)) {
+    const data = await readJson(candidate);
+    if (Object.keys(data).length > 0) {
+      canonical = data;
+      break;
+    }
+  }
+  // Keep sourcePath/name metadata from the runtime wiki while allowing the
+  // canonical project file to own agent/provider/model selection. If the
+  // canonical file uses the direct form, it also supersedes old metadata
+  // written by pre-configurable CPB versions.
+  const merged = { ...legacy, ...canonical };
+  const canonicalOwnsSelection = canonical.agents !== undefined
+    || canonical.agent !== undefined
+    || canonical.provider !== undefined
+    || canonical.model !== undefined
+    || canonical.modelName !== undefined
+    || canonical.variant !== undefined;
+  if (canonicalOwnsSelection && canonical.agents === undefined) delete merged.agents;
+  return merged;
 }
 
 export async function readProjectJsonFromRoots(roots: (string | null | undefined)[], project: string) {
@@ -181,12 +234,25 @@ export async function readProjectJsonFromRoots(roots: (string | null | undefined
 }
 
 export async function writeProjectJson(dataRoot: string, project: string, data: AgentConfigRecord) {
-  await writeJson(projectConfigPath(dataRoot), data);
+  const canonical = canonicalProjectConfigPath(dataRoot, project);
+  if (!canonical) throw new Error(`valid project name required for project config: ${project}`);
+  await writeJson(canonical, data);
 }
 
 export async function readProjectConfig(dataRoot: string, project: string) {
   const data = await readProjectJson(dataRoot, project);
-  return data.agents || null;
+  if (data.agents) return data.agents;
+  if (data.agent !== undefined || data.provider !== undefined || data.model !== undefined || data.modelName !== undefined || data.variant !== undefined) {
+    return {
+      default: {
+        agent: data.agent ?? null,
+        provider: data.provider ?? null,
+        model: data.model ?? data.modelName ?? null,
+        variant: data.variant ?? null,
+      },
+    };
+  }
+  return null;
 }
 
 export async function readProjectConfigFromRoots(roots: (string | null | undefined)[], project: string) {
@@ -234,20 +300,30 @@ function timestampMs(value: unknown) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-export function normalizeAgentSpec(raw: unknown) {
+export function normalizeAgentSpec(raw: unknown): AgentConfigRecord | null {
   if (!raw) return null;
   if (isStringRecord(raw)) {
     const obj = raw;
-    if ((obj.agent === null || obj.agent === undefined) && obj.variant) {
-      return { agent: null, variant: obj.variant };
+    const optional: AgentConfigRecord = {};
+    if (Object.prototype.hasOwnProperty.call(obj, "provider")) {
+      optional.provider = obj.provider === null ? null : (typeof obj.provider === "string" ? obj.provider : null);
+    }
+    if (Object.prototype.hasOwnProperty.call(obj, "model")) {
+      optional.model = obj.model === null ? null : (typeof obj.model === "string" ? obj.model : null);
+    } else if (Object.prototype.hasOwnProperty.call(obj, "modelName")) {
+      optional.model = obj.modelName === null ? null : (typeof obj.modelName === "string" ? obj.modelName : null);
+    }
+    if ((obj.agent === null || obj.agent === undefined)
+      && (obj.variant !== undefined || Object.keys(optional).length > 0)) {
+      return { agent: null, ...(obj.variant !== undefined ? { variant: obj.variant } : {}), ...optional };
     }
     if (obj.agent === null || obj.agent === undefined) return null;
     const agentStr = String(obj.agent || "");
     if (agentStr.includes(":")) {
       const [agent, variant] = agentStr.split(":", 2);
-      return { agent, variant: variant || obj.variant || null };
+      return { agent, variant: variant || obj.variant || null, ...optional };
     }
-    return agentStr ? { agent: agentStr, variant: obj.variant || null } : null;
+    return agentStr ? { agent: agentStr, variant: obj.variant || null, ...optional } : null;
   }
   const colonIdx = String(raw).indexOf(":");
   if (colonIdx >= 0) {
@@ -259,6 +335,10 @@ export function normalizeAgentSpec(raw: unknown) {
 function resolveFromConfig(config: AgentConfigRecord | null | undefined): AgentConfigRecord {
   if (!config) return {};
   const result: AgentConfigRecord = {};
+  if (config.agent !== undefined || config.provider !== undefined || config.model !== undefined || config.modelName !== undefined || config.variant !== undefined) {
+    const direct = normalizeAgentSpec(config);
+    if (direct) result.default = direct;
+  }
   const defaultSpec = normalizeAgentSpec(config.default);
   if (defaultSpec) result.default = defaultSpec;
 
@@ -310,6 +390,17 @@ const PHASE_TO_ROLE = {
 export function mergeAgentConfig(hubAgents: AgentConfigRecord | null | undefined, projectAgents: AgentConfigRecord | null | undefined, metadataAgents: AgentConfigRecord | null | undefined) {
   const merged: AgentConfigRecord = {};
 
+  function mergeSpec(existing: AgentConfigRecord | undefined, spec: AgentConfigRecord) {
+    if (!existing) return { ...spec };
+    return {
+      ...existing,
+      ...(Object.prototype.hasOwnProperty.call(spec, "variant") ? { variant: spec.variant } : {}),
+      ...(Object.prototype.hasOwnProperty.call(spec, "provider") ? { provider: spec.provider } : {}),
+      ...(Object.prototype.hasOwnProperty.call(spec, "model") ? { model: spec.model } : {}),
+      ...(spec.agent !== null && spec.agent !== undefined ? { agent: spec.agent } : {}),
+    };
+  }
+
   function applyResolved(resolved: AgentConfigRecord, overrideDefault: boolean) {
     if (isAgentConfigRecord(resolved.default)) {
       for (const role of ["planner", "executor", "verifier", "reviewer"]) {
@@ -321,11 +412,11 @@ export function mergeAgentConfig(hubAgents: AgentConfigRecord | null | undefined
       if (!isAgentConfigRecord(rawSpec)) continue;
       const spec = rawSpec;
       const role = PHASE_TO_ROLE[phase] || phase;
-      const existing = merged[role];
+      const existing = merged[role] as AgentConfigRecord | undefined;
       if (spec.agent === null && isAgentConfigRecord(existing)) {
-        merged[role] = { ...existing, variant: spec.variant };
+        merged[role] = mergeSpec(existing, spec);
       } else {
-        merged[role] = { ...spec };
+        merged[role] = mergeSpec(existing, spec);
       }
     }
   }
@@ -340,11 +431,11 @@ export function mergeAgentConfig(hubAgents: AgentConfigRecord | null | undefined
           const spec = normalizeAgentSpec(raw);
           if (spec) {
             const role = PHASE_TO_ROLE[key] || key;
-            const existing = merged[role];
+            const existing = merged[role] as AgentConfigRecord | undefined;
             if (spec.agent === null && isAgentConfigRecord(existing)) {
-              merged[role] = { ...existing, variant: spec.variant };
+              merged[role] = mergeSpec(existing, spec);
             } else {
-              merged[role] = spec;
+              merged[role] = mergeSpec(existing, spec);
             }
         }
       }
@@ -371,7 +462,7 @@ export async function resolveAgentsForEntry(hubRoot: string, cpbRoot: string, pr
   const { getProject } = await import("../hub/hub-registry.js");
   const projectRecord = await getProject(hubRoot, project);
   const projectAgents = await readProjectConfigFromRoots(
-    [projectRecord?.projectRuntimeRoot],
+    [projectRecord?.projectRuntimeRoot, hubRoot, cpbRoot],
     project,
   );
 

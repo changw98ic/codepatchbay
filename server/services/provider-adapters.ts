@@ -1,132 +1,127 @@
-import { recordValue, type LooseRecord } from "../../shared/types.js";
 /**
- * Provider Adapters — supplier-specific quota semantics.
+ * Provider quota adapters are projections of descriptor configuration.
  *
- * Each adapter knows:
- *   - region / timezone (for naive timestamp interpretation)
- *   - how to parse supplier-specific limit errors
- *   - quota policy (daily window, weekly cap, etc.)
+ * A provider descriptor may declare its region, timezone, quota policy and
+ * limit-error rules. The runtime turns those declarative rules into the
+ * small adapter interface consumed by quota and usage code. Unknown or
+ * descriptor-less keys deliberately use the generic adapter.
  */
-
+import { recordValue, type LooseRecord } from "../../shared/types.js";
+import {
+  getProviderConfig,
+  listAgents,
+} from "../../core/agents/registry.js";
+import {
+  normalizeProviderConfig,
+  providerKeyForDescriptor,
+  type NormalizedProviderConfig,
+} from "../../core/agents/provider-config.js";
+import {
+  configuredProviderForKey,
+  providerDescriptorFromConfig,
+  listConfiguredProviders,
+} from "../../core/agents/provider-catalog.js";
 import { parseResetTime } from "./provider-quota.js";
 
-// ─── Adapter Registry ───────────────────────────────────────────────
-const adapters = new Map<string, LooseRecord>();
-
-function register(key: string, adapter: LooseRecord) {
-  adapters.set(key, Object.freeze({ providerKeyPattern: key, ...adapter }));
-}
-
-// ─── Built-in Adapters ──────────────────────────────────────────────
-
-register("codex", {
-  region: "global",
-  timezone: "UTC",
-  quotaPolicy: { type: "per-minute", description: "OpenAI per-minute rate limit" },
-  parseLimitError: null, // uses deterministic parser
-  parseResetTime: (msg: string) => parseResetTime(msg, "UTC"),
-});
-
-register("claude", {
-  region: "global",
-  timezone: "UTC",
-  quotaPolicy: { type: "per-minute", description: "Anthropic per-minute rate limit" },
-  parseLimitError({ error, stderr }: LooseRecord) {
-    const err = recordValue(error);
-    const msg = `${err.message || ""}\n${stderr || ""}`;
-    if (Number(err.code) === 529 || /\b529\b|访问量过大|模型当前访问量|当前访问量过大/i.test(msg)) {
-      return {
-        isQuota: true,
-        status: "rate_limited",
-        confidence: 0.95,
-        reason: msg.slice(0, 200) || "claude provider overloaded",
-      };
-    }
-    return null;
-  },
-  parseResetTime: (msg: string) => parseResetTime(msg, "UTC"),
-});
-
-register("claude:mimo-v2.5pro", {
-  region: "cn",
-  timezone: "Asia/Shanghai",
-  quotaPolicy: {
-    type: "5h-window",
-    description: "MiMo 5-hour usage window, weekly cap",
-    windowHours: 5,
-  },
-  parseLimitError({ error, stderr }: LooseRecord) {
-    const err = recordValue(error);
-    const msg = `${err.message || ""}\n${stderr || ""}`;
-    if (/weekly|week.?limit/i.test(msg)) {
-      return {
-        isQuota: true,
-        status: "weekly_exhausted",
-        confidence: 0.9,
-        reason: msg.slice(0, 200),
-      };
-    }
-    if (/window|quota|exhaust|5.?hour/i.test(msg)) {
-      return {
-        isQuota: true,
-        status: "window_exhausted",
-        confidence: 0.9,
-        reason: msg.slice(0, 200),
-      };
-    }
-    return null;
-  },
-  parseResetTime: (msg: string) => parseResetTime(msg, "Asia/Shanghai"),
-});
-
-register("claude:glm", {
-  region: "cn",
-  timezone: "Asia/Shanghai",
-  quotaPolicy: { type: "per-minute", description: "GLM Anthropic-compatible rate limit" },
-  parseLimitError({ error, stderr }: LooseRecord) {
-    const err = recordValue(error);
-    const msg = `${err.message || ""}\n${stderr || ""}`;
-    if (/rate.?limit|quota|限额|额度|访问量|频率|过载|overload/i.test(msg)) {
-      return {
-        isQuota: true,
-        status: "rate_limited",
-        confidence: 0.85,
-        reason: msg.slice(0, 200),
-      };
-    }
-    return null;
-  },
-  parseResetTime: (msg: string) => parseResetTime(msg, "Asia/Shanghai"),
-});
-
-register("generic", {
+const genericAdapter = Object.freeze({
+  providerKeyPattern: "generic",
   region: "global",
   timezone: "UTC",
   quotaPolicy: { type: "unknown", description: "default fallback" },
   parseLimitError: null,
-  parseResetTime: (msg: string) => parseResetTime(msg, "UTC"),
+  parseResetTime: (message: string) => parseResetTime(message, "UTC"),
 });
 
-// ─── Lookup ─────────────────────────────────────────────────────────
+function descriptorForProviderKey(providerKey: string) {
+  try {
+    for (const descriptor of listAgents()) {
+      if (typeof descriptor?.name !== "string") continue;
+      const exact = providerKeyForDescriptor(descriptor.name, descriptor);
+      if (exact === providerKey || descriptor.name === providerKey) return descriptor;
+    }
+    const agent = providerKey.split(":", 1)[0];
+    return listAgents().find((descriptor) => descriptor?.name === agent) || null;
+  } catch {
+    return null;
+  }
+}
 
-/**
- * Get the adapter for a provider key.
- * Tries exact match first, then falls back to "generic".
- *
- * @param {string} providerKey - e.g. "claude", "claude:mimo-v2.5pro", "codex"
- * @returns {object} adapter
- */
-export function getProviderAdapter(providerKey: string) {
-  if (adapters.has(providerKey)) return adapters.get(providerKey);
-  // Try agent-level fallback (e.g. "claude:mimo-v2.5pro" -> "claude")
-  const agent = providerKey.split(":")[0];
-  if (adapters.has(agent)) return adapters.get(agent);
-  return adapters.get("generic");
+function adapterFromConfig(providerKey: string, config: NormalizedProviderConfig) {
+  const quota = config.quota;
+  if (!quota) return null;
+  const timezone = quota.timezone || "UTC";
+  return Object.freeze({
+    providerKeyPattern: providerKey,
+    region: quota.region || "global",
+    timezone,
+    quotaPolicy: quota.policy,
+    parseLimitError: quota.rules.length > 0
+      ? ({ error, stderr }: LooseRecord) => {
+        const err = recordValue(error);
+        const message = `${err.message || ""}\n${stderr || ""}`;
+        for (const rule of quota.rules) {
+          let matched = false;
+          try {
+            matched = new RegExp(rule.pattern, "i").test(message);
+          } catch {
+            // Invalid user regexes are ignored; descriptor validation remains
+            // non-executable and quota classification must stay fail-safe.
+          }
+          if (!matched) continue;
+          return {
+            isQuota: true,
+            status: rule.status,
+            confidence: rule.confidence,
+            reason: rule.reason || message.slice(0, 200),
+          };
+        }
+        return null;
+      }
+      : null,
+    parseResetTime: (message: string) => parseResetTime(message, timezone),
+  });
 }
 
 /**
- * List all registered adapter keys.
+ * Get the adapter for a provider key. Exact descriptor provider keys win;
+ * agent-level descriptors are used for unknown variants, then generic state.
  */
+export function getProviderAdapter(providerKey: string) {
+  const key = String(providerKey || "").trim();
+  const configured = configuredProviderForKey(key);
+  if (configured) {
+    try {
+      const configuredDescriptor = providerDescriptorFromConfig(configured.id, configured.config);
+      const config = normalizeProviderConfig(configured.id, { provider: configuredDescriptor });
+      return adapterFromConfig(key, config) || genericAdapter;
+    } catch {
+      return genericAdapter;
+    }
+  }
+  const descriptor = descriptorForProviderKey(key);
+  if (!descriptor || typeof descriptor.name !== "string") return genericAdapter;
+  try {
+    const config = getProviderConfig(descriptor.name);
+    return config ? (adapterFromConfig(key, config) || genericAdapter) : genericAdapter;
+  } catch {
+    return genericAdapter;
+  }
+}
+
+/** List configured provider adapter keys plus the generic fallback. */
 export function listAdapterKeys() {
-  return [...adapters.keys()];
+  const keys = new Set<string>(["generic"]);
+  try {
+    for (const descriptor of listAgents()) {
+      if (typeof descriptor?.name !== "string") continue;
+      keys.add(providerKeyForDescriptor(descriptor.name, descriptor));
+    }
+    for (const { id, config } of listConfiguredProviders()) {
+      keys.add(String(config.key || config.providerKey || id));
+    }
+  } catch {
+    // Registry loading is optional for callers that only need generic quota
+    // classification.
+  }
+  return [...keys];
 }

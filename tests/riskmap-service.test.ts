@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdir, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 
 import { FailureKind, isValidFailureKind } from "../core/contracts/failure.js";
-import { captureProcessIdentity } from "../core/runtime/process-tree.js";
 import { materializeJob } from "../server/services/event/event-store.js";
 import { enqueue, listQueue } from "../server/services/hub/hub-queue.js";
 import { tempRoot } from "./helpers.js";
@@ -31,18 +30,13 @@ async function loadRiskMapApi() {
   assert.fail(`RiskMap service API not found. Tried: ${failures.join("; ")}`);
 }
 
-async function makeCodegraphReadyProject() {
+async function makeLocalCodeIndexProject() {
   const sourcePath = await tempRoot("cpb-riskmap-source");
-  const processIdentity = captureProcessIdentity(process.pid, { strict: true });
-  assert.ok(processIdentity, "expected current process identity");
-  await mkdir(path.join(sourcePath, ".codegraph"), { recursive: true });
-  await writeFile(path.join(sourcePath, ".codegraph", "codegraph.db"), Buffer.alloc(8192, 1));
   await writeFile(
-    path.join(sourcePath, ".codegraph", "daemon.pid"),
-    `${JSON.stringify({ pid: process.pid, processIdentity, version: "test", socketPath: path.join(sourcePath, ".codegraph", "daemon.sock") }, null, 2)}\n`,
+    path.join(sourcePath, "scheduler.ts"),
+    "export function scheduleProviderWork() { return 'ready'; }\n",
     "utf8",
   );
-  await writeFile(path.join(sourcePath, "README.md"), "# RiskMap fixture\n", "utf8");
   return sourcePath;
 }
 
@@ -77,7 +71,7 @@ function highConfidenceCapabilityContext() {
 async function callPrepareTask(api: any, overrides: Record<string, unknown> = {}) {
   const cpbRoot = overrides.cpbRoot || await tempRoot("cpb-riskmap-cpb");
   const sourcePath = overrides.sourcePath === undefined
-    ? await makeCodegraphReadyProject()
+    ? await makeLocalCodeIndexProject()
     : overrides.sourcePath;
   const options = {
     hubRoot: overrides.hubRoot || await tempRoot("cpb-riskmap-hub"),
@@ -111,17 +105,20 @@ async function assertPrepareBlocks(api, overrides, expectedKind) {
   assert.fail(`prepareTask should block with ${expectedKind}`);
 }
 
-test("prepareTask blocks with codegraph_unavailable when sourcePath is missing", async () => {
+test("prepareTask blocks with local_code_index_unavailable when sourcePath is missing", async () => {
   const api = await loadRiskMapApi();
 
-  await assertPrepareBlocks(api, { sourcePath: null }, FailureKind.CODEGRAPH_UNAVAILABLE);
+  await assertPrepareBlocks(api, { sourcePath: null }, FailureKind.LOCAL_CODE_INDEX_UNAVAILABLE);
 });
 
-test("prepareTask blocks with codegraph_unavailable when CodeGraph data is unavailable", async () => {
+test("prepareTask succeeds with v2 index even for empty directories (v2 behavior change)", async () => {
   const api = await loadRiskMapApi();
-  const sourcePath = await tempRoot("cpb-riskmap-no-codegraph");
+  const sourcePath = await tempRoot("cpb-riskmap-no-local-index");
 
-  await assertPrepareBlocks(api, { sourcePath }, FailureKind.CODEGRAPH_UNAVAILABLE);
+  // v2 creates a valid index with 0 files for empty directories
+  const result = await callPrepareTask(api, { sourcePath });
+  const riskMap = normalizeRiskMap(result);
+  assert.ok(riskMap, "should return a riskMap for empty directory");
 });
 
 test("prepareTask blocks with a valid FailureKind when capability maps are unavailable", async () => {
@@ -130,15 +127,16 @@ test("prepareTask blocks with a valid FailureKind when capability maps are unava
   const err = await assertPrepareBlocks(
     api,
     { sourceContext: {} },
-    FailureKind.CODEGRAPH_UNAVAILABLE,
+    FailureKind.LOCAL_CODE_INDEX_UNAVAILABLE,
   );
-  assert.match(String(err.reason || err.message || ""), /capability|project map|CodeGraph|codegraph/i);
+  assert.match(String(err.reason || err.message || ""), /capability|project map|local code index/i);
 });
 
 test("prepareTask returns a high-risk RiskMap for scheduler/provider/worktree tasks", async () => {
   const api = await loadRiskMapApi();
 
-  const riskMap = normalizeRiskMap(await callPrepareTask(api));
+  const result = await callPrepareTask(api);
+  const riskMap = normalizeRiskMap(result);
 
   assert.equal(riskMap.riskLevel, "high");
   assert.ok(riskMap.domains.includes("scheduler"));
@@ -147,6 +145,17 @@ test("prepareTask returns a high-risk RiskMap for scheduler/provider/worktree ta
   assert.equal(riskMap.adversarialRequired, true);
   assert.match(riskMap.verificationDepth, /strict|paranoid/);
   assert.equal(riskMap.confidence, "high");
+
+  // v2 ref state
+  assert.ok(result.localCodeIndexReadiness, "expected localCodeIndexReadiness in result");
+  assert.equal(result.localCodeIndexReadiness.available, true);
+  assert.equal(result.localCodeIndexReadiness.ref.schemaVersion, 2);
+  assert.equal(typeof result.localCodeIndexReadiness.ref.sourcePath, "string");
+  assert.ok(result.localCodeIndexReadiness.ref.sourcePath.length > 0);
+  assert.equal(typeof result.localCodeIndexReadiness.ref.repositoryKey, "string");
+  assert.equal(typeof result.localCodeIndexReadiness.ref.worktreeKey, "string");
+  assert.equal(typeof result.localCodeIndexReadiness.ref.sourceKey, "string");
+  assert.equal(typeof result.localCodeIndexReadiness.ref.snapshotId, "string");
 });
 
 test("prepareTask returns and persists a dynamic agent plan for high-risk tasks", async () => {
@@ -170,6 +179,11 @@ test("prepareTask returns and persists a dynamic agent plan for high-risk tasks"
   assert.equal(result.dynamicAgentPlan.agentConfig.verifier.independent, true);
   assert.equal(result.dynamicAgentPlan.agentConfig.adversarial_verifier.required, true);
 
+  // v2 ref state
+  assert.equal(result.localCodeIndexReadiness.available, true);
+  assert.equal(result.localCodeIndexReadiness.ref.schemaVersion, 2);
+  assert.equal(typeof result.localCodeIndexReadiness.ref.snapshotId, "string");
+
   const updated = (await listQueue(hubRoot)).find((entry) => entry.id === queueEntry.id);
   assert.equal(updated.metadata.dynamicAgentPlan.riskLevel, "high");
   assert.equal(updated.metadata.dynamicAgentPlan.agentConfig.verifier.required, true);
@@ -178,19 +192,24 @@ test("prepareTask returns and persists a dynamic agent plan for high-risk tasks"
 test("prepareTask returns a low or medium RiskMap for docs-only tasks", async () => {
   const api = await loadRiskMapApi();
 
-  const riskMap = normalizeRiskMap(await callPrepareTask(api, {
+  const result = await callPrepareTask(api, {
     task: "Update README wording and fix documentation typos only",
-  }));
+  });
+  const riskMap = normalizeRiskMap(result);
 
   assert.match(riskMap.riskLevel, /low|medium/);
   assert.equal(riskMap.adversarialRequired, false);
   assert.match(riskMap.verificationDepth, /standard|strict/);
   assert.equal(riskMap.confidence, "high");
+
+  // v2 ref state
+  assert.equal(result.localCodeIndexReadiness.available, true);
+  assert.equal(result.localCodeIndexReadiness.ref.schemaVersion, 2);
 });
 
 test("prepareTask requires adversarial verification for SWE-bench release validation", async () => {
   const api = await loadRiskMapApi();
-  const riskMap = normalizeRiskMap(await callPrepareTask(api, {
+  const result = await callPrepareTask(api, {
     task: "Update a small compatibility behavior",
     sourceContext: {
       ...highConfidenceCapabilityContext(),
@@ -199,11 +218,16 @@ test("prepareTask requires adversarial verification for SWE-bench release valida
         adversarialRequired: true,
       },
     },
-  }));
+  });
+  const riskMap = normalizeRiskMap(result);
 
   assert.equal(riskMap.adversarialRequired, true);
   assert.match(riskMap.verificationDepth, /strict|paranoid/);
   assert.ok(riskMap.adversarialFocus.includes("independent release-validation challenge"));
+
+  // v2 ref state
+  assert.equal(result.localCodeIndexReadiness.available, true);
+  assert.equal(result.localCodeIndexReadiness.ref.schemaVersion, 2);
 });
 
 test("materializeJob stores riskmap_generated summary and full RiskMap", () => {

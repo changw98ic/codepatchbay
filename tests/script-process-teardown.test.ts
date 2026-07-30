@@ -131,7 +131,7 @@ test("npm-pack E2E cleanup delegates to identity-bound Hub shutdown", async () =
 
   assert.match(stepStop, /runInstalledCpb\(\["hub", "stop"\], \{ silent: true \}\)/);
   assert.doesNotMatch(stepStop, /allowFail\s*:\s*true/);
-  assert.doesNotMatch(stepStop, /\b(?:pkill|killall)\b|cpb codegraph stop/);
+  assert.doesNotMatch(stepStop, /\b(?:pkill|killall)\b/);
 });
 
 test("script teardown helpers await close after normal finally cleanup", async () => {

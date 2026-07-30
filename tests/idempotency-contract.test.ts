@@ -104,14 +104,14 @@ test("selectIdempotentEntry reuses an existing ACTIVE entry with the same hashed
 test("selectIdempotentEntry reuses entries across every non-terminal (active) status", () => {
   const key = hashTaskKey("flow::task");
   // pending = queued but not started; scheduled/in_progress = claimed/running;
-  // needs_issue_link / codegraph_unavailable = in-flight but waiting. All are
+  // needs_issue_link / local_code_index_unavailable = in-flight but waiting. All are
   // non-terminal and therefore dedupe-eligible.
   const activeStatuses = [
     "pending",
     "scheduled",
     "in_progress",
     "needs_issue_link",
-    "codegraph_unavailable",
+    "local_code_index_unavailable",
   ];
   for (const status of activeStatuses) {
     const entries = [entry(`entry-${status}`, status, key)];

@@ -52,7 +52,7 @@ async function prepareReviewWorktree(prefix: string) {
   const project = await registerProject(hubRoot, {
     id: "proj",
     sourcePath,
-    skipCodeGraphGate: true,
+    skipLocalCodeIndexGate: true,
   });
   if (!project.projectRuntimeRoot) throw new Error("registered test project has no runtime root");
   const jobId = `job-${prefix}`;
@@ -159,7 +159,7 @@ test("review dispatch binds the session to the registered project runtime worktr
   const project = await registerProject(hubRoot, {
     id: "proj",
     sourcePath,
-    skipCodeGraphGate: true,
+    skipLocalCodeIndexGate: true,
   });
   if (!project.projectRuntimeRoot) throw new Error("registered dispatch project has no runtime root");
   const session = await createSession(cpbRoot, { project: "proj", intent: "dispatch binding", hubRoot });
@@ -192,7 +192,7 @@ test("review dispatch recovers the exact claimed queue entry after session publi
   await registerProject(hubRoot, {
     id: "proj",
     sourcePath,
-    skipCodeGraphGate: true,
+    skipLocalCodeIndexGate: true,
   });
   const session = await createSession(cpbRoot, { project: "proj", intent: "recover dispatch", hubRoot });
   await updateSession(cpbRoot, session.sessionId, { status: "user_review" }, {

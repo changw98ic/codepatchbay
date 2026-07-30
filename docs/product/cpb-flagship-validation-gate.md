@@ -166,10 +166,7 @@ must prove:
 - the source checkout contains the generated patch evidence and regression
   evidence referenced by the report
 - strict cleanup reported no residual source, worktree, child-process, or
-  runtime-root leak; the representative job also carries the closed
-  `runtime/worker/managed-worker.ts#stopAssignmentCodeGraphRuntime` proof from
-  cleanup attempt 1, with matching job identity, ordered timestamps, a stopped
-  process tree, and removed CodeGraph state
+  runtime-root leak
 - the source manifest and report copy of provider preflight evidence match
 
 Run the disposable draft PR rehearsal only against a controlled repository that

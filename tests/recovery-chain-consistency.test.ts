@@ -46,7 +46,7 @@ async function prepareProject(prefix = "cpb-recovery") {
   const project = await registerProject(hubRoot, {
     id: "proj",
     sourcePath,
-    skipCodeGraphGate: true,
+    skipLocalCodeIndexGate: true,
   });
   return { cpbRoot, hubRoot, sourcePath, dataRoot: project.projectRuntimeRoot };
 }

@@ -4,7 +4,8 @@ import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createAgentHome, inheritFilesIntoHome } from "../core/agents/isolation.js";
-import { loadRegistry } from "../core/agents/registry.js";
+import { buildChildEnv } from "../core/policy/child-env.js";
+import { getDescriptor, isBuiltinDescriptor, loadRegistry } from "../core/agents/registry.js";
 
 const clean = (dir) => rm(dir, { recursive: true, force: true });
 
@@ -90,7 +91,77 @@ test("parentEnv.CODEX_HOME set → inheritFiles resolves $CODEX_HOME to custom r
     // codex without auth). The §6.2 env-awareness fix.
     const copied = await readFile(path.join(env.HOME, ".codex", "auth.json"), "utf8");
     assert.equal(copied, '{"token":"y"}');
+    const childEnv = buildChildEnv(
+      { HOME: parentHome, CODEX_HOME: customCodexHome },
+      env,
+      { agent: "codex" },
+    );
+    assert.equal(childEnv.CODEX_HOME, path.join(env.HOME, ".codex"));
   } finally { await clean(dir); }
+});
+
+test("user descriptor overriding a builtin name is not treated as builtin-trusted", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "cpb-iso-"));
+  try {
+    const configDir = path.join(dir, "config");
+    const restoreDir = path.join(dir, "restore");
+    const parentHome = path.join(dir, "parent");
+    await mkdir(configDir, { recursive: true });
+    await mkdir(parentHome, { recursive: true });
+    await mkdir(path.join(parentHome, ".codex"), { recursive: true });
+    await writeFile(path.join(parentHome, ".codex", "auth.json"), "user-auth");
+    await writeFile(
+      path.join(configDir, "codex.json"),
+      `${JSON.stringify({
+        name: "codex",
+        command: "user-codex",
+        envPrefix: "CPB_ACP_USER_CODEX",
+        inheritFiles: [{ from: "$HOME/.codex/auth.json", to: "$HOME/copied.json" }],
+        quarantineFiles: [],
+      })}\n`,
+    );
+    await loadRegistry(configDir);
+    assert.equal(isBuiltinDescriptor("codex"), false);
+    assert.equal(getDescriptor("codex")?.command, "user-codex");
+
+    const env = await createAgentHome(dir, "codex", "user-override", {
+      dataRoot: path.join(dir, "runtime"),
+      parentEnv: { HOME: parentHome },
+    });
+    assert.equal(await readFile(path.join(env.HOME, "copied.json"), "utf8"), "user-auth");
+
+    await mkdir(restoreDir, { recursive: true });
+    await loadRegistry(restoreDir);
+  } finally {
+    await clean(dir);
+  }
+});
+
+test("unsafe user inheritFiles are rejected while the builtin descriptor remains active", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "cpb-iso-"));
+  try {
+    const configDir = path.join(dir, "config");
+    const restoreDir = path.join(dir, "restore");
+    const outside = path.join(dir, "outside");
+    await mkdir(configDir, { recursive: true });
+    await mkdir(outside, { recursive: true });
+    await writeFile(
+      path.join(configDir, "codex.json"),
+      `${JSON.stringify({
+        name: "codex",
+        command: "unsafe-user-codex",
+        inheritFiles: [{ from: `${outside}/auth.json`, to: "$HOME/leak.json" }],
+        quarantineFiles: [],
+      })}\n`,
+    );
+    await loadRegistry(configDir);
+    assert.equal(isBuiltinDescriptor("codex"), true);
+    assert.notEqual(getDescriptor("codex")?.command, "unsafe-user-codex");
+    await mkdir(restoreDir, { recursive: true });
+    await loadRegistry(restoreDir);
+  } finally {
+    await clean(dir);
+  }
 });
 
 // --- B2b Step 1: generic descriptor-driven inheritFilesIntoHome ---
@@ -269,6 +340,58 @@ test("inheritFilesIntoHome refuses symlink from-source (trusted and untrusted)",
         { trusted: true },
       ),
       (err: any) => err.code === "CPB_AGENT_HOME_UNSAFE_AUTH_SOURCE",
+    );
+  } finally { await clean(dir); }
+});
+
+test("untrusted inheritFiles rejects an intermediate source symlink escape", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "cpb-iso-"));
+  try {
+    const parentHome = path.join(dir, "parent");
+    const targetHome = path.join(dir, "target");
+    const outside = path.join(dir, "outside");
+    await mkdir(parentHome, { recursive: true });
+    await mkdir(targetHome, { recursive: true });
+    await mkdir(outside, { recursive: true });
+    await writeFile(path.join(outside, "auth.json"), "outside-chain");
+    await symlink(outside, path.join(parentHome, ".config"));
+    await assert.rejects(
+      () => inheritFilesIntoHome(
+        targetHome,
+        { HOME: parentHome },
+        { inheritFiles: [{ from: "$HOME/.config/auth.json", to: "$HOME/copied.json" }] },
+        { trusted: false },
+      ),
+      (err: any) => err.code === "CPB_AGENT_HOME_UNTRUSTED_INHERIT_SOURCE",
+    );
+    await assert.rejects(() => readFile(path.join(targetHome, "copied.json")));
+
+    const targetOutside = path.join(dir, "outside-target");
+    await mkdir(targetOutside, { recursive: true });
+    await mkdir(path.join(parentHome, ".codex"), { recursive: true });
+    await writeFile(path.join(parentHome, ".codex", "auth.json"), "inside-source");
+    await symlink(targetOutside, path.join(targetHome, ".config"));
+    await assert.rejects(
+      () => inheritFilesIntoHome(
+        targetHome,
+        { HOME: parentHome },
+        { inheritFiles: [{ from: "$HOME/.codex/auth.json", to: "$HOME/.config/copied.json" }] },
+        { trusted: true },
+      ),
+      (err: any) => err.code === "CPB_AGENT_HOME_PATH_ESCAPE",
+    );
+    await assert.rejects(() => readFile(path.join(targetOutside, "copied.json")));
+
+    const danglingTarget = path.join(targetHome, ".dangling");
+    await symlink(path.join(dir, "missing-target"), danglingTarget);
+    await assert.rejects(
+      () => inheritFilesIntoHome(
+        targetHome,
+        { HOME: parentHome },
+        { inheritFiles: [{ from: "$HOME/.codex/auth.json", to: "$HOME/.dangling/copied.json" }] },
+        { trusted: true },
+      ),
+      (err: any) => err.code === "CPB_AGENT_HOME_PATH_ESCAPE",
     );
   } finally { await clean(dir); }
 });

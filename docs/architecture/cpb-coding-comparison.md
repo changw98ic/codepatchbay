@@ -10,22 +10,22 @@ This is not a benchmark adapter. The manifest accepts only repository, base revi
 
 ## Isolation boundary
 
-Each lane starts from a detached worktree created from a comparison-local mirror. Before timing starts, CodeGraph is initialized for every lane. The solver permission contract is the same maximum worktree access, headless tool surface, approval policy, CodeGraph capability, and task timeout.
+Each lane starts from a detached worktree created from a comparison-local mirror. Before timing starts, CPB builds a file-backed local code index for every lane. The solver permission contract is the same maximum worktree access, headless tool surface, approval policy, local-index evidence, and task timeout.
 
 CPB workflow and plan mode come from the normal task router. Ordinary unprotected tasks use the existing `standard/light` path; protected or genuinely complex work can still select full planning and review. The comparison runner does not choose a shorter route based on evaluator data.
 
 Within the light path, CPB may remove redundant model turns using production rules that are independent of the evaluator:
 
-- An exact, unique CodeGraph symbol match may produce the frozen static file scope without a planner model turn. Ambiguous or missing matches fall back to normal checklist decomposition.
+- An exact, unique local-index symbol match may produce the frozen static file scope without a planner model turn. Ambiguous or missing matches fall back to normal checklist decomposition.
 - Verification may remain deterministic only when risk is explicitly low or medium, no adversarial or real-path evidence is required, every required checklist item is static, candidate identity is stable, and at least one non-skipped focused test actually passed. Otherwise the normal verifier model runs.
 
 These are fail-closed optimizations. They do not inspect post-terminal checks and they do not apply to high-risk, ambiguous, command-probe, manual, or real-path requirements.
 
-Codex execution keeps native tool choice for small explicit scopes. CodeGraph remains available and is preferred for broad or ambiguous discovery, but CPB does not force a redundant first MCP call when a direct focused lookup is narrower. Codex's ACP message stream is also the default structured-result transport: CPB parses the compact final JSON response and persists the deliverable itself. It does not ask Codex to spend an extra tool call writing CPB metadata. Other agents retain the structured-file fallback, and operators can force either mode with `CPB_EXECUTOR_OUTPUT_TRANSPORT=file|chat`.
+Codex execution keeps native tool choice for small explicit scopes. CPB supplies prepared local-index evidence through the workflow context and never requires an index MCP call. Codex's ACP message stream is also the default structured-result transport: CPB parses the compact final JSON response and persists the deliverable itself. It does not ask Codex to spend an extra tool call writing CPB metadata. Other agents retain the structured-file fallback, and operators can force either mode with `CPB_EXECUTOR_OUTPUT_TRANSPORT=file|chat`.
 
-Codex phases use Codex's native phase sandbox by default: `workspace-write` for execute/remediate and `read-only` for other phases. This avoids a nested CPB `sandbox-exec` boundary changing git, package-manager, toolchain, and MCP availability relative to native Codex. An operator's explicit CPB outer-sandbox configuration still wins. The effective inner/outer enforcement is recorded in the ACP launch audit.
+Codex phases use Codex's native phase sandbox by default: `workspace-write` for execute/remediate and `read-only` for other phases. This avoids a nested CPB `sandbox-exec` boundary changing git, package-manager, and toolchain availability relative to native Codex. An operator's explicit CPB outer-sandbox configuration still wins. The effective inner/outer enforcement is recorded in the ACP launch audit.
 
-Headless Codex lanes disable the default `apps`, `plugins`, and `remote_plugin` features. This prevents an isolated coding run from opening the signed-in product-service MCP as an undeclared remote dependency. The comparison runner then adds only its declared local CodeGraph MCP. Both the native and CPB lanes use this boundary.
+Headless Codex lanes disable the default `apps`, `plugins`, and `remote_plugin` features. This prevents an isolated coding run from opening a signed-in product service as an undeclared remote dependency. The comparison runner injects no MCP server. Both the native and CPB lanes use this boundary.
 
 When outcome history is insufficient, every coding role retains Codex as the quality baseline. An alternative provider can replace it only through explicit configuration, a required independence rule, a concrete recovery handoff, or outcome evidence that clears the configured sample, confidence, score, and margin thresholds.
 

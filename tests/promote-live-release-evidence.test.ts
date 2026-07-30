@@ -135,44 +135,6 @@ function controlPlaneEvidence(phase: string, role: string) {
   };
 }
 
-function codeGraphCleanupProof() {
-  const assignmentId = "assignment-provider-promotion";
-  const statePath = `/tmp/${assignmentId}/.codegraph/daemon.pid`;
-  return {
-    generator: "runtime/worker/managed-worker.ts#stopAssignmentCodeGraphRuntime",
-    assignmentId,
-    attempt: 1,
-    attemptToken: "attempt-token-provider-promotion",
-    entryId: "provider-promotion",
-    projectId: "proj-provider-promotion",
-    jobId: "job-provider-promotion",
-    workerId: "w-provider-promotion",
-    orchestratorEpoch: 1,
-    context: "before_terminal_publication",
-    cleanupAttempt: 1,
-    ok: true,
-    cleanupVerified: true,
-    processTreeStopped: true,
-    stateRemoved: true,
-    statePath,
-    worktreePath: `/tmp/${assignmentId}`,
-    startup: {
-      ok: true,
-      source: "test_codegraph_daemon",
-      pid: 12345,
-      processPid: 12345,
-      statePath,
-      startedAt: "2026-07-20T10:00:00.000Z",
-      readyAt: "2026-07-20T10:00:01.000Z",
-    },
-    startupSource: "test_codegraph_daemon",
-    pid: 12345,
-    processPid: 12345,
-    cleanupStartedAt: "2026-07-20T10:00:02.000Z",
-    cleanupCompletedAt: "2026-07-20T10:00:03.000Z",
-  };
-}
-
 async function writeControlPlaneAuditRef(
   runRoot: string,
   phase: string,
@@ -458,9 +420,6 @@ async function writeProviderRun(runRoot: string) {
           canonicalCommandsRun: ["python tests/runtests.py expressions.tests.FTimeDeltaTests.test_date_subtraction"],
           canonicalCommandsMissing: [],
         },
-        cleanup: {
-          codegraph: codeGraphCleanupProof(),
-        },
         jobId: "job-provider-promotion",
       },
     },
@@ -502,14 +461,6 @@ async function rewriteReportAsTwoJobs(reportFile: string) {
   manifest.workerCleanup.pids = [12345, 12346];
 
   const firstJob = report.jobs[0];
-  const secondCleanup = codeGraphCleanupProof();
-  secondCleanup.assignmentId = "assignment-provider-promotion-second";
-  secondCleanup.attemptToken = "attempt-token-provider-promotion-second";
-  secondCleanup.entryId = "provider-promotion-second";
-  secondCleanup.projectId = "proj-provider-promotion-second";
-  secondCleanup.jobId = "job-provider-promotion-second";
-  secondCleanup.workerId = "w-provider-promotion-second";
-  secondCleanup.orchestratorEpoch = 2;
   const rebuilt = buildSweBenchBatchReport({
     manifest,
     evidenceByAssignmentId: {
@@ -517,14 +468,12 @@ async function rewriteReportAsTwoJobs(reportFile: string) {
         phaseEvidence: firstJob.phaseEvidence,
         patch: firstJob.patch,
         regressionEvidence: firstJob.regressionEvidence,
-        cleanup: firstJob.cleanup,
         jobId: firstJob.jobId,
       },
       "assignment-provider-promotion-second": {
         phaseEvidence: firstJob.phaseEvidence,
         patch: firstJob.patch,
         regressionEvidence: firstJob.regressionEvidence,
-        cleanup: { codegraph: secondCleanup },
         jobId: "job-provider-promotion-second",
       },
     },

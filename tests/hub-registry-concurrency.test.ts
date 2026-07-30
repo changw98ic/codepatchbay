@@ -23,7 +23,7 @@ async function fixture() {
   const project = await registerProject(hubRoot, {
     id: "project",
     sourcePath,
-    skipCodeGraphGate: true,
+    skipLocalCodeIndexGate: true,
   });
   return { hubRoot, sourcePath, projectId: project.id };
 }
@@ -882,7 +882,7 @@ test("oversized registry and lock metadata files fail closed with bounded errors
 
   await rm(path.join(hubRoot, "projects.json"));
   const sourcePath = await mkdtemp(path.join(os.tmpdir(), "cpb-hub-large-source-"));
-  const project = await registerProject(hubRoot, { id: "project", sourcePath, skipCodeGraphGate: true });
+  const project = await registerProject(hubRoot, { id: "project", sourcePath, skipLocalCodeIndexGate: true });
   const lockDir = path.join(hubRoot, "projects.json.lock");
   await mkdir(lockDir);
   const lockHandle = await open(path.join(lockDir, "lock.json"), "w");

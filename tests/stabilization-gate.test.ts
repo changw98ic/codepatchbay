@@ -26,6 +26,7 @@ test("stabilization gate includes all required release evidence commands", () =>
     "npm run verify:patch-integrity",
     "npm run verify:commit-size",
     "npm run verify:release-gate",
+    "npm run verify:v2-release-scan",
     "npm run verify:enterprise-gate",
     "npm run verify:product-gate",
   ]);

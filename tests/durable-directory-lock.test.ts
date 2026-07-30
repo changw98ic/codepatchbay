@@ -827,6 +827,35 @@ test("durable directory lock skips an unrelated listener on its first fence port
   }
 });
 
+test("durable directory lock waits for delayed unrelated fence proof", async () => {
+  const root = await tempRoot("cpb-durable-directory-lock-fence-delayed");
+  const lockDir = path.join(root, "state.lock");
+  const canonicalLockDir = path.join(await realpath(path.dirname(lockDir)), path.basename(lockDir));
+  const fenceKey = createHash("sha256")
+    .update(`${canonicalLockDir}\0durable-directory-lock-fence-v2`)
+    .digest("hex");
+  const digest = createHash("sha256").update(`${fenceKey}\u0000${0}`).digest();
+  const firstPort = 20_000 + (digest.readUInt16BE(0) % 40_000);
+  const unrelated = net.createServer((socket) => {
+    socket.on("error", () => undefined);
+    setTimeout(() => socket.end("delayed-unrelated-listener\n"), 400);
+  });
+  await new Promise<void>((resolve, reject) => {
+    unrelated.once("error", reject);
+    unrelated.listen({ host: "127.0.0.1", port: firstPort, exclusive: true }, resolve);
+  });
+
+  try {
+    let entered = false;
+    await withDurableDirectoryLock(lockDir, async () => {
+      entered = true;
+    }, { waitMs: 1_200 });
+    assert.equal(entered, true);
+  } finally {
+    await new Promise<void>((resolve, reject) => unrelated.close((error) => error ? reject(error) : resolve()));
+  }
+});
+
 test("durable directory lock fails closed on an indeterminate listener on a fence port", async () => {
   const root = await tempRoot("cpb-durable-directory-lock-fence-indeterminate");
   const lockDir = path.join(root, "state.lock");

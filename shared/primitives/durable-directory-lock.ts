@@ -701,7 +701,7 @@ async function probeProcessFence(
     const onAbort = () => finish("indeterminate", signal ? abortError(signal) : new Error("aborted"));
     const timer = setTimeout(
       () => finish("indeterminate"),
-      Math.max(1, Math.min(250, deadlineAt - Date.now())),
+      Math.max(1, deadlineAt - Date.now()),
     );
     socket.setEncoding("utf8");
     socket.on("data", (chunk: string) => {

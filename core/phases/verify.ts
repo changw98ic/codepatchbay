@@ -2600,7 +2600,7 @@ Executor deliverables and summaries are self-reports for audit only; do not trea
 ${blindVerification
     ? "The winning implementation plan is deliberately withheld. Derive your judgment independently from the task, checklist, diff, repository behavior, and tests."
     : "The plan artifact is guidance for where to look, not an independent acceptance criterion. Do not fail or partial solely because the implementation differs from the plan's suggested code path when the task/checklist requirements are satisfied by concrete evidence."}
-Codegraph/project indexes are optional accelerators. If unavailable, record the reason and continue with git diff, focused file inspection, and real tests.
+The local code index is an optional accelerator. If unavailable, record the reason and continue with git diff, focused file inspection, and real tests.
 
 ## Current Evidence Snapshot
 ${JSON.stringify(promptVerificationEvidence, null, 2)}
@@ -2622,7 +2622,12 @@ function resolveAgent(ctx: VerifyContext, fallback: string) {
   const raw = ctx.agents?.[role] || ctx.agents?.verifier || ctx.agent || fallback;
   if (typeof raw === "object" && raw !== null) {
     const config = recordValue(raw);
-    return { agent: String(config.agent || fallback), variant: config.variant || null };
+    return {
+      agent: String(config.agent || fallback),
+      variant: config.variant || null,
+      provider: typeof config.provider === "string" ? config.provider : null,
+      model: typeof config.model === "string" ? config.model : null,
+    };
   }
-  return { agent: String(raw), variant: null };
+  return { agent: String(raw), variant: null, provider: null, model: null };
 }

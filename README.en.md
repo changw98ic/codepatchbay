@@ -263,6 +263,13 @@ cpb github doctor [--json]
 # Hub & scheduling
 cpb hub [status|start|stop|projects|...]
 
+# Local code index
+cpb code-index build [-s <path>]   # Build or refresh the local code index
+cpb code-index status [-s <path>]  # Check index status
+cpb code-index query <kind> [...]  # Query symbols, files, relationships
+cpb code-index evidence [-t <task>]  # Build evidence pack from query results
+cpb code-index gc                  # Run garbage collection under repository lock
+
 # Setup & diagnostics
 cpb setup [--recommended|--interactive|--json]
 cpb agents [list|detect|install|upgrade|test]

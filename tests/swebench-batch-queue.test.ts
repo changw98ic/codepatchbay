@@ -8,6 +8,7 @@ import path from "node:path";
 import nodeTest, { type TestContext } from "node:test";
 
 import { hasAgent, loadRegistry } from "../core/agents/registry.js";
+import { ensureLocalCodeIndex } from "../core/indexing/local-code-index/service.js";
 import type { ProcessIdentity } from "../core/runtime/process-tree.js";
 import {
   _internalWithTemporaryWorkspaceHooks,
@@ -106,6 +107,21 @@ function test(name: string, fn: (context: TestContext) => void | Promise<void>) 
 }
 
 const batchQueueSource = readFileSync(new URL("../scripts/queue-swebench-batch.js", import.meta.url), "utf8");
+
+async function queueIndexedBatchAssignment(
+  input: Omit<Parameters<typeof queueBatchAssignmentAtomically>[0], "cpbRoot"> & {
+    cpbRoot?: string;
+  },
+) {
+  const cpbRoot = input.cpbRoot ?? input.hubRoot;
+  await mkdir(cpbRoot, { recursive: true, mode: 0o700 });
+  await ensureLocalCodeIndex({
+    sourcePath: input.sourcePath,
+    cpbRoot,
+    signal: input.signal,
+  });
+  return queueBatchAssignmentAtomically({ ...input, cpbRoot });
+}
 
 function stableTestJson(value: unknown): string {
   if (Array.isArray(value)) {
@@ -524,62 +540,6 @@ function errno(code: string) {
   return error;
 }
 
-function testCodeGraphCleanupProof({
-  assignmentId = "assignment-one",
-  attempt = 1,
-  attemptToken = "attempt-token-1",
-  entryId = "entry-one",
-  projectId = "proj",
-  jobId = `job-${assignmentId}`,
-  workerId = "w-swebench-01",
-  orchestratorEpoch = 1,
-  cleanupAttempt = 1,
-}: {
-  assignmentId?: string;
-  attempt?: number;
-  attemptToken?: string;
-  entryId?: string;
-  projectId?: string;
-  jobId?: string;
-  workerId?: string;
-  orchestratorEpoch?: number;
-  cleanupAttempt?: number;
-} = {}) {
-  return {
-    generator: "runtime/worker/managed-worker.ts#stopAssignmentCodeGraphRuntime",
-    assignmentId,
-    attempt,
-    attemptToken,
-    entryId,
-    projectId,
-    jobId,
-    workerId,
-    orchestratorEpoch,
-    context: "before_terminal_publication",
-    cleanupAttempt,
-    ok: true,
-    cleanupVerified: true,
-    processTreeStopped: true,
-    stateRemoved: true,
-    statePath: `/tmp/${assignmentId}/.codegraph/daemon.pid`,
-    worktreePath: `/tmp/${assignmentId}`,
-    startup: {
-      ok: true,
-      source: "fake_codegraph_daemon",
-      pid: 12345,
-      processPid: 12345,
-      statePath: `/tmp/${assignmentId}/.codegraph/daemon.pid`,
-      startedAt: "2026-07-20T00:00:00.000Z",
-      readyAt: "2026-07-20T00:00:01.000Z",
-    },
-    startupSource: "fake_codegraph_daemon",
-    pid: 12345,
-    processPid: 12345,
-    cleanupStartedAt: "2026-07-20T00:00:02.000Z",
-    cleanupCompletedAt: "2026-07-20T00:00:03.000Z",
-  };
-}
-
 function withLiveProviderPreflight(manifestValue: unknown): LooseRecord {
   const manifest = recordValue(manifestValue);
   const agents = {
@@ -671,23 +631,6 @@ function buildSweBenchBatchReport(options: Parameters<typeof buildSweBenchBatchR
     terminalState.jobId = String(terminalState.jobId || `job-${assignmentId}`);
     terminalState.workerId = String(terminalState.workerId || assignmentRecord.workerId);
     terminalState.orchestratorEpoch = Number(terminalState.orchestratorEpoch || queued.orchestratorEpoch);
-    const current = recordValue(evidenceByAssignmentId[assignmentId]);
-    const cleanup = recordValue(current.cleanup);
-    if (cleanup.codegraph === null || typeof cleanup.codegraph !== "object" || Array.isArray(cleanup.codegraph)) {
-      cleanup.codegraph = testCodeGraphCleanupProof({
-        assignmentId,
-        attempt: Number(queued.attempt),
-        attemptToken: String(queued.attemptToken),
-        entryId: String(assignmentRecord.entryId),
-        projectId: String(assignmentRecord.projectId),
-        jobId: String(current.jobId || terminalState.jobId || `job-${assignmentId}`),
-        workerId: String(assignmentRecord.workerId),
-        orchestratorEpoch: Number(queued.orchestratorEpoch),
-      });
-      current.cleanup = cleanup;
-      current.jobId = recordValue(cleanup.codegraph).jobId;
-      evidenceByAssignmentId[assignmentId] = current;
-    }
   }
   return buildSweBenchBatchReportProduction({
     ...options,
@@ -1330,7 +1273,7 @@ test("SWE-bench provider preflight rejects a hash-consistent ACP proof with an e
             ...baselinePolicy,
             toolPolicy: {
               ...toolPolicy,
-              allow: ["mcp__codegraph__codegraph_context"],
+              allow: ["terminal/create"],
             },
           },
         },
@@ -1537,7 +1480,6 @@ test("SWE-bench live provider preflight invokes ACP client and records command f
     args: [],
     outputPath: path.join(root, "cpb-preflight-output.json"),
     env: {
-      CPB_CODEGRAPH_ENABLED: "1",
       ZHIPU_BASE_URL: "https://example.invalid/glm",
       ZHIPU_API_KEY: "redacted",
       ZHIPU_MODEL: "glm-test-model",
@@ -1570,7 +1512,6 @@ test("SWE-bench live provider preflight invokes ACP client and records command f
   assert.equal(calls[0].timeoutMs, 1234);
   assert.match(String(calls[0].options.input), /CPB_PROVIDER_PREFLIGHT_OK/);
   assert.equal(recordValue(calls[0].options.env).CPB_ACP_TERMINAL, "deny");
-  assert.equal(recordValue(calls[0].options.env).CPB_CODEGRAPH_ENABLED, "1");
   assert.equal(recordValue(calls[0].options.env).ZHIPU_MODEL, "glm-test-model");
 });
 
@@ -2138,7 +2079,7 @@ test("SWE-bench live provider preflight accepts redacted Codex ACP MCP launch me
         projectId: String(env.CPB_ACP_PROJECT),
         jobId: String(env.CPB_ACP_JOB_ID),
         correlationNonce: String(env.CPB_PROVIDER_PREFLIGHT_NONCE),
-        mcpServers: [{ name: "codegraph", command: "codegraph" }],
+        mcpServers: [],
       });
       return { code: 0, stdout: "CPB_PROVIDER_PREFLIGHT_OK", stderr: "" };
     },
@@ -3163,8 +3104,8 @@ test("SWE-bench scoped residual discovery excludes the queue process and its anc
     `200 100 npm run queue:swebench-batch -- --source-root ${scopeRoot}/sources`,
     `300 200 node scripts/queue-swebench-batch.js --cpb-root ${scopeRoot}/cpb`,
     `400 300 node dist/runtime/worker/managed-worker.js --hub-root ${scopeRoot}/hub`,
-    `401 400 codegraph serve --repo ${scopeRoot}/sources/astropy`,
-    `500 1 codegraph serve --repo ${scopeRoot}/hub/worktrees/orphan`,
+    `401 400 node helper.js --repo ${scopeRoot}/sources/astropy`,
+    `500 1 node helper.js --repo ${scopeRoot}/hub/worktrees/orphan`,
     "600 1 node unrelated.js /private/tmp/another-run",
     "",
   ].join("\n");
@@ -3986,12 +3927,6 @@ test("SWE-bench batch evidence collector ingests assignment result phase artifac
   await mkdir(attemptDir, { recursive: true });
   await writeFile(path.join(attemptDir, "result.json"), JSON.stringify({
     status: "completed",
-    cleanup: {
-      codegraph: testCodeGraphCleanupProof({
-        assignmentId: "assignment-one",
-        jobId: "job-assignment-one",
-      }),
-    },
     phaseResults: [
       {
         phase: "execute",
@@ -4982,209 +4917,6 @@ test("SWE-bench batch report rejects assignments without terminal states", () =>
   assert.match(String(recordValue(report.validation).violations), /missing terminal state|non-terminal status/);
 });
 
-test("SWE-bench batch report rejects missing or forged CodeGraph cleanup proof for live completed jobs", () => {
-  const firstRecord = recordFromDatasetRow(sampleRow, 7);
-  const manifest = {
-    schemaVersion: 1,
-    generatedAt: "2026-07-20T10:00:00.000Z",
-    dataset: "SWE-bench/SWE-bench_Verified",
-    split: "test",
-    count: 1,
-    planMode: "full",
-    providerPreflightMode: "live",
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
-    assignments: [{
-      entryId: "entry-one",
-      projectId: "proj",
-      workerId: "w-swebench-01",
-      record: firstRecord,
-      queued: { assignmentId: "assignment-one", attempt: 1, attemptToken: "attempt-token-1", orchestratorEpoch: 1 },
-    }],
-    terminalStates: [{ assignmentId: "assignment-one", status: "completed", attempt: 1, jobId: "job-assignment-one", workerId: "w-swebench-01", orchestratorEpoch: 1 }],
-  };
-  const evidenceByAssignmentId = {
-    "assignment-one": {
-      jobId: "job-assignment-one",
-      phaseEvidence: {
-        prepare_task: { ok: true, structuredOutputPath: "/tmp/prepare.json#riskmap_generated", structuredOutputBytes: 1, artifactSha256: "a".repeat(64) },
-        plan: { ok: true, structuredOutputPath: "/tmp/plan.json", structuredOutputBytes: 1, artifactSha256: "b".repeat(64) },
-        execute: { ok: true, structuredOutputPath: "/tmp/execute.json", structuredOutputBytes: 1, artifactSha256: "c".repeat(64) },
-        verify: { ok: true, structuredOutputPath: "/tmp/verify.json", structuredOutputBytes: 1, artifactSha256: "d".repeat(64) },
-        adversarial_verify: { ok: true, structuredOutputPath: "/tmp/adversarial.json", structuredOutputBytes: 1, artifactSha256: "e".repeat(64) },
-      },
-      patch: {
-        path: "/tmp/source.patch",
-        sha256: "f".repeat(64),
-        bytes: 1,
-        changedFiles: ["django/db/models/expressions.py"],
-        changedFileCount: 1,
-      },
-      regressionEvidence: {
-        status: "present",
-        canonicalCommandsRun: ["python tests/runtests.py expressions"],
-      },
-    },
-  };
-  const valid = buildSweBenchBatchReport({ manifest, evidenceByAssignmentId });
-  assert.equal(recordValue(valid.validation).valid, true);
-  const rehashReportManifest = (report: LooseRecord) => {
-    recordValue(report.manifest).hash = stableTestJsonSha256(report.sourceManifest);
-  };
-
-  const missing = structuredClone(valid);
-  delete recordValue(recordValue(missing.jobs[0]).cleanup).codegraph;
-  missing.validation = validateSweBenchBatchReport({ manifest: missing.sourceManifest, report: missing });
-  assert.equal(recordValue(missing.validation).valid, false);
-  assert.match(String(recordValue(missing.validation).violations), /missing CodeGraph cleanup proof/);
-
-  const identityMutations = [
-    { field: "assignmentId", value: "other-assignment", pattern: /assignment identity mismatch/ },
-    { field: "attempt", value: 2, pattern: /attempt identity mismatch/ },
-    { field: "attemptToken", value: "other-token", pattern: /attempt token mismatch/ },
-    { field: "entryId", value: "other-entry", pattern: /entry identity mismatch/ },
-    { field: "projectId", value: "other-project", pattern: /project identity mismatch/ },
-    { field: "jobId", value: "other-job", pattern: /job identity mismatch/ },
-    { field: "workerId", value: "other-worker", pattern: /worker identity mismatch/ },
-    { field: "orchestratorEpoch", value: 2, pattern: /orchestrator epoch mismatch/ },
-  ] as const;
-  for (const mutation of identityMutations) {
-    const forged = structuredClone(valid);
-    const proof = recordValue(recordValue(recordValue(forged.jobs[0]).cleanup).codegraph) as Record<string, unknown>;
-    proof[mutation.field] = mutation.value;
-    forged.validation = validateSweBenchBatchReport({ manifest: forged.sourceManifest, report: forged });
-    assert.equal(recordValue(forged.validation).valid, false, mutation.field);
-    assert.match(String(recordValue(forged.validation).violations), mutation.pattern, mutation.field);
-  }
-
-  const authorityConflicts = [
-    {
-      name: "terminal projectId conflict",
-      mutate: (report: LooseRecord) => {
-        recordValue((recordValue(report.sourceManifest).terminalStates as LooseRecord[])[0]).projectId = "other-project";
-      },
-      pattern: /conflicting authoritative projectId/,
-    },
-    {
-      name: "terminal attempts conflict",
-      mutate: (report: LooseRecord) => {
-        recordValue((recordValue(report.sourceManifest).terminalStates as LooseRecord[])[0]).attempts = 2;
-      },
-      pattern: /conflicting authoritative attempt/,
-    },
-    {
-      name: "terminal attemptToken conflict",
-      mutate: (report: LooseRecord) => {
-        recordValue((recordValue(report.sourceManifest).terminalStates as LooseRecord[])[0]).attemptToken = "other-token";
-      },
-      pattern: /conflicting authoritative attemptToken/,
-    },
-    {
-      name: "terminal workerId conflict",
-      mutate: (report: LooseRecord) => {
-        recordValue((recordValue(report.sourceManifest).terminalStates as LooseRecord[])[0]).workerId = "other-worker";
-      },
-      pattern: /conflicting authoritative workerId/,
-    },
-    {
-      name: "terminal orchestratorEpoch conflict",
-      mutate: (report: LooseRecord) => {
-        recordValue((recordValue(report.sourceManifest).terminalStates as LooseRecord[])[0]).orchestratorEpoch = 2;
-      },
-      pattern: /conflicting authoritative orchestratorEpoch/,
-    },
-  ] as const;
-  for (const fixture of authorityConflicts) {
-    const forged = structuredClone(valid);
-    fixture.mutate(forged);
-    rehashReportManifest(forged);
-    forged.validation = validateSweBenchBatchReport({ manifest: forged.sourceManifest, report: forged });
-    assert.equal(recordValue(forged.validation).valid, false, fixture.name);
-    assert.match(String(recordValue(forged.validation).violations), fixture.pattern, fixture.name);
-  }
-
-  const missingEpochAuthority = structuredClone(valid);
-  const missingAssignments = recordValue(missingEpochAuthority.sourceManifest).assignments as Array<LooseRecord>;
-  const missingTerminalStates = recordValue(missingEpochAuthority.sourceManifest).terminalStates as Array<LooseRecord>;
-  const missingAssignment = recordValue(missingAssignments[0]);
-  delete recordValue(missingAssignment.queued).orchestratorEpoch;
-  delete missingAssignment.orchestratorEpoch;
-  delete recordValue(missingTerminalStates[0]).orchestratorEpoch;
-  missingEpochAuthority.validation = validateSweBenchBatchReport({
-    manifest: missingEpochAuthority.sourceManifest,
-    report: missingEpochAuthority,
-  });
-  assert.equal(recordValue(missingEpochAuthority.validation).valid, false);
-  assert.match(String(recordValue(missingEpochAuthority.validation).violations), /missing authoritative orchestratorEpoch/);
-
-  const retry = structuredClone(valid);
-  recordValue(recordValue(recordValue(retry.jobs[0]).cleanup).codegraph).cleanupAttempt = 2;
-  retry.validation = validateSweBenchBatchReport({ manifest: retry.sourceManifest, report: retry });
-  assert.equal(recordValue(retry.validation).valid, false);
-  assert.match(String(recordValue(retry.validation).violations), /first cleanup attempt/);
-
-  const proofTypeMutations = [
-    { name: "proof pid 0", path: ["pid"], value: 0, pattern: /pids must be positive safe integers/ },
-    { name: "proof processPid null", path: ["processPid"], value: null, pattern: /pids must be positive safe integers/ },
-    { name: "startup pid 0", path: ["startup", "pid"], value: 0, pattern: /pids must be positive safe integers/ },
-    { name: "startup processPid null", path: ["startup", "processPid"], value: null, pattern: /pids must be positive safe integers/ },
-    { name: "cleanupAttempt string", path: ["cleanupAttempt"], value: "1", pattern: /first cleanup attempt/ },
-    { name: "orchestratorEpoch string", path: ["orchestratorEpoch"], value: "1", pattern: /orchestrator epoch mismatch/ },
-    { name: "attempt string", path: ["attempt"], value: "1", pattern: /attempt identity mismatch/ },
-  ] as const;
-  for (const mutation of proofTypeMutations) {
-    const forged = structuredClone(valid);
-    const proof = recordValue(recordValue(recordValue(forged.jobs[0]).cleanup).codegraph) as Record<string, unknown>;
-    let target = proof;
-    for (const segment of mutation.path.slice(0, -1)) {
-      target = recordValue(target[segment]) as Record<string, unknown>;
-    }
-    target[mutation.path[mutation.path.length - 1]] = mutation.value;
-    forged.validation = validateSweBenchBatchReport({ manifest: forged.sourceManifest, report: forged });
-    assert.equal(recordValue(forged.validation).valid, false, mutation.name);
-    assert.match(String(recordValue(forged.validation).violations), mutation.pattern, mutation.name);
-  }
-
-  const authorityTypeMutations = [
-    {
-      name: "queued orchestratorEpoch string",
-      mutate: (report: LooseRecord) => {
-        const assignment = recordValue((recordValue(report.sourceManifest).assignments as LooseRecord[])[0]);
-        recordValue(assignment.queued).orchestratorEpoch = "1";
-      },
-      pattern: /missing authoritative orchestratorEpoch/,
-    },
-    {
-      name: "terminal projectId null",
-      mutate: (report: LooseRecord) => {
-        recordValue((recordValue(report.sourceManifest).terminalStates as LooseRecord[])[0]).projectId = null;
-      },
-      pattern: /missing authoritative projectId/,
-    },
-    {
-      name: "terminal attemptToken null",
-      mutate: (report: LooseRecord) => {
-        recordValue((recordValue(report.sourceManifest).terminalStates as LooseRecord[])[0]).attemptToken = null;
-      },
-      pattern: /missing authoritative attemptToken/,
-    },
-    {
-      name: "terminal orchestratorEpoch string",
-      mutate: (report: LooseRecord) => {
-        recordValue((recordValue(report.sourceManifest).terminalStates as LooseRecord[])[0]).orchestratorEpoch = "1";
-      },
-      pattern: /missing authoritative orchestratorEpoch/,
-    },
-  ] as const;
-  for (const mutation of authorityTypeMutations) {
-    const forged = structuredClone(valid);
-    mutation.mutate(forged);
-    rehashReportManifest(forged);
-    forged.validation = validateSweBenchBatchReport({ manifest: forged.sourceManifest, report: forged });
-    assert.equal(recordValue(forged.validation).valid, false, mutation.name);
-    assert.match(String(recordValue(forged.validation).violations), mutation.pattern, mutation.name);
-  }
-});
-
 test("SWE-bench batch output writer includes hub result evidence when available", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "cpb-swebench-output-evidence-test-"));
   const manifestPath = path.join(root, "swebench-batch-queue-manifest.json");
@@ -5301,7 +5033,7 @@ test("SWE-bench batch enqueue rolls back project and assignment state when abort
     });
     const abort = new AbortController();
     await assert.rejects(
-      () => queueBatchAssignmentAtomically({
+      () => queueIndexedBatchAssignment({
         hubRoot,
         workerId: "worker-01",
         input,
@@ -5312,17 +5044,20 @@ test("SWE-bench batch enqueue rolls back project and assignment state when abort
           benchmarkInstanceId: record.benchmarkInstanceId,
           batchQueuedAt: "2026-07-20T00:00:00.000Z",
         },
-        skipCodeGraphGate: true,
         signal: abort.signal,
         hooks: {
           [stage]: () => abort.abort(new DOMException(`${stage} abort`, "AbortError")),
           concurrentDuringRollback: preserveConcurrent
             ? async () => {
+              await ensureLocalCodeIndex({
+                sourcePath: concurrentSourcePath,
+                cpbRoot: hubRoot,
+              });
               await registerHubProject(hubRoot, {
                 id: "concurrent-project",
                 name: "concurrent-project",
                 sourcePath: concurrentSourcePath,
-                skipCodeGraphGate: true,
+                cpbRoot: hubRoot,
               });
               const concurrentStore = new AssignmentStore(hubRoot);
               await concurrentStore.init();
@@ -5404,13 +5139,12 @@ test("SWE-bench batch enqueue compensates a committed registry warning before an
           throw Object.assign(new Error("durability acknowledgement failed after registry rename"), { code: "EIO" });
         }
       },
-    }, () => queueBatchAssignmentAtomically({
+    }, () => queueIndexedBatchAssignment({
       hubRoot,
       workerId: "worker-01",
       input,
       sourcePath,
       metadata: { productValidation: true },
-      skipCodeGraphGate: true,
       hooks: {
         afterRegister: () => { afterRegisterCalled = true; },
       },
@@ -5458,13 +5192,12 @@ test("local assignment enqueue self-compensates every pre-receipt write fault", 
       };
       try {
         await assert.rejects(
-          () => queueBatchAssignmentAtomically({
+          () => queueIndexedBatchAssignment({
             hubRoot,
             workerId: "worker-01",
             input,
             sourcePath,
             metadata: { productValidation: true },
-            skipCodeGraphGate: true,
           }),
           /fault at/,
         );
@@ -5895,7 +5628,7 @@ test("SWE-bench batch enqueue rollback refuses to overwrite a concurrent same-as
   const inboxPath = path.join(hubRoot, "workers", "inbox", "worker-01", `a-${input.entryId}.json`);
 
   await assert.rejects(
-    () => queueBatchAssignmentAtomically({
+    () => queueIndexedBatchAssignment({
       hubRoot,
       workerId: "worker-01",
       input,
@@ -5906,7 +5639,6 @@ test("SWE-bench batch enqueue rollback refuses to overwrite a concurrent same-as
         benchmarkInstanceId: record.benchmarkInstanceId,
         batchQueuedAt: "2026-07-20T00:00:00.000Z",
       },
-      skipCodeGraphGate: true,
       signal: abort.signal,
       hooks: {
         afterEnqueue: () => abort.abort(new DOMException("afterEnqueue abort", "AbortError")),
@@ -5950,7 +5682,7 @@ test("SWE-bench batch enqueue rollback refuses to delete an inbox claim after at
   const inboxPath = path.join(hubRoot, "workers", "inbox", "worker-01", `a-${input.entryId}.json`);
 
   await assert.rejects(
-    () => queueBatchAssignmentAtomically({
+    () => queueIndexedBatchAssignment({
       hubRoot,
       workerId: "worker-01",
       input,
@@ -5961,7 +5693,6 @@ test("SWE-bench batch enqueue rollback refuses to delete an inbox claim after at
         benchmarkInstanceId: record.benchmarkInstanceId,
         batchQueuedAt: "2026-07-20T00:00:00.000Z",
       },
-      skipCodeGraphGate: true,
       signal: abort.signal,
       hooks: {
         afterEnqueue: () => abort.abort(new DOMException("afterEnqueue abort", "AbortError")),
@@ -6397,13 +6128,12 @@ test("SWE-bench batch queue exposes explicit local inbox backend contract", asyn
     planMode: "full",
   });
 
-  const result = await queueBatchAssignmentAtomically({
+  const result = await queueIndexedBatchAssignment({
     hubRoot,
     workerId: "worker-01",
     input,
     sourcePath,
     metadata: { productValidation: true },
-    skipCodeGraphGate: true,
   });
 
   assert.equal(result.inboxBackend, "local");
@@ -6412,8 +6142,9 @@ test("SWE-bench batch queue exposes explicit local inbox backend contract", asyn
   assert.notEqual(result.inboxPath, "");
 });
 
-test("SWE-bench batch queue does not weaken CodeGraph readiness", () => {
-  assert.doesNotMatch(batchQueueSource, /CPB_CODEGRAPH_INDEX_ONLY_OK/);
+test("SWE-bench batch queue initializes the canonical local code index", () => {
+  assert.match(batchQueueSource, /ensureLocalCodeIndex/);
+  assert.doesNotMatch(batchQueueSource, /skip-local-code-index/);
   assert.match(batchQueueSource, /registerProject/);
 });
 

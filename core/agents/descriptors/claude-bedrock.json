@@ -1,0 +1,73 @@
+{
+  "name": "claude-bedrock",
+  "displayName": "Claude Bedrock",
+  "command": "claude-agent-acp",
+  "fallbackCommand": "npx",
+  "fallbackArgs": ["-y", "@agentclientprotocol/claude-agent-acp"],
+  "args": [],
+  "capabilities": ["plan", "execute", "verify", "review", "remediate"],
+  "sessionMcpServers": false,
+  "defaultRoles": [],
+  "stability": "stable",
+  "envPrefix": "CPB_ACP_CLAUDE_BEDROCK",
+  "protocol": "acp",
+  "transport": "claude-cli",
+  "description": "Claude Code configured for an AWS Bedrock credential set",
+  "provider": {
+    "key": "claude:bedrock",
+    "variant": "bedrock",
+    "family": "bedrock",
+    "credentialEnv": [
+      "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+      "AWS_REGION", "AWS_DEFAULT_REGION", "ANTHROPIC_MODEL"
+    ],
+    "runtimeEnv": [
+      "CPB_CLAUDE_PLAN_MAX_TEXT_CHARS", "CPB_CLAUDE_PLAN_MAX_THINKING_TOKENS",
+      "CPB_CLAUDE_PLAN_MAX_TURNS", "CPB_CLAUDE_MAX_INTERNAL_API_RETRIES",
+      "MAX_THINKING_TOKENS", "CLAUDE_CODE_MAX_OUTPUT_TOKENS"
+    ],
+    "cli": {
+      "command": "claude",
+      "commandEnv": "CPB_CLAUDE_CLI_COMMAND",
+      "modelEnv": "ANTHROPIC_MODEL",
+      "modelArg": "--model"
+    },
+    "capsule": {
+      "nativeExecutable": {
+        "basename": "claude",
+        "pathContains": ["@anthropic-ai/claude-agent-sdk-"],
+        "env": "CPB_CAPSULE_CLAUDE_CODE_EXECUTABLE",
+        "targetEnv": "CLAUDE_CODE_EXECUTABLE",
+        "kind": "native"
+      }
+    },
+    "quota": {
+      "region": "global",
+      "timezone": "UTC",
+      "policy": { "type": "per-minute", "description": "Bedrock per-minute rate limit" },
+      "rules": [
+        {
+          "pattern": "\\b529\\b|访问量过大|模型当前访问量|当前访问量过大",
+          "status": "rate_limited",
+          "confidence": 0.95
+        }
+      ]
+    },
+    "homeAgent": "claude"
+  },
+  "providerKey": "claude:bedrock",
+  "providerVariant": "bedrock",
+  "lifecycle": "one-shot",
+  "providerFamily": "bedrock",
+  "tieBreakPriority": 50,
+  "sandboxPolicy": "cpb-required",
+  "inheritFiles": [
+    { "from": "$HOME/.claude.json", "to": "$HOME/.claude.json" },
+    { "from": "$HOME/.claude/.credentials.json", "to": "$HOME/.claude/.credentials.json" },
+    { "from": "$HOME/.claude/credentials.json", "to": "$HOME/.claude/credentials.json" },
+    { "from": "$HOME/.claude/auth.json", "to": "$HOME/.claude/auth.json" }
+  ],
+  "quarantineFiles": [],
+  "resumeCommand": "claude",
+  "resumeArgs": ["--resume"]
+}

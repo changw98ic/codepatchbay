@@ -4,11 +4,11 @@ import { spawn } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { ensureLocalCodeIndex } from "../core/indexing/local-code-index/index.js";
 import {
   captureProcessIdentity,
   isProcessIdentityAlive,
   killTree,
-  sameProcessIdentity,
   type ProcessIdentity,
 } from "../core/runtime/process-tree.js";
 import {
@@ -61,19 +61,6 @@ type CommandResult = {
   errorCode?: string | null;
   errorCause?: unknown;
   rootIdentity?: ProcessIdentity;
-};
-
-type CodeGraphEvidence = {
-  init: {
-    code: number | null;
-    stdoutTail: string;
-    stderrTail: string;
-  };
-  statusCommand: {
-    code: number | null;
-    stdoutTail: string;
-    stderrTail: string;
-  };
 };
 
 type SweBenchVerificationCommands = {
@@ -281,25 +268,6 @@ type ManagedProcessTeardown = (
 type ProductCommandOptions = {
   teardownProcessTree?: ManagedProcessTeardown;
   onSpawn?: (identity: ProcessIdentity) => void;
-};
-
-export type ScopedCodegraphCleanupOptions = {
-  listProcesses?: () => Promise<string>;
-  readProcessCommand?: (pid: number) => Promise<string | null>;
-  captureIdentity?: (pid: number) => ProcessIdentity | null;
-  isIdentityAlive?: (identity: ProcessIdentity) => boolean;
-  teardownProcessTree?: ManagedProcessTeardown;
-};
-
-export type ScopedCodegraphCleanupUnresolved = {
-  pid: number;
-  reason:
-    | "identity_unavailable"
-    | "identity_mismatch"
-    | "command_mismatch"
-    | "teardown_failed"
-    | "cleanup_unverified";
-  message: string;
 };
 
 export function resolveProductValidationAgents(args: string[]): ProductValidationAgents {
@@ -576,189 +544,6 @@ async function runRequired(command: string, args: string[], cwd: string, timeout
   return result;
 }
 
-function scopedPathVariants(targetPath: string) {
-  const resolved = path.resolve(targetPath);
-  const variants = new Set([resolved]);
-  if (resolved.startsWith("/var/")) variants.add(`/private${resolved}`);
-  if (resolved.startsWith("/private/var/")) variants.add(resolved.replace(/^\/private/, ""));
-  return [...variants];
-}
-
-function isScopedCodegraphCommand(command: string, variants: string[]) {
-  return command.includes("codegraph")
-    && command.includes("serve")
-    && command.includes("--mcp")
-    && variants.some((variant) => command.includes(variant));
-}
-
-function codegraphCleanupError(
-  message: string,
-  code: string,
-  unresolved: ScopedCodegraphCleanupUnresolved[],
-  cause?: unknown,
-) {
-  const error = cause === undefined ? new Error(message) : new Error(message, { cause });
-  return Object.assign(error, { code, unresolvedCleanup: unresolved });
-}
-
-function decorateCodegraphCleanupError(error: unknown, unresolved: ScopedCodegraphCleanupUnresolved[]) {
-  if (error instanceof Error) {
-    return Object.assign(error, { unresolvedCleanup: unresolved });
-  }
-  return Object.assign(new Error(String(error)), { unresolvedCleanup: unresolved });
-}
-
-function isExactProcessIdentityForPid(identity: ProcessIdentity | null, pid: number) {
-  return Boolean(identity && identity.pid === pid && sameProcessIdentity(identity, identity));
-}
-
-export async function cleanupScopedCodegraphDaemons(
-  worktreePath: string,
-  options: ScopedCodegraphCleanupOptions = {},
-) {
-  const variants = scopedPathVariants(worktreePath);
-  const listProcesses = options.listProcesses || (async () => {
-    const result = await runCommand("ps", ["-axo", "pid=,command="], REPO_ROOT, 30000);
-    if (result.code !== 0) {
-      throw new Error(`failed to enumerate Codegraph daemons (ps exited ${result.code}): ${result.stderr}`);
-    }
-    return result.stdout;
-  });
-  const readProcessCommand = options.readProcessCommand || (async (pid: number) => {
-    const result = await runCommand("ps", ["-p", String(pid), "-o", "command="], REPO_ROOT, 30000);
-    return result.code === 0 ? result.stdout.trim() : null;
-  });
-  const captureIdentity = options.captureIdentity || ((pid: number) => captureProcessIdentity(pid, { strict: true }));
-  const identityAlive = options.isIdentityAlive || isProcessIdentityAlive;
-  const lines = (await listProcesses()).split("\n");
-  const matches = lines
-    .map((line) => {
-      const match = line.match(/^\s*(\d+)\s+(.+)$/);
-      if (!match) return null;
-      return { pid: Number.parseInt(match[1], 10), command: match[2] };
-    })
-    .filter((entry): entry is { pid: number; command: string } => Boolean(entry))
-    .filter((entry) => isScopedCodegraphCommand(entry.command, variants));
-
-  const errors: unknown[] = [];
-  const killed: number[] = [];
-  const unresolved: ScopedCodegraphCleanupUnresolved[] = [];
-  const targets: Array<{ pid: number; identity: ProcessIdentity }> = [];
-  for (const entry of matches) {
-    try {
-      const observedIdentity = captureIdentity(entry.pid);
-      if (!isExactProcessIdentityForPid(observedIdentity, entry.pid)) {
-        throw codegraphCleanupError(
-          `failed to capture an exact identity for Codegraph daemon pid ${entry.pid}; refusing to claim cleanup`,
-          "PROCESS_IDENTITY_UNAVAILABLE",
-          [],
-        );
-      }
-      const currentCommand = await readProcessCommand(entry.pid);
-      const confirmedIdentity = captureIdentity(entry.pid);
-      if (!isExactProcessIdentityForPid(confirmedIdentity, entry.pid)) {
-        throw codegraphCleanupError(
-          `failed to re-capture an exact identity for Codegraph daemon pid ${entry.pid}; refusing to signal`,
-          "PROCESS_IDENTITY_UNAVAILABLE",
-          [],
-        );
-      }
-      if (!sameProcessIdentity(observedIdentity, confirmedIdentity)) {
-        throw codegraphCleanupError(
-          `Codegraph daemon pid ${entry.pid} changed identity before cleanup; refusing to signal successor`,
-          "PROCESS_IDENTITY_MISMATCH",
-          [],
-        );
-      }
-      if (!currentCommand || !isScopedCodegraphCommand(currentCommand, variants)) {
-        throw codegraphCleanupError(
-          `Codegraph daemon pid ${entry.pid} no longer matches the scoped command; refusing to signal`,
-          "PROCESS_IDENTITY_MISMATCH",
-          [],
-        );
-      }
-      targets.push({ pid: entry.pid, identity: confirmedIdentity });
-    } catch (error) {
-      const cause = toError(error);
-      const code = errorCode(cause);
-      const reason: ScopedCodegraphCleanupUnresolved["reason"] = code === "PROCESS_IDENTITY_MISMATCH"
-        ? (cause.message.includes("no longer matches") ? "command_mismatch" : "identity_mismatch")
-        : "identity_unavailable";
-      unresolved.push({ pid: entry.pid, reason, message: cause.message });
-      errors.push(new Error(`failed to bind Codegraph daemon pid ${entry.pid} to a process identity`, { cause: error }));
-    }
-  }
-
-  for (const target of targets) {
-    const teardownTimeoutMs = managedWorkerTeardownTimeoutMs();
-    const deadlineAt = Date.now() + teardownTimeoutMs;
-    const controller = new AbortController();
-    const deadlineError = Object.assign(
-      new Error(`Codegraph daemon teardown timed out after ${teardownTimeoutMs}ms`),
-      { name: "AbortError", code: "ABORT_ERR" },
-    );
-    const deadlineTimer = setTimeout(() => controller.abort(deadlineError), teardownTimeoutMs);
-    try {
-      const cleanup: ManagedProcessTeardown = options.teardownProcessTree || ((pid, cleanupOptions) => killTree(
-        pid,
-        10_000,
-        { requireDescendantScan: true, expectedRootIdentity: cleanupOptions.expectedRootIdentity },
-      ));
-      await cleanup(target.pid, {
-        signal: controller.signal,
-        deadlineAt,
-        expectedRootIdentity: target.identity,
-      });
-      if (controller.signal.aborted) throw controller.signal.reason;
-      let stillAlive: boolean;
-      try {
-        stillAlive = identityAlive(target.identity);
-      } catch (error) {
-        throw codegraphCleanupError(
-          `could not verify cleanup of Codegraph daemon pid ${target.pid}: ${toError(error).message}`,
-          "PROCESS_CLEANUP_UNVERIFIED",
-          [],
-          error,
-        );
-      }
-      if (stillAlive) {
-        throw codegraphCleanupError(
-          `Codegraph daemon pid ${target.pid} is still running after teardown`,
-          "PROCESS_CLEANUP_UNVERIFIED",
-          [],
-        );
-      }
-      killed.push(target.pid);
-    } catch (error) {
-      const cause = toError(error);
-      unresolved.push({
-        pid: target.pid,
-        reason: errorCode(cause) === "PROCESS_CLEANUP_UNVERIFIED" ? "cleanup_unverified" : "teardown_failed",
-        message: cause.message,
-      });
-      const diagnosticCause = cause.cause === undefined ? error : cause.cause;
-      errors.push(new Error(`failed to clean up Codegraph daemon pid ${target.pid}`, { cause: diagnosticCause }));
-    } finally {
-      clearTimeout(deadlineTimer);
-    }
-  }
-
-  if (errors.length === 1) throw decorateCodegraphCleanupError(errors[0], unresolved);
-  if (errors.length > 1) {
-    throw Object.assign(
-      new AggregateError(errors, "scoped Codegraph daemon cleanup failed"),
-      { unresolvedCleanup: unresolved },
-    );
-  }
-
-  return {
-    worktreePath,
-    matchedPids: matches.map((entry) => entry.pid),
-    killedPids: killed,
-    unresolvedCleanup: unresolved,
-  };
-}
-
 async function fetchDatasetRow(record: SweBenchRecord) {
   const ref = stringValue(record.datasetRowRef);
   if (!ref) throw new Error(`record ${record.benchmarkInstanceId} is missing datasetRowRef`);
@@ -782,23 +567,6 @@ async function cloneAtCommit({ repo, baseCommit, targetDir }: { repo: string; ba
   await runRequired("git", ["remote", "add", "origin", `https://github.com/${repo}.git`], targetDir);
   await runRequired("git", ["fetch", "--depth=1", "origin", baseCommit], targetDir, 600000);
   await runRequired("git", ["checkout", "--detach", "FETCH_HEAD"], targetDir);
-}
-
-async function initCodeGraph(sourcePath: string): Promise<CodeGraphEvidence> {
-  const init = await runRequired("codegraph", ["init", sourcePath], REPO_ROOT, 600000);
-  const status = await runRequired("codegraph", ["status", sourcePath], REPO_ROOT, 120000);
-  return {
-    init: {
-      code: init.code,
-      stdoutTail: init.stdout.slice(-4000),
-      stderrTail: init.stderr.slice(-4000),
-    },
-    statusCommand: {
-      code: status.code,
-      stdoutTail: status.stdout.slice(-4000),
-      stderrTail: status.stderr.slice(-4000),
-    },
-  };
 }
 
 function uniqueStrings(values: string[]) {
@@ -1322,12 +1090,9 @@ async function main() {
   if (agentNames(options.agents).includes("fake-acp")) {
     throw new Error("Refusing to run product validation with fake-acp. Use a real agent such as codex or claude.");
   }
-  const previousIndexOnly = process.env.CPB_CODEGRAPH_INDEX_ONLY_OK;
-  process.env.CPB_CODEGRAPH_INDEX_ONLY_OK = "1";
   let bundlePath: string | null = null;
 
-  try {
-    await runProductValidationTemporaryWorkspace({
+  await runProductValidationTemporaryWorkspace({
       keepTemp: options.keepTemp,
       task: async (tmpRoot) => {
         const { rowIndex, row } = await fetchDatasetRow(record);
@@ -1340,7 +1105,7 @@ async function main() {
         const cpbRoot = path.join(tmpRoot, "cpb");
         const sourcePath = path.join(tmpRoot, "source");
         const workerId = "w-swebench";
-        let codegraphEvidence: CodeGraphEvidence | null = null;
+        let localCodeIndex: unknown = null;
         const failToPassTests = stringArrayFromJson(row.FAIL_TO_PASS);
         const passToPassTests = stringArrayFromJson(row.PASS_TO_PASS);
 
@@ -1350,7 +1115,7 @@ async function main() {
       baseCommit: stringValue(record.baseCommit),
       targetDir: sourcePath,
     });
-    codegraphEvidence = await initCodeGraph(sourcePath);
+    localCodeIndex = await ensureLocalCodeIndex({ sourcePath, cpbRoot });
     const assignment = await writeAssignment({
       hubRoot,
       workerId,
@@ -1373,7 +1138,6 @@ async function main() {
     const eventLogPath = path.join(hubRoot, "projects", assignment.projectId, "events", assignment.projectId, `job-${assignment.entryId}.jsonl`);
     const acpAuditPath = path.join(hubRoot, "projects", assignment.projectId, "acp-audit", assignment.projectId, `job-${assignment.entryId}.jsonl`);
     const worktreePath = path.join(hubRoot, "worktrees", `job-${assignment.entryId}-pipeline`);
-    const codegraphDaemonCleanup = await cleanupScopedCodegraphDaemons(worktreePath);
     const result = await readJson(resultPath).catch(() => null);
     const heartbeat = await readJson(heartbeatPath).catch(() => null);
     const worktreeStatus = await runCommand("git", ["status", "--short"], worktreePath, 120000).catch((error: unknown) => ({
@@ -1422,8 +1186,7 @@ async function main() {
         hubRoot,
         cpbRoot,
         sourcePath,
-        codegraph: codegraphEvidence,
-        codegraphIndexOnlyAccepted: true,
+        localCodeIndex,
         capabilityMapConfidence: assignment.project.metadata?.capabilityMapConfidence || null,
         projectRuntimeRoot: assignment.project.projectRuntimeRoot,
         resultPath,
@@ -1431,7 +1194,6 @@ async function main() {
         workerSignal: worker.signal,
         workerTimedOut: worker.timedOut || false,
         workerErrorMessage: worker.errorMessage || null,
-        codegraphDaemonCleanup,
         stdoutTail: worker.stdout.slice(-4000),
         stderrTail: worker.stderr.slice(-4000),
         heartbeat,
@@ -1461,10 +1223,6 @@ async function main() {
     }
       },
     });
-  } finally {
-    if (previousIndexOnly === undefined) delete process.env.CPB_CODEGRAPH_INDEX_ONLY_OK;
-    else process.env.CPB_CODEGRAPH_INDEX_ONLY_OK = previousIndexOnly;
-  }
 
   if (!bundlePath) process.exitCode = 1;
 }

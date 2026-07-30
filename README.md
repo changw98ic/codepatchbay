@@ -254,6 +254,13 @@ cpb github doctor [--json]
 # Hub 与调度
 cpb hub [status|start|stop|projects|...]
 
+# 本地代码索引
+cpb code-index build [-s <path>]   # 构建或刷新本地代码索引
+cpb code-index status [-s <path>]  # 检查索引状态
+cpb code-index query <kind> [...]  # 查询符号、文件、关系
+cpb code-index evidence [-t <task>]  # 从查询结果构建证据包
+cpb code-index gc                  # 在 repository lock 下运行垃圾回收
+
 # 设置与诊断
 cpb setup [--recommended|--interactive|--json]
 cpb agents [list|detect|install|upgrade|test]
@@ -286,6 +293,13 @@ and `cpb status <project>` to see the latest verdict.
 3. **本地优先** — 一切运行在你的机器上，不需要托管服务
 4. **证据可审查** — 每一步产生本地文件，你可以在任何环节介入
 5. **Agent 可组合** — 受支持的 ACP 或 CLI coding agent 都可以接入
+
+## Agent、供应商与模型配置
+
+默认角色只选择 agent，不绑定具体供应商或模型。全局供应商目录放在
+`~/.cpb/providers.json`，项目选择放在 `~/.cpb/<projectName>/project.json`；
+也可以通过 `CPB_HOME` 和 `CPB_PROVIDERS_FILE` 改变位置。配置示例和字段说明见
+[Agent、供应商与模型配置](docs/provider-project-config.md)。
 
 ## 安全
 

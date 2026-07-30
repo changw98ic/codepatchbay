@@ -5,6 +5,7 @@ import { recordValue, type LooseRecord } from "../../shared/types.js";
 import { FailureKind, failure } from "../contracts/failure.js";
 import {
   getCapability,
+  getDescriptor,
   resolveAgentEnvPrefix,
 } from "./registry.js";
 
@@ -16,13 +17,20 @@ const VALIDATION_PHASES = new Set(["verify", "review"]);
 function isReadOnlyPhase(phase: string) {
   return Boolean(phase) && !MUTATING_PHASES.has(phase);
 }
-const CLAUDE_COMPATIBLE_AGENT = /^(?:claude|claude-.+)$/;
 const REPLAY_DENY_TOOLS = ["--disallowedTools", "Edit,Write,MultiEdit"];
 const VERIFIER_DENY_TOOLS = ["--disallowedTools", "Edit,MultiEdit"];
 const READ_ONLY_DENY_TOOLS = ["--disallowedTools", "Bash,Edit,Write,MultiEdit"];
 const WEB_DENY_TOOLS = ["--disallowedTools", "WebSearch,WebFetch"];
 const WEB_MCP_DISABLE_ARGS = ["--strict-mcp-config", "--mcp-config", "{\"mcpServers\":{}}"];
 const MUTATING_TOOL_TITLE = /^(?:Edit|Write|MultiEdit)\s+(.+)$/;
+
+function isClaudeCliAgent(agentName: string) {
+  try {
+    return getDescriptor(agentName)?.transport === "claude-cli";
+  } catch {
+    return false;
+  }
+}
 
 function mergeCommaList(...values: unknown[]) {
   const entries = values
@@ -115,13 +123,14 @@ function mergeArgsEnv(current: unknown, appended: string[]) {
 }
 
 function claudeArgsEnvKey(agentName: string) {
-  if (!CLAUDE_COMPATIBLE_AGENT.test(agentName)) return null;
+  if (!isClaudeCliAgent(agentName)) return null;
   // Derive the canonical ARGS key from the registry env-prefix resolver (B2b):
   // it already enforces the CPB_ACP_<NAME> namespace used for the _ARGS suffix
   // and is the same resolver used elsewhere for the per-agent envPrefix. Falls
   // back to null if the name is somehow rejected.
   try {
-    return `${resolveAgentEnvPrefix(agentName)}_ARGS`;
+    const descriptor = getDescriptor(agentName);
+    return `${resolveAgentEnvPrefix(agentName, descriptor?.envPrefix)}_ARGS`;
   } catch {
     return null;
   }
@@ -366,22 +375,23 @@ function phaseWriteAllowOverride(
     // (B2b): "native" providers already run inside their own phase-aware
     // sandbox, so nesting them in CPB's outer sandbox changes the available
     // toolchain and prevents MCP subprocesses from matching a native run.
-    // codex ships with `sandboxPolicy: "native"`, so behavior is preserved.
-    // When the registry is not loaded (some focused unit tests) the literal
-    // `==="codex"` test is used as a defensive fallback.
-    let nativeSandbox: boolean;
+    // A missing registry entry fails closed to the required CPB sandbox.
+    let sandboxPolicy: "native" | "cpb-required" | "none" = "cpb-required";
     try {
-      nativeSandbox = getCapability(agentName)?.sandboxPolicy === "native";
+      sandboxPolicy = getCapability(agentName)?.sandboxPolicy || "cpb-required";
     } catch {
-      nativeSandbox = agentName === "codex";
+      sandboxPolicy = "cpb-required";
     }
-    if (nativeSandbox) {
+    if (sandboxPolicy === "native") {
       baseEnv.CPB_AGENT_SANDBOX_INHERITED = "1";
+    } else if (sandboxPolicy === "none") {
+      baseEnv.CPB_AGENT_SANDBOX = "off";
+      baseEnv.CPB_AGENT_SANDBOX_MODE = "off";
     } else {
       baseEnv.CPB_AGENT_SANDBOX = "required";
     }
   }
-  if (CLAUDE_COMPATIBLE_AGENT.test(agentName) && baseEnv.CPB_ACP_DISABLE_WEB_TOOLS === "1") {
+  if (isClaudeCliAgent(agentName) && baseEnv.CPB_ACP_DISABLE_WEB_TOOLS === "1") {
     installClaudeToolDeny(baseEnv, agentName, [...WEB_MCP_DISABLE_ARGS, ...WEB_DENY_TOOLS]);
   }
   if (!isReadOnlyPhase(phase)) {
@@ -390,7 +400,7 @@ function phaseWriteAllowOverride(
     // worktree, so explicitly add only the phase-owned output directory.
     // Without this root the executor can complete the code change but cannot
     // persist its structured handoff artifact.
-    if (CLAUDE_COMPATIBLE_AGENT.test(agentName) && typeof dataRoot === "string" && dataRoot) {
+    if (isClaudeCliAgent(agentName) && typeof dataRoot === "string" && dataRoot) {
       const phaseOutput = `${dataRoot}/phase-io/${phase}/*`;
       baseEnv.CPB_ACP_WRITE_ALLOW = mergeCommaList(baseEnv.CPB_ACP_WRITE_ALLOW, phaseOutput);
       baseEnv.CPB_AGENT_SANDBOX_ALLOW_WRITE = mergeCommaList(
@@ -419,7 +429,7 @@ function phaseWriteAllowOverride(
       baseEnv.TEMP = isolatedTemp;
       baseEnv.TMP = isolatedTemp;
     }
-    if (CLAUDE_COMPATIBLE_AGENT.test(agentName)) {
+    if (isClaudeCliAgent(agentName)) {
       installClaudeToolDeny(baseEnv, agentName, REPLAY_DENY_TOOLS);
     }
     if (!baseEnv.PYTHONDONTWRITEBYTECODE) baseEnv.PYTHONDONTWRITEBYTECODE = "1";
@@ -436,7 +446,7 @@ function phaseWriteAllowOverride(
     baseEnv.TEMP = isolatedTemp;
     baseEnv.TMP = isolatedTemp;
   }
-  if (CLAUDE_COMPATIBLE_AGENT.test(agentName)) {
+  if (isClaudeCliAgent(agentName)) {
     if (phase === "verify") installClaudeToolDeny(baseEnv, agentName, VERIFIER_DENY_TOOLS);
     else if (VALIDATION_PHASES.has(phase)) installClaudeToolDeny(baseEnv, agentName, REPLAY_DENY_TOOLS);
     else installClaudeReadOnlyToolDeny(baseEnv, agentName);
@@ -467,6 +477,8 @@ export async function runAgent({
   role,
   agent,
   variant,
+  provider,
+  model,
   project,
   jobId,
   prompt,
@@ -521,6 +533,8 @@ export async function runAgent({
       attemptId,
       conversationKey: typeof conversationKey === "string" && conversationKey ? conversationKey : undefined,
       variant,
+      provider,
+      model,
       workspaceId: typeof scopeRecord.workspaceId === "string" ? scopeRecord.workspaceId : undefined,
       cwd,
       env: executionEnv,
@@ -566,6 +580,8 @@ export async function runAgent({
         conversationKey: typeof conversationKey === "string" ? conversationKey : null,
         providerKey,
         variant: execVariant,
+        provider: provider || null,
+        model: model || null,
         acpAuditFile: execRecord.acpAuditFile || null,
         sessionId: execRecord.sessionId || null,
         usage: execRecord.usage || null,

@@ -126,7 +126,7 @@ test("runtime health divergence scan is read-only for malformed event logs", asy
     const project = await registerProject(hubRoot, {
       id: "proj",
       sourcePath: cpbRoot,
-      skipCodeGraphGate: true,
+      skipLocalCodeIndexGate: true,
     });
     const dataRoot = project.projectRuntimeRoot;
     const eventsDir = path.join(dataRoot, "events", "proj");

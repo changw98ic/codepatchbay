@@ -30,9 +30,10 @@ function deferred<T = void>() {
 }
 
 async function waitFor(condition: () => boolean, message: string) {
-  for (let attempt = 0; attempt < 10_000; attempt += 1) {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
     if (condition()) return;
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await new Promise<void>((resolve) => setTimeout(resolve, 1));
   }
   assert.fail(message);
 }
@@ -321,14 +322,14 @@ test("runJob blocks before phases when prepareTask service is missing", async ()
   assert.equal(calls.length, 0);
 });
 
-test("runJob blocks codegraph_unavailable from prepareTask before provider phase work", async () => {
+test("runJob blocks local_code_index_unavailable from prepareTask before provider phase work", async () => {
   const prepareTask = async () => {
     throw failure({
-      kind: FailureKind.CODEGRAPH_UNAVAILABLE,
+      kind: FailureKind.LOCAL_CODE_INDEX_UNAVAILABLE,
       phase: "prepare_task",
-      reason: "CodeGraph is unavailable for this project",
+      reason: "Local code index is unavailable for this project",
       retryable: true,
-      cause: { dirtyReasons: ["codegraph_unavailable"] },
+      cause: { dirtyReasons: ["local_code_index_unavailable"] },
     });
   };
 
@@ -336,9 +337,9 @@ test("runJob blocks codegraph_unavailable from prepareTask before provider phase
 
   assert.equal(result.status, "blocked");
   assert.equal(result.exitCode, 2);
-  assert.equal(result.failure.kind, FailureKind.CODEGRAPH_UNAVAILABLE);
+  assert.equal(result.failure.kind, FailureKind.LOCAL_CODE_INDEX_UNAVAILABLE);
   assert.equal(result.failure.phase, "prepare_task");
-  assert.equal(blocked[0].code || blocked[0].kind, FailureKind.CODEGRAPH_UNAVAILABLE);
+  assert.equal(blocked[0].code || blocked[0].kind, FailureKind.LOCAL_CODE_INDEX_UNAVAILABLE);
   assert.deepEqual(starts, []);
   assert.equal(calls.length, 0);
 });
@@ -506,6 +507,7 @@ test("runJob overlaps read-only reviews and commits their durable events in DAG 
   const actualReviewCompletion: string[] = [];
   let inFlightReviews = 0;
   let maxInFlightReviews = 0;
+  const controller = new AbortController();
 
   const run = runJob({
     cpbRoot,
@@ -517,6 +519,7 @@ test("runJob overlaps read-only reviews and commits their durable events in DAG 
     planMode: "full",
     sourcePath,
     sourceContext: {},
+    signal: controller.signal,
     agents: {
       planner: "fake-primary",
       executor: "fake-primary",
@@ -583,11 +586,12 @@ test("runJob overlaps read-only reviews and commits their durable events in DAG 
     assert.equal(dagEvent?.dagParallelExecutionReady, true);
     assert.equal(dagEvent?.dagParallelExecutionEnabled, true);
   } finally {
+    controller.abort();
     for (let attempt = 0; attempt < 10; attempt += 1) {
       for (const release of reviewReleases.values()) release.resolve(undefined);
       await new Promise<void>((resolve) => setImmediate(resolve));
     }
-    await run.catch(() => undefined);
+    await settleWithin(run.catch(() => undefined), 5_000, "parallel review cleanup must settle");
   }
 });
 

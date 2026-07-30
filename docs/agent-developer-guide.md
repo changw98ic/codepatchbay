@@ -49,8 +49,56 @@ Descriptor 的权威 schema 是 [`schemas/agent-descriptor.schema.json`](../sche
 | `poolLimit` | integer (>=0) | 否 | 持久 ACP 池上限。 |
 | `sessionMcpServers` | boolean | 否 | 是否向 `session/new.mcpServers` 注入 MCP。`claude` 显式设为 `false`（见 `docs/acp-provider-validation.md` 的 Headless vs UI 说明）。 |
 | `resumeCommand` / `resumeArgs` | string / string[] | 否 | 会话恢复命令（如 `claude --resume`）。 |
-| `providerKey` / `providerVariant` | string | 否 | provider 适配键 / 变体（GLM、MiMo 等走 provider-*.ts 适配器）。 |
+| `provider` | object | 否 | provider 的唯一配置入口：身份、凭据输入、环境变量映射、模型归一化、CLI 参数、capsule handoff 与 fallback 都放在这里。 |
+| `providerKey` / `providerVariant` | string | 否 | 仅保留为旧 descriptor 的路由元数据；存在 `provider` 时不参与执行配置。 |
 | `description` | string | 否 | 自由文本说明。 |
+
+### `provider` 配置
+
+provider 执行路径不根据 agent 名称猜测。CPB 从 descriptor 的 `provider` 对象读取：
+
+| 字段 | 作用 |
+|---|---|
+| `key` / `keyTemplate`、`variant`、`variantAliases`、`family` | provider 身份、变体别名和路由分组。`${variant}` 可用于 key 模板。 |
+| `credentialEnv` | 宿主环境允许传入的 provider 原始变量名；密钥仍放在环境或 provider 原生登录态里，不写入 descriptor。 |
+| `environment` | `{ "目标变量": ["原始变量1", "原始变量2"] }` 映射。CPB 按顺序取第一个非空值。 |
+| `derived` / `values` | 从已映射变量派生变量，或写入固定/模板化值。支持 `${agent}`、`${variant}`、`${providerKey}`。 |
+| `required`、`normalizers` | 启动前必需变量和模型等值的归一化规则。缺少必需变量会在 provider 启动前失败。 |
+| `cli` | `command`、`commandEnv`、固定 `args`、`modelEnv`、`modelArg` 与 `homeAgent`。 |
+| `capsule.nativeExecutable` | 当 ACP command 是 npm 包时，声明如何找到包内原生可执行文件，以及 handoff 变量和最终工具变量。 |
+| `quota` | 声明 region、timezone、quota policy 和可匹配的限额错误规则；运行时只负责解释这些规则。 |
+| `fallbacks` | provider 配额/传输失败时的候选 `{ providerKey, agent, variant }`。也可由 `CPB_ACP_PROVIDER_FALLBACKS` 显式覆盖。 |
+
+一个自定义 Anthropic-compatible provider 的最小配置如下。`VENDOR_*` 是宿主环境变量，`ANTHROPIC_*` 是 CLI 需要的目标变量：
+
+```json
+{
+  "name": "vendor-cli",
+  "command": "vendor-acp",
+  "envPrefix": "CPB_ACP_VENDOR_CLI",
+  "transport": "claude-cli",
+  "provider": {
+    "keyTemplate": "vendor:${variant}",
+    "variant": "small",
+    "family": "vendor",
+    "credentialEnv": ["VENDOR_BASE_URL", "VENDOR_TOKEN", "VENDOR_MODEL"],
+    "environment": {
+      "ANTHROPIC_BASE_URL": ["VENDOR_BASE_URL"],
+      "ANTHROPIC_API_KEY": ["VENDOR_TOKEN"],
+      "ANTHROPIC_AUTH_TOKEN": ["VENDOR_TOKEN"],
+      "ANTHROPIC_MODEL": ["VENDOR_MODEL"]
+    },
+    "required": ["ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_MODEL"],
+    "cli": {
+      "command": "vendor-cli",
+      "modelEnv": "ANTHROPIC_MODEL",
+      "modelArg": "--model"
+    }
+  }
+}
+```
+
+把该 JSON 放入 `CPB_AGENTS_CONFIG_DIR` 指向的目录即可；新增 provider 不需要在 CPB 源码里增加 agent 名称分支。
 
 ### 最小可工作 descriptor 示例
 
@@ -76,8 +124,9 @@ Descriptor 的权威 schema 是 [`schemas/agent-descriptor.schema.json`](../sche
 ```
 
 `codex.json` / `claude.json` 是生产级范例（带 `protocol`、`resumeCommand`、
-`defaultRoles`）。已发布的 6 个 builtin descriptor 全部合规（`codex` / `claude` /
-`claude-glm` / `claude-mimo` / `browser-agent` / `fake-acp`）。
+`defaultRoles`）。builtin descriptor 统一通过 `provider` 声明 provider 行为；
+`claude-glm`、`claude-mimo`、Bedrock 等兼容入口只是配置文件中的 descriptor，
+不是运行时代码中的名称分支。
 
 ## 3. I/O 契约 (Envelope)
 
@@ -161,9 +210,8 @@ adapter 复用登录态而不共享可变 session 状态：
 - **Claude** (`inheritClaudeConfig`)：继承 `.claude/.credentials.json`、`.claude/credentials.json`、`.claude/auth.json`（`CLAUDE_SHARED_CONFIG_FILES`）以及 `.claude.json`（`CLAUDE_SHARED_HOME_FILES`）。
 - 单文件大小上限 `MAX_INHERITED_AUTH_BYTES = 1 MiB`，且拒绝跟随符号链接（`CPB_AGENT_HOME_UNSAFE_AUTH_SOURCE`）。
 
-GLM/MiMo 等 variant adapter 只接收各自的原始 provider 配置（见
-`core/policy/child-env.ts` 的 `*_COMPATIBLE_CREDENTIALS` 白名单），由 trusted adapter
-在启动后转换，避免 ambient Anthropic key 与 GLM/MiMo 凭据混入同一子进程。
+兼容 provider 只接收其 descriptor 声明的原始 provider 配置；`environment` 映射在
+CPB 的可信启动边界完成，避免 ambient 凭据混入不属于当前 provider 的子进程。
 
 ### Read-only phase 越权写
 
@@ -231,11 +279,11 @@ registry 解析、ACP 进程启动、JSON-RPC 握手、session update、response
   方式落地（这是已被支持的扩展面），但不要新增需要改 `core/agents/routing.ts` /
   `core/agents/registry.ts` 类型枚举的硬编码 agent 种类。
 
-**Phase B — Provider Registry 落地后**（父 RFC
+**Provider Registry 已落地**：
 [`docs/superpowers/plans/2026-07-28-cpb-agent-platform-maturity-rfc.md`](./superpowers/plans/2026-07-28-cpb-agent-platform-maturity-rfc.md)
-§6）：接入第三类 agent 将无需改源码——descriptor 注册、路由、隔离全部走配置化
-registry。届时本指南第 7 节的"放 descriptor / 设 `CPB_AGENTS_CONFIG_DIR`"会成为
-所有 agent 的标准接入路径，不再需要 builtin 目录。
+§6 的目标现在由 descriptor registry、路由、隔离和 provider execution config 共同覆盖。
+本指南第 7 节的“放 descriptor / 设 `CPB_AGENTS_CONFIG_DIR`”是所有自定义 agent 的标准
+接入路径；builtin 目录只用于 CPB 自带默认配置。
 
 ## 9. Observability / 可观测性
 

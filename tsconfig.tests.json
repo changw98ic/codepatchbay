@@ -17,6 +17,7 @@
     "node_modules",
     "dist",
     "dist-tests",
-    "web"
+    "web",
+    "scripts/workflows/**"
   ]
 }

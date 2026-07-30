@@ -329,9 +329,7 @@ export async function runAcp(agent: string, prompt: string, cwd: string, executo
   const clientPath = process.env.CPB_ACP_CLIENT
     || path.join(executorRoot, "server", "services", "acp", "acp-client.js");
 
-  if (agent === "claude") {
-    applyVariant();
-  }
+  applyVariant({ agent });
 
   const abort = new AbortController();
   let abortSignal: NodeJS.Signals | null = null;
@@ -349,11 +347,6 @@ export async function runAcp(agent: string, prompt: string, cwd: string, executo
   const command = process.execPath;
   const args = [clientPath, "--agent", agent, "--cwd", cwd];
   const env = { ...process.env };
-
-  if (!process.env.CPB_TEST_ENV_LOG && !env.ANTHROPIC_API_KEY && env.ANTHROPIC_AUTH_TOKEN) {
-    env.ANTHROPIC_API_KEY = env.ANTHROPIC_AUTH_TOKEN;
-    delete env.ANTHROPIC_AUTH_TOKEN;
-  }
 
   try {
     const maxOutputBytes = subprocessOutputMaxBytes(process.env.CPB_SUBPROCESS_OUTPUT_MAX_BYTES);

@@ -12,7 +12,7 @@ export const FailureKind = Object.freeze({
   WORKER_HEARTBEAT_LOST: "worker_heartbeat_lost",
   ASSIGNMENT_PROGRESS_STALE: "assignment_progress_stale",
   TIMEOUT: "timeout",
-  CODEGRAPH_UNAVAILABLE: "codegraph_unavailable",
+  LOCAL_CODE_INDEX_UNAVAILABLE: "local_code_index_unavailable",
   VERIFICATION_FAILED: "verification_failed",
   VERDICT_INVALID: "verdict_invalid",
   PLAN_BOUNDED_HANDOFF_TIMEOUT: "plan_bounded_handoff_timeout",

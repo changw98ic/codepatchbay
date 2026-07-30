@@ -197,7 +197,7 @@ export function codingComparisonPermissionFingerprint() {
     approvalPolicy: "never",
     profile: "headless",
     maximumWorktreeAccess: "workspace-write",
-    tools: ["codegraph", "file-edit", "terminal"],
+    tools: ["local-code-index", "file-edit", "terminal"],
     uiTools: false,
     evaluatorVisibleDuringSolve: false,
   });

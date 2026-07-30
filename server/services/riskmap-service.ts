@@ -1,7 +1,8 @@
 import { recordValue, type LooseRecord } from "../../shared/types.js";
 import { getProject } from "./hub/hub-registry.js";
 import { updateEntry } from "./hub/hub-queue.js";
-import { checkCodeGraphReady } from "./readiness-checks.js";
+import { ensureLocalCodeIndex } from "../../core/indexing/local-code-index/index.js";
+import type { LocalCodeIndexRef } from "../../core/indexing/local-code-index/index.js";
 import { generateDynamicAgentPlan } from "../../core/agents/dynamic-agent-plan.js";
 
 export class ProjectCapabilityMapUnavailableError extends Error {
@@ -11,7 +12,7 @@ export class ProjectCapabilityMapUnavailableError extends Error {
   constructor(reason: string, details: LooseRecord = {}) {
     super(reason);
     this.name = "ProjectCapabilityMapUnavailableError";
-    this.code = "codegraph_unavailable";
+    this.code = "local_code_index_unavailable";
     this.details = details;
   }
 }
@@ -243,7 +244,10 @@ export async function prepareTask(cpbRootOrOptions: LooseRecord | string, option
   const registeredProject = await resolveProjectForTask({ hubRoot: hubRootValue, project: projectValue, sourcePath: sourcePathValue });
   const effectiveSourcePath = sourcePath || registeredProject?.sourcePath;
 
-  await checkCodeGraphReady({ cpbRoot: cpbRootValue, sourcePath: typeof effectiveSourcePath === "string" ? effectiveSourcePath : "" });
+  const localCodeIndexResult = await ensureLocalCodeIndex({
+    cpbRoot: cpbRootValue,
+    sourcePath: typeof effectiveSourcePath === "string" ? effectiveSourcePath : "",
+  });
   const maps = requireCapabilityMap(recordValue(registeredProject), sourceContextRecord);
   let riskMap = computeRiskMap({
     task,
@@ -268,5 +272,15 @@ export async function prepareTask(cpbRootOrOptions: LooseRecord | string, option
   const dynamicAgentPlan = generateDynamicAgentPlan({ riskMap, workflow, planMode });
 
   await persistQueueRiskMap(hubRootValue, sourceContextRecord, riskMap, dynamicAgentPlan);
-  return { riskMap, dynamicAgentPlan };
+  return {
+    riskMap,
+    dynamicAgentPlan,
+    localCodeIndexReadiness: {
+      available: true,
+      ref: localCodeIndexResult.ref,
+      sourcePath: localCodeIndexResult.ref.sourcePath,
+      tool: localCodeIndexResult.tool.name,
+      toolVersion: localCodeIndexResult.tool.version,
+    },
+  };
 }

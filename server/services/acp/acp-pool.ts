@@ -32,6 +32,22 @@ import {
 } from "../provider-quota.js";
 import { getProviderAdapter } from "../provider-adapters.js";
 import {
+  getDescriptor as getRegisteredDescriptor,
+  listAgents as listRegisteredAgents,
+} from "../../../core/agents/registry.js";
+import {
+  normalizeProviderConfig,
+  normalizeProviderConfigForSelection,
+  providerEnvironmentKeys,
+  providerEnvironmentKeysForSelection,
+  providerFallbacksFromDescriptor,
+  providerKeyForDescriptor,
+  providerKeyForSelection,
+  providerVariantFromEnvironment,
+  providerVariantForDescriptor,
+  providerVariantFromKey,
+} from "../../../core/agents/provider-config.js";
+import {
   captureProcessIdentity,
   captureSpawnProcessIdentity,
   killTree,
@@ -68,6 +84,8 @@ type PoolClientKeyOptions = LooseRecord & {
   processCwd?: string;
   policyHash?: string;
   variant?: string | null;
+  provider?: string | null;
+  model?: string | null;
   conversationKey?: string;
   launchPermissionLane?: string;
 };
@@ -140,6 +158,8 @@ type PoolRequestOptions = PoolClientKeyOptions & AcpMetadataOptions & {
   cwd?: string;
   env?: EnvRecord;
   providerKey?: string;
+  provider?: string | null;
+  model?: string | null;
   waitTimeoutMs?: unknown;
   bypass?: boolean;
   onProgress?: ProgressReporter | null;
@@ -399,7 +419,6 @@ type PersistentClientState = {
   connectionLease: ConnectionLease | null;
   launchCwd: string;
   lastCwd?: string;
-  launchScopedMcp: boolean;
   startedAt: number;
   requestCount: number;
   lastUsedAt: number | null;
@@ -439,7 +458,10 @@ export function poolClientKey(agent: string, options: PoolClientKeyOptions = {})
   const policyHash = options.policyHash || "";
   const variant = options.variant || "";
   const launchPermissionLane = options.launchPermissionLane || "";
-  const baseKey = [agent, projectId, workspaceId, dataRoot, processCwd, policyHash, variant, launchPermissionLane].join("::");
+  const provider = options.provider || "";
+  const model = options.model || "";
+  const providerScope = provider || model ? [provider, model] : [];
+  const baseKey = [agent, projectId, workspaceId, dataRoot, processCwd, policyHash, variant, ...providerScope, launchPermissionLane].join("::");
   const conversationKey = stringValue(options.conversationKey);
   return conversationKey
     ? `${baseKey}::conversation:${encodeURIComponent(conversationKey)}`
@@ -687,7 +709,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // One-shot pool children are acp-client wrappers. On SIGTERM the wrapper runs
 // AcpClient.close(), which closes its own detached provider process and waits up
 // to roughly 2s. Killing the wrapper after 500ms interrupts that cleanup and can
-// leave codex-acp/codegraph grandchildren orphaned.
+// leave ACP adapter grandchildren orphaned.
 const CHILD_TERM_GRACE_MS = 3_000;
 const CHILD_KILL_GRACE_MS = 1_500;
 // The phase timeout covers provider work. The one-shot wrapper still needs a
@@ -906,55 +928,70 @@ function agentEnvName(agent: string) {
   return String(agent || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "_");
 }
 
-const CLAUDE_COMPATIBLE_AGENT_VARIANTS: Record<string, string> = {
-  "claude-glm": "glm",
-  "claude-mimo": "mimo-v2.5pro",
-};
-
-function isClaudeCompatibleAgent(agent: string) {
-  return agent === "claude" || Boolean(CLAUDE_COMPATIBLE_AGENT_VARIANTS[agent]);
+function descriptorForAgent(agent: string): AgentDescriptor | null {
+  try {
+    return getRegisteredDescriptor(agent) as AgentDescriptor | null;
+  } catch {
+    return null;
+  }
 }
 
 export function providerVariantForAgent(agent: string, variant: string | null = null) {
-  return variant || CLAUDE_COMPATIBLE_AGENT_VARIANTS[agent] || null;
+  return providerVariantForDescriptor(descriptorForAgent(agent), variant);
 }
 
-export function providerKeyForAgent(agent: string, env: EnvRecord = {}, variant: string | null = null) {
-  const providerVariant = providerVariantForAgent(agent, variant);
-  if (isClaudeCompatibleAgent(agent)) {
-    if (providerVariant) return `claude:${providerVariant}`;
-    const config = resolveVariantConfig(env);
-    return config.variant && config.variant !== "none"
-      ? `claude:${config.variant}`
-      : "claude";
-  }
-
-  if (variant) return `${agent}:${variant}`;
-  return agent;
-}
-
-function variantNameFromProviderKey(providerKey: string, agent: string) {
-  const prefix = `${agent}:`;
-  return providerKey.startsWith(prefix) ? providerKey.slice(prefix.length) : null;
+export function providerKeyForAgent(
+  agent: string,
+  env: EnvRecord = {},
+  variant: string | null = null,
+  provider: string | null = null,
+  model: string | null = null,
+) {
+  const descriptor = descriptorForAgent(agent);
+  const configuredVariant = providerVariantFromEnvironment(agent, env, variant);
+  if (descriptor) return providerKeyForSelection(agent, descriptor, provider || env.CPB_PROVIDER || env.CPB_PROVIDER_ID, configuredVariant, model || env.CPB_MODEL || env.CPB_MODEL_NAME, env);
+  return configuredVariant ? `${agent}:${configuredVariant}` : agent;
 }
 
 function variantNameForProviderKey(providerKey: string, agent: string) {
-  return variantNameFromProviderKey(providerKey, isClaudeCompatibleAgent(agent) ? "claude" : agent);
+  return providerVariantFromKey(agent, descriptorForAgent(agent), providerKey);
 }
 
-export function envForAgent(agent: string, env: EnvRecord = {}, variant: string | null = null): EnvRecord {
+export function envForAgent(
+  agent: string,
+  env: EnvRecord = {},
+  variant: string | null = null,
+  provider: string | null = null,
+  model: string | null = null,
+): EnvRecord {
   const next: EnvRecord = { ...env };
-  const providerVariant = providerVariantForAgent(agent, variant);
+  const selectedProvider = provider || next.CPB_PROVIDER || next.CPB_PROVIDER_ID || null;
+  const selectedModel = model || next.CPB_MODEL || next.CPB_MODEL_NAME || null;
+  if (selectedProvider) {
+    next.CPB_PROVIDER = selectedProvider;
+    next.CPB_PROVIDER_ID = selectedProvider;
+    next.CPB_PROVIDER_AGENT = agent;
+  }
+  if (selectedModel) {
+    next.CPB_MODEL = selectedModel;
+    next.CPB_MODEL_NAME = selectedModel;
+  }
+  const providerVariant = providerVariantForAgent(
+    agent,
+    providerVariantFromEnvironment(agent, next, variant),
+  );
 
   if (providerVariant) {
     next.CPB_ACP_AGENT_VARIANT = providerVariant;
     next[`CPB_ACP_${agentEnvName(agent)}_VARIANT`] = providerVariant;
   }
 
-  if (isClaudeCompatibleAgent(agent)) {
-    if (providerVariant) next.CPB_CLAUDE_VARIANT = providerVariant;
-    applyVariantToEnv(next);
-  }
+  applyVariantToEnv(next, {
+    agent,
+    variant: providerVariant,
+    provider: selectedProvider,
+    model: selectedModel,
+  });
 
   return next;
 }
@@ -1037,22 +1074,6 @@ function providerEnvKey(providerKey: string) {
   return String(providerKey || "unknown").toUpperCase().replace(/[^A-Z0-9]/g, "_");
 }
 
-const DEFAULT_PROVIDER_FALLBACKS: Readonly<Record<string, readonly ProviderFallbackCandidate[]>> = Object.freeze({
-  // GLM is the normal low-cost executor in CPB.  MiMo is an independent
-  // Claude-compatible provider and is therefore safe to use when GLM is
-  // quota-blocked or its transport becomes unavailable.  Keep this mapping
-  // provider-key based so the handoff is auditable and never masquerades as
-  // another GLM request.
-  "claude:glm": Object.freeze([
-    Object.freeze({
-      providerKey: "claude:mimo-v2.5pro",
-      agent: "claude-mimo",
-      variant: "mimo-v2.5pro",
-      providerFallback: true,
-    }),
-  ]),
-});
-
 function parseProviderFallbacks(value: unknown): LooseRecord | null {
   if (isRecord(value)) return value;
   if (typeof value !== "string" || !value.trim()) return null;
@@ -1084,11 +1105,22 @@ function normalizeProviderFallbacks(value: unknown): Record<string, ProviderFall
   const entries = configured ? Object.entries(configured) : [];
   const result: Record<string, ProviderFallbackCandidate[]> = {};
 
-  // The built-in mapping is always present.  Operators may override a key in
-  // CPB_ACP_PROVIDER_FALLBACKS without losing the safe default for unrelated
-  // providers.  An explicitly configured empty array disables that key.
-  for (const [key, candidates] of Object.entries(DEFAULT_PROVIDER_FALLBACKS)) {
-    result[key] = candidates.map((candidate) => ({ ...candidate }));
+  // Provider fallbacks are descriptor data. A descriptor can be installed in
+  // CPB_AGENTS_CONFIG_DIR without changing this module; the explicit
+  // CPB_ACP_PROVIDER_FALLBACKS object then overrides only the keys it names.
+  try {
+    for (const descriptor of listRegisteredAgents()) {
+      const agent = typeof descriptor?.name === "string" ? descriptor.name : "";
+      if (!agent) continue;
+      const providerKey = providerKeyForDescriptor(agent, descriptor);
+      const candidates = providerFallbacksFromDescriptor(agent, descriptor);
+      if (candidates.length > 0) {
+        result[providerKey] = candidates.map((candidate) => ({ ...candidate }));
+      }
+    }
+  } catch {
+    // The registry is loaded asynchronously by the pool. init() refreshes
+    // this map after loading; construction remains usable before that point.
   }
   for (const [rawKey, rawCandidates] of entries) {
     const key = rawKey.trim();
@@ -2267,6 +2299,7 @@ export class AcpPool {
   hubRoot: string;
   leaseRoot: string;
   env: EnvRecord;
+  sourceEnv: EnvRecord;
   limits: LooseRecord;
   runner: PoolRunner | null;
   persistentProcesses: boolean;
@@ -2299,6 +2332,7 @@ export class AcpPool {
 
   constructor(opts: AcpPoolOptions = {}) {
     const parentEnv = opts.env || process.env;
+    this.sourceEnv = { ...parentEnv };
     this.cpbRoot = resolveAgentHomeRuntimeRoot(
       opts.cpbRoot || parentEnv.CPB_ROOT || path.join(__dirname, ".."),
       "CPB_ROOT",
@@ -2368,6 +2402,7 @@ export class AcpPool {
     const registry = await getRegistry();
     if (registry) {
       this.limits = await normalizeLimitsAsync(this.limits);
+      this.providerFallbacks = normalizeProviderFallbacks(this.providerFallbacks);
     }
     return this;
   }
@@ -2429,7 +2464,7 @@ export class AcpPool {
         cleanupErrors.push(error);
       }
 
-      if (persistent.launchScopedMcp || closeProvider) {
+      if (closeProvider) {
         if (!activeMatches && launchCwd !== target && lastCwd !== target && terminalCleanupCount === 0) continue;
         try {
           await this.#closePersistentClient(key);
@@ -2593,14 +2628,7 @@ export class AcpPool {
     return Boolean(this.persistentProcesses && !this.runner);
   }
 
-  #usesLaunchScopedMcp(agent: string, options: PoolRequestOptions = {}) {
-    if (agent !== "codex") return false;
-    const env = this.#executionEnv(agent, options);
-    return env.CPB_CODEGRAPH_ENABLED !== "0";
-  }
-
   #persistentClientKey(agent: string, options: PoolRequestOptions = {}) {
-    const processCwd = this.#usesLaunchScopedMcp(agent, options) ? options.cwd || "" : "";
     const launchPermissionLane = agent === "codex"
       ? codexSandboxModeForExecution(this.#executionEnv(agent, options))
       : "";
@@ -2608,7 +2636,7 @@ export class AcpPool {
     return poolClientKey(agent, {
       ...options,
       dataRoot: dataRoot || null,
-      processCwd,
+      processCwd: "",
       launchPermissionLane,
     });
   }
@@ -2630,7 +2658,12 @@ export class AcpPool {
   }
 
   #providerKeyForRequest(agent: string, options: PoolRequestOptions = {}) {
-    return options.providerKey || this.providerKey(agent, options.variant);
+    if (options.providerKey) return options.providerKey;
+    const requestEnv = {
+      ...this.env,
+      ...(isRecord(options.env) ? options.env as EnvRecord : {}),
+    };
+    return providerKeyForAgent(agent, requestEnv, options.variant, options.provider, options.model);
   }
 
   _nextId(agent: string) {
@@ -2737,8 +2770,8 @@ export class AcpPool {
     if (queue.length === 0) this.pending.delete(queueKey);
   }
 
-  providerKey(agent: string, variant: string | null = null) {
-    return providerKeyForAgent(agent, this.env, variant);
+  providerKey(agent: string, variant: string | null = null, provider: string | null = null, model: string | null = null) {
+    return providerKeyForAgent(agent, this.env, variant, provider, model);
   }
 
   /**
@@ -3672,8 +3705,17 @@ export class AcpPool {
 
   #executionEnv(agent: string, options: PoolRequestOptions = {}): EnvRecord {
     const projectRuntimeRoot = this.#requestDataRoot(options);
+    const descriptor = descriptorForAgent(agent);
+    const baseEnv = { ...this.sourceEnv, ...this.env };
+    const selectionEnv = {
+      ...baseEnv,
+      ...(isRecord(options.env) ? options.env as EnvRecord : {}),
+    };
+    const providerKeys = descriptor
+      ? [...providerEnvironmentKeysForSelection(agent, descriptor, options.provider, options.model, selectionEnv)]
+      : [];
     return buildChildEnv(
-      envForAgent(agent, this.env, options.variant),
+      envForAgent(agent, selectionEnv, options.variant, options.provider, options.model),
       {
         CPB_ROOT: this.cpbRoot,
         CPB_ACP_CPB_ROOT: this.cpbRoot,
@@ -3684,7 +3726,12 @@ export class AcpPool {
         ...(projectRuntimeRoot ? { CPB_PROJECT_RUNTIME_ROOT: projectRuntimeRoot } : {}),
         ...(typeof options.cwd === "string" && options.cwd ? { CPB_PROJECT_PATH_OVERRIDE: options.cwd } : {}),
       },
-      { agent },
+      {
+        agent,
+        provider: options.provider,
+        model: options.model,
+        providerCredentialKeys: providerKeys,
+      },
     );
   }
 
@@ -3709,9 +3756,6 @@ export class AcpPool {
         for (const name of registry.listAgentNames()) keys.add(name);
       }
     } catch {}
-    // Ensure codex and claude are always present (sync fallback)
-    keys.add("codex");
-    keys.add("claude");
     return [...keys];
   }
 
@@ -3994,12 +4038,19 @@ export class AcpPool {
     await mkdir(this.cpbRoot, { recursive: true });
     await mkdir(this.hubRoot, { recursive: true });
     const providerKey = this.#providerKeyForRequest(agent, options);
+    const descriptor = descriptorForAgent(agent);
     const env = this.#executionEnv(agent, options);
+    const providerConfig = normalizeProviderConfigForSelection(
+      agent,
+      descriptor,
+      { provider: options.provider, model: options.model },
+      env,
+    );
     const executionCwd = path.resolve(cwd);
     const homeDataRoot = options.dataRoot || env.CPB_PROJECT_RUNTIME_ROOT || null;
     const isolatedHome = await createAgentHome(
       this.cpbRoot,
-      "claude",
+      providerConfig.homeAgent || agent,
       String(options.jobId || "default"),
       {
         parentEnv: env,
@@ -4010,7 +4061,7 @@ export class AcpPool {
     );
     Object.assign(env, isolatedHome);
     const auditFile = resolveAcpAuditFile(env);
-    const model = String(env.ANTHROPIC_MODEL || env.ZHIPU_MODEL || "").trim();
+    const model = String(env[providerConfig.cliModelEnv] || "").trim();
     const phase = String(options.phase || "");
     const role = String(options.role || "");
     const planning = phase === "plan";
@@ -4366,6 +4417,7 @@ export class AcpPool {
       outerSandboxMode = "claude-native-validation";
     }
     const args = [
+      ...providerConfig.cliArgs,
       "-p",
       ...(planning ? ["--bare"] : []),
       "--output-format", "stream-json",
@@ -4390,9 +4442,12 @@ export class AcpPool {
       // output keeps the transport contract machine-enforced while the
       // tournament parser continues to validate the role-specific schema.
       ...(planningJsonSchema ? ["--json-schema", JSON.stringify(planningJsonSchema)] : []),
-      ...(model ? ["--model", model] : []),
+      ...(model && providerConfig.cliModelArg ? [providerConfig.cliModelArg, model] : []),
     ];
-    const cliCommand = env.CPB_CLAUDE_CLI_COMMAND || "claude";
+    const configuredCliCommand = providerConfig.cliCommandEnv
+      ? env[providerConfig.cliCommandEnv]
+      : undefined;
+    const cliCommand = configuredCliCommand || providerConfig.cliCommand || String(descriptor?.command || "claude");
     // Initial planners may inspect the bounded checkout with Read/Glob/Grep
     // under Claude's native fail-closed filesystem sandbox. Later tournament
     // rounds receive the frozen proposals and expose only StructuredOutput.
@@ -5165,7 +5220,6 @@ export class AcpPool {
       await this.#releaseConnectionLease(lease);
       throw abortErrorForSignal(options.signal);
     }
-    const launchScopedMcp = this.#usesLaunchScopedMcp(agent, { ...options, cwd });
     const executionEnv = this.#executionEnv(agent, options);
     const client = new AcpClient({
       agent,
@@ -5192,7 +5246,6 @@ export class AcpPool {
       providerKey,
       connectionLease: lease,
       launchCwd: cwd,
-      launchScopedMcp,
       startedAt: Date.now(),
       requestCount: 0,
       lastUsedAt: null,
