@@ -105,13 +105,15 @@ async function runTests(files: string[], opts: LooseRecord = {}) {
       reject(new Error(`${label} timed out after ${timeoutMs}ms`));
     }, timeoutMs) : null;
 
-    child.on("close", (code) => {
+    child.on("close", (code, signal) => {
       if (watchdog) clearTimeout(watchdog);
       process.off("SIGTERM", onTerm);
       process.off("SIGINT", onInt);
       process.off("SIGHUP", onHup);
       process.off("exit", onExit);
-      if (code !== 0) {
+      if (signal !== null) {
+        reject(new Error(`${label} terminated by signal ${signal}`));
+      } else if (code !== 0) {
         reject(new Error(`${label} exited with code ${code}`));
       } else {
         resolve(code);
@@ -400,7 +402,7 @@ try {
       await runTests(parallelUnitFiles, { label: "unit tests (fast)" });
     }
     if (slowUnitTestFiles.length > 0) {
-      await runTests(slowUnitTestFiles, { concurrency: 4, label: "unit tests (slow)" });
+      await runTests(slowUnitTestFiles, { concurrency: 2, label: "unit tests (slow)" });
     }
     if (isolatedUnitTestFiles.length > 0) {
       await runTests(isolatedUnitTestFiles, { concurrency: 1, label: "isolated unit tests" });

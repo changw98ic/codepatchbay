@@ -806,6 +806,8 @@ test("build-output macOS identity contract uses proc_pidinfo and treats ps lstar
   assert.match(script, /spawnSync\("\/usr\/bin\/python3"/);
   assert.match(script, /proc_pidinfo/);
   assert.match(script, /darwin-proc-pidinfo-starttime/);
+  assert.match(script, /DARWIN_PROC_PIDINFO_ATTEMPTS\s*=\s*3/);
+  assert.match(script, /captureDarwinProcPidInfoIdentityWithRetry/);
   assert.match(script, /birthIdPrecision !== "exact"/);
   assert.equal(script.includes("`ps-lstart:${started}`, \"coarse\""), true);
 });

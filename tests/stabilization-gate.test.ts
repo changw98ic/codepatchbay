@@ -93,6 +93,13 @@ test("main-flow profile excludes specialized and process integration suites", as
   assert.match(runner, /const allFiles = mainOnly\s*\n\s*\? mainFlowFiles/);
 });
 
+test("node test runner reports terminating signals and bounds slow-suite concurrency", async () => {
+  const runner = await readFile(path.join(repoRoot, "scripts", "run-node-tests.ts"), "utf8");
+  assert.match(runner, /child\.on\("close", \(code, signal\) =>/);
+  assert.match(runner, /terminated by signal \$\{signal\}/);
+  assert.match(runner, /concurrency:\s*2,\s*label:\s*"unit tests \(slow\)"/);
+});
+
 test("CI cannot reinstall the removed web toolchain outside the reviewed lockfile", async () => {
   const workflow = await readFile(path.join(repoRoot, ".github", "workflows", "test.yml"), "utf8");
   assert.match(workflow, /run: npm run test:main/);
