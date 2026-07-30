@@ -97,7 +97,9 @@ test("node test runner reports terminating signals and bounds slow-suite concurr
   const runner = await readFile(path.join(repoRoot, "scripts", "run-node-tests.ts"), "utf8");
   assert.match(runner, /child\.on\("close", \(code, signal\) =>/);
   assert.match(runner, /terminated by signal \$\{signal\}/);
-  assert.match(runner, /concurrency:\s*1,\s*label:\s*"unit tests \(slow\)"/);
+  assert.match(runner, /async function runTestFilesSerially/);
+  assert.match(runner, /await runTests\(\[file\]/);
+  assert.match(runner, /await runTestFilesSerially\(slowUnitTestFiles,\s*"unit tests \(slow\)"\)/);
 });
 
 test("CI cannot reinstall the removed web toolchain outside the reviewed lockfile", async () => {

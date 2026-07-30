@@ -122,6 +122,16 @@ async function runTests(files: string[], opts: LooseRecord = {}) {
   });
 }
 
+async function runTestFilesSerially(files: string[], label: string) {
+  for (let index = 0; index < files.length; index += 1) {
+    const file = files[index];
+    await runTests([file], {
+      concurrency: 1,
+      label: `${label} (${index + 1}/${files.length}): ${file}`,
+    });
+  }
+}
+
 const requestedFiles = process.argv.slice(2)
   .filter((arg) => !arg.startsWith("-"))
   .map(normalizeRequestedFile);
@@ -284,7 +294,8 @@ const isolatedUnitFiles = new Set([
 // `node --test`; 67 files, measured 2026-07-24). They are spawn/git/npm/ACP
 // E2E-flavored tests that live under tests/ (not tests/integration/) for
 // historical reasons. --unit skips them for fast feedback; the default full
-// run still executes them in a parallel batch, so CI coverage is unchanged.
+// run still executes every file in a fresh serial child, so CI coverage is
+// unchanged without retaining the full batch's peak memory.
 // Five real-process files that need concurrency:1 isolation (rather than the
 // parallel slow batch) live in isolatedUnitFiles above. Re-measure before
 // editing: `node scripts/bench-test-files.mjs` (per-file, 30s cap each).
@@ -402,7 +413,7 @@ try {
       await runTests(parallelUnitFiles, { label: "unit tests (fast)" });
     }
     if (slowUnitTestFiles.length > 0) {
-      await runTests(slowUnitTestFiles, { concurrency: 1, label: "unit tests (slow)" });
+      await runTestFilesSerially(slowUnitTestFiles, "unit tests (slow)");
     }
     if (isolatedUnitTestFiles.length > 0) {
       await runTests(isolatedUnitTestFiles, { concurrency: 1, label: "isolated unit tests" });
