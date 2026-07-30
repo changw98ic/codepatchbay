@@ -140,7 +140,14 @@ function localCodeIndexRefFromContext(ctx: unknown): LocalCodeIndexRef | null {
   if (typeof ref.worktreeKey !== "string" || !ref.worktreeKey) return null;
   if (typeof ref.sourceKey !== "string" || !ref.sourceKey) return null;
   if (typeof ref.snapshotId !== "string" || !ref.snapshotId) return null;
-  return ref as unknown as LocalCodeIndexRef;
+  return {
+    schemaVersion: 2,
+    sourcePath: ref.sourcePath,
+    repositoryKey: ref.repositoryKey,
+    worktreeKey: ref.worktreeKey,
+    sourceKey: ref.sourceKey,
+    snapshotId: ref.snapshotId,
+  };
 }
 
 export async function buildEvidencePack(ctx: AssuranceContext) {

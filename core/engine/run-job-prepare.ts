@@ -89,7 +89,14 @@ function normalizeLocalCodeIndexReadiness(
   if (typeof ref.snapshotId !== "string" || !ref.snapshotId) return null;
   return {
     available: true,
-    ref: ref as unknown as LocalCodeIndexRef,
+    ref: {
+      schemaVersion: 2,
+      sourcePath: ref.sourcePath,
+      repositoryKey: ref.repositoryKey,
+      worktreeKey: ref.worktreeKey,
+      sourceKey: ref.sourceKey,
+      snapshotId: ref.snapshotId,
+    },
     sourcePath: ref.sourcePath,
   };
 }
