@@ -157,6 +157,22 @@ async function closeBuildFenceTestServer(server: net.Server) {
   });
 }
 
+async function createBuildFenceTestListener(prefix: string, response: string) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const isolatedRoot = await makeMinimalBuildSource(`${prefix}-${attempt}`);
+    const descriptor = await buildFenceDescriptor(isolatedRoot);
+    try {
+      const server = await listenForBuildFenceTest(descriptor.firstPort, response === "same-key"
+        ? `${descriptor.protocol}${descriptor.key}\n`
+        : response);
+      return { isolatedRoot, descriptor, server };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EADDRINUSE") throw error;
+    }
+  }
+  throw new Error(`could not reserve a build-fence test port for ${prefix}`);
+}
+
 async function buildLockPath(repoRoot: string, target: "node" | "tests", lockRoot: string) {
   const repoHash = createHash("sha256").update(await realpath(repoRoot)).digest("hex").slice(0, 20);
   return path.join(lockRoot, `${repoHash}-${target}.lock`);
@@ -813,10 +829,11 @@ test("build-output macOS identity contract uses proc_pidinfo and treats ps lstar
 });
 
 test("build-output process fence skips an unrelated listener on its first candidate port", async () => {
-  const isolatedRoot = await makeMinimalBuildSource("cpb-build-fence-unrelated");
+  const { isolatedRoot, server: unrelated } = await createBuildFenceTestListener(
+    "cpb-build-fence-unrelated",
+    "unrelated-listener\n",
+  );
   const lockRoot = await tempRoot("cpb-build-fence-unrelated-locks");
-  const { firstPort } = await buildFenceDescriptor(isolatedRoot);
-  const unrelated = await listenForBuildFenceTest(firstPort, "unrelated-listener\n");
   try {
     const built = await runNpmScript(isolatedRoot, "build:tests", {
       CPB_BUILD_LOCK_ROOT: lockRoot,
@@ -829,10 +846,11 @@ test("build-output process fence skips an unrelated listener on its first candid
 });
 
 test("build-output process fence fails closed when the same key is already held", async () => {
-  const isolatedRoot = await makeMinimalBuildSource("cpb-build-fence-same-key");
+  const { isolatedRoot, server: holder } = await createBuildFenceTestListener(
+    "cpb-build-fence-same-key",
+    "same-key",
+  );
   const lockRoot = await tempRoot("cpb-build-fence-same-key-locks");
-  const { firstPort, key, protocol } = await buildFenceDescriptor(isolatedRoot);
-  const holder = await listenForBuildFenceTest(firstPort, `${protocol}${key}\n`);
   try {
     const blocked = await runNpmScript(isolatedRoot, "build:tests", {
       CPB_BUILD_LOCK_ROOT: lockRoot,
