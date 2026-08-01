@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile as execFileCb } from "node:child_process";
-import { chmod, lstat, mkdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readFile, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -104,6 +104,7 @@ exec /usr/bin/git "$@"
       env,
     });
     worktreePath = workspace.worktreePath;
+    assert.equal(path.dirname(workspace.rootPath), await realpath(path.dirname(cwd)));
     adminDir = (await execFile("git", ["rev-parse", "--absolute-git-dir"], {
       cwd: workspace.worktreePath,
     })).stdout.trim();

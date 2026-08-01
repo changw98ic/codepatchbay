@@ -97,8 +97,8 @@ describe("shards", () => {
       assert.equal(SHARD_BUCKET_COUNT, 256);
     });
 
-    it("keeps path shards at 65536 (2^16)", () => {
-      assert.equal(PATH_SHARD_BUCKET_COUNT, 65_536);
+    it("keeps path shards at 256 (2^8)", () => {
+      assert.equal(PATH_SHARD_BUCKET_COUNT, 256);
     });
   });
 
@@ -215,7 +215,7 @@ describe("shards", () => {
   });
 
   describe("pathBucketIndex", () => {
-    it("returns values in [0, 65535]", () => {
+    it("returns values in [0, 255]", () => {
       for (const p of ["src/index.ts", "lib/utils.ts", "a"]) {
         const idx = pathBucketIndex(p);
         assert.ok(idx >= 0, `${p}: idx=${idx} < 0`);
@@ -247,24 +247,24 @@ describe("shards", () => {
       const p = "src/index.ts";
       const normalized = normalizePath(p);
       const hash = createHash("sha256").update(normalized, "utf8").digest();
-      const expected = (hash[0]! << 8) | hash[1]!;
+      const expected = hash[0]!;
       assert.equal(pathBucketIndex(p), expected);
     });
   });
 
   describe("pathBucketKey", () => {
-    it("returns 4-character lowercase hex string", () => {
+    it("returns 2-character lowercase hex string", () => {
       for (const p of ["src/index.ts", "lib/utils.ts"]) {
         const key = pathBucketKey(p);
-        assert.equal(key.length, 4);
-        assert.match(key, /^[0-9a-f]{4}$/);
+        assert.equal(key.length, 2);
+        assert.match(key, /^[0-9a-f]{2}$/);
       }
     });
 
     it("matches hex of pathBucketIndex", () => {
       const p = "lib/core.ts";
       const idx = pathBucketIndex(p);
-      assert.equal(pathBucketKey(p), idx.toString(16).padStart(4, "0"));
+      assert.equal(pathBucketKey(p), idx.toString(16).padStart(2, "0"));
     });
   });
 
@@ -764,7 +764,7 @@ describe("shards", () => {
       for (const p of paths) {
         const idx = pathBucketIndex(p);
         const key = pathBucketKey(p);
-        assert.equal(key, idx.toString(16).padStart(4, "0"), `Mismatch for ${p}`);
+        assert.equal(key, idx.toString(16).padStart(2, "0"), `Mismatch for ${p}`);
       }
     });
 

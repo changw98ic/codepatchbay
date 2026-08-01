@@ -749,6 +749,7 @@ async function runDagNode(
   } = routing;
 
   const { cpbRoot, project } = session;
+  const phaseStartedAtMs = Date.now();
   await emitPhaseStartEvents({
     cpbRoot,
     project,
@@ -805,6 +806,13 @@ async function runDagNode(
   }
 
   const attempt = await runDagNodeAttempt(session, dagNode, decision);
+  attempt.result.diagnostics = {
+    ...recordValue(attempt.result.diagnostics),
+    phaseTiming: {
+      startedAtMs: phaseStartedAtMs,
+      durationMs: Date.now() - phaseStartedAtMs,
+    },
+  };
   return await finalizeDagNodeOutcome(session, dagNode, decision, attempt, options);
 }
 
@@ -859,37 +867,7 @@ async function runVerificationRepairLoop(
 
   for (let iteration = 1; iteration <= maxRepairs; iteration += 1) {
     let feedback = verificationFeedbackFromResult(verificationOutcome.result as PhaseResult, iteration);
-    const scopedFeedback = bindVerificationFeedbackToFrozenScope(originalSourceContext, feedback);
-    if (scopedFeedback.ok === false) {
-      const failedResult = verificationOutcome.result as PhaseResult;
-      if (failedResult.failure) {
-        failedResult.failure.retryable = false;
-        failedResult.failure.cause = {
-          ...recordValue(failedResult.failure.cause),
-          counterexampleDisposition: "scope_expansion",
-          requestedFixScope: scopedFeedback.requestedFixScope,
-          allowedFixScope: scopedFeedback.allowedFixScope,
-        };
-      }
-      await session.ctx.appendEvent(session.cpbRoot, session.project, session.jobId, {
-        type: "solver_repair_blocked",
-        jobId: session.jobId,
-        project: session.project,
-        attemptId: session.attemptId || null,
-        iteration,
-        triggerPhase: feedback.triggerPhase,
-        disposition: "scope_expansion",
-        reason: scopedFeedback.reason,
-        requestedFixScope: scopedFeedback.requestedFixScope,
-        allowedFixScope: scopedFeedback.allowedFixScope,
-        failureFingerprint: feedback.failureFingerprint,
-        candidateId: previousCandidateId,
-        ts: ts(),
-      });
-      session.phaseSourceContext = originalSourceContext;
-      return finishDeferredVerificationFailure(session, verificationOutcome);
-    }
-    feedback = scopedFeedback.feedback;
+    feedback = bindVerificationFeedbackToFrozenScope(originalSourceContext, feedback).feedback;
     session.phaseSourceContext = solverRepairSourceContext(originalSourceContext, feedback);
     if (forceFreshDiagnosis) {
       const retry = recordValue(session.phaseSourceContext.retry);

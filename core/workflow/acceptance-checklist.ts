@@ -39,7 +39,7 @@ export function mapChecklistRoutingLabel(label: string, context: RoutingContext 
 
   switch (label) {
     case "scope_violation":
-      return { kind: FailureKind.SCOPE_VIOLATION, action: "mark_failed", retryPhase: null, requiresFixScope: false, retryable: false };
+      return { kind: FailureKind.SCOPE_VIOLATION, action: "retry_same_worker", retryPhase: "execute", requiresFixScope: false, retryable: true };
     case "checklist_failed":
       if (hasFixScope) {
         return { kind: FailureKind.VERIFICATION_FAILED, action: "retry_same_worker", retryPhase: "execute", requiresFixScope: true, retryable: true };

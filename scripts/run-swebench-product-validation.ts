@@ -17,6 +17,10 @@ import {
   type TemporaryWorkspace,
 } from "../core/runtime/temporary-workspace.js";
 import { registerProject } from "../server/services/hub/hub-registry.js";
+import {
+  resolveAgentsForEntry,
+  writeProjectJson,
+} from "../server/services/agent/agent-config.js";
 import { writeJsonAtomic } from "../shared/fs-utils.js";
 import { AssignmentStore } from "../shared/orchestrator/assignment-store.js";
 import type { LooseRecord } from "../shared/types.js";
@@ -30,17 +34,25 @@ type SweBenchRecord = LooseRecord & {
 };
 
 export type ProductValidationPlanMode = "full" | "light";
+export type ProductValidationAgentSelection = {
+  agent: string;
+  provider: string | null;
+  model: string | null;
+  variant: string | null;
+};
 export type ProductValidationAgents = {
-  planner: string;
-  executor: string;
-  verifier: string;
-  adversarial_verifier: string;
+  planner: ProductValidationAgentSelection;
+  executor: ProductValidationAgentSelection;
+  verifier: ProductValidationAgentSelection;
+  adversarial_verifier: ProductValidationAgentSelection;
 };
 
 type CliOptions = {
   instance: string | null;
   agent: string;
   agents: ProductValidationAgents;
+  projectConfigPath: string;
+  projectConfig: LooseRecord;
   timeoutMs: number;
   keepTemp: boolean;
   outputDir: string;
@@ -77,17 +89,26 @@ const PRODUCT_EVIDENCE_FILE = process.env.CPB_SWEBENCH_PRODUCT_EVIDENCE_FILE
 const DEFAULT_OUTPUT_DIR = path.join(REPO_ROOT, "docs", "product", "evidence", "swe-bench-real-runs");
 const MANAGED_WORKER_OUTPUT_TAIL_BYTES = 2_000_000;
 const DEFAULT_MANAGED_WORKER_CANCEL_WRITE_TIMEOUT_MS = 2_000;
-export const DEFAULT_PRODUCT_VALIDATION_AGENTS: ProductValidationAgents = {
-  planner: "codex",
-  executor: "claude-glm",
-  verifier: "claude-mimo",
-  adversarial_verifier: "claude-mimo",
-};
 
 function argValue(args: string[], flag: string) {
   const index = args.indexOf(flag);
   if (index < 0) return null;
   return args[index + 1] || null;
+}
+
+const REMOVED_AGENT_FLAGS = [
+  "--agent",
+  "--planner-agent",
+  "--executor-agent",
+  "--verifier-agent",
+  "--adversarial-agent",
+];
+
+function rejectRemovedAgentFlags(args: string[]) {
+  const removed = REMOVED_AGENT_FLAGS.find((flag) => args.includes(flag));
+  if (removed) {
+    throw new Error(`${removed} was removed; configure agent/provider/model in --project-config`);
+  }
 }
 
 function parsePlanMode(value: string | null): ProductValidationPlanMode {
@@ -270,30 +291,69 @@ type ProductCommandOptions = {
   onSpawn?: (identity: ProcessIdentity) => void;
 };
 
-export function resolveProductValidationAgents(args: string[]): ProductValidationAgents {
-  const singleAgent = argValue(args, "--agent");
-  if (singleAgent) {
-    return {
-      planner: singleAgent,
-      executor: singleAgent,
-      verifier: singleAgent,
-      adversarial_verifier: singleAgent,
-    };
+function optionalConfigString(value: unknown) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function projectAgentSelection(value: unknown, label: string): ProductValidationAgentSelection {
+  const raw = isRecord(value) ? value : typeof value === "string" ? { agent: value } : {};
+  const agent = optionalConfigString(raw.agent);
+  if (!agent) throw new Error(`project config is missing ${label}.agent`);
+  return {
+    agent,
+    provider: optionalConfigString(raw.provider),
+    model: optionalConfigString(raw.model ?? raw.modelName),
+    variant: optionalConfigString(raw.variant),
+  };
+}
+
+export function resolveProductValidationAgents(projectConfig: unknown): ProductValidationAgents {
+  if (!isRecord(projectConfig)) throw new Error("project config must be a JSON object");
+  const configured = isRecord(projectConfig.agents) ? projectConfig.agents : {};
+  const defaultSelection = Object.keys(configured).length > 0
+    ? configured.default
+    : {
+        agent: projectConfig.agent,
+        provider: projectConfig.provider,
+        model: projectConfig.model ?? projectConfig.modelName,
+        variant: projectConfig.variant,
+      };
+  const roleValue = (role: string, fallback: unknown = defaultSelection) => configured[role] ?? fallback;
+  const verifier = roleValue("verifier");
+  return {
+    planner: projectAgentSelection(roleValue("planner"), "agents.planner"),
+    executor: projectAgentSelection(roleValue("executor"), "agents.executor"),
+    verifier: projectAgentSelection(verifier, "agents.verifier"),
+    adversarial_verifier: projectAgentSelection(
+      roleValue("adversarial_verifier", verifier),
+      "agents.adversarial_verifier",
+    ),
+  };
+}
+
+export async function readProductValidationProjectConfig(filePath: string) {
+  const resolved = path.resolve(filePath);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await readFile(resolved, "utf8"));
+  } catch (error) {
+    throw new Error(`failed to read project config: ${resolved}`, { cause: error });
   }
   return {
-    planner: argValue(args, "--planner-agent") || DEFAULT_PRODUCT_VALIDATION_AGENTS.planner,
-    executor: argValue(args, "--executor-agent") || DEFAULT_PRODUCT_VALIDATION_AGENTS.executor,
-    verifier: argValue(args, "--verifier-agent") || DEFAULT_PRODUCT_VALIDATION_AGENTS.verifier,
-    adversarial_verifier: argValue(args, "--adversarial-agent") || DEFAULT_PRODUCT_VALIDATION_AGENTS.adversarial_verifier,
+    path: resolved,
+    raw: parsed as LooseRecord,
+    agents: resolveProductValidationAgents(parsed),
   };
 }
 
 function summarizeAgents(agents: ProductValidationAgents) {
-  return [...new Set([agents.planner, agents.executor, agents.verifier, agents.adversarial_verifier])].join("+");
+  return [...new Set([agents.planner, agents.executor, agents.verifier, agents.adversarial_verifier]
+    .map((selection) => selection.agent))].join("+");
 }
 
 function agentNames(agents: ProductValidationAgents) {
-  return [agents.planner, agents.executor, agents.verifier, agents.adversarial_verifier];
+  return [agents.planner, agents.executor, agents.verifier, agents.adversarial_verifier]
+    .map((selection) => selection.agent);
 }
 
 function shouldPrintHelp(argv: string[]) {
@@ -305,11 +365,7 @@ function printUsage() {
 
 Options:
   --instance <id>       SWE-bench Verified instance id to run.
-  --agent <name>        Single real agent override for all phases.
-  --planner-agent <n>   Planner agent. Defaults to codex.
-  --executor-agent <n>  Executor agent. Defaults to claude-glm.
-  --verifier-agent <n>  Verifier agent. Defaults to claude-mimo.
-  --adversarial-agent <n> Adversarial verifier agent. Defaults to claude-mimo.
+  --project-config <p>  Required project.json template with agent/provider/model selection.
   --timeout-ms <ms>     Managed worker timeout. Defaults to 1800000.
   --keep-temp           Keep temporary source, hub, and cpb directories.
   --output-dir <dir>    Directory for the evidence bundle.
@@ -318,13 +374,19 @@ Options:
 `);
 }
 
-function parseArgs(argv: string[]): CliOptions {
+async function parseArgs(argv: string[]): Promise<CliOptions> {
   const args = argv.slice(2);
-  const agents = resolveProductValidationAgents(args);
+  rejectRemovedAgentFlags(args);
+  const projectConfigArg = argValue(args, "--project-config");
+  if (!projectConfigArg) throw new Error("--project-config is required");
+  const projectConfig = await readProductValidationProjectConfig(projectConfigArg);
+  const agents = projectConfig.agents;
   return {
     instance: argValue(args, "--instance"),
     agent: summarizeAgents(agents),
     agents,
+    projectConfigPath: projectConfig.path,
+    projectConfig: projectConfig.raw,
     timeoutMs: Number.parseInt(argValue(args, "--timeout-ms") || "1800000", 10),
     keepTemp: args.includes("--keep-temp"),
     outputDir: path.resolve(argValue(args, "--output-dir") || DEFAULT_OUTPUT_DIR),
@@ -566,7 +628,7 @@ async function cloneAtCommit({ repo, baseCommit, targetDir }: { repo: string; ba
   await runRequired("git", ["init"], targetDir);
   await runRequired("git", ["remote", "add", "origin", `https://github.com/${repo}.git`], targetDir);
   await runRequired("git", ["fetch", "--depth=1", "origin", baseCommit], targetDir, 600000);
-  await runRequired("git", ["checkout", "--detach", "FETCH_HEAD"], targetDir);
+  await runRequired("git", ["checkout", "-B", "cpb/swebench-base", "FETCH_HEAD"], targetDir);
 }
 
 function uniqueStrings(values: string[]) {
@@ -701,15 +763,17 @@ async function writeAssignment({
   sourcePath,
   record,
   row,
-  agents,
+  cpbRoot,
+  projectConfig,
   planMode,
 }: {
   hubRoot: string;
+  cpbRoot: string;
   workerId: string;
   sourcePath: string;
   record: SweBenchRecord;
   row: LooseRecord;
-  agents: ProductValidationAgents;
+  projectConfig: LooseRecord;
   planMode: ProductValidationPlanMode;
 }) {
   const projectId = safeId(`swebench-${record.benchmarkInstanceId}`);
@@ -722,10 +786,26 @@ async function writeAssignment({
     id: projectId,
     name: projectId,
     sourcePath,
+    cpbRoot,
     metadata: {
       productValidation: true,
       benchmarkDataset: "SWE-bench/SWE-bench_Verified",
       benchmarkInstanceId: record.benchmarkInstanceId,
+    },
+  });
+  if (!project.projectRuntimeRoot) throw new Error(`project runtime root missing for ${projectId}`);
+  await writeProjectJson(String(project.projectRuntimeRoot), projectId, {
+    ...projectConfig,
+    sourcePath,
+    name: projectId,
+  });
+  const metadata = await resolveAgentsForEntry(hubRoot, cpbRoot, projectId, {
+    autoFinalize: true,
+    finalizeMode: "dry-run",
+    productValidation: {
+      validationMode: "swe-bench-verified",
+      benchmarkInstanceId: record.benchmarkInstanceId,
+      planMode,
     },
   });
 
@@ -760,25 +840,9 @@ async function writeAssignment({
         validationMode: "swe-bench-verified",
         benchmarkInstanceId: record.benchmarkInstanceId,
         planMode,
-        agents,
       },
     },
-    metadata: {
-      autoFinalize: true,
-      finalizeMode: "dry-run",
-      agents: {
-        planner: agents.planner,
-        executor: agents.executor,
-        verifier: agents.verifier,
-        adversarial_verifier: agents.adversarial_verifier,
-      },
-      productValidation: {
-        validationMode: "swe-bench-verified",
-        benchmarkInstanceId: record.benchmarkInstanceId,
-        planMode,
-        agents,
-      },
-    },
+    metadata,
     attempt: 1,
     attemptToken,
     orchestratorEpoch: 1,
@@ -832,7 +896,7 @@ export async function runManagedWorker({
         CPB_WORKER_DISPATCH_ENABLED: "0",
         CPB_ACP_USE_MANAGED_POOL: "0",
         CPB_ACP_PERSISTENT_PROCESS: "0",
-        CPB_DYNAMIC_VERIFIER_AGENT: phaseAgents.verifier,
+        CPB_DYNAMIC_VERIFIER_AGENT: phaseAgents.verifier.agent,
         CPB_PRODUCT_VALIDATION_KEEP_WORKTREE: "1",
         CPB_ACP_TIMEOUT_MS: String(timeoutMs),
         CPB_ACP_IDLE_TIMEOUT_MS: process.env.CPB_ACP_IDLE_TIMEOUT_MS || String(Math.min(timeoutMs, 600_000)),
@@ -1078,7 +1142,7 @@ async function main() {
     return;
   }
 
-  const options = parseArgs(process.argv);
+  const options = await parseArgs(process.argv);
   const evidence = await readJson(PRODUCT_EVIDENCE_FILE);
   const records = Array.isArray(evidence.records) ? evidence.records.filter(isRecord) as SweBenchRecord[] : [];
   const record = records.find((item) => item.validationMode === "swe-bench-verified" && (
@@ -1118,11 +1182,12 @@ async function main() {
     localCodeIndex = await ensureLocalCodeIndex({ sourcePath, cpbRoot });
     const assignment = await writeAssignment({
       hubRoot,
+      cpbRoot,
       workerId,
       sourcePath,
       record,
       row,
-      agents: options.agents,
+      projectConfig: options.projectConfig,
       planMode: options.planMode,
     });
     const worker = await runManagedWorker({

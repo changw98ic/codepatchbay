@@ -132,10 +132,15 @@ test("prepareTask blocks with a valid FailureKind when capability maps are unava
   assert.match(String(err.reason || err.message || ""), /capability|project map|local code index/i);
 });
 
-test("prepareTask returns a high-risk RiskMap for scheduler/provider/worktree tasks", async () => {
+test("prepareTask returns a high-risk RiskMap for repository-mapped scheduler/provider/worktree tasks", async () => {
   const api = await loadRiskMapApi();
 
-  const result = await callPrepareTask(api);
+  const result = await callPrepareTask(api, {
+    sourceContext: {
+      ...highConfidenceCapabilityContext(),
+      productValidation: { validationProfile: "verified" },
+    },
+  });
   const riskMap = normalizeRiskMap(result);
 
   assert.equal(riskMap.riskLevel, "high");
@@ -158,6 +163,26 @@ test("prepareTask returns a high-risk RiskMap for scheduler/provider/worktree ta
   assert.equal(typeof result.localCodeIndexReadiness.ref.snapshotId, "string");
 });
 
+test("prepareTask keeps generic high-risk words at medium risk when no repository risk area matches", async () => {
+  const api = await loadRiskMapApi();
+  const result = await callPrepareTask(api, {
+    task: "Improve concurrent status-message wording in normal CLI output",
+    sourceContext: {
+      ...highConfidenceCapabilityContext(),
+      productValidation: {
+        validationMode: "swe-bench-verified",
+        validationProfile: "standard",
+      },
+    },
+  });
+  const riskMap = normalizeRiskMap(result);
+
+  assert.equal(riskMap.riskLevel, "medium");
+  assert.equal(riskMap.validationProfile, "standard");
+  assert.equal(riskMap.adversarialRequired, false);
+  assert.ok(riskMap.classificationReasons.includes("task_signal_without_repository_risk_area"));
+});
+
 test("prepareTask returns and persists a dynamic agent plan for high-risk tasks", async () => {
   const api = await loadRiskMapApi();
   const hubRoot = await tempRoot("cpb-riskmap-dynamic-agent-hub");
@@ -171,6 +196,7 @@ test("prepareTask returns and persists a dynamic agent plan for high-risk tasks"
     sourceContext: {
       ...highConfidenceCapabilityContext(),
       queueEntryId: queueEntry.id,
+      productValidation: { validationProfile: "verified" },
     },
   });
 
@@ -215,7 +241,7 @@ test("prepareTask requires adversarial verification for SWE-bench release valida
       ...highConfidenceCapabilityContext(),
       productValidation: {
         validationMode: "swe-bench-verified",
-        adversarialRequired: true,
+        validationProfile: "verified",
       },
     },
   });

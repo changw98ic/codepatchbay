@@ -8,7 +8,7 @@
  */
 
 import { execFile as _execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   constants,
   fstatSync,
@@ -43,7 +43,17 @@ const SAFE_COMPONENT = /^[A-Za-z0-9][A-Za-z0-9-]*$/;
 const UNSIGNED_INTEGER = /^(?:0|[1-9][0-9]*)$/;
 const COMMIT = /^[0-9a-f]{40,64}$/;
 const MAX_GIT_OUTPUT_BYTES = 8 * 1024 * 1024;
+const WORKTREE_RUN_NAMESPACE_LENGTH = 12;
 const execFileAsync = promisify(_execFile);
+
+export function managedWorktreeSlug(projectRuntimeRootInput: string) {
+  const projectRuntimeRoot = path.resolve(projectRuntimeRootInput);
+  const runNamespace = createHash("sha256")
+    .update(projectRuntimeRoot)
+    .digest("hex")
+    .slice(0, WORKTREE_RUN_NAMESPACE_LENGTH);
+  return `${WORKTREE_SLUG}-${runNamespace}`;
+}
 
 type WorktreeLog = {
   debug?: (message: string) => void;
@@ -1053,7 +1063,7 @@ async function cleanupManagedWorkerWorktreeUnlocked({
   sourcePath,
   entryId,
   managedWorktree,
-  slug = WORKTREE_SLUG,
+  slug = managedWorktreeSlug(projectRuntimeRoot),
   runGit = defaultGitRunner,
   hooks = {},
 }: CleanupManagedWorkerWorktreeOptions): Promise<ManagedWorktreeCleanupProof> {
@@ -1238,7 +1248,7 @@ async function cleanupManagedWorkerWorktreeUnlocked({
 export async function cleanupManagedWorkerWorktree(
   options: CleanupManagedWorkerWorktreeOptions,
 ): Promise<ManagedWorktreeCleanupProof> {
-  const slug = options.slug || WORKTREE_SLUG;
+  const slug = options.slug || managedWorktreeSlug(options.projectRuntimeRoot);
   const coordinates = await ensureManagedNamespace(options.projectRuntimeRoot, options.entryId, slug);
   return await withDurableDirectoryLock(
     coordinates.lockPath,
@@ -1252,7 +1262,7 @@ export async function verifyRetainedManagedWorkerWorktree({
   sourcePath,
   entryId,
   managedWorktree,
-  slug = WORKTREE_SLUG,
+  slug = managedWorktreeSlug(projectRuntimeRoot),
   runGit = defaultGitRunner,
 }: CleanupManagedWorkerWorktreeOptions): Promise<ManagedWorktreeCleanupProof> {
   const coordinates = await ensureManagedNamespace(projectRuntimeRoot, entryId, slug);
@@ -1355,7 +1365,7 @@ export async function createIsolatedWorktreeWithRetry({
   projectRuntimeRoot,
   sourcePath,
   entryId,
-  slug = WORKTREE_SLUG,
+  slug = managedWorktreeSlug(projectRuntimeRoot),
   create = createWorktree as CreateManagedWorktree,
   runGit = defaultGitRunner,
   maxAttempts = WORKTREE_CREATE_MAX_ATTEMPTS,

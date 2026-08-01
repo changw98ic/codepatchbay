@@ -8,7 +8,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 
-import { DEFAULT_PRODUCT_VALIDATION_AGENTS } from "../scripts/run-swebench-product-validation.js";
+import { resolveProductValidationAgents } from "../scripts/run-swebench-product-validation.js";
 import {
   buildSweBenchBatchReport as buildSweBenchBatchReportProduction,
   recordFromDatasetRow,
@@ -19,6 +19,14 @@ import { buildReleaseReadinessReport } from "../scripts/release-readiness-report
 import { tempRoot, writeJson } from "./helpers.js";
 
 const execFileAsync = promisify(execFile);
+const TEST_PRODUCT_VALIDATION_AGENTS = resolveProductValidationAgents({
+  agents: {
+    planner: { agent: "codex" },
+    executor: { agent: "claude-glm" },
+    verifier: { agent: "claude-mimo" },
+    adversarial_verifier: { agent: "claude-mimo" },
+  },
+});
 const repoRoot = path.resolve(import.meta.dirname, "..", "..");
 const referenceTime = "2026-07-20T12:00:00.000Z";
 const productEvidenceFiles = [
@@ -383,7 +391,7 @@ function providerEvidence({ weak = false } = {}) {
       providerPreflightPhase({
         phase: "plan",
         role: "planner",
-        agent: DEFAULT_PRODUCT_VALIDATION_AGENTS.planner,
+        agent: TEST_PRODUCT_VALIDATION_AGENTS.planner.agent,
         providerKey: "codex",
         transport: "acp",
         command: "codex-acp",
@@ -391,7 +399,7 @@ function providerEvidence({ weak = false } = {}) {
       providerPreflightPhase({
         phase: "execute",
         role: "executor",
-        agent: DEFAULT_PRODUCT_VALIDATION_AGENTS.executor,
+        agent: TEST_PRODUCT_VALIDATION_AGENTS.executor.agent,
         providerKey: "claude:glm",
         transport: "claude-cli",
         command: "claude",
@@ -399,7 +407,7 @@ function providerEvidence({ weak = false } = {}) {
       providerPreflightPhase({
         phase: "verify",
         role: "verifier",
-        agent: DEFAULT_PRODUCT_VALIDATION_AGENTS.verifier,
+        agent: TEST_PRODUCT_VALIDATION_AGENTS.verifier.agent,
         providerKey: "claude:mimo-v2.5pro",
         transport: "claude-cli",
         command: "claude",
@@ -407,7 +415,7 @@ function providerEvidence({ weak = false } = {}) {
       providerPreflightPhase({
         phase: "adversarial_verify",
         role: "adversarial_verifier",
-        agent: DEFAULT_PRODUCT_VALIDATION_AGENTS.adversarial_verifier,
+        agent: TEST_PRODUCT_VALIDATION_AGENTS.adversarial_verifier.agent,
         providerKey: "claude:mimo-v2.5pro",
         transport: "claude-cli",
         command: "claude",
@@ -425,7 +433,7 @@ function providerEvidence({ weak = false } = {}) {
     count: 1,
     planMode: "full",
     providerPreflightMode: "live",
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
     workerCleanup: {
       workerCleanupEvents: 1,
       forcedKills: 0,

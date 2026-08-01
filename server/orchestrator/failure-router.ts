@@ -175,7 +175,10 @@ export class FailureRouter {
       failure.retryable === false &&
       failure.kind !== FailureKind.PLAN_BOUNDED_HANDOFF_TIMEOUT &&
       failure.kind !== FailureKind.PERMISSION_DENIED &&
-      failure.kind !== FailureKind.HUMAN_APPROVAL_REQUIRED
+      failure.kind !== FailureKind.HUMAN_APPROVAL_REQUIRED &&
+      // Scope violations with a checklist routing label get bounded
+      // executor remediation turn; unlabelled violations still fail below.
+      failure.kind !== FailureKind.SCOPE_VIOLATION
     ) {
       return {
         action: "mark_failed",
@@ -210,7 +213,7 @@ export class FailureRouter {
     }
 
     let verificationRetryScope: string[] = [];
-    if (failure.kind === FailureKind.VERIFICATION_FAILED) {
+    if (failure.kind === FailureKind.VERIFICATION_FAILED || failure.kind === FailureKind.SCOPE_VIOLATION) {
       verificationRetryScope = collectVerificationRetryScope(failure);
       // Checklist-aware routing: map routing labels from completion gate
       // to correct retry action, phase, and fixScope.

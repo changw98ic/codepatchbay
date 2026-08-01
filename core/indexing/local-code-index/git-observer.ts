@@ -27,7 +27,11 @@
  *   - an attribute or materialization configuration that cannot be parsed exactly;
  *   - an external diff requirement;
  *   - a path outside the canonical worktree;
- *   - a symbolic link or unsupported special file.
+ *   - an untracked symbolic link or unsupported special file.
+ *
+ * A tracked symbolic link (Git mode 120000) stays in the source-state
+ * observation but is never materialized or indexed. This preserves the Git
+ * inventory while maintaining the no-follow boundary for source reads.
  *
  * Spec: docs/architecture/local-code-index-v2-spec.md section 8.1
  * Dependencies: node:child_process, node:crypto, node:os, node:path,
@@ -37,7 +41,7 @@
 import { execFile } from "node:child_process";
 import { devNull } from "node:os";
 import path from "node:path";
-import { lstat } from "node:fs/promises";
+import { lstat, realpath } from "node:fs/promises";
 
 import { LocalCodeIndexUnavailableError } from "./contracts.js";
 import { canonicalStringify } from "./canonical-json.js";
@@ -280,6 +284,33 @@ async function git(
       child.stdin?.end();
     }
   });
+}
+
+/**
+ * Resolve the shared Git directory for a worktree.
+ *
+ * A `.git` entry in a linked worktree is a file, not the common repository
+ * directory. Index objects must therefore use Git's common directory as their
+ * repository namespace key; otherwise every worktree rebuilds the same index.
+ */
+export async function resolveGitCommonDirectory(sourcePath: string): Promise<string> {
+  const raw = await git(
+    sourcePath,
+    ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    { maxBuffer: 16 * 1024 },
+  );
+  const commonDir = raw.trim();
+  if (!commonDir || !path.isAbsolute(commonDir)) {
+    throw new LocalCodeIndexUnavailableError("unsupported_git_state", { sourcePath });
+  }
+  try {
+    return await realpath(commonDir);
+  } catch (cause) {
+    throw new LocalCodeIndexUnavailableError("unsupported_git_state", {
+      sourcePath,
+      cause,
+    });
+  }
 }
 
 /**
@@ -1110,13 +1141,18 @@ async function observeOnce(sourcePath: string): Promise<SourceStatePayload> {
     const porcelain = porcelainMap.get(p) ?? null;
 
     // Detect tracked deletion: porcelain status ".D" means worktree-deleted,
-    // index-clean.  The file is absent from the working tree — never lstat it.
+    // index-clean. The file is absent from the working tree — never lstat it.
     const isDeleted = porcelain !== null && porcelain.statusCode === ".D";
+    // A Git-tracked symbolic link is represented by mode 120000. Preserve it
+    // in the Git state observation, but never dereference it or pass it to the
+    // extractor. Its stage and porcelain records still make link changes part
+    // of the source-state fingerprint.
+    const isTrackedSymbolicLink = stage?.mode === "120000";
 
     let present: boolean;
     let metadata: PinnedMetadata | null;
 
-    if (isDeleted) {
+    if (isDeleted || isTrackedSymbolicLink) {
       present = false;
       metadata = null;
     } else {

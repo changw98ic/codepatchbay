@@ -17,6 +17,7 @@ import { test, beforeEach, afterEach } from "node:test";
 import {
   publishObjects,
   publishFileObject,
+  publishFileObjects,
   publishSymbolShard,
   publishRelationShard,
   readStoredObject,
@@ -94,6 +95,27 @@ test("publishFileObject: identical file object is reused on second publish", asy
   const second = await publishFileObject(fo, options);
   assert.equal(second.status, "reused");
   assert.equal(first.objectId, second.objectId);
+});
+
+test("publishFileObjects preserves input order while publishing distinct file objects", async () => {
+  const objects = [
+    makeFileObject({ sourceContentId: "01".repeat(32) }),
+    makeFileObject({ sourceContentId: "02".repeat(32) }),
+    makeFileObject({ sourceContentId: "03".repeat(32) }),
+  ];
+
+  const published = await publishFileObjects(objects, options);
+
+  assert.deepEqual(
+    published.map((entry) => entry.objectId),
+    objects.map((fileObject) => deriveFileObjectId(
+      fileObject.language,
+      fileObject.parserMode,
+      fileObject.languageExtractorFingerprint,
+      fileObject.sourceContentId,
+    )),
+  );
+  assert.deepEqual(published.map((entry) => entry.status), ["created", "created", "created"]);
 });
 
 test("publishObjects: identical batch entry is reused on second publish", async () => {

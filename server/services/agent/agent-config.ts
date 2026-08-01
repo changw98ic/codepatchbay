@@ -342,6 +342,18 @@ function resolveFromConfig(config: AgentConfigRecord | null | undefined): AgentC
   const defaultSpec = normalizeAgentSpec(config.default);
   if (defaultSpec) result.default = defaultSpec;
 
+  for (const role of [
+    "planner",
+    "executor",
+    "verifier",
+    "reviewer",
+    "remediator",
+    "adversarial_verifier",
+  ]) {
+    const spec = normalizeAgentSpec(config[role]);
+    if (spec) result[role] = spec;
+  }
+
   if (config.phases) {
     for (const [phase, raw] of Object.entries(config.phases)) {
       const spec = normalizeAgentSpec(raw);

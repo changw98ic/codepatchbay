@@ -26,6 +26,7 @@ import {
 } from "../indexing/local-code-index/index.js";
 import type { LocalCodeIndexRef } from "../indexing/local-code-index/index.js";
 import { buildRiskBudgetAcpEnv } from "../policy/phase-budget.js";
+import { isValidationProfile, resolveValidationProfile } from "../policy/validation-profile.js";
 import { validateDecomposedItems } from "./acceptance-checklist.js";
 import { extractTaskRequirementSlices } from "./checklist-build.js";
 import { isRecord, recordValue, text } from "./checklist-shared.js";
@@ -54,6 +55,8 @@ export interface DecomposedItem {
 export interface DecompositionResult {
   ok: boolean;
   items?: DecomposedItem[];
+  planMarkdown?: string;
+  fusedPlanning?: boolean;
   reason?: string;
   kind?: string;
   retryable?: boolean;
@@ -270,13 +273,23 @@ function agentFailureReason(agentResult: LooseRecord) {
   return `decompose agent failed: ${kind || reason || "unknown"}`;
 }
 
-export function buildDecomposePrompt(task: string, documents: LooseRecord[] = []): string {
+export function buildDecomposePrompt(
+  task: string,
+  documents: LooseRecord[] = [],
+  options: { fusedPlanning?: boolean } = {},
+): string {
   const docSection = documents.length > 0
     ? `\n\n## Reference documents\n${documents.map((document) => `- ${documentLabel(document)}`).join("\n")}`
     : "";
   const explicitSlices = extractTaskRequirementSlices(task).filter((slice) => slice.locator !== "task:0");
   const explicitSliceSection = explicitSlices.length > 0
     ? `\n\n## Explicit structured requirements\nEach entry below is a separate acceptance obligation. At least one decomposed item must cite each locator in sourceRefs; do not collapse or silently defer one as out of scope.\n${explicitSlices.map((slice) => `- ${slice.locator}: ${slice.text}`).join("\n")}`
+    : "";
+  const fusedPlanningSection = options.fusedPlanning
+    ? `\n\n## Planning output\nAlso provide planMarkdown. It must be a concrete Markdown implementation plan with these sections: Analysis, Bounded Handoff, Files to modify, Implementation Steps, Testing, and Risks. The Bounded Handoff must contain exactly these labels: Real actors, Entrypoints, Bypass candidates, Edit files, Verification targets, Blockers. Use "none" instead of omitting a label. Its edit files and verification targets must agree with decomposedItems.`
+    : "";
+  const planJsonField = options.fusedPlanning
+    ? `,\n  "planMarkdown": "## Analysis\\n..."`
     : "";
   return `You are decomposing a task into structured acceptance-checklist items for a coding-agent pipeline.
 
@@ -303,6 +316,7 @@ Inspect the local code (read-only commands only) and break this task into one or
 - For behavior-changing code, include at least one item that names the real actors/entrypoints. Set requiresRealPathEvidence true only for a maintainer-approved command/test/manual probe that objectively emits coversRealPath=true. Static diff-scope evidence and agent_written evidence can NEVER satisfy requiresRealPathEvidence, so they MUST set it false.
 - Use evidenceOrigin to distinguish "agent_written", "deterministic_probe", "independent_probe", "benchmark_required", or "user_required" evidence when that distinction affects whether the item can pass.
 - Inspect the repo first; do NOT invent unrelated files.
+${fusedPlanningSection}
 
 ## Output — a single JSON code block, nothing outside it
 \`\`\`json
@@ -320,7 +334,7 @@ Inspect the local code (read-only commands only) and break this task into one or
       "evidenceOrigin": "<optional evidence origin>",
       "requiresRealPathEvidence": false
     }
-  ]
+  ]${planJsonField}
 }
 \`\`\``;
 }
@@ -345,12 +359,18 @@ export async function decomposeTaskToChecklistItems({
   const sourceContext = recordValue(ctx.sourceContext);
   const riskMap = recordValue(sourceContext.riskMap);
   const riskLevel = text(riskMap.riskLevel).toLowerCase();
+  const productValidation = recordValue(sourceContext.productValidation);
+  const workflowConfig = recordValue(sourceContext.workflow);
+  const explicitProfile = productValidation.validationProfile ?? workflowConfig.validationProfile;
+  const fusedPlanning = isValidationProfile(explicitProfile)
+    && resolveValidationProfile(sourceContext) !== "verified";
   const localIndexFastPathAllowed = ctx.planMode === "light"
     && documents.length === 0
     && runtimeEnv.CPB_CHECKLIST_LOCAL_CODE_INDEX_FAST_PATH !== "0"
     && riskLevel !== "high"
     && riskLevel !== "critical"
-    && riskMap.adversarialRequired !== true;
+    && riskMap.adversarialRequired !== true
+    && !fusedPlanning;
   if (localIndexFastPathAllowed) {
     const ref = localCodeIndexRefFromSourceContext(ctx.sourceContext);
     if (ref) {
@@ -381,7 +401,7 @@ export async function decomposeTaskToChecklistItems({
     }
   }
   const { agent, variant } = resolvePlanner(ctx);
-  const prompt = buildDecomposePrompt(task, documents);
+  const prompt = buildDecomposePrompt(task, documents, { fusedPlanning });
 
   const maxRetries = decomposeRetryMax(runtimeEnv);
   let agentResult: LooseRecord = {};
@@ -424,11 +444,20 @@ export async function decomposeTaskToChecklistItems({
     return { ok: false, reason: `decompose output is not valid JSON: ${parsed.reason}` };
   }
 
-  const items = recordValue(parsed.data).decomposedItems;
+  const parsedData = recordValue(parsed.data);
+  const items = parsedData.decomposedItems;
   const validation = validateDecomposedItems(items);
   if (!validation.ok) {
     return { ok: false, reason: `decomposed items invalid: ${validation.reason}` };
   }
 
-  return { ok: true, items: normalizeDecomposedItems(items) };
+  const planMarkdown = text(parsedData.planMarkdown);
+  if (fusedPlanning && !planMarkdown) {
+    return { ok: false, reason: "fused planning output is missing planMarkdown" };
+  }
+  return {
+    ok: true,
+    items: normalizeDecomposedItems(items),
+    ...(fusedPlanning ? { planMarkdown, fusedPlanning: true } : {}),
+  };
 }

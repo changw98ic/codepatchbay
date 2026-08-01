@@ -8,7 +8,8 @@
  *     byte of SHA-256(symbol).
  *
  *   - File summaries and related-file records are stored in shards selected
- *     by the first two bytes of SHA-256(normalized path).
+ *     by the first byte of SHA-256(normalized path). This keeps cold-start
+ *     publication bounded for repositories with thousands of files.
  *
  *   - Only touched shards are rebuilt during an incremental update.
  *     Untouched shard objects are reused by object ID.
@@ -45,7 +46,7 @@ import { canonicalStringify, objectId } from "./canonical-json.js";
  * Every key maps to exactly one of 256 buckets.
  */
 export const SHARD_BUCKET_COUNT = 256;
-export const PATH_SHARD_BUCKET_COUNT = 65_536;
+export const PATH_SHARD_BUCKET_COUNT = 256;
 
 /**
  * Pre-computed two-character hex strings for all 256 bucket indices.
@@ -56,7 +57,7 @@ const SYMBOL_BUCKET_HEX: readonly string[] = buildBucketHexTable(
 );
 const PATH_BUCKET_HEX: readonly string[] = buildBucketHexTable(
   PATH_SHARD_BUCKET_COUNT,
-  4,
+  2,
 );
 
 function buildBucketHexTable(count: number, width: number): string[] {
@@ -146,25 +147,25 @@ export function symbolBucketKey(symbol: string): string {
  * Compute the shard bucket index for a normalized path.
  *
  * Formula (spec section 7.5):
- *   first two bytes of SHA-256(normalized path)
+ *   first byte of SHA-256(normalized path)
  *
  * The path is first normalized (forward-slash, no leading "./", no
  * trailing "/", NFC), then hashed.
  *
  * @param path - Source-relative path (will be normalized internally).
- * @returns Bucket index in [0, 65535].
+ * @returns Bucket index in [0, 255].
  */
 export function pathBucketIndex(path: string): number {
   const normalized = normalizePath(path);
   const hash = createHash("sha256").update(normalized, "utf8").digest();
-  return (hash[0]! << 8) | hash[1]!;
+  return hash[0]!;
 }
 
 /**
  * Compute the shard bucket hex key for a normalized path.
  *
  * @param path - Source-relative path (will be normalized internally).
- * @returns 4-char lowercase hex bucket key.
+ * @returns 2-char lowercase hex bucket key.
  */
 export function pathBucketKey(path: string): string {
   return PATH_BUCKET_HEX[pathBucketIndex(path)]!;
@@ -342,7 +343,7 @@ export function buildSymbolShard(
  *
  * Both arrays are sorted deterministically before inclusion.
  *
- * @param bucketKey - 4-char hex bucket key.
+ * @param bucketKey - 2-char hex bucket key.
  * @param fileSummaries - Unsorted file summary entries for this bucket.
  * @param relationships - Unsorted relationship entries for this bucket.
  * @returns A deterministic relation shard payload.
@@ -415,7 +416,7 @@ export function distributeBySymbol<T>(
  *
  * @param items - Items with a `path` field.
  * @param getPath - Extracts the path string from an item.
- * @returns Map from 4-char hex bucket key to the items in that bucket.
+ * @returns Map from 2-char hex bucket key to the items in that bucket.
  */
 export function distributeByPath<T>(
   items: readonly T[],
@@ -519,7 +520,7 @@ export type RebuiltSymbolShard = Readonly<{
  * A single rebuilt or reused relation shard.
  */
 export type RebuiltRelationShard = Readonly<{
-  /** 4-char hex bucket key. */
+  /** 2-char hex bucket key. */
   bucketKey: string;
   /** The shard payload (rebuilt from current data). */
   shard: RelationShard;

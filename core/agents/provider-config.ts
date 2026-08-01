@@ -1,6 +1,7 @@
 import type { LooseRecord } from "../../shared/types.js";
 import {
   configuredProviderDescriptor,
+  configuredProviderAgent,
   configuredProviderEnvironmentKeys,
   configuredProviderCredentialInputKeys,
   getConfiguredProvider,
@@ -243,6 +244,10 @@ export function descriptorForProviderSelection(
 ) {
   const providerId = text(provider);
   if (!providerId) return descriptor || {};
+  const requiredAgent = configuredProviderAgent(providerId, env);
+  if (requiredAgent && requiredAgent !== agent) {
+    throw new Error(`Configured provider '${providerId}' requires agent '${requiredAgent}', got '${agent}'`);
+  }
   const configured = configuredProviderDescriptor(providerId, text(model), env) as LooseRecord | null;
   if (!configured) throw new Error(`Unknown configured provider '${providerId}'`);
   const base = record(descriptor?.provider);

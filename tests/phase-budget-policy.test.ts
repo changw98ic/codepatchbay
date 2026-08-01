@@ -35,7 +35,10 @@ test("derivePhaseBudgetPolicy scales budgets and evidence by risk", () => {
   });
   const high = derivePhaseBudgetPolicy({
     workflow: "standard",
-    sourceContext: { riskMap: { riskLevel: "high", domains: ["provider_pool"], verificationDepth: "strict" } },
+    sourceContext: {
+      productValidation: { validationProfile: "verified" },
+      riskMap: { riskLevel: "high", domains: ["provider_pool"], verificationDepth: "strict" },
+    },
   });
   const critical = derivePhaseBudgetPolicy({
     workflow: "complex",
@@ -64,6 +67,7 @@ test("explicit medium-risk adversarial verification receives a finite runtime bu
         riskLevel: "medium",
         adversarialRequired: true,
       },
+      productValidation: { validationProfile: "verified" },
     },
   };
   const policy = derivePhaseBudgetPolicy(ctx);

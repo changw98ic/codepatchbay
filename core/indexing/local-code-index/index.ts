@@ -41,6 +41,7 @@ export {
   repositoryRecoveryElectionsDir,
   repositoryRecoveryElectionDir,
   repositoryObjectsDir,
+  repositoryReusableSnapshotPath,
   fileObjectPath,
   blobMapObjectPath,
   symbolShardPath,

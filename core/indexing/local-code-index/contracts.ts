@@ -104,8 +104,24 @@ export type LocalCodeIndexToolState = Readonly<{
 export type LocalCodeIndexPhaseTimings = Readonly<{
   inventoryMs: number;
   hashingMs: number;
+  /** ast-grep process execution and validated output decoding only. */
   parsingMs: number;
+  /** Alias for parsingMs retained for explicit run-report consumers. */
+  astGrepMs: number;
+  /** Safe source-byte reads only. */
+  fileReadMs: number;
+  /** Conversion of parsed facts into the canonical per-file representation. */
+  fileFactExtractionMs: number;
+  /** Durable file-object publication. */
+  fileObjectPublicationMs: number;
+  /** Relationship resolution and deterministic shard construction. */
+  relationshipMs: number;
+  /** Durable symbol- and relation-shard publication. */
+  shardPublicationMs: number;
+  /** Immutable snapshot publication and verification. */
+  snapshotPublicationMs: number;
   lookupMs: number;
+  /** Sum of the durable publication phases. */
   publicationMs: number;
 }>;
 

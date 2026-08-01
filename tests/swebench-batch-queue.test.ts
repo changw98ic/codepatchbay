@@ -21,7 +21,10 @@ import {
 } from "../server/services/hub/hub-registry.js";
 import { getProviderAdapter } from "../server/services/provider-adapters.js";
 import type { QuotaDelegateLockReceipt } from "../server/services/quota-delegate-client.js";
-import { DEFAULT_PRODUCT_VALIDATION_AGENTS } from "../scripts/run-swebench-product-validation.js";
+import {
+  resolveProductValidationAgents,
+  type ProductValidationAgents,
+} from "../scripts/run-swebench-product-validation.js";
 import {
   AssignmentStore,
   withAssignmentStoreTestHooksForTests,
@@ -64,6 +67,20 @@ import {
 
 const assignmentStoreTestHookScope = new AsyncLocalStorage<AssignmentStoreTestHooks>();
 const workerStoreTestHookScope = new AsyncLocalStorage<WorkerStoreTestHooks>();
+const batchConfigFixtureRoot = mkdtempSync(path.join(os.tmpdir(), "cpb-swebench-project-config-"));
+const batchProjectConfigPath = path.join(batchConfigFixtureRoot, "project.json");
+const batchProjectConfig = {
+  agents: {
+    planner: { agent: "codex" },
+    executor: { agent: "claude-glm" },
+    verifier: { agent: "claude-mimo" },
+    adversarial_verifier: { agent: "claude-mimo" },
+  },
+};
+writeFileSync(batchProjectConfigPath, `${JSON.stringify(batchProjectConfig, null, 2)}\n`, "utf8");
+nodeTest.after(() => rm(batchConfigFixtureRoot, { recursive: true, force: true }));
+const TEST_PRODUCT_VALIDATION_AGENTS = resolveProductValidationAgents(batchProjectConfig);
+const queueArgs = (args: string[]) => [...args, "--project-config", batchProjectConfigPath];
 const __assignmentStoreTestHooks = new Proxy({} as AssignmentStoreTestHooks, {
   get(_target, property) {
     return Reflect.get(assignmentStoreTestHookScope.getStore() || {}, property);
@@ -109,8 +126,9 @@ function test(name: string, fn: (context: TestContext) => void | Promise<void>) 
 const batchQueueSource = readFileSync(new URL("../scripts/queue-swebench-batch.js", import.meta.url), "utf8");
 
 async function queueIndexedBatchAssignment(
-  input: Omit<Parameters<typeof queueBatchAssignmentAtomically>[0], "cpbRoot"> & {
+  input: Omit<Parameters<typeof queueBatchAssignmentAtomically>[0], "cpbRoot" | "projectConfig"> & {
     cpbRoot?: string;
+    projectConfig?: LooseRecord;
   },
 ) {
   const cpbRoot = input.cpbRoot ?? input.hubRoot;
@@ -120,7 +138,11 @@ async function queueIndexedBatchAssignment(
     cpbRoot,
     signal: input.signal,
   });
-  return queueBatchAssignmentAtomically({ ...input, cpbRoot });
+  return queueBatchAssignmentAtomically({
+    ...input,
+    cpbRoot,
+    projectConfig: input.projectConfig || batchProjectConfig,
+  });
 }
 
 function stableTestJson(value: unknown): string {
@@ -542,15 +564,17 @@ function errno(code: string) {
 
 function withLiveProviderPreflight(manifestValue: unknown): LooseRecord {
   const manifest = recordValue(manifestValue);
-  const agents = {
-    ...DEFAULT_PRODUCT_VALIDATION_AGENTS,
-    ...recordValue(manifest.agents),
-  };
+  const agents = resolveProductValidationAgents({
+    agents: {
+      ...batchProjectConfig.agents,
+      ...recordValue(manifest.agents),
+    },
+  });
   const routes = [
-    { phase: "plan", role: "planner", agent: agents.planner },
-    { phase: "execute", role: "executor", agent: agents.executor },
-    { phase: "verify", role: "verifier", agent: agents.verifier },
-    { phase: "adversarial_verify", role: "adversarial_verifier", agent: agents.adversarial_verifier },
+    { phase: "plan", role: "planner", ...agents.planner },
+    { phase: "execute", role: "executor", ...agents.executor },
+    { phase: "verify", role: "verifier", ...agents.verifier },
+    { phase: "adversarial_verify", role: "adversarial_verifier", ...agents.adversarial_verifier },
   ];
   return {
     ...manifest,
@@ -573,15 +597,16 @@ function withLiveProviderPreflight(manifestValue: unknown): LooseRecord {
       ok: true,
       violations: [],
       phases: routes.map((route) => {
-        const transport = String(route.agent).startsWith("claude-") ? "claude-cli" : "acp";
+        const transport = route.agent.startsWith("claude") ? "claude-cli" : "acp";
         const command = transport === "claude-cli" ? "claude" : "codex-acp";
+        const providerKey = route.provider || (route.agent === "codex" ? "openai" : route.agent);
         const artifactRoot = mkdtempSync(path.join(os.tmpdir(), "cpb-test-provider-preflight-"));
         const outputPath = path.join(artifactRoot, `${route.phase}.json`);
         const handshake = testHandshakeEvidence({
           phase: String(route.phase),
           role: String(route.role),
           agent: String(route.agent),
-          providerKey: "openai",
+          providerKey,
           command,
           transport: transport as "acp" | "claude-cli",
           outputPath,
@@ -589,7 +614,7 @@ function withLiveProviderPreflight(manifestValue: unknown): LooseRecord {
         const outputBuffer = readFileSync(outputPath);
         return {
           ...route,
-          providerKey: "openai",
+          providerKey,
           transport,
           command,
           outputPath,
@@ -646,16 +671,32 @@ function writeSweBenchBatchOutputs(options: Parameters<typeof writeSweBenchBatch
   });
 }
 
-test("SWE-bench batch queue defaults to 50 full-plan split-agent assignments", () => {
-  const opts = resolveBatchQueueOptions(["node", "queue-swebench-batch.js"]);
+test("SWE-bench batch queue reads agent/provider/model selection from project config", () => {
+  const opts = resolveBatchQueueOptions(queueArgs(["node", "queue-swebench-batch.js"]));
 
   assert.equal(opts.count, 50);
   assert.equal(opts.planMode, "full");
-  assert.deepEqual(opts.agents, DEFAULT_PRODUCT_VALIDATION_AGENTS);
+  assert.deepEqual(opts.agents, TEST_PRODUCT_VALIDATION_AGENTS);
   assert.equal(opts.workerCount, 1);
   assert.equal(opts.timeoutMs, 1_200_000);
   assert.equal(opts.waitTimeoutMs, 1_200_000);
   assert.equal(opts.notify, true);
+});
+
+test("SWE-bench batch queue rejects removed agent flags and missing project config", () => {
+  assert.throws(
+    () => resolveBatchQueueOptions(["node", "queue-swebench-batch.js"]),
+    /--project-config is required/,
+  );
+  assert.throws(
+    () => resolveBatchQueueOptions(queueArgs([
+      "node",
+      "queue-swebench-batch.js",
+      "--agent",
+      "claude-glm",
+    ])),
+    /--agent was removed/,
+  );
 });
 
 test("SWE-bench batch wait timeout scales with locally started workers", () => {
@@ -664,7 +705,7 @@ test("SWE-bench batch wait timeout scales with locally started workers", () => {
     120_000_000,
   );
 
-  const opts = resolveBatchQueueOptions([
+  const opts = resolveBatchQueueOptions(queueArgs([
     "node",
     "queue-swebench-batch.js",
     "--count",
@@ -673,27 +714,27 @@ test("SWE-bench batch wait timeout scales with locally started workers", () => {
     "2",
     "--start-workers",
     "2",
-  ]);
+  ]));
   assert.equal(opts.timeoutMs, 1_200_000);
   assert.equal(opts.waitTimeoutMs, 120_000_000);
 });
 
 test("SWE-bench batch wait timeout can be overridden independently from phase timeout", () => {
-  const opts = resolveBatchQueueOptions([
+  const opts = resolveBatchQueueOptions(queueArgs([
     "node",
     "queue-swebench-batch.js",
     "--timeout-ms",
     "12345",
     "--wait-timeout-ms",
     "67890",
-  ]);
+  ]));
 
   assert.equal(opts.timeoutMs, 12345);
   assert.equal(opts.waitTimeoutMs, 67890);
 });
 
 test("SWE-bench batch queue accepts report rebuild scorer evidence options", () => {
-  const opts = resolveBatchQueueOptions([
+  const opts = resolveBatchQueueOptions(queueArgs([
     "node",
     "queue-swebench-batch.js",
     "--rebuild-report",
@@ -704,7 +745,7 @@ test("SWE-bench batch queue accepts report rebuild scorer evidence options", () 
     "--scorer-evidence",
     "/tmp/cpb-batch/official-score-summary.json",
     "--scorer-required",
-  ]);
+  ]));
 
   assert.equal(opts.rebuildReport, true);
   assert.equal(opts.outputPath, "/tmp/cpb-batch/manifest.json");
@@ -714,30 +755,30 @@ test("SWE-bench batch queue accepts report rebuild scorer evidence options", () 
 });
 
 test("SWE-bench batch queue resolves report output next to manifest by default", () => {
-  const opts = resolveBatchQueueOptions([
+  const opts = resolveBatchQueueOptions(queueArgs([
     "node",
     "queue-swebench-batch.js",
     "--output",
     "/tmp/cpb-batch/custom-manifest.json",
-  ]);
-  const custom = resolveBatchQueueOptions([
+  ]));
+  const custom = resolveBatchQueueOptions(queueArgs([
     "node",
     "queue-swebench-batch.js",
     "--output",
     "/tmp/cpb-batch/custom-manifest.json",
     "--report-output",
     "/tmp/cpb-batch/custom-report.json",
-  ]);
+  ]));
 
   assert.equal(opts.reportPath, "/tmp/cpb-batch/swebench-batch-report.json");
   assert.equal(custom.reportPath, "/tmp/cpb-batch/custom-report.json");
 });
 
-test("SWE-bench batch queue default agents are registered before runtime", async () => {
+test("SWE-bench batch queue configured agents are registered before runtime", async () => {
   await loadRegistry("");
 
-  for (const [role, agent] of Object.entries(DEFAULT_PRODUCT_VALIDATION_AGENTS)) {
-    assert.equal(hasAgent(agent), true, `${role} agent is not registered: ${agent}`);
+  for (const [role, selection] of Object.entries(TEST_PRODUCT_VALIDATION_AGENTS)) {
+    assert.equal(hasAgent(selection.agent), true, `${role} agent is not registered: ${selection.agent}`);
   }
 });
 
@@ -786,7 +827,7 @@ test("SWE-bench batch queue MiMo alias preserves provider model spelling", () =>
 
 test("SWE-bench batch provider preflight freezes split provider route", async () => {
   const result = await runSweBenchProviderPreflight({
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
     env: validProviderPreflightEnv(),
     handshake: async (input) => testHandshakeEvidence(input),
   });
@@ -813,6 +854,62 @@ test("SWE-bench batch provider preflight freezes split provider route", async ()
     result.phases.map((phase) => recordValue(phase).handshakeOk),
     [true, true, true, true],
   );
+});
+
+test("SWE-bench standard validation profile skips unused adversarial provider preflight", async () => {
+  const result = await runSweBenchProviderPreflight({
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
+    validationProfile: "standard",
+    env: validProviderPreflightEnv(),
+    handshake: async (input) => testHandshakeEvidence(input),
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(
+    result.phases.map((phase) => recordValue(phase).phase),
+    ["plan", "execute", "verify"],
+  );
+});
+
+test("SWE-bench batch provider preflight applies provider and model from project config", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "cpb-swebench-configured-provider-"));
+  const providersFile = path.join(root, "providers.json");
+  await writeFile(providersFile, `${JSON.stringify({
+    providers: {
+      glm: {
+        agent: "claude",
+        key: "glm",
+        family: "glm",
+        baseUrlEnv: "GLM_BASE_URL",
+        apiKeyEnv: "GLM_API_KEY",
+        modelEnv: "GLM_MODEL",
+      },
+    },
+  })}\n`, "utf8");
+  const agents = resolveProductValidationAgents({
+    agent: "claude",
+    provider: "glm",
+    model: "glm-project-model",
+  });
+  const observed: LooseRecord[] = [];
+  const result = await runSweBenchProviderPreflight({
+    agents,
+    env: {
+      CPB_PROVIDERS_FILE: providersFile,
+      GLM_BASE_URL: "https://glm.example.invalid/anthropic",
+      GLM_API_KEY: "redacted",
+      GLM_MODEL: "glm-default-model",
+    },
+    handshake: async (input) => {
+      observed.push(input);
+      return testHandshakeEvidence(input);
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.phases.map((phase) => recordValue(phase).providerKey), ["glm", "glm", "glm", "glm"]);
+  assert.equal(recordValue(observed[0].env).ANTHROPIC_MODEL, "glm-project-model");
+  assert.equal(recordValue(observed[0].env).ANTHROPIC_BASE_URL, "https://glm.example.invalid/anthropic");
 });
 
 test("SWE-bench provider preflight audit reference accepts generation-time output identity omission", async () => {
@@ -1146,7 +1243,7 @@ test("SWE-bench provider preflight audit reference rejects tampered raw audit st
 
 test("SWE-bench provider preflight rejects callback output that differs from retained handshake", async () => {
   const result = await runSweBenchProviderPreflight({
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
     env: validProviderPreflightEnv(),
     handshake: async (input) => {
       const handshake = testHandshakeEvidence(input);
@@ -1164,7 +1261,7 @@ test("SWE-bench provider preflight rejects callback output that differs from ret
 test("SWE-bench provider preflight rejects symlinked callback output artifacts", async () => {
   const outsideRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-preflight-output-symlink-target-"));
   const result = await runSweBenchProviderPreflight({
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
     env: validProviderPreflightEnv(),
     handshake: async (input) => {
       const handshake = testHandshakeEvidence(input);
@@ -1234,7 +1331,7 @@ test("SWE-bench provider preflight rejects forged control-plane proof", async (t
   for (const fixture of cases) {
     await t.test(fixture.name, async () => {
       const result = await runSweBenchProviderPreflight({
-        agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+        agents: TEST_PRODUCT_VALIDATION_AGENTS,
         env: {
           MIMO_BASE_URL: "https://example.invalid/mimo",
           MIMO_API_KEY: "redacted",
@@ -1259,7 +1356,7 @@ test("SWE-bench provider preflight rejects forged control-plane proof", async (t
 
 test("SWE-bench provider preflight rejects a hash-consistent ACP proof with an explicitly allowed tool", async () => {
   const result = await runSweBenchProviderPreflight({
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
     env: validProviderPreflightEnv(),
     handshake: async (input) => {
       if (input.role !== "planner") return testHandshakeEvidence(input);
@@ -1290,7 +1387,7 @@ test("SWE-bench provider preflight rejects a hash-consistent ACP proof with an e
 
 test("SWE-bench batch provider preflight surfaces handshake failure detail", async () => {
   const result = await runSweBenchProviderPreflight({
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
     env: {
       MIMO_BASE_URL: "https://example.invalid/mimo",
       MIMO_API_KEY: "redacted",
@@ -1311,7 +1408,7 @@ test("SWE-bench batch provider preflight surfaces handshake failure detail", asy
 
 test("SWE-bench batch provider preflight propagates rate-limit failure kind", async () => {
   const result = await runSweBenchProviderPreflight({
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
     env: {
       MIMO_BASE_URL: "https://example.invalid/mimo",
       MIMO_API_KEY: "redacted",
@@ -1331,7 +1428,7 @@ test("SWE-bench batch provider preflight propagates rate-limit failure kind", as
 
 test("SWE-bench batch provider preflight redacts secrets from thrown handshake errors", async () => {
   const result = await runSweBenchProviderPreflight({
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
     env: {
       MIMO_BASE_URL: "https://example.invalid/mimo",
       MIMO_API_KEY: "configured",
@@ -1359,7 +1456,7 @@ test("SWE-bench batch provider preflight redacts secrets returned by a custom ha
     "github_pat_returned_failure_kind_secret",
   ];
   const providerPreflight = await runSweBenchProviderPreflight({
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
     env: {
       MIMO_BASE_URL: "https://example.invalid/mimo",
       MIMO_API_KEY: "configured",
@@ -1385,7 +1482,7 @@ test("SWE-bench batch provider preflight redacts secrets returned by a custom ha
     split: "test",
     count: 0,
     planMode: "full",
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
     providerPreflight,
     assignments: [],
     terminalStates: [],
@@ -1412,12 +1509,7 @@ test("SWE-bench batch provider preflight never persists agent launch arguments",
   process.env[argsKey] = `--token ${secret}`;
   try {
     const providerPreflight = await runSweBenchProviderPreflight({
-      agents: {
-        planner: "codex",
-        executor: "codex",
-        verifier: "codex",
-        adversarial_verifier: "codex",
-      },
+      agents: resolveProductValidationAgents({ agent: "codex" }),
       env: {},
       handshake: async (input) => testHandshakeEvidence(input),
     });
@@ -1448,8 +1540,13 @@ test("SWE-bench batch provider preflight failure message uses specific failure k
 test("SWE-bench batch provider preflight fails missing configured providers", async () => {
   const result = await runSweBenchProviderPreflight({
     agents: {
-      ...DEFAULT_PRODUCT_VALIDATION_AGENTS,
-      executor: "missing-claude-glm",
+      ...TEST_PRODUCT_VALIDATION_AGENTS,
+      executor: {
+        agent: "missing-claude-glm",
+        provider: null,
+        model: null,
+        variant: null,
+      },
     },
     handshake: async () => ({ ok: true }),
   });
@@ -1519,7 +1616,7 @@ test("SWE-bench provider preflight propagates abort signal and fails closed", as
   const controller = new AbortController();
   let observedSignal = false;
   const result = await runSweBenchProviderPreflight({
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
     env: validProviderPreflightEnv(),
     signal: controller.signal,
     handshake: async (input) => {
@@ -2167,7 +2264,6 @@ test("SWE-bench batch queue submits the unmodified problem statement without ora
     record,
     row: sampleRow,
     sourcePath: "/tmp/source/django-django-13128",
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
     planMode: "full",
   });
 
@@ -2179,8 +2275,8 @@ test("SWE-bench batch queue submits the unmodified problem statement without ora
   const productValidation = recordValue(metadata.productValidation);
   const sourceContext = recordValue(input.sourceContext);
   const sourceProductValidation = recordValue(sourceContext.productValidation);
-  assert.deepEqual(metadata.agents, DEFAULT_PRODUCT_VALIDATION_AGENTS);
-  assert.deepEqual(productValidation.agents, DEFAULT_PRODUCT_VALIDATION_AGENTS);
+  assert.equal(Object.hasOwn(metadata, "agents"), false);
+  assert.equal(Object.hasOwn(productValidation, "agents"), false);
   assert.equal(input.task, sampleRow.problem_statement);
   assert.equal(Object.hasOwn(sourceContext, "acceptanceChecklist"), false);
   assert.equal(Object.hasOwn(productValidation, "canonicalCommands"), false);
@@ -2200,7 +2296,7 @@ test("SWE-bench batch report validation rejects omitted manifest assignments", (
     split: "test",
     count: 2,
     planMode: "full",
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
     assignments: [
       {
         record: firstRecord,
@@ -2241,7 +2337,7 @@ test("SWE-bench batch report validation rejects jobs outside the frozen manifest
     split: "test",
     count: 1,
     planMode: "full",
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
     assignments: [
       {
         record: firstRecord,
@@ -2282,7 +2378,7 @@ test("SWE-bench batch report validation rejects completed jobs without patch evi
     split: "test",
     count: 1,
     planMode: "full",
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
     assignments: [
       {
         record: firstRecord,
@@ -2334,7 +2430,7 @@ test("SWE-bench batch report validation rejects scorer-required jobs without sco
     split: "test",
     count: 1,
     planMode: "full",
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
     assignments: [
       {
         record: firstRecord,
@@ -2387,7 +2483,7 @@ test("SWE-bench scorer-required validation covers failed jobs with source patche
     split: "test",
     count: 1,
     planMode: "full",
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
     terminalStates: [
       { assignmentId: "assignment-one", status: "failed", failureKind: "agent_exit_nonzero" },
     ],
@@ -2430,7 +2526,7 @@ test("SWE-bench scorer-required report exempts failed test-only patches with exp
     split: "test",
     count: 1,
     planMode: "full",
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
     terminalStates: [
       { assignmentId: "assignment-one", status: "failed", failureKind: "agent_exit_nonzero" },
     ],
@@ -2476,7 +2572,7 @@ test("SWE-bench batch report validation rejects fixture-only regression evidence
     split: "test",
     count: 1,
     planMode: "full",
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
     assignments: [
       {
         record: firstRecord,
@@ -2528,7 +2624,7 @@ test("SWE-bench batch report validation rejects rewritten oracle tests without e
     split: "test",
     count: 1,
     planMode: "full",
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
     terminalStates: [
       { assignmentId: "assignment-one", status: "completed" },
     ],
@@ -2584,7 +2680,7 @@ test("SWE-bench batch report validation accepts rewritten tests when scorer reso
     split: "test",
     count: 1,
     planMode: "full",
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
     terminalStates: [
       { assignmentId: "assignment-one", status: "completed" },
     ],
@@ -2678,7 +2774,7 @@ test("SWE-bench report rebuild can merge official scorer evidence into failed ve
     split: "test",
     count: 1,
     planMode: "full",
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
     terminalStates: [
       { assignmentId: "assignment-one", status: "failed", failureKind: "agent_exit_nonzero" },
     ],
@@ -2743,7 +2839,7 @@ test("SWE-bench batch report validation rejects incomplete attempt lineage", () 
     split: "test",
     count: 1,
     planMode: "full",
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
     terminalStates: [
       { assignmentId: "assignment-one", status: "failed", attempts: 2 },
     ],
@@ -2785,7 +2881,7 @@ test("SWE-bench batch report validation rejects hard-constraint attempts", () =>
     split: "test",
     count: 1,
     planMode: "full",
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
     terminalStates: [
       { assignmentId: "assignment-one", status: "failed" },
     ],
@@ -2823,7 +2919,7 @@ test("SWE-bench batch report builder emits manifest hash and integrity fields", 
     split: "test",
     count: 2,
     planMode: "full",
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
     terminalStates: [
       { assignmentId: "assignment-one", status: "failed", failureKind: "provider_unavailable" },
       { assignmentId: "assignment-two", status: "failed", failureKind: "provider_unavailable" },
@@ -2851,7 +2947,7 @@ test("SWE-bench batch report builder emits manifest hash and integrity fields", 
   assert.equal(report.jobs?.length, 2);
   const firstJob = recordValue(report.jobs?.[0]);
   assert.equal(firstJob.benchmarkInstanceId, "django__django-13128");
-  assert.deepEqual(recordValue(recordValue(firstJob.providerRoute).expected), DEFAULT_PRODUCT_VALIDATION_AGENTS);
+  assert.deepEqual(recordValue(recordValue(firstJob.providerRoute).expected), TEST_PRODUCT_VALIDATION_AGENTS);
   assert.equal(recordValue(firstJob.scorer).required, false);
   assert.equal(recordValue(firstJob.regressionEvidence).status, "unknown");
   assert.equal(recordValue(report.summary).residualProcesses, 0);
@@ -2868,7 +2964,7 @@ test("SWE-bench batch report builder summarizes terminal assignment states", () 
     split: "test",
     count: 2,
     planMode: "full",
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
     terminalStates: [
       { assignmentId: "assignment-one", status: "completed" },
       { assignmentId: "assignment-two", status: "failed", failureKind: "phase_timeout" },
@@ -2907,7 +3003,7 @@ test("SWE-bench batch report builder includes worker cleanup evidence", () => {
     split: "test",
     count: 1,
     planMode: "full",
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
     terminalStates: [
       { assignmentId: "assignment-one", status: "failed", failureKind: "phase_timeout" },
     ],
@@ -2949,7 +3045,7 @@ test("SWE-bench batch report rejects an unverified residual process scan", () =>
     split: "test",
     count: 1,
     planMode: "full",
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
     terminalStates: [
       { assignmentId: "assignment-one", status: "failed", failureKind: "phase_timeout" },
     ],
@@ -2985,7 +3081,7 @@ test("SWE-bench batch validation uses source worker cleanup when report cleanup 
     split: "test",
     count: 1,
     planMode: "full",
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
     terminalStates: [
       { assignmentId: "assignment-one", status: "failed", failureKind: "phase_timeout" },
     ],
@@ -3024,7 +3120,7 @@ test("SWE-bench batch validation uses source worker cleanup when report cleanup 
     split: "test",
     count: 1,
     planMode: "full",
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
     terminalStates: [
       { assignmentId: "assignment-one", status: "failed", failureKind: "phase_timeout" },
     ],
@@ -3067,7 +3163,7 @@ test("SWE-bench batch report builder derives failure kind from phase evidence", 
     split: "test",
     count: 1,
     planMode: "full",
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
     terminalStates: [
       { assignmentId: "assignment-one", status: "failed" },
     ],
@@ -3136,7 +3232,7 @@ test("SWE-bench batch queue stops started workers before writing final report", 
 
   assert.deepEqual(kills, [{ pid: 12345, expected: identity }]);
   assert.equal(cleanup.workerCleanupEvents, 1);
-  assert.equal(cleanup.forcedKills, 1);
+  assert.equal(cleanup.forcedKills, 0);
   assert.equal(cleanup.residualProcesses, 0);
   assert.equal(cleanup.residualScanOk, true);
   assert.deepEqual(cleanup.workerIds, ["w-swebench-01"]);
@@ -3169,6 +3265,7 @@ test("SWE-bench batch cleanup tracks and kills detached descendants", async () =
     killTreeFn: async (pid, _graceMs, options) => {
       assert.equal(options?.expectedRootIdentity?.pid, pid);
       kills.push(pid);
+      options?.onForceKill?.();
       liveIncarnations.delete(String(options?.expectedRootIdentity?.incarnation));
     },
   });
@@ -3847,7 +3944,7 @@ test("SWE-bench batch report builder merges patch regression and scorer evidence
     split: "test",
     count: 1,
     planMode: "full",
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
     terminalStates: [
       { assignmentId: "assignment-one", status: "completed" },
     ],
@@ -3912,7 +4009,7 @@ test("SWE-bench batch evidence collector ingests assignment result phase artifac
     split: "test",
     count: 1,
     planMode: "full",
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
     terminalStates: [
       { assignmentId: "assignment-one", status: "completed" },
     ],
@@ -3974,7 +4071,7 @@ test("SWE-bench batch evidence collector ingests real jobResult phase evidence",
     split: "test",
     count: 1,
     planMode: "full",
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
     terminalStates: [
       { assignmentId: "assignment-one", status: "completed" },
     ],
@@ -4075,7 +4172,7 @@ test("SWE-bench batch evidence collector records phase metrics and audit counts"
     split: "test",
     count: 1,
     planMode: "full",
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
     terminalStates: [
       { assignmentId: "assignment-one", status: "completed" },
     ],
@@ -4144,7 +4241,7 @@ test("SWE-bench batch evidence collector records runtime phase retries", async (
     split: "test",
     count: 1,
     planMode: "full",
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
     terminalStates: [
       { assignmentId: "assignment-one", status: "completed", projectId },
     ],
@@ -4222,7 +4319,7 @@ test("SWE-bench batch evidence collector records auditable prepare_task riskmap 
     split: "test",
     count: 1,
     planMode: "full",
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
     terminalStates: [
       { assignmentId: "assignment-one", status: "completed", projectId },
     ],
@@ -4285,7 +4382,7 @@ test("SWE-bench batch evidence collector does not fabricate prepare_task artifac
     split: "test",
     count: 1,
     planMode: "full",
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
     terminalStates: [
       { assignmentId: "assignment-one", status: "completed", projectId },
     ],
@@ -4332,7 +4429,7 @@ test("SWE-bench batch report rejects placeholder prepare_task artifact evidence 
     count: 1,
     planMode: "full",
     providerPreflightMode: "live",
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
     terminalStates: [
       { assignmentId: "assignment-one", status: "completed" },
     ],
@@ -4385,6 +4482,75 @@ test("SWE-bench batch report rejects placeholder prepare_task artifact evidence 
   assert.match(String(validation.violations), /unauditable prepare_task artifact evidence/);
 });
 
+test("SWE-bench live report requires adversarial evidence only for the verified validation profile", () => {
+  const firstRecord = recordFromDatasetRow(sampleRow, 7);
+  const phaseArtifact = {
+    ok: true,
+    structuredOutputPath: "/tmp/phase-output.json",
+    structuredOutputBytes: 123,
+    artifactSha256: "a".repeat(64),
+  };
+  const phaseEvidence = {
+    prepare_task: {
+      ...phaseArtifact,
+      structuredOutputPath: "/tmp/events.jsonl#riskmap_generated",
+    },
+    plan: phaseArtifact,
+    execute: phaseArtifact,
+    verify: phaseArtifact,
+  };
+  const manifestFor = (validationProfile: "standard" | "verified") => ({
+    schemaVersion: 1,
+    generatedAt: "2026-07-05T00:00:00.000Z",
+    dataset: "SWE-bench/SWE-bench_Verified",
+    split: "test",
+    count: 1,
+    planMode: "full",
+    providerPreflightMode: "live",
+    validationProfile,
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
+    terminalStates: [
+      { assignmentId: "assignment-one", status: "completed" },
+    ],
+    assignments: [
+      {
+        record: firstRecord,
+        queued: { assignmentId: "assignment-one", attempt: 1 },
+      },
+    ],
+  });
+  const evidenceByAssignmentId = {
+    "assignment-one": {
+      phaseEvidence,
+      patch: {
+        path: "/tmp/patch.diff",
+        sha256: "b".repeat(64),
+        bytes: 234,
+        changedFiles: ["django/db/models/expressions.py"],
+        changedFileCount: 1,
+      },
+      regressionEvidence: {
+        status: "present",
+        canonicalCommandsRun: ["PYTHONPATH=. python3 tests/runtests.py expressions.tests.FTimeDeltaTests.test_date_subtraction"],
+      },
+    },
+  };
+
+  const standard = buildSweBenchBatchReport({
+    manifest: manifestFor("standard"),
+    evidenceByAssignmentId,
+  });
+  const verified = buildSweBenchBatchReport({
+    manifest: manifestFor("verified"),
+    evidenceByAssignmentId,
+  });
+
+  assert.equal(recordValue(standard.validation).valid, true);
+  assert.deepEqual(recordValue(standard.validation).violations, []);
+  assert.equal(recordValue(verified.validation).valid, false);
+  assert.match(String(recordValue(verified.validation).violations), /missing successful adversarial_verify evidence/);
+});
+
 test("SWE-bench batch evidence collector fails validation on malformed referenced JSONL evidence", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "cpb-swebench-malformed-jsonl-test-"));
   const auditPath = path.join(root, "audit.jsonl");
@@ -4398,7 +4564,7 @@ test("SWE-bench batch evidence collector fails validation on malformed reference
     split: "test",
     count: 1,
     planMode: "full",
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
     terminalStates: [
       { assignmentId: "assignment-one", status: "completed", projectId },
     ],
@@ -4478,7 +4644,7 @@ test("SWE-bench batch evidence collector summarizes ACP blocked audit events", a
     split: "test",
     count: 1,
     planMode: "full",
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
     terminalStates: [
       { assignmentId: "assignment-one", status: "failed", failureKind: "broad_test_command_denied" },
     ],
@@ -4531,7 +4697,7 @@ test("SWE-bench batch report preserves hard-constraint failure over coarse agent
     split: "test",
     count: 1,
     planMode: "full",
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
     terminalStates: [
       { assignmentId: "assignment-one", status: "failed", failureKind: "agent_exit_nonzero" },
     ],
@@ -4587,7 +4753,7 @@ test("SWE-bench batch report preserves no-edit execute failure over coarse agent
     split: "test",
     count: 1,
     planMode: "full",
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
     terminalStates: [
       { assignmentId: "assignment-one", status: "failed", failureKind: "agent_exit_nonzero" },
     ],
@@ -4643,7 +4809,7 @@ test("SWE-bench batch evidence collector summarizes cleanup audit evidence", asy
     split: "test",
     count: 1,
     planMode: "full",
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
     workerCleanup: { workerCleanupEvents: 0 },
     terminalStates: [
       { assignmentId: "assignment-one", status: "failed", failureKind: "phase_timeout" },
@@ -4700,7 +4866,7 @@ test("SWE-bench batch output writer stores manifest and report JSON side by side
     split: "test",
     count: 1,
     planMode: "full",
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
     terminalStates: [
       { assignmentId: "assignment-one", status: "failed", failureKind: "provider_unavailable" },
     ],
@@ -4733,7 +4899,7 @@ test("SWE-bench batch output writer fails closed when provider preflight evidenc
     split: "test",
     count: 0,
     planMode: "full",
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
     assignments: [],
     terminalStates: [],
   };
@@ -4754,7 +4920,7 @@ test("SWE-bench batch queue writes manifest and report when provider preflight f
   const root = await mkdtemp(path.join(os.tmpdir(), "cpb-swebench-preflight-fail-"));
   const manifestPath = path.join(root, "manifest.json");
   const reportPath = path.join(root, "report.json");
-  const options = resolveBatchQueueOptions([
+  const options = resolveBatchQueueOptions(queueArgs([
     "node",
     "queue-swebench-batch.js",
     "--hub-root",
@@ -4769,7 +4935,7 @@ test("SWE-bench batch queue writes manifest and report when provider preflight f
     reportPath,
     "--provider-preflight",
     "live",
-  ]);
+  ]));
 
   const outputs = await writePreflightFailureOutputs({
     options,
@@ -4804,7 +4970,7 @@ test("SWE-bench batch report fails closed when provider preflight evidence is mi
     split: "test",
     count: 0,
     planMode: "full",
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
     assignments: [],
     terminalStates: [],
   };
@@ -4812,7 +4978,7 @@ test("SWE-bench batch report fails closed when provider preflight evidence is mi
     schemaVersion: 1,
     generatedAt: "2026-07-05T00:00:00.000Z",
     manifest: {
-      agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+      agents: TEST_PRODUCT_VALIDATION_AGENTS,
       providerPreflight: null,
     },
     summary: {
@@ -4847,7 +5013,7 @@ test("SWE-bench batch report rejects forged provider preflight success", () => {
     split: "test",
     count: 0,
     planMode: "full",
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
     assignments: [],
     terminalStates: [],
   });
@@ -4903,7 +5069,7 @@ test("SWE-bench batch report rejects assignments without terminal states", () =>
     split: "test",
     count: 1,
     planMode: "full",
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
     assignments: [{
       record: firstRecord,
       queued: { assignmentId: "assignment-one", attempt: 1 },
@@ -4929,7 +5095,7 @@ test("SWE-bench batch output writer includes hub result evidence when available"
     split: "test",
     count: 1,
     planMode: "full",
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
     terminalStates: [
       { assignmentId: "assignment-one", status: "completed" },
     ],
@@ -4973,7 +5139,7 @@ test("SWE-bench worker env keeps infrastructure settings but injects no solving 
     repoRoot: "/repo",
     hubRoot: "/tmp/hub",
     cpbRoot: "/tmp/cpb",
-    phaseAgents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    phaseAgents: TEST_PRODUCT_VALIDATION_AGENTS,
     timeoutMs: 12345,
   });
 
@@ -5003,7 +5169,7 @@ test("SWE-bench worker env keeps infrastructure settings but injects no solving 
     repoRoot: "/repo",
     hubRoot: "/tmp/hub",
     cpbRoot: "/tmp/cpb",
-    phaseAgents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    phaseAgents: TEST_PRODUCT_VALIDATION_AGENTS,
     timeoutMs: 999999,
   });
   assert.equal(longEnv.CPB_ACP_IDLE_TIMEOUT_MS, "600000");
@@ -5028,7 +5194,6 @@ test("SWE-bench batch enqueue rolls back project and assignment state when abort
       record,
       row: sampleRow,
       sourcePath,
-      agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
       planMode: "full",
     });
     const abort = new AbortController();
@@ -5125,7 +5290,6 @@ test("SWE-bench batch enqueue compensates a committed registry warning before an
     record,
     row: sampleRow,
     sourcePath,
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
     planMode: "full",
   });
   let injected = false;
@@ -5183,7 +5347,6 @@ test("local assignment enqueue self-compensates every pre-receipt write fault", 
         record,
         row: sampleRow,
         sourcePath,
-        agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
         planMode: "full",
       });
       const assignmentId = `a-${input.entryId}`;
@@ -5620,7 +5783,6 @@ test("SWE-bench batch enqueue rollback refuses to overwrite a concurrent same-as
     record,
     row: sampleRow,
     sourcePath,
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
     planMode: "full",
   });
   const abort = new AbortController();
@@ -5675,7 +5837,6 @@ test("SWE-bench batch enqueue rollback refuses to delete an inbox claim after at
     record,
     row: sampleRow,
     sourcePath,
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
     planMode: "full",
   });
   const abort = new AbortController();
@@ -6124,7 +6285,6 @@ test("SWE-bench batch queue exposes explicit local inbox backend contract", asyn
     record,
     row: sampleRow,
     sourcePath,
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
     planMode: "full",
   });
 
@@ -6133,6 +6293,12 @@ test("SWE-bench batch queue exposes explicit local inbox backend contract", asyn
     workerId: "worker-01",
     input,
     sourcePath,
+    projectConfig: {
+      agent: "claude",
+      provider: "glm",
+      model: "glm-test-model",
+      validationProfile: "standard",
+    },
     metadata: { productValidation: true },
   });
 
@@ -6140,12 +6306,29 @@ test("SWE-bench batch queue exposes explicit local inbox backend contract", asyn
   assert.equal(result.inboxPath, result.inboxRef);
   assert.match(String(result.inboxPath), /a-django-django-13128\.json$/);
   assert.notEqual(result.inboxPath, "");
+  const canonicalConfig = JSON.parse(await readFile(
+    path.join(hubRoot, input.projectId, "project.json"),
+    "utf8",
+  ));
+  assert.equal(canonicalConfig.agent, "claude");
+  assert.equal(canonicalConfig.provider, "glm");
+  assert.equal(canonicalConfig.model, "glm-test-model");
+  assert.equal(canonicalConfig.validationProfile, "standard");
+  const inbox = JSON.parse(await readFile(String(result.inboxPath), "utf8"));
+  assert.equal(inbox.projectRuntimeRoot, path.join(hubRoot, "projects", input.projectId));
+  assert.equal(inbox.metadata.agents.executor.agent, "claude");
+  assert.equal(inbox.metadata.agents.executor.provider, "glm");
+  assert.equal(inbox.metadata.agents.executor.model, "glm-test-model");
+  assert.equal(inbox.sourceContext.productValidation.validationProfile, "standard");
+  assert.equal(inbox.sourceContext.productValidation.adversarialRequired, false);
 });
 
 test("SWE-bench batch queue initializes the canonical local code index", () => {
   assert.match(batchQueueSource, /ensureLocalCodeIndex/);
   assert.doesNotMatch(batchQueueSource, /skip-local-code-index/);
   assert.match(batchQueueSource, /registerProject/);
+  assert.match(batchQueueSource, /checkout", "-B", baseBranch/);
+  assert.doesNotMatch(batchQueueSource, /checkout", "--detach"/);
 });
 
 test("SWE-bench batch wait marks stale assignments failed at timeout", async () => {
@@ -6180,6 +6363,37 @@ test("SWE-bench batch wait marks stale assignments failed at timeout", async () 
   assert.equal(result.attemptToken, attempt.attemptToken);
   assert.equal(result.orchestratorEpoch, attempt.orchestratorEpoch);
   assert.equal(result.failureKind, "unit_timeout");
+});
+
+test("SWE-bench batch wait returns a blocked assignment without manufacturing a timeout", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "cpb-swebench-wait-blocked-"));
+  const store = new AssignmentStore(root);
+  await store.init();
+  const assignment = await store.getOrCreateAssignmentForEntry({
+    entryId: "blocked-one",
+    projectId: "swebench-blocked-one",
+    task: "blocked assignment",
+    sourcePath: root,
+  });
+  const statePath = path.join(root, "assignments", String(assignment.assignmentId), "state.json");
+  const state = recordValue(JSON.parse(await readFile(statePath, "utf8")));
+  state.status = "blocked";
+  await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+
+  const states = await waitForAssignments(root, [{ assignmentId: assignment.assignmentId }], {
+    intervalMs: 1,
+    timeoutMs: 100,
+  });
+
+  assert.equal(states[0]?.status, "blocked");
+  assert.equal(await fileExists(path.join(
+    root,
+    "assignments",
+    String(assignment.assignmentId),
+    "attempts",
+    "001",
+    "result.json",
+  )), false);
 });
 
 test("SWE-bench batch wait refuses to terminalize a stale assignment identity", async () => {
@@ -6243,7 +6457,7 @@ test("SWE-bench batch report preserves but rejects synthetic timeout terminal st
     split: "test",
     count: 1,
     planMode: "full",
-    agents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    agents: TEST_PRODUCT_VALIDATION_AGENTS,
     terminalStates: [
       { assignmentId, status: "failed", attempts: 1 },
     ],

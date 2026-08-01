@@ -64,6 +64,23 @@ function stringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.map(String) : [];
 }
 
+function checklistPromptSummary(value: unknown) {
+  const checklist = recordValue(value);
+  return {
+    schemaVersion: checklist.schemaVersion ?? null,
+    items: (Array.isArray(checklist.items) ? checklist.items : []).map(recordValue).map((item) => ({
+      id: item.id ?? null,
+      requirement: item.requirement ?? null,
+      predicateId: item.predicateId ?? null,
+      verificationMethod: item.verificationMethod ?? null,
+      allowedFiles: Array.isArray(item.allowedFiles) ? item.allowedFiles : [],
+      required: item.required === true,
+      dependsOn: Array.isArray(item.dependsOn) ? item.dependsOn : [],
+      requiresRealPathEvidence: item.requiresRealPathEvidence === true,
+    })),
+  };
+}
+
 function eventSummary(event: LooseRecord) {
   return {
     event: stringValue(event.event),
@@ -200,14 +217,23 @@ export async function runPlan(ctx: LooseRecord) {
   // before checklist scope was frozen. Reuse that immutable artifact so the
   // sequential DAG can preserve its normal plan -> execute dependency without
   // asking a new single planner to redefine the accepted scope.
-  const assuranceTournament = recordValue(recordValue(ctx.sourceContext).assuranceTournament);
-  const precomputedPlanArtifact = recordValue(assuranceTournament.planArtifact);
+  const sourceContext = recordValue(ctx.sourceContext);
+  const assuranceTournament = recordValue(sourceContext.assuranceTournament);
+  const fusedPlanning = recordValue(sourceContext.fusedPlanning);
+  const assurancePlanArtifact = recordValue(assuranceTournament.planArtifact);
+  const fusedPlanArtifact = recordValue(fusedPlanning.planArtifact);
+  const precomputedPlanArtifact = stringValue(assurancePlanArtifact.path)
+    ? assurancePlanArtifact
+    : fusedPlanArtifact;
+  const precomputedPlanSource = stringValue(assurancePlanArtifact.path)
+    ? "high_assurance"
+    : "checklist_planning_fusion";
   if (stringValue(precomputedPlanArtifact.path)) {
     try {
       const planMarkdown = await readFile(stringValue(precomputedPlanArtifact.path), "utf8");
       const validation = recordValue(validatePlanMarkdown(planMarkdown));
       if (!validation.ok) throw new Error(stringValue(validation.reason, "precomputed plan is invalid"));
-      if (requiresPlanBoundedHandoff(ctx, recordValue(ctx.sourceContext))) {
+      if (requiresPlanBoundedHandoff(ctx, sourceContext)) {
         const handoffValidation = recordValue(validatePlanBoundedHandoff(planMarkdown));
         if (!handoffValidation.ok) throw new Error(stringValue(handoffValidation.reason, "precomputed plan handoff is invalid"));
       }
@@ -215,10 +241,13 @@ export async function runPlan(ctx: LooseRecord) {
         phase: "plan",
         artifact: precomputedPlanArtifact,
         diagnostics: {
-          assuranceMode: "high",
+          precomputedPlanSource,
           precomputedPlan: true,
-          tournamentDecision: recordValue(assuranceTournament.decision).decision || null,
-          supportingArtifacts: assuranceTournament.supportingArtifacts || [],
+          ...(precomputedPlanSource === "high_assurance" ? {
+            assuranceMode: "high",
+            tournamentDecision: recordValue(assuranceTournament.decision).decision || null,
+            supportingArtifacts: assuranceTournament.supportingArtifacts || [],
+          } : {}),
         },
       });
     } catch (err) {
@@ -227,7 +256,7 @@ export async function runPlan(ctx: LooseRecord) {
         failure: failure({
           kind: FailureKind.ARTIFACT_INVALID,
           phase: "plan",
-          reason: `precomputed high-assurance plan is unavailable: ${err instanceof Error ? err.message : String(err)}`,
+          reason: `precomputed ${precomputedPlanSource} plan is unavailable: ${err instanceof Error ? err.message : String(err)}`,
           retryable: false,
           cause: { planArtifact: precomputedPlanArtifact },
         }),
@@ -269,7 +298,6 @@ export async function runPlan(ctx: LooseRecord) {
 
   throwIfPhaseAborted(ctx.signal as AbortSignal | undefined);
   if (!agentResult.ok) {
-    const sourceContext = recordValue(ctx.sourceContext);
     const originalFailureKind = typeof agentResult.kind === "string" ? agentResult.kind : FailureKind.UNKNOWN;
     const diagnostics = recordValue(agentResult.diagnostics);
     const boundedHandoffTimeout = shouldClassifyPlanBoundedHandoffTimeout(ctx, sourceContext, originalFailureKind);
@@ -333,7 +361,6 @@ export async function runPlan(ctx: LooseRecord) {
       diagnostics: withPromptArtifactDiagnostics(recordValue(agentResult.diagnostics), promptArtifact),
     });
   }
-  const sourceContext = recordValue(ctx.sourceContext);
   if (requiresPlanBoundedHandoff(ctx, sourceContext) && !classifyPoisonedSession(planMarkdown).poisoned) {
     const handoffValidation = recordValue(validatePlanBoundedHandoff(planMarkdown));
     if (!handoffValidation.ok) {
@@ -392,7 +419,7 @@ async function buildPlanPrompt(ctx: LooseRecord) {
     throw new Error("plan received checklist context without an event-indexed artifact handle");
   }
   const checklistSection = checklist
-    ? `\n\n## Frozen Acceptance Checklist\nThis checklist is the task contract. Do not silently mutate it. If it is wrong, report the issue in the plan risks.\n\n${JSON.stringify(checklist, null, 2)}`
+    ? `\n\n## Frozen Acceptance Checklist\nThis checklist is the task contract. Do not silently mutate it. If it is wrong, report the issue in the plan risks. The full checklist remains in its artifact; this is the planning summary.\n\n${JSON.stringify(checklistPromptSummary(checklist), null, 2)}`
     : "";
 
   let repoSection = "";

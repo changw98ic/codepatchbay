@@ -961,7 +961,11 @@ async function providerConnectivityViolations(
     }
   }
   for (const route of REQUIRED_PROVIDER_ROUTES) {
-    const configuredAgent = agents[route.agentKey];
+    const configuredValue = agents[route.agentKey];
+    const configuredSelection: LooseRecord = isRecord(configuredValue)
+      ? configuredValue
+      : { agent: typeof configuredValue === "string" ? configuredValue : null };
+    const configuredAgent = configuredSelection.agent;
     const matching = phases.filter((value) => isRecord(value)
       && value.phase === route.phase
       && value.role === route.role

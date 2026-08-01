@@ -76,6 +76,7 @@ import {
   type HarnessInstanceResult,
 } from "../scripts/run-swebench-three-way.js";
 import {
+  resolveProductValidationAgents,
   runCommand as runProductValidationCommand,
   runManagedWorker,
 } from "../scripts/run-swebench-product-validation.js";
@@ -1683,12 +1684,14 @@ async function writeFakeManagedWorkerDist(root: string) {
   return distRoot;
 }
 
-const managedWorkerAgents = {
-  planner: "codex",
-  executor: "claude-glm",
-  verifier: "codex",
-  adversarial_verifier: "codex",
-};
+const managedWorkerAgents = resolveProductValidationAgents({
+  agents: {
+    planner: { agent: "codex" },
+    executor: { agent: "claude-glm" },
+    verifier: { agent: "codex" },
+    adversarial_verifier: { agent: "codex" },
+  },
+});
 
 test("runManagedWorker abort waits for verified worker and grandchild teardown", async () => {
   const root = await tempRoot("cpb-managed-worker-abort-tree");

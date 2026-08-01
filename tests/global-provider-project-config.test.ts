@@ -79,6 +79,33 @@ test("providers.json maps a project-selected provider and model onto the agent t
   }
 });
 
+test("providers.json rejects a project agent that does not match the configured provider transport", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "cpb-provider-agent-mismatch-"));
+  const providersFile = path.join(root, "providers.json");
+  try {
+    await writeFile(providersFile, `${JSON.stringify({
+      providers: {
+        glm: {
+          agent: "claude-glm",
+          key: "glm",
+          family: "glm",
+        },
+      },
+    })}\n`, "utf8");
+    assert.throws(
+      () => applyProviderEnvironment(
+        { CPB_PROVIDERS_FILE: providersFile },
+        "claude",
+        getDescriptor("claude"),
+        { provider: "glm", model: "glm-project-model" },
+      ),
+      /requires agent 'claude-glm', got 'claude'/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("the global provider catalog is created empty without overwriting user configuration", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "cpb-provider-catalog-"));
   const file = path.join(root, "nested", "providers.json");
@@ -166,6 +193,45 @@ test("queue-entry agent resolution carries the canonical project selection into 
     assert.equal(agents.planner?.agent, "claude");
     assert.equal(agents.executor?.provider, "glm");
     assert.equal(agents.verifier?.model, "glm-project-model");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("queue-entry agent resolution preserves role-specific project provider and model selections", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "cpb-entry-role-agent-config-"));
+  const hubRoot = path.join(root, "hub");
+  const runtimeRoot = path.join(hubRoot, "projects", "demo");
+  try {
+    await mkdir(hubRoot, { recursive: true });
+    await writeFile(path.join(hubRoot, "projects.json"), `${JSON.stringify({
+      version: 1,
+      revision: 0,
+      projects: {
+        demo: {
+          id: "demo",
+          sourcePath: "/tmp/demo",
+          projectRuntimeRoot: runtimeRoot,
+        },
+      },
+      projectRevisions: {},
+      mutationId: null,
+    })}\n`, "utf8");
+    await writeProjectJson(runtimeRoot, "demo", {
+      agents: {
+        planner: { agent: "claude-glm", provider: "glm", model: "glm-5.2" },
+        executor: { agent: "claude-glm", provider: "glm", model: "glm-5.2" },
+        verifier: { agent: "claude-mimo", provider: "mimo", model: "mimo-v2.5-pro" },
+        adversarial_verifier: { agent: "claude-mimo", provider: "mimo", model: "mimo-v2.5-pro" },
+      },
+    });
+
+    const resolved = await resolveAgentsForEntry(hubRoot, root, "demo", {});
+    const agents = resolved.agents as Record<string, Record<string, unknown>>;
+    assert.equal(agents.planner.agent, "claude-glm");
+    assert.equal(agents.executor.provider, "glm");
+    assert.equal(agents.verifier.model, "mimo-v2.5-pro");
+    assert.equal(agents.adversarial_verifier.provider, "mimo");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

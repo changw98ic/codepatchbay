@@ -60,7 +60,11 @@ import {
 } from "../core/policy/filesystem-boundary.js";
 import { derivePhaseBudgetPolicy } from "../core/policy/phase-budget.js";
 import { buildDatasetRowsUrl } from "./queue-swebench-batch.js";
-import { runManagedWorker, type ProductValidationAgents } from "./run-swebench-product-validation.js";
+import {
+  runManagedWorker,
+  type ProductValidationAgentSelection,
+  type ProductValidationAgents,
+} from "./run-swebench-product-validation.js";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..", "..");
 const DIST_ROOT = path.resolve(import.meta.dirname, "..");
@@ -5847,11 +5851,17 @@ async function writeNeutralAssignment({
     sourcePath,
     metadata: { comparisonRunRootHash: sha256(runRoot), lane: "cpb_high_assurance" },
   })).projectRuntimeRoot;
+  const selection = (agent: string): ProductValidationAgentSelection => ({
+    agent,
+    provider: null,
+    model: null,
+    variant: null,
+  });
   const agents: ProductValidationAgents = {
-    planner: "codex",
-    executor: "claude-glm",
-    verifier: "codex",
-    adversarial_verifier: "codex",
+    planner: selection("codex"),
+    executor: selection("claude-glm"),
+    verifier: selection("codex"),
+    adversarial_verifier: selection("codex"),
   };
   const input = {
     entryId, projectId,
