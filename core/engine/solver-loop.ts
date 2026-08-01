@@ -62,45 +62,22 @@ function artifactRef(value: unknown): LooseRecord | null {
   };
 }
 
-function scopePathMatches(candidate: string, allowed: string) {
-  const requestedPath = candidate.replace(/\\/g, "/").replace(/^\.\//, "");
-  const allowedPath = allowed.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/$/, "");
-  return Boolean(requestedPath && allowedPath)
-    && (requestedPath === allowedPath || requestedPath.startsWith(`${allowedPath}/`));
-}
-
 export function bindVerificationFeedbackToFrozenScope(
   sourceContext: LooseRecord,
   feedback: VerificationFeedback,
-): { ok: true; feedback: VerificationFeedback } | { ok: false; reason: string; requestedFixScope: string[]; allowedFixScope: string[] } {
+): { ok: true; feedback: VerificationFeedback } {
   const checklist = recordValue(sourceContext.acceptanceChecklist);
   const items = Array.isArray(checklist.items) ? checklist.items.map(recordValue) : [];
   const requestedIds = feedback.targetChecklistIds;
   const selectedItems = requestedIds.length > 0
     ? requestedIds.map((id) => items.find((item) => String(item.id || "") === id)).filter(Boolean).map(recordValue)
     : items;
-  if (requestedIds.length > 0 && selectedItems.length !== requestedIds.length) {
-    return {
-      ok: false,
-      reason: "verification counterexample references a checklist item outside the frozen acceptance contract",
-      requestedFixScope: feedback.fixScope,
-      allowedFixScope: [],
-    };
-  }
   const allowedFixScope = selectedItems
     .flatMap((item) => stringArray(item.allowedFiles))
     .filter((value, index, all) => all.indexOf(value) === index);
-  const outsideScope = feedback.fixScope.filter(
-    (candidate) => !allowedFixScope.some((allowed) => scopePathMatches(candidate, allowed)),
-  );
-  if (outsideScope.length > 0) {
-    return {
-      ok: false,
-      reason: `verification counterexample requests scope outside the frozen acceptance contract: ${outsideScope.join(", ")}`,
-      requestedFixScope: feedback.fixScope,
-      allowedFixScope,
-    };
-  }
+  // The frozen checklist is an audit baseline, not a mutation boundary. A
+  // verifier's concrete counterexample may expose a missing file, regression
+  // case, or newly required file that the original plan did not predict.
   return {
     ok: true,
     feedback: {
@@ -159,8 +136,11 @@ export function completionGateRepairSourceContext(
   feedback: CompletionGateFeedback,
 ) {
   const verifyOnly = feedback.retryPhase === "verify";
+  const scopeViolation = feedback.gateOutcome === "scope_violation";
   const instruction = verifyOnly
     ? "Keep the candidate unchanged. Rerun the objective probes and verification path, cite only evidence IDs that exist in the current ledger, and produce a fresh verdict bound to the current candidate."
+    : scopeViolation
+      ? "The candidate contains files outside the frozen scope. Inspect each named file: remove only throwaway residue created in this execution. Do not delete a file that may be required for the task; instead stop and report that an explicit frozen-scope amendment is required. Then rerun focused validation and return a candidate that is entirely within the approved scope."
     : "Continue in the existing worktree and executor conversation. Repair the implementation for the named checklist items and fix scope, run focused validation, and produce a materially improved candidate before independent verification.";
   return {
     ...sourceContext,

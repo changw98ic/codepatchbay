@@ -67,6 +67,7 @@ function makeCtx(pool) {
 }
 
 const VALID = '```json\n{"status":"ok","decomposedItems":[{"requirement":"support --json","predicateId":"status-json","verificationMethod":"static","allowedFiles":["cli/commands/status.ts"],"sourceRefs":[{"kind":"task_text","locator":"task:0"}]}]}\n```';
+const VALID_FUSED = '```json\n{"status":"ok","decomposedItems":[{"requirement":"support --json","predicateId":"status-json","verificationMethod":"static","allowedFiles":["cli/commands/status.ts"],"sourceRefs":[{"kind":"task_text","locator":"task:0"}]}],"planMarkdown":"## Analysis\\nImplement JSON status output.\\n\\n## Bounded Handoff\\n- Real actors: status command\\n- Entrypoints: cpb status\\n- Bypass candidates: none\\n- Edit files: cli/commands/status.ts\\n- Verification targets: status command test\\n- Blockers: none\\n\\n## Files to modify\\n- cli/commands/status.ts\\n\\n## Implementation Steps\\n1. Add output.\\n\\n## Testing\\n- Run status test.\\n\\n## Risks\\n- Preserve text output."}\n```';
 
 function isAbortError(error) {
   return error instanceof Error && error.name === "AbortError";
@@ -188,6 +189,24 @@ test("decompose: pool returns valid items -> ok with allowedFiles", async () => 
   assert.equal(r.items!.length, 1);
   assert.equal(r.items![0].predicateId, "status-json");
   assert.deepEqual(r.items![0].allowedFiles, ["cli/commands/status.ts"]);
+});
+
+test("decompose: an explicit standard validation profile produces checklist and plan in one call", async () => {
+  let calls = 0;
+  const r = await decomposeTaskToChecklistItems({
+    task: "add --json to status",
+    ctx: {
+      ...makeCtx(makeFakePool(VALID_FUSED, () => { calls += 1; })),
+      sourceContext: {
+        productValidation: { validationProfile: "standard" },
+      },
+    },
+  });
+  assert.equal(calls, 1);
+  assert.equal(r.ok, true);
+  assert.equal(r.fusedPlanning, true);
+  assert.match(r.planMarkdown || "", /## Bounded Handoff/);
+  assert.equal(r.items?.[0]?.allowedFiles[0], "cli/commands/status.ts");
 });
 
 test("decompose: prepare_task agent call receives risk budget env", async () => {

@@ -10,7 +10,6 @@ import { buildExecutePrompt } from "../core/phases/execute.js";
 import { buildVerifyPrompt } from "../core/phases/verify.js";
 import {
   buildTask,
-  DEFAULT_PRODUCT_VALIDATION_AGENTS,
   deriveSweBenchDiagnosticCommands,
   deriveSweBenchVerificationCommands,
   resolveProductValidationAgents,
@@ -20,6 +19,19 @@ import {
 import type { TemporaryWorkspace } from "../core/runtime/temporary-workspace.js";
 
 const validationRunnerSource = readFileSync(new URL("../scripts/run-swebench-product-validation.js", import.meta.url), "utf8");
+
+test("SWE-bench source checkout keeps the symbolic base branch required by managed worktrees", () => {
+  assert.match(validationRunnerSource, /checkout", "-B", "cpb\/swebench-base", "FETCH_HEAD"/);
+  assert.doesNotMatch(validationRunnerSource, /checkout", "--detach"/);
+});
+const TEST_PRODUCT_VALIDATION_AGENTS = resolveProductValidationAgents({
+  agents: {
+    planner: { agent: "codex" },
+    executor: { agent: "claude", provider: "glm", model: "glm-test" },
+    verifier: { agent: "claude", provider: "mimo", model: "mimo-test" },
+    adversarial_verifier: { agent: "claude", provider: "mimo", model: "mimo-test" },
+  },
+});
 
 const djangoRecord = {
   benchmarkInstanceId: "django__django-13128",
@@ -189,21 +201,18 @@ test("product validation still uses structured cancellation before killing timed
   assert.match(validationRunnerSource, /product validation timed out/);
 });
 
-test("product validation keeps full planning default and supports controlled agent comparisons", () => {
+test("product validation keeps full planning default and resolves project-owned provider selection", () => {
   assert.match(validationRunnerSource, /function parsePlanMode/);
   assert.match(validationRunnerSource, /value === null \|\| value === "full"/);
-  assert.deepEqual(DEFAULT_PRODUCT_VALIDATION_AGENTS, {
-    planner: "codex",
-    executor: "claude-glm",
-    verifier: "claude-mimo",
-    adversarial_verifier: "claude-mimo",
+  assert.equal(TEST_PRODUCT_VALIDATION_AGENTS.planner.agent, "codex");
+  assert.deepEqual(TEST_PRODUCT_VALIDATION_AGENTS.executor, {
+    agent: "claude",
+    provider: "glm",
+    model: "glm-test",
+    variant: null,
   });
-  assert.deepEqual(resolveProductValidationAgents(["--agent", "codex"]), {
-    planner: "codex",
-    executor: "codex",
-    verifier: "codex",
-    adversarial_verifier: "codex",
-  });
+  assert.doesNotMatch(validationRunnerSource, /DEFAULT_PRODUCT_VALIDATION_AGENTS/);
+  assert.doesNotMatch(validationRunnerSource, /planner:\s*"codex"|executor:\s*"claude-glm"|verifier:\s*"claude-mimo"/);
 });
 
  test("managed worker teardown preserves a synchronous cleanup failure in AggregateError diagnostics", async (t) => {
@@ -235,7 +244,7 @@ test("product validation keeps full planning default and supports controlled age
     hubRoot,
     cpbRoot,
     assignmentId: "missing-assignment",
-    phaseAgents: DEFAULT_PRODUCT_VALIDATION_AGENTS,
+    phaseAgents: TEST_PRODUCT_VALIDATION_AGENTS,
     timeoutMs: 50,
     distRoot,
     teardownProcessTree() {

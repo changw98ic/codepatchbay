@@ -6,8 +6,10 @@ import { test } from "node:test";
 
 import { runAgent } from "../core/agents/agent-runner.js";
 import { FailureKind, failure } from "../core/contracts/failure.js";
+import { buildCompletionGateFailureResult } from "../core/engine/completion-failure.js";
 import { mapChecklistRoutingLabel } from "../core/workflow/acceptance-checklist.js";
 import { FailureRouter } from "../server/orchestrator/failure-router.js";
+import { recordValue } from "../shared/types.js";
 
 test("scope violation is a valid failure kind for checklist routing", () => {
   const result = failure({
@@ -166,13 +168,13 @@ test("runAgent classifies a null child exit as a retryable transport disappearan
   assert.equal(record.diagnostics?.transportFailure, true);
 });
 
-test("checklist routing labels map to closed failure contracts", () => {
+test("checklist routing labels preserve scope violations while allowing bounded remediation", () => {
   assert.deepEqual(mapChecklistRoutingLabel("scope_violation", {}), {
     kind: FailureKind.SCOPE_VIOLATION,
-    action: "mark_failed",
-    retryPhase: null,
+    action: "retry_same_worker",
+    retryPhase: "execute",
     requiresFixScope: false,
-    retryable: false,
+    retryable: true,
   });
   assert.deepEqual(mapChecklistRoutingLabel("checklist_failed", { fixScope: ["cli/status.ts"] }), {
     kind: FailureKind.VERIFICATION_FAILED,
@@ -233,15 +235,16 @@ test("checklist routing labels map to closed failure contracts", () => {
   assert.equal(mapChecklistRoutingLabel("unknown_label", {}).action, "mark_failed");
 });
 
-test("failure router applies closed actions for checklist routing labels", async () => {
+test("failure router retries scope cleanup before applying a terminal checklist action", async () => {
   const router = new FailureRouter();
   const scopeDecision = await router.route({
     assignment: { attempts: 0 },
     attempt: 1,
     result: { failure: { kind: FailureKind.SCOPE_VIOLATION, reason: "outside fix scope", retryable: false, cause: { routingLabel: "scope_violation" } } },
   });
-  assert.equal(scopeDecision.action, "mark_failed");
-  assert.equal(scopeDecision.retryable, false);
+  assert.equal(scopeDecision.action, "retry_same_worker");
+  assert.equal(scopeDecision.retryPhase, "execute");
+  assert.equal(scopeDecision.retryable, true);
 
   const ambiguousDecision = await router.route({
     assignment: { attempts: 0 },
@@ -250,4 +253,24 @@ test("failure router applies closed actions for checklist routing labels", async
   });
   assert.equal(ambiguousDecision.action, "mark_failed");
   assert.equal(ambiguousDecision.retryable, false);
+});
+
+test("completion scope violations are repairable without accepting the rejected candidate", () => {
+  const result = buildCompletionGateFailureResult({
+    project: "flow",
+    jobId: "job-scope-remediation",
+    gateResult: {
+      outcome: "scope_violation",
+      reason: "execution map contains unmapped changed files",
+      missingGates: ["checklist"],
+      details: { checklist: { unmappedChangedFiles: ["_sim_check_scratch.py"] } },
+    },
+    phaseResults: [],
+  });
+
+  assert.equal(result.failure.kind, FailureKind.SCOPE_VIOLATION);
+  assert.equal(result.failure.retryable, true);
+  const cause = recordValue(result.failure.cause);
+  assert.equal(cause.routingAction, "retry_same_worker");
+  assert.equal(cause.routingRetryPhase, "execute");
 });

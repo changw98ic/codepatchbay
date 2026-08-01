@@ -20,6 +20,7 @@ import { createWorktree } from "../runtime/git/worktree.js";
 import {
   cleanupManagedWorkerWorktree,
   createIsolatedWorktreeWithRetry,
+  managedWorktreeSlug,
   parseManagedWorktreeDispositionProof,
   verifyRetainedManagedWorkerWorktree,
   WORKTREE_QUARANTINE_PREFIX,
@@ -89,14 +90,16 @@ async function initializedFixture(name: string) {
   await writeFile(path.join(sourcePath, "seed.txt"), "seed\n", "utf8");
   await git(sourcePath, ["add", "seed.txt"]);
   await git(sourcePath, ["commit", "-m", "seed"]);
+  const projectRuntimeRoot = path.join(hubRoot, "projects", "proj");
+  const worktreeSlug = managedWorktreeSlug(projectRuntimeRoot);
   return {
     root,
     hubRoot,
-    projectRuntimeRoot: path.join(hubRoot, "projects", "proj"),
+    projectRuntimeRoot,
     sourcePath,
     worktreesRoot: path.join(hubRoot, "projects", "proj", "worktrees"),
-    worktreePath: path.join(hubRoot, "projects", "proj", "worktrees", "job-entry1-pipeline"),
-    branch: "cpb/job-entry1-pipeline",
+    worktreePath: path.join(hubRoot, "projects", "proj", "worktrees", `job-entry1-${worktreeSlug}`),
+    branch: `cpb/job-entry1-${worktreeSlug}`,
   };
 }
 
@@ -113,6 +116,42 @@ async function fixture(name: string) {
   await writeFile(path.join(managedWorktree.path, "owned.txt"), "owned\n", "utf8");
   return { ...paths, managedWorktree };
 }
+
+test("the same entry can create isolated worktrees for separate runtime runs", async () => {
+  const paths = await initializedFixture("separate-runs");
+  const secondProjectRuntimeRoot = path.join(paths.hubRoot, "projects", "proj-second-run");
+  const first = await createIsolatedWorktreeWithRetry({
+    projectRuntimeRoot: paths.projectRuntimeRoot,
+    sourcePath: paths.sourcePath,
+    entryId: "entry1",
+    maxAttempts: 1,
+    retryDelayMs: 0,
+    create: async (options) => await createWorktree(options),
+  });
+  const second = await createIsolatedWorktreeWithRetry({
+    projectRuntimeRoot: secondProjectRuntimeRoot,
+    sourcePath: paths.sourcePath,
+    entryId: "entry1",
+    maxAttempts: 1,
+    retryDelayMs: 0,
+    create: async (options) => await createWorktree(options),
+  });
+
+  assert.notEqual(first.branch, second.branch);
+  assert.notEqual(first.path, second.path);
+  await cleanupManagedWorkerWorktree({
+    projectRuntimeRoot: paths.projectRuntimeRoot,
+    sourcePath: paths.sourcePath,
+    entryId: "entry1",
+    managedWorktree: first,
+  });
+  await cleanupManagedWorkerWorktree({
+    projectRuntimeRoot: secondProjectRuntimeRoot,
+    sourcePath: paths.sourcePath,
+    entryId: "entry1",
+    managedWorktree: second,
+  });
+});
 
 function cleanupOptions(paths: Awaited<ReturnType<typeof fixture>>) {
   return {

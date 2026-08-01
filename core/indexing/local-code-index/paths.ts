@@ -265,6 +265,27 @@ export function repositoryObjectsDir(
 }
 
 /**
+ * Immutable lookup record for a clean Git state that has already been indexed.
+ *
+ * The record lives in the repository namespace, rather than a worktree
+ * namespace, because a newly-created worktree can safely reuse the parsed
+ * objects only after it proves that its Git state has the same content key.
+ */
+export function repositoryReusableSnapshotPath(
+  storageRoot: string,
+  repositoryKey: string,
+  reusableStateKey: string,
+): string {
+  return path.join(
+    repositoryDir(storageRoot, repositoryKey),
+    "reusable-snapshots",
+    "v2",
+    objectPrefix(reusableStateKey),
+    `${reusableStateKey}.json`,
+  );
+}
+
+/**
  * `<storageRoot>/repositories/<repositoryKey>/objects/files/<prefix>/<fileObjectId>.json`
  */
 export function fileObjectPath(

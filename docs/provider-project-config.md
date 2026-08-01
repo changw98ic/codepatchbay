@@ -71,6 +71,7 @@ Anthropic-compatible agent 会自动把 `apiKeyEnv` 同时映射到 `ANTHROPIC_A
 
 ```json
 {
+  "validationProfile": "standard",
   "agents": {
     "planner": { "agent": "codex" },
     "executor": { "agent": "claude", "provider": "glm", "model": "glm-5" },
@@ -79,6 +80,37 @@ Anthropic-compatible agent 会自动把 `apiKeyEnv` 同时映射到 `ANTHROPIC_A
 }
 ```
 
-`variant` 仍可用于兼容旧的 agent descriptor，但新配置的供应商选择应优先使用 `provider` 和 `model`。项目配置只保存选择关系，不复制 provider token。
+`variant` 只在 agent 自身有多个实现时选择该实现；供应商与模型始终使用 `provider` 和 `model`。项目配置只保存选择关系，不复制 provider token。
+
+### 验证档位
+
+`validationProfile` 是 `project.json` 的顶层字段，只能为 `smoke`、`standard` 或
+`verified`。SWE-bench 批处理会在入队时把这个值冻结到作业的
+`sourceContext.productValidation`、批次清单和报告中；运行中的作业不会被后来改动的项目配置影响。
+没有指定时，SWE-bench 保守地使用 `verified`。
+
+- `smoke`：清单和计划合并为一次规划调用；验证者为每项变更运行最小的直接仓库检查；不加入独立对抗复核。
+- `standard`：同样合并清单和计划；验证者覆盖变更行为及其相关回归路径；不加入独立对抗复核，也不会为该未执行阶段启动供应商预检。
+- `verified`：清单与计划分开，执行严格的独立验证和对抗复核；适合需要发布级证据的任务。
+
+无论档位如何，CPB 都会保留冻结的验收清单、范围检查、候选改动身份校验和失败即停止的验证门。档位只改变规划是否合并及验证深度，不会把失败结果改为通过。
 
 配置变更在新任务启动时生效；已经创建的 ACP 连接不会跨 provider 或 model 复用。
+
+## SWE-bench 批处理
+
+SWE-bench 运行器不再接受 `--agent`、`--planner-agent`、`--executor-agent`、
+`--verifier-agent` 或 `--adversarial-agent`。真实运行必须传入一个
+`--project-config <path>`；该文件作为模板写入每个生成项目的 canonical
+`<CPB_HOME>/<projectName>/project.json`，随后由正常队列配置解析流程生成作业。
+
+```bash
+CPB_PROVIDERS_FILE="$HOME/.cpb/providers.json" \
+node dist/scripts/queue-swebench-batch.js \
+  --project-config ./swebench-project.json \
+  --count 5
+```
+
+批处理清单中的 agent/provider/model 只是所用项目配置的审计副本，不能覆盖
+`project.json`。缺少项目配置、引用未知 provider，或继续使用已删除的 agent
+参数时，运行会在克隆仓库和创建作业之前失败。

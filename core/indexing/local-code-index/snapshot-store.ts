@@ -36,6 +36,7 @@ import { mkdir, open, readdir, rename, unlink } from "node:fs/promises";
 import path from "node:path";
 
 import { LocalCodeIndexUnavailableError } from "./contracts.js";
+import type { LocalCodeIndexPhaseTimings } from "./contracts.js";
 import { canonicalStringify } from "./canonical-json.js";
 import {
   snapshotDir,
@@ -106,6 +107,12 @@ export type SnapshotInventoryEntry = Readonly<{
   sourceContentId: string;
   /** Derived file object ID (from object-store.ts). */
   fileObjectId: string;
+  /** Effective language recorded by the extraction that produced fileObjectId. */
+  language: string;
+  /** Parser mode recorded by the extraction that produced fileObjectId. */
+  parserMode: string;
+  /** Extractor fingerprint recorded by the extraction that produced fileObjectId. */
+  languageExtractorFingerprint: string;
   /** Pinned filesystem metadata for identity rechecks. */
   metadata: SnapshotPinnedMetadata;
 }>;
@@ -246,13 +253,7 @@ export type RunReport = Readonly<{
   bytesRead: number;
   bytesWritten: number;
   /** Phase timings in milliseconds. */
-  timings: Readonly<{
-    inventoryMs: number;
-    hashingMs: number;
-    parsingMs: number;
-    lookupMs: number;
-    publicationMs: number;
-  }>;
+  timings: LocalCodeIndexPhaseTimings;
 }>;
 
 // ── Snapshot ID derivation ───────────────────────────────────────────────────

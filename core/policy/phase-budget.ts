@@ -1,6 +1,7 @@
 import { recordValue, type LooseRecord } from "../contracts/types.js";
 import { resolveAllowedAgentNames } from "../agents/outcome-routing.js";
 import { resolveHighAssurancePolicy } from "./high-assurance.js";
+import { resolveValidationProfile } from "./validation-profile.js";
 
 type EnvMap = Record<string, string | undefined>;
 type RiskLevel = "low" | "medium" | "high" | "critical";
@@ -204,6 +205,7 @@ export function derivePhaseBudgetPolicy(ctx: LooseRecord = {}) {
   const riskMap = riskMapFromContext(ctx);
   const classification = classifyRiskLevel(riskMap.riskLevel, ctx, riskMap);
   const riskLevel = classification.riskLevel;
+  const validationProfile = resolveValidationProfile(ctx.sourceContext ?? ctx);
   const profile = RISK_PROFILES[riskLevel];
   const verificationDepth = text(riskMap.verificationDepth) || profile.verificationDepth;
   const domains = domainsFromRiskMap(riskMap);
@@ -222,11 +224,13 @@ export function derivePhaseBudgetPolicy(ctx: LooseRecord = {}) {
     riskLevel,
     domains: policyDomains,
     verificationDepth,
-    adversarialRequired: riskMap.adversarialRequired === true || riskLevel === "high" || riskLevel === "critical",
+    adversarialRequired: riskLevel === "critical"
+      || validationProfile === "verified",
     evidenceRequirements: profile.evidenceRequirements,
     phases,
     reasons: [
       `riskLevel=${riskLevel}`,
+      `validationProfile=${validationProfile}`,
       `riskSignal=${classification.reason}`,
       `verificationDepth=${verificationDepth}`,
       ...(assurancePolicy.enabled ? ["assurance=high_quality_time_budget"] : []),

@@ -16,7 +16,8 @@
  *   1. Exclusively create a synced temporary file alongside the final path.
  *   2. Write canonical bytes, fsync, close, and identity-check.
  *   3. Atomically publish via exclusive same-filesystem hard link.
- *   4. Unlink the temporary path and fsync the object directory.
+ *   4. Unlink the temporary path and, before reporting a batch successful,
+ *      fsync every object directory modified by that batch.
  *   5. If the final path already exists, bounded-read and byte-compare;
  *      exact equality reuses, any mismatch fails object_identity_collision.
  *
@@ -78,6 +79,9 @@ const MAX_OBJECT_READ_BYTES = 64 * 1024 * 1024;
 
 /** Bound concurrent durable writes so publication overlaps I/O without exhaustion. */
 const MAX_CONCURRENT_OBJECT_PUBLICATIONS = 64;
+
+/** Bound concurrent file-object serialization and durable writes. */
+const MAX_CONCURRENT_FILE_OBJECT_PUBLICATIONS = 8;
 
 // ── File-object ID ───────────────────────────────────────────────────────────
 
@@ -292,7 +296,8 @@ export type PublishBatchResult = Readonly<{
  *   2. Exclusively create a synced temporary file alongside the final path.
  *   3. Write canonical bytes, fsync, close.
  *   4. Atomically publish via exclusive same-filesystem hard link.
- *   5. Unlink the temporary path and fsync the object directory.
+ *   5. Unlink the temporary path and fsync the object directory before the
+ *      caller reports publication success (batch callers may coalesce this).
  *   6. If the final path already exists, bounded-read and byte-compare;
  *      exact equality reuses, any mismatch fails object_identity_collision.
  *
@@ -305,6 +310,7 @@ async function publishSingleObject(
   finalPath: string,
   canonicalBytes: Uint8Array,
   ownerToken: string,
+  syncParentDirectory = true,
 ): Promise<"created" | "reused"> {
   const dir = path.dirname(finalPath);
   await mkdir(dir, { recursive: true });
@@ -380,9 +386,11 @@ async function publishSingleObject(
     });
   }
 
-  // Step 5: unlink the temporary path and fsync the object directory.
+  // Step 5: unlink the temporary path and fsync the object directory. Batch
+  // callers may defer the directory sync until every atomically linked object
+  // in the batch is complete; they never report success before that sync.
   await safeUnlink(tmpPath);
-  await syncDirectory(dir);
+  if (syncParentDirectory) await syncDirectory(dir);
 
   return "created";
 }
@@ -488,6 +496,61 @@ export async function publishFileObject(
   const bytes = serializeFileObject(fileObject);
   const status = await publishSingleObject(finalPath, bytes, options.ownerToken);
   return { objectId: id, status };
+}
+
+/**
+ * Publish file objects with the same identity rules as {@link publishFileObject}
+ * while allowing the bounded object-store worker pool to overlap durable I/O.
+ * The result order always matches the input order.
+ */
+export async function publishFileObjects(
+  fileObjects: readonly FileObject[],
+  options: PublishObjectsOptions,
+): Promise<readonly PublishObjectResult[]> {
+  const results: PublishObjectResult[] = [];
+  const dirtyDirectories = new Set<string>();
+  let nextIndex = 0;
+  const workerCount = Math.min(
+    MAX_CONCURRENT_FILE_OBJECT_PUBLICATIONS,
+    fileObjects.length,
+  );
+
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (true) {
+      const index = nextIndex++;
+      if (index >= fileObjects.length) return;
+      const fileObject = fileObjects[index]!;
+      const objectId = deriveFileObjectId(
+        fileObject.language,
+        fileObject.parserMode,
+        fileObject.languageExtractorFingerprint,
+        fileObject.sourceContentId,
+      );
+      const finalPath = fileObjectPublishPath(
+        options.storageRoot,
+        options.repositoryKey,
+        objectId,
+      );
+      const status = await publishSingleObject(
+        finalPath,
+        serializeFileObject(fileObject),
+        options.ownerToken,
+        false,
+      );
+      results[index] = { objectId, status };
+      if (status === "created") dirtyDirectories.add(path.dirname(finalPath));
+    }
+  }));
+
+  const directories = [...dirtyDirectories];
+  for (let offset = 0; offset < directories.length; offset += MAX_CONCURRENT_OBJECT_PUBLICATIONS) {
+    await Promise.all(
+      directories
+        .slice(offset, offset + MAX_CONCURRENT_OBJECT_PUBLICATIONS)
+        .map((dir) => syncDirectory(dir)),
+    );
+  }
+  return results;
 }
 
 // ── Blob-map helpers ─────────────────────────────────────────────────────────

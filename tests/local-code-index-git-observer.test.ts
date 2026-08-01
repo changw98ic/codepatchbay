@@ -542,6 +542,22 @@ describe("rejected filter and config states", () => {
       return true;
     });
   });
+
+  test("tracked symbolic link is retained but never materialized", async () => {
+    const dir = await makeTemp("obs-tracked-symlink");
+    await initRepo(dir, { "a.txt": "hello\n" });
+
+    await symlink("a.txt", path.join(dir, "link.txt"));
+    git(dir, ["add", "link.txt"]);
+    git(dir, ["commit", "-m", "track symbolic link"]);
+
+    const result = await observeOrThrow(dir);
+    const entry = findEntry(result.payload, "link.txt");
+    assert.ok(entry);
+    assert.equal(entry.stage?.mode, "120000");
+    assert.equal(entry.present, false);
+    assert.equal(entry.metadata, null);
+  });
 });
 
 // ══════════════════════════════════════════════════════════════════════════════

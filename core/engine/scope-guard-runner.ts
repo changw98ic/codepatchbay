@@ -1,4 +1,3 @@
-import { FailureKind } from "../contracts/failure.js";
 import { isPhasePassed } from "../contracts/phase-result.js";
 import { evaluateScopeGuard, normalizeFixScope } from "./scope-guard.js";
 import type { PhaseResult } from "../../shared/types.js";
@@ -23,14 +22,6 @@ type ScopeGuardInput = {
   now?: () => string;
 };
 
-type FailedJobResult = {
-  status: "failed";
-  jobId: string;
-  exitCode: 1;
-  failure: LooseRecord;
-  phaseResults: LooseRecord[];
-};
-
 function retryFixScope(sourceContext: unknown) {
   const context = recordValue(sourceContext);
   const retryContext = recordValue(context.retryContext);
@@ -48,10 +39,9 @@ function retryFixScope(sourceContext: unknown) {
   };
 
   // Verification feedback distinguishes the narrow requested repair target
-  // (fixScope) from the frozen boundary within which that repair may add
-  // supporting changes such as regression tests (allowedFixScope). Enforce the
-  // frozen boundary when present. A retry without either explicit scope is
-  // rejected below rather than being widened implicitly.
+  // (fixScope) from the frozen boundary suggested by the verifier
+  // (allowedFixScope). Both are audit hints only: a successful executor may
+  // add source or test files anywhere inside its isolated worktree.
   const allowedFixScope = firstNonEmptyScope([
     retryContext.allowedFixScope,
     retry.allowedFixScope,
@@ -76,41 +66,16 @@ function rawChangedFiles(result: PhaseResult): unknown[] {
   return Array.isArray(files) ? files : [];
 }
 
-function checklistIds(dagNode: unknown) {
-  const node = recordValue(dagNode);
-  return Array.isArray(node.checklistIds) ? node.checklistIds : [];
-}
-
-async function reportProgress(
-  onProgress: ScopeGuardInput["onProgress"],
-  event: LooseRecord,
-  now: () => string,
-) {
-  if (typeof onProgress !== "function") return;
-  try {
-    await onProgress({ ts: now(), ...event });
-  } catch {
-    // Progress reporting must not change job execution outcome.
-  }
-}
-
 export async function evaluateExecuteScopeGuard({
   cpbRoot,
   project,
   jobId,
-  nodeId,
   phase,
-  role,
-  attemptId = null,
-  dagNode = {},
   phaseSourceContext = {},
   phaseResult,
-  phaseResults,
   appendEvent,
-  failJob,
-  onProgress = null,
   now = () => new Date().toISOString(),
-}: ScopeGuardInput): Promise<FailedJobResult | null> {
+}: ScopeGuardInput): Promise<null> {
   if (phase !== "execute" || !isPhasePassed(phaseResult)) return null;
 
   const fixScope = retryFixScope(phaseSourceContext);
@@ -133,55 +98,8 @@ export async function evaluateExecuteScopeGuard({
   });
   if (scopeResult.withinScope) return null;
 
-  const violationList = scopeResult.violations.join(", ");
-  await reportProgress(onProgress, {
-    type: "scope_guard_violation",
-    jobId,
-    project,
-    phase,
-    violations: scopeResult.violations,
-    fixScope: scopeResult.fixScope,
-  }, now);
-  await appendEvent(cpbRoot, project, jobId, {
-    type: "dag_node_failed",
-    jobId,
-    project,
-    nodeId,
-    phase,
-    role,
-    attemptId,
-    code: "scope_guard_violation",
-    reason: `Scope guard violation: changed files outside fix_scope: ${violationList}`,
-    error: `Scope guard violation: ${violationList}`,
-    checklistIds: checklistIds(dagNode),
-    ts: now(),
-  });
-  await failJob(cpbRoot, project, jobId, {
-    reason: `Scope guard violation: changed files outside fix_scope: ${violationList}`,
-    code: "scope_guard_violation",
-    phase,
-    cause: { violations: scopeResult.violations, fixScope: scopeResult.fixScope },
-  });
-  await reportProgress(onProgress, {
-    type: "job_failed",
-    jobId,
-    project,
-    phase,
-    failureKind: FailureKind.SCOPE_VIOLATION,
-    reason: `Scope guard violation: ${violationList}`,
-  }, now);
-  return {
-    status: "failed",
-    jobId,
-    exitCode: 1,
-    failure: {
-      kind: FailureKind.SCOPE_VIOLATION,
-      phase,
-      nodeId,
-      reason: `Changed files outside fix_scope: ${violationList}`,
-      retryable: false,
-      cause: { routingLabel: "scope_violation", violations: scopeResult.violations, fixScope: scopeResult.fixScope },
-    },
-    phaseResults,
-  };
+  // fixScope is a planning hint, not a file-write allowlist. The changed file
+  // list is kept in the durable event above for review, while the isolated
+  // worktree and protected-path controls remain the enforcement boundary.
+  return null;
 }

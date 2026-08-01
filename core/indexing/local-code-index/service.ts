@@ -81,6 +81,7 @@ import {
   fileObjectPath,
   symbolShardPath,
   relationShardPath,
+  repositoryReusableSnapshotPath,
   tempFileName,
 } from "./paths.js";
 
@@ -94,6 +95,7 @@ import { canonicalStringify } from "./canonical-json.js";
 import {
   observeGitSourceState,
   observeGitSourceStateOnce,
+  resolveGitCommonDirectory,
 } from "./git-observer.js";
 import type {
   SourceStatePayload,
@@ -119,6 +121,8 @@ import {
 } from "./extract.js";
 import {
   AstGrepAdapter,
+  AST_GREP_OUTLINE_BATCH_SIZE,
+  AST_GREP_REFERENCE_BATCH_SIZE,
   outlineFileToParseResult,
 } from "./ast-grep-adapter.js";
 import type {
@@ -134,13 +138,11 @@ import type {
 } from "./extract.js";
 
 import {
-  publishFileObject,
+  publishFileObjects,
   publishObjects,
   readFileObject,
-  verifyStoredObject,
 } from "./object-store.js";
 import type { FileObject, PublishObjectsOptions } from "./object-store.js";
-import { deriveFileObjectId, serializeFileObject } from "./object-store.js";
 
 import { buildAllRelationships } from "./relationships.js";
 import type {
@@ -199,7 +201,7 @@ const MAX_SNAPSHOT_READ_BYTES = 32 * 1024 * 1024;
 /** Maximum source file size for extraction (5 MiB). */
 const MAX_SOURCE_FILE_BYTES = 5 * 1024 * 1024;
 const INDEX_EXTRACTION_SCHEMA_VERSION = 2;
-const SHARD_LAYOUT_VERSION = 3;
+const SHARD_LAYOUT_VERSION = 4;
 
 function indexExtractorFingerprint(parserVersion: string | null): string {
   return createHash("sha256")
@@ -231,10 +233,30 @@ type CurrentPointer = Readonly<{
   previousSnapshotIds: readonly string[];
 }>;
 
+/**
+ * A repository-scoped pointer to one immutable snapshot. It is published only
+ * for clean Git states, so a different worktree may reuse its already-parsed
+ * file objects after matching the content-derived state key below.
+ */
+type ReusableGitSnapshotRecord = Readonly<{
+  schemaVersion: 2;
+  reusableStateKey: string;
+  repositoryKey: string;
+  extractorFingerprint: string;
+  worktreeKey: string;
+  snapshotId: string;
+}>;
+
+type ReusableIndexBaseline = Readonly<{
+  identity: SnapshotIdentity;
+  indexMap: IndexMap;
+  existingObjectIds: Set<string>;
+}>;
+
 function usesLegacyShardBuckets(indexMap: IndexMap | null): boolean {
   if (indexMap === null) return false;
-  return Object.keys(indexMap.symbolShards).some(
-    (key) => /^sym-[0-9a-f]{4}$/u.test(key),
+  return Object.keys(indexMap.relationShards).some(
+    (key) => !/^rel-[0-9a-f]{2}$/u.test(key),
   );
 }
 
@@ -285,16 +307,19 @@ export async function ensureLocalCodeIndex(
   const canonicalSource = await validateSourcePath(sourcePath);
   const storageRoot = await resolveStorageRoot(cpbRoot, canonicalSource);
 
-  // Determine if this is a Git repository for key derivation.
+  // Determine whether this is a Git repository and key its shared object
+  // namespace by Git's common directory. A linked worktree has a `.git` file,
+  // so keying by its source directory would prevent any cross-worktree reuse.
   let commonGitDir = canonicalSource;
   let isGit = false;
   try {
     await lstat(path.join(canonicalSource, ".git"));
     isGit = true;
-    // For Git, we would normally use `git rev-parse --git-common-dir`.
-    // For simplicity, use the source path (the git-observer handles the rest).
   } catch {
     // Not Git.
+  }
+  if (isGit) {
+    commonGitDir = await resolveGitCommonDirectory(canonicalSource);
   }
 
   const { repositoryKey, worktreeKey, sourceKey } = computeKeys(
@@ -355,7 +380,21 @@ async function ensureLocalCodeIndexInner(
     signal?.throwIfAborted();
 
     // ── Read current pointer ────────────────────────────────────────────
-    const currentPtr = await readCurrentPointer(storageRoot, worktreeKey);
+    let currentPtr = await readCurrentPointer(storageRoot, worktreeKey);
+    // Repository objects were previously keyed by the source directory. Once
+    // a worktree correctly switches to the shared Git common-directory key,
+    // its old pointer cannot safely name objects in the new namespace. Drop
+    // that pointer and rebuild a canonical snapshot instead of mixing stores.
+    if (currentPtr !== null) {
+      const pointerIdentity = await readSnapshotIdentity(
+        storageRoot,
+        worktreeKey,
+        currentPtr.snapshotId,
+      );
+      if (pointerIdentity === null || pointerIdentity.repositoryKey !== repositoryKey) {
+        currentPtr = null;
+      }
+    }
 
     // ── Observe source state (first observation) ────────────────────────
     const firstObservation = await observeSourceState(canonicalSource, isGit);
@@ -402,10 +441,31 @@ async function ensureLocalCodeIndexInner(
       );
     }
 
+    // A clean worktree at the same content-derived Git state can borrow the
+    // previous worktree's immutable objects and shards. It still receives its
+    // own snapshot identity and current pointer, so freshness remains local to
+    // this worktree.
+    const reusableStateKey = isGit
+      ? deriveReusableGitStateKey(
+        originalObservation as SourceStatePayload,
+        expectedExtractorFingerprint,
+      )
+      : null;
+    const reusableBaseline = (
+      !force && currentPtr === null && reusableStateKey !== null
+    )
+      ? await readReusableIndexBaseline(
+        storageRoot,
+        repositoryKey,
+        reusableStateKey,
+        expectedExtractorFingerprint,
+      )
+      : null;
+
     // ── Read previous snapshot state ────────────────────────────────────
     let previousSourceState: SourceState | null = null;
     let previousIdentity: SnapshotIdentity | null = null;
-    let existingObjects = new Map<string, string>();
+    let existingObjectIds = new Set<string>();
 
     if (currentPtr !== null && !force) {
       const prevIdentity = await readSnapshotIdentity(
@@ -422,19 +482,26 @@ async function ensureLocalCodeIndexInner(
         if (
           !usesLegacyShardBuckets(previousIndexMap)
           && prevIdentity.extractorFingerprint === expectedExtractorFingerprint
+          && hasCompleteExtractionIdentity(prevIdentity)
         ) {
-          previousIdentity = prevIdentity;
-          previousSourceState = convertIdentityToSourceState(
-            prevIdentity,
-            canonicalSource,
-          );
-          existingObjects = await buildExistingObjectsMap(
+          const verifiedObjectIds = await buildExistingFileObjectIds(
             storageRoot,
             repositoryKey,
             prevIdentity,
           );
+          if (hasAllInventoryObjects(prevIdentity, verifiedObjectIds)) {
+            previousIdentity = prevIdentity;
+            previousSourceState = convertIdentityToSourceState(prevIdentity);
+            existingObjectIds = verifiedObjectIds;
+          }
         }
       }
+    }
+
+    if (reusableBaseline !== null) {
+      previousIdentity = reusableBaseline.identity;
+      previousSourceState = convertIdentityToSourceState(reusableBaseline.identity);
+      existingObjectIds = reusableBaseline.existingObjectIds;
     }
 
     sourceStateForPlan = await hydrateObservedContentIds(
@@ -442,6 +509,11 @@ async function ensureLocalCodeIndexInner(
       previousSourceState,
       canonicalSource,
       signal,
+      reusableBaseline?.identity ?? null,
+    );
+    sourceStateForPlan = alignObservedEntriesWithPreviousExtraction(
+      sourceStateForPlan,
+      previousSourceState,
     );
 
     // ── Build change plan ───────────────────────────────────────────────
@@ -449,7 +521,7 @@ async function ensureLocalCodeIndexInner(
       previous: previousSourceState,
       current: sourceStateForPlan,
       force,
-      existingObjects,
+      existingObjectIds,
     });
 
     if (
@@ -480,7 +552,6 @@ async function ensureLocalCodeIndexInner(
         canonicalSource,
         sourceStateForPlan,
         changePlan,
-        existingObjects,
         currentPtr,
         isGit,
         astGrepAdapter,
@@ -489,6 +560,8 @@ async function ensureLocalCodeIndexInner(
         force,
         signal,
         originalObservation,
+        reusableBaseline,
+        reusableStateKey,
       );
     } catch (error: unknown) {
       if (
@@ -519,7 +592,6 @@ async function runPublicationProtocol(
   canonicalSource: string,
   sourceState: SourceState,
   changePlan: ChangePlan,
-  existingObjects: Map<string, string>,
   currentPtr: CurrentPointer | null,
   isGit: boolean,
   astGrepAdapter: AstGrepAdapter,
@@ -528,6 +600,8 @@ async function runPublicationProtocol(
   force: boolean,
   signal: AbortSignal | undefined,
   originalObservation: SourceStatePayload | DirectorySourceState,
+  reusableBaseline: ReusableIndexBaseline | null,
+  reusableStateKey: string | null,
 ): Promise<EnsureLocalCodeIndexResult> {
   const repositoryLockDir = repositoryObjectsLockDir(storageRoot, repositoryKey);
   const worktreeLock = worktreeLockDir(storageRoot, worktreeKey);
@@ -556,14 +630,15 @@ async function runPublicationProtocol(
 
       // ── Build relationships and shards ──────────────────────────────
       const prevIds = force
-        ? {
-            symbolShardIds: new Map<string, string>(),
-            relationShardIds: new Map<string, string>(),
-          }
-        : await readPreviousShardIds(currentPtr, storageRoot, worktreeKey);
-      const previousIdentity = force || currentPtr === null
+        ? emptyPreviousShardIds()
+        : reusableBaseline !== null
+          ? previousShardIdsFromIndexMap(reusableBaseline.indexMap)
+          : await readPreviousShardIds(currentPtr, storageRoot, worktreeKey);
+      const previousIdentity = force
         ? null
-        : await readSnapshotIdentity(storageRoot, worktreeKey, currentPtr.snapshotId);
+        : reusableBaseline?.identity ?? (currentPtr === null
+          ? null
+          : await readSnapshotIdentity(storageRoot, worktreeKey, currentPtr.snapshotId));
       const shardResult = await buildAndPublishShards(
         storageRoot,
         repositoryKey,
@@ -577,6 +652,7 @@ async function runPublicationProtocol(
       );
 
       // ── Steps 5–9: Publish snapshot ────────────────────────────────
+      const snapshotPublicationStart = Date.now();
       const snapshotResult = await publishSnapshotWithVerification(
         storageRoot,
         worktreeKey,
@@ -588,6 +664,16 @@ async function runPublicationProtocol(
         shardResult,
         worktreeOwner,
       );
+      const snapshotPublicationMs = Date.now() - snapshotPublicationStart;
+      const timings = {
+        ...extractionResult.timings,
+        relationshipMs: shardResult.relationshipMs,
+        shardPublicationMs: shardResult.shardPublicationMs,
+        snapshotPublicationMs,
+        publicationMs: extractionResult.timings.fileObjectPublicationMs
+          + shardResult.shardPublicationMs
+          + snapshotPublicationMs,
+      };
 
       // ── Step 10: Verify snapshot identity ──────────────────────────
       await verifyPublishedSnapshot(
@@ -603,7 +689,7 @@ async function runPublicationProtocol(
 
       // ── Step 12: Write run report ──────────────────────────────────
       const runDurationMs = Date.now() - startTime;
-      const buildMode = force || currentPtr === null
+      const buildMode = force || (currentPtr === null && reusableBaseline === null)
         ? "full" as const
         : changePlan.summary.compute > 0
           ? "incremental" as const
@@ -626,7 +712,7 @@ async function runPublicationProtocol(
         rebuiltRelationShards: shardResult.rebuiltRelationShards,
         bytesRead: extractionResult.bytesRead,
         bytesWritten: snapshotResult.bytesWritten + shardResult.bytesWritten,
-        timings: extractionResult.timings,
+        timings,
       });
 
       // ── Steps 13–15: Publish current pointer ───────────────────────
@@ -638,6 +724,18 @@ async function runPublicationProtocol(
         worktreeOwner,
         currentPtr,
       );
+
+      if (isGit && reusableStateKey !== null && reusableBaseline === null) {
+        await publishReusableGitSnapshot(
+          storageRoot,
+          repositoryKey,
+          reusableStateKey,
+          expectedExtractorFingerprint,
+          worktreeKey,
+          snapshotResult.snapshotId,
+          repositoryOwner,
+        );
+      }
 
       // ── Build result ────────────────────────────────────────────────
       const ref: LocalCodeIndexRef = {
@@ -672,7 +770,7 @@ async function runPublicationProtocol(
         bytesWritten: snapshotResult.bytesWritten + shardResult.bytesWritten,
         coverage: extractionResult.coverage,
         parserVersion: extractionResult.parserVersion,
-        timings: extractionResult.timings,
+        timings,
         durationMs: runDurationMs,
       };
 
@@ -723,10 +821,22 @@ export async function localCodeIndexStatus(
     };
   }
 
-  const { repositoryKey, worktreeKey, sourceKey } = computeKeys(
-    canonicalSource,
-    canonicalSource,
-  );
+  let commonGitDir = canonicalSource;
+  try {
+    await lstat(path.join(canonicalSource, ".git"));
+    commonGitDir = await resolveGitCommonDirectory(canonicalSource);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      return {
+        available: false as const,
+        fresh: false as const,
+        exact: false as const,
+        reason: "unsupported_git_state",
+        sourcePath: canonicalSource,
+      };
+    }
+  }
+  const { repositoryKey, worktreeKey, sourceKey } = computeKeys(commonGitDir, canonicalSource);
 
   // ── Read current pointer ──────────────────────────────────────────────
   const currentPtr = await readCurrentPointer(storageRoot, worktreeKey);
@@ -1073,7 +1183,6 @@ function convertDirectoryToSourceState(
  */
 function convertIdentityToSourceState(
   identity: SnapshotIdentity,
-  canonicalSource: string,
 ): SourceState {
   const repository: RepositoryIdentity = {
     commonGitDir: identity.git?.commonDir ?? null,
@@ -1084,30 +1193,12 @@ function convertIdentityToSourceState(
 
   const entries: SourceStateEntry[] = [];
   for (const [relativePath, invEntry] of Object.entries(identity.inventory)) {
-    const lang = languageForFile(relativePath);
-    const structurallySupported = lang && lang !== "json" && lang !== "yaml"
-      && lang !== "css" && lang !== "html" && lang !== "markdown"
-      ? true
-      : false;
-    const parserMode = structurallySupported
-      ? identity.toolState.available ? "structural" : "lexical-fallback"
-      : "file-inventory-only";
     entries.push({
       path: relativePath,
       contentId: invEntry.sourceContentId,
-      language: lang ?? "unknown",
-      parserMode,
-      languageExtractorFingerprint: lang
-        ? computeLanguageExtractorFingerprint(
-            lang,
-            parserMode,
-            identity.toolState.version,
-          )
-        : computeLanguageExtractorFingerprint(
-            "unknown" as SupportedLanguage,
-            "file-inventory-only",
-            null,
-          ),
+      language: invEntry.language,
+      parserMode: invEntry.parserMode,
+      languageExtractorFingerprint: invEntry.languageExtractorFingerprint,
       metadata: {
         device: invEntry.metadata.device,
         inode: invEntry.metadata.inode,
@@ -1134,6 +1225,53 @@ function convertIdentityToSourceState(
   };
 }
 
+function hasCompleteExtractionIdentity(identity: SnapshotIdentity): boolean {
+  return Object.values(identity.inventory).every((entry) =>
+    typeof entry.language === "string"
+    && entry.language.length > 0
+    && typeof entry.parserMode === "string"
+    && entry.parserMode.length > 0
+    && typeof entry.languageExtractorFingerprint === "string"
+    && entry.languageExtractorFingerprint.length > 0,
+  );
+}
+
+function hasAllInventoryObjects(
+  identity: SnapshotIdentity,
+  objectIds: ReadonlySet<string>,
+): boolean {
+  return Object.values(identity.inventory).every((entry) =>
+    objectIds.has(entry.fileObjectId),
+  );
+}
+
+/**
+ * Source observation predicts a parser mode before ast-grep runs. A prior
+ * immutable snapshot records the actual mode selected for a stable path and
+ * content. Keep that proven identity for change planning; otherwise an empty
+ * or inventory-only file could be needlessly parsed again in every worktree.
+ */
+function alignObservedEntriesWithPreviousExtraction(
+  current: SourceState,
+  previous: SourceState | null,
+): SourceState {
+  if (previous === null) return current;
+  const previousByPath = new Map(previous.entries.map((entry) => [entry.path, entry]));
+  return {
+    ...current,
+    entries: current.entries.map((entry) => {
+      const prior = previousByPath.get(entry.path);
+      if (prior === undefined || prior.contentId !== entry.contentId) return entry;
+      return {
+        ...entry,
+        language: prior.language,
+        parserMode: prior.parserMode,
+        languageExtractorFingerprint: prior.languageExtractorFingerprint,
+      };
+    }),
+  };
+}
+
 function samePinnedMetadata(
   left: SourceStateEntry["metadata"],
   right: SourceStateEntry["metadata"],
@@ -1151,16 +1289,28 @@ async function hydrateObservedContentIds(
   previous: SourceState | null,
   canonicalSource: string,
   signal?: AbortSignal,
+  reusableIdentity: SnapshotIdentity | null = null,
 ): Promise<SourceState> {
   if (current.entries.every((entry) => entry.contentId.length > 0)) return current;
   const previousByPath = new Map(
     (previous?.entries ?? []).map((entry) => [entry.path, entry]),
+  );
+  const reusableContentByPath = new Map(
+    Object.entries(reusableIdentity?.inventory ?? {}).map(([filePath, entry]) => [
+      filePath,
+      entry.sourceContentId,
+    ]),
   );
   const entries: SourceStateEntry[] = [];
   for (const entry of current.entries) {
     signal?.throwIfAborted();
     if (entry.contentId.length > 0) {
       entries.push(entry);
+      continue;
+    }
+    const reusableContentId = reusableContentByPath.get(entry.path);
+    if (reusableContentId) {
+      entries.push({ ...entry, contentId: reusableContentId });
       continue;
     }
     const old = previousByPath.get(entry.path);
@@ -1236,6 +1386,13 @@ function reusedEnsureResult(
         inventoryMs: 0,
         hashingMs: 0,
         parsingMs: 0,
+        astGrepMs: 0,
+        fileReadMs: 0,
+        fileFactExtractionMs: 0,
+        fileObjectPublicationMs: 0,
+        relationshipMs: 0,
+        shardPublicationMs: 0,
+        snapshotPublicationMs: 0,
         lookupMs: 0,
         publicationMs: 0,
       },
@@ -1281,19 +1438,164 @@ function buildMaterializationFingerprint(
   return createHash("sha256").update(canonical, "utf8").digest("hex");
 }
 
+/**
+ * Return a reuse key only for a clean, fully tracked Git worktree. It omits
+ * the source path and file metadata, which necessarily differ between
+ * worktrees, while retaining every input that can affect materialized bytes.
+ */
+function deriveReusableGitStateKey(
+  payload: SourceStatePayload,
+  extractorFingerprint: string,
+): string | null {
+  if (payload.entries.some((entry) => entry.stage === null || entry.porcelain !== null)) {
+    return null;
+  }
+  const stableState = {
+    schemaVersion: 1,
+    extractorFingerprint,
+    commonDir: payload.commonDir,
+    objectFormat: payload.objectFormat,
+    headCommit: payload.headCommit,
+    materializationConfig: payload.materializationConfig,
+    filterConfigs: payload.filterConfigs,
+    entries: payload.entries.map((entry) => ({
+      path: entry.path,
+      stage: entry.stage,
+      attributes: entry.attributes,
+      eolInfo: entry.eolInfo,
+    })),
+  };
+  return createHash("sha256")
+    .update(canonicalStringify(stableState), "utf8")
+    .digest("hex");
+}
+
+async function readReusableIndexBaseline(
+  storageRoot: string,
+  repositoryKey: string,
+  reusableStateKey: string,
+  extractorFingerprint: string,
+): Promise<ReusableIndexBaseline | null> {
+  const cachePath = repositoryReusableSnapshotPath(
+    storageRoot,
+    repositoryKey,
+    reusableStateKey,
+  );
+  let record: ReusableGitSnapshotRecord;
+  try {
+    const bytes = await readBoundedFileNoFollow(cachePath, MAX_CURRENT_JSON_BYTES);
+    record = JSON.parse(new TextDecoder().decode(bytes)) as ReusableGitSnapshotRecord;
+  } catch {
+    return null;
+  }
+  if (
+    record.schemaVersion !== 2
+    || record.reusableStateKey !== reusableStateKey
+    || record.repositoryKey !== repositoryKey
+    || record.extractorFingerprint !== extractorFingerprint
+    || typeof record.worktreeKey !== "string"
+    || typeof record.snapshotId !== "string"
+  ) {
+    return null;
+  }
+  try {
+    const identity = await readSnapshotIdentity(
+      storageRoot,
+      record.worktreeKey,
+      record.snapshotId,
+    );
+    const indexMap = await readIndexMap(
+      storageRoot,
+      record.worktreeKey,
+      record.snapshotId,
+    );
+    if (
+      identity === null
+      || indexMap === null
+      || !hasCompleteExtractionIdentity(identity)
+      || identity.repositoryKey !== repositoryKey
+      || identity.extractorFingerprint !== extractorFingerprint
+      || usesLegacyShardBuckets(indexMap)
+    ) {
+      return null;
+    }
+    const existingObjectIds = await buildExistingFileObjectIds(
+      storageRoot,
+      repositoryKey,
+      identity,
+    );
+    if (!hasAllInventoryObjects(identity, existingObjectIds)) {
+      return null;
+    }
+    return { identity, indexMap, existingObjectIds };
+  } catch {
+    return null;
+  }
+}
+
+async function publishReusableGitSnapshot(
+  storageRoot: string,
+  repositoryKey: string,
+  reusableStateKey: string,
+  extractorFingerprint: string,
+  worktreeKey: string,
+  snapshotId: string,
+  lockOwner: IndexLockOwner,
+): Promise<void> {
+  const record: ReusableGitSnapshotRecord = {
+    schemaVersion: 2,
+    reusableStateKey,
+    repositoryKey,
+    extractorFingerprint,
+    worktreeKey,
+    snapshotId,
+  };
+  try {
+    await publishObjects([{
+      finalPath: repositoryReusableSnapshotPath(storageRoot, repositoryKey, reusableStateKey),
+      canonicalBytes: new TextEncoder().encode(canonicalStringify(record)),
+    }], {
+      storageRoot,
+      repositoryKey,
+      ownerToken: lockOwner.ownerToken,
+    });
+  } catch (error) {
+    // The catalog is a first-writer-wins selection, not a content-addressed
+    // object: two clean worktrees at the same Git state point to different
+    // local snapshot paths. A full rebuild can therefore race an already
+    // published selection after its reusable baseline was unavailable. Keep
+    // the existing selection only after revalidating its snapshot and every
+    // referenced object; otherwise preserve the collision as a hard failure.
+    if (
+      error instanceof LocalCodeIndexUnavailableError
+      && error.reason === "object_identity_collision"
+      && await readReusableIndexBaseline(
+        storageRoot,
+        repositoryKey,
+        reusableStateKey,
+        extractorFingerprint,
+      ) !== null
+    ) return;
+    throw error;
+  }
+}
+
 // ── Existing objects map ───────────────────────────────────────────────────
 
 /**
- * Build a content-ID to file-object-ID map from the previous snapshot's inventory.
+ * Build the set of verified file object IDs from the previous snapshot's inventory.
  *
- * Used by the change planner to identify reusable file objects.
+ * Used by the change planner to identify reusable file objects. This checks
+ * only a safe, no-follow filesystem identity because every file object was
+ * byte-verified at its immutable publication boundary. Re-reading thousands
+ * of object bodies here would make a clean linked worktree needlessly slow.
  */
-async function buildExistingObjectsMap(
+async function buildExistingFileObjectIds(
   storageRoot: string,
   repositoryKey: string,
   identity: SnapshotIdentity,
-): Promise<Map<string, string>> {
-  const map = new Map<string, string>();
+): Promise<Set<string>> {
+  const objectIds = new Set<string>();
   for (const [, invEntry] of Object.entries(identity.inventory)) {
     const objectPath = fileObjectPath(
       storageRoot,
@@ -1301,15 +1603,15 @@ async function buildExistingObjectsMap(
       invEntry.fileObjectId,
     );
     try {
-      const exists = await verifyStoredObject(objectPath, new Uint8Array(0));
-      if (exists !== null) {
-        map.set(invEntry.sourceContentId, invEntry.fileObjectId);
+      const objectStat = await lstat(objectPath);
+      if (objectStat.isFile() && !objectStat.isSymbolicLink()) {
+        objectIds.add(invEntry.fileObjectId);
       }
     } catch {
       // Object doesn't exist or is unreadable — skip.
     }
   }
-  return map;
+  return objectIds;
 }
 
 // ── Get previous shard IDs from current pointer ────────────────────────────
@@ -1326,10 +1628,7 @@ async function readPreviousShardIds(
   relationShardIds: ReadonlyMap<string, string>;
 }> {
   if (currentPtr === null) {
-    return {
-      symbolShardIds: new Map(),
-      relationShardIds: new Map(),
-    };
+    return emptyPreviousShardIds();
   }
 
   const identity = await readSnapshotIdentity(
@@ -1339,10 +1638,7 @@ async function readPreviousShardIds(
   );
 
   if (identity === null) {
-    return {
-      symbolShardIds: new Map(),
-      relationShardIds: new Map(),
-    };
+    return emptyPreviousShardIds();
   }
 
   const indexMap = await readIndexMap(
@@ -1351,11 +1647,26 @@ async function readPreviousShardIds(
     currentPtr.snapshotId,
   );
   if (indexMap === null) {
-    return {
-      symbolShardIds: new Map(),
-      relationShardIds: new Map(),
-    };
+    return emptyPreviousShardIds();
   }
+
+  return previousShardIdsFromIndexMap(indexMap);
+}
+
+function emptyPreviousShardIds(): {
+  symbolShardIds: ReadonlyMap<string, string>;
+  relationShardIds: ReadonlyMap<string, string>;
+} {
+  return {
+    symbolShardIds: new Map(),
+    relationShardIds: new Map(),
+  };
+}
+
+function previousShardIdsFromIndexMap(indexMap: IndexMap): {
+  symbolShardIds: ReadonlyMap<string, string>;
+  relationShardIds: ReadonlyMap<string, string>;
+} {
 
   const symMap = new Map<string, string>();
   for (const [key, shardId] of Object.entries(indexMap.symbolShards)) {
@@ -1364,7 +1675,7 @@ async function readPreviousShardIds(
 
   const relMap = new Map<string, string>();
   for (const [key, shardId] of Object.entries(indexMap.relationShards)) {
-    if (/^rel-[0-9a-f]{4}$/u.test(key)) relMap.set(key.slice(4), shardId);
+    if (/^rel-[0-9a-f]{2}$/u.test(key)) relMap.set(key.slice(4), shardId);
   }
 
   return { symbolShardIds: symMap, relationShardIds: relMap };
@@ -1373,7 +1684,6 @@ async function readPreviousShardIds(
 // ── Extraction and object publication ──────────────────────────────────────
 
 type ExtractionPhaseResult = Readonly<{
-  fileObjects: Map<string, FileObject>;
   fileObjectIds: Map<string, string>;
   extractionResults: Map<string, FileExtractionResult>;
   coverage: LocalCodeIndexCoverageSummary;
@@ -1457,7 +1767,6 @@ async function extractAndPublishObjects(
     ownerToken: lockOwner.ownerToken,
   };
 
-  const fileObjects = new Map<string, FileObject>();
   const fileObjectIds = new Map<string, string>();
   const extractionResults = new Map<string, FileExtractionResult>();
   const sourceEntriesByPath = new Map(
@@ -1467,7 +1776,12 @@ async function extractAndPublishObjects(
   let bytesRead = 0;
   let oversizedFiles = 0;
   const extractorFingerprint = expectedExtractorFingerprint;
-  const structuralFiles = new Map<string, AstGrepFileResult>();
+  const structuralOutlines = new Map<string, AstGrepFileResult>();
+  const outlineAvailablePaths = new Set<string>();
+  let astGrepMs = 0;
+  let fileReadMs = 0;
+  let fileFactExtractionMs = 0;
+  let fileObjectPublicationMs = 0;
 
   const hashingStart = Date.now();
 
@@ -1490,38 +1804,98 @@ async function extractAndPublishObjects(
   const hashingMs = Date.now() - hashingStart;
 
   // ── Process compute entries (need extraction) ────────────────────────
-  let parsingStart = Date.now();
-
   if (computeEntries.length > 0) {
     if (parserVersion !== null) {
-      const batchSize = 120;
-      for (let offset = 0; offset < computeEntries.length; offset += batchSize) {
+      // Outlines are compact: parse the approved paths in large batches to
+      // avoid paying ast-grep process startup once per tiny batch. References
+      // remain smaller because their JSON can be orders of magnitude larger.
+      for (
+        let offset = 0;
+        offset < computeEntries.length;
+        offset += AST_GREP_OUTLINE_BATCH_SIZE
+      ) {
         signal?.throwIfAborted();
-        const batch = computeEntries.slice(offset, offset + batchSize);
+        const batch = computeEntries.slice(
+          offset,
+          offset + AST_GREP_OUTLINE_BATCH_SIZE,
+        );
+        const astGrepStart = Date.now();
         try {
-          const batchPaths = batch.map((entry) => entry.path);
-          const [outlines, references] = await Promise.all([
-            adapter.extractFiles(batchPaths, { signal }),
-            adapter.extractReferences(batchPaths, { signal }),
-          ]);
-          const batchFiles = new Map<string, AstGrepFileResult>();
-          const declarationPositions = new Map<string, Set<string>>();
-          const importRanges = new Map<string, AstGrepSymbol[]>();
+          const outlines = await adapter.extractFiles(
+            batch.map((entry) => entry.path),
+            { signal },
+          );
+          astGrepMs += Date.now() - astGrepStart;
+          for (const entry of batch) outlineAvailablePaths.add(entry.path);
           for (const file of outlines.files) {
             const normalizedPath = normalizedAstGrepPath(canonicalSource, file.path);
             if (normalizedPath === null) continue;
-            batchFiles.set(normalizedPath, { ...file, path: normalizedPath });
+            structuralOutlines.set(normalizedPath, { ...file, path: normalizedPath });
+          }
+        } catch (error: unknown) {
+          astGrepMs += Date.now() - astGrepStart;
+          if (
+            error instanceof LocalCodeIndexUnavailableError
+            && error.reason === "operation_aborted"
+          ) {
+            throw error;
+          }
+          // A failed outline batch falls back file-by-file below. Other batches
+          // still retain structural coverage.
+        }
+      }
+    }
+
+    for (
+      let offset = 0;
+      offset < computeEntries.length;
+      offset += AST_GREP_REFERENCE_BATCH_SIZE
+    ) {
+      signal?.throwIfAborted();
+      const batch = computeEntries.slice(
+        offset,
+        offset + AST_GREP_REFERENCE_BATCH_SIZE,
+      );
+      const batchFiles = new Map<string, AstGrepFileResult>();
+      const batchFileObjectEntries: Array<readonly [string, FileObject]> = [];
+      let hasStructuralFacts = parserVersion !== null
+        && batch.every((entry) => outlineAvailablePaths.has(entry.path));
+
+      if (hasStructuralFacts) {
+        const astGrepStart = Date.now();
+        try {
+          const references = await adapter.extractReferences(
+            batch.map((entry) => entry.path),
+            { signal },
+          );
+          astGrepMs += Date.now() - astGrepStart;
+          const declarationPositions = new Map<string, Set<string>>();
+          const importRanges = new Map<string, AstGrepSymbol[]>();
+
+          for (const entry of batch) {
+            const outline = structuralOutlines.get(entry.path);
+            const file: AstGrepFileResult = outline === undefined
+              ? {
+                path: entry.path,
+                language: sourceEntriesByPath.get(entry.path)?.language ?? "unknown",
+                symbols: [],
+              }
+              : { ...outline, symbols: [...outline.symbols] };
+            batchFiles.set(entry.path, file);
             const positions = new Set<string>();
             collectDeclarationPositions(file.symbols, positions);
-            declarationPositions.set(normalizedPath, positions);
+            declarationPositions.set(entry.path, positions);
             importRanges.set(
-              normalizedPath,
+              entry.path,
               file.symbols.filter((symbol) => symbol.isImport),
             );
           }
+
           for (const file of references.files) {
             const normalizedPath = normalizedAstGrepPath(canonicalSource, file.path);
             if (normalizedPath === null) continue;
+            const current = batchFiles.get(normalizedPath);
+            if (current === undefined) continue;
             const declarationKeys = declarationPositions.get(normalizedPath)
               ?? new Set<string>();
             const referenceSymbols = file.symbols.filter((symbol) =>
@@ -1532,112 +1906,92 @@ async function extractAndPublishObjects(
                 (importSymbol) => isInsideSymbolRange(symbol, importSymbol),
               )
             );
-            const current = batchFiles.get(normalizedPath) ?? {
-              path: normalizedPath,
-              language: file.language,
-              symbols: [],
-            };
             batchFiles.set(normalizedPath, {
               ...current,
               symbols: [...current.symbols, ...referenceSymbols],
             });
           }
-          for (const [filePath, file] of batchFiles) {
-            structuralFiles.set(filePath, file);
-          }
         } catch (error: unknown) {
+          astGrepMs += Date.now() - astGrepStart;
           if (
             error instanceof LocalCodeIndexUnavailableError
             && error.reason === "operation_aborted"
           ) {
             throw error;
           }
-          // A failed parser batch falls back file-by-file below. Other batches
-          // still retain structural coverage.
+          // Do not claim structural coverage if references could not be read.
+          hasStructuralFacts = false;
+          batchFiles.clear();
+        }
+      }
+
+      for (const entry of batch) {
+        signal?.throwIfAborted();
+
+        const stateEntry = sourceEntriesByPath.get(entry.path);
+        if (!stateEntry) continue;
+
+        // Read source bytes.
+        const filePath = path.resolve(canonicalSource, entry.path);
+        let sourceBytes: Uint8Array;
+        const fileReadStart = Date.now();
+        try {
+          sourceBytes = await readBoundedFileNoFollow(filePath, MAX_SOURCE_FILE_BYTES);
+        } catch {
+          fileReadMs += Date.now() - fileReadStart;
+          coverageOutcomes.push("failed");
+          continue;
+        }
+        fileReadMs += Date.now() - fileReadStart;
+        bytesRead += sourceBytes.byteLength;
+
+        const structuralFile = hasStructuralFacts
+          ? batchFiles.get(entry.path)
+          : undefined;
+        const fileFactExtractionStart = Date.now();
+        const result = extractFileFacts(
+          sourceBytes,
+          entry.path,
+          parserVersion,
+          structuralFile !== undefined && parserVersion !== null
+            ? outlineFileToParseResult(structuralFile, parserVersion)
+            : null,
+        );
+        fileFactExtractionMs += Date.now() - fileFactExtractionStart;
+
+        extractionResults.set(entry.path, result);
+        coverageOutcomes.push(result.coverage);
+
+        if (result.truncation.some((t) => t.limitKind === "max-file-size")) {
+          oversizedFiles += 1;
+        }
+
+        const fileObject = fileObjectFromExtractionResult(result, parserVersion);
+        batchFileObjectEntries.push([entry.path, fileObject]);
+      }
+
+      // Keep only one parser batch of serialized bytes live at a time. The
+      // object store performs up to eight durable file-object publications
+      // concurrently,
+      // eliminating per-file fsync serialization without accumulating a
+      // repository-sized second copy in memory.
+      if (batchFileObjectEntries.length > 0) {
+        const publicationStart = Date.now();
+        const publications = await publishFileObjects(
+          batchFileObjectEntries.map(([, fileObject]) => fileObject),
+          publishOptions,
+        );
+        fileObjectPublicationMs += Date.now() - publicationStart;
+        for (const [index, [filePath]] of batchFileObjectEntries.entries()) {
+          fileObjectIds.set(filePath, publications[index]!.objectId);
         }
       }
     }
-
-    for (const entry of computeEntries) {
-      signal?.throwIfAborted();
-
-      const stateEntry = sourceEntriesByPath.get(entry.path);
-      if (!stateEntry) continue;
-
-      // Read source bytes.
-      const filePath = path.resolve(canonicalSource, entry.path);
-      let sourceBytes: Uint8Array;
-      try {
-        sourceBytes = await readBoundedFileNoFollow(filePath, MAX_SOURCE_FILE_BYTES);
-      } catch {
-        coverageOutcomes.push("failed");
-        continue;
-      }
-      bytesRead += sourceBytes.byteLength;
-
-      const structuralFile = structuralFiles.get(entry.path);
-      const result = extractFileFacts(
-        sourceBytes,
-        entry.path,
-        parserVersion,
-        structuralFile !== undefined && parserVersion !== null
-          ? outlineFileToParseResult(structuralFile, parserVersion)
-          : null,
-      );
-
-      extractionResults.set(entry.path, result);
-      coverageOutcomes.push(result.coverage);
-
-      if (result.truncation.some((t) => t.limitKind === "max-file-size")) {
-        oversizedFiles += 1;
-      }
-
-      // Build file object.
-      const fileObject: FileObject = {
-        sourceContentId: result.sourceContentId,
-        languageExtractorFingerprint: result.extractorFingerprint,
-        byteSize: result.byteSize,
-        language: result.language,
-        parserMode: result.parserMode,
-        definitions: result.definitions.map((d) => ({
-          name: d.name,
-          kind: d.kind,
-          range: d.range,
-          exported: d.exported,
-          ...(d.signature != null ? { signature: d.signature } : {}),
-        })),
-        references: result.references.map((r) => ({
-          name: r.name,
-          range: r.range,
-          referenceKind: r.referenceKind,
-        })),
-        imports: result.imports.map((i) => ({
-          requested: i.requested,
-          range: i.range,
-          importKind: i.importKind,
-        })),
-        errors: result.errors.map((e) => e.message),
-        truncated: result.truncation.length > 0,
-        extractorVersion: parserVersion,
-        ruleSetFingerprint: createHash("sha256")
-          .update(result.extractorFingerprint)
-          .digest("hex"),
-      };
-
-      fileObjects.set(entry.path, fileObject);
-
-      // Publish the file object.
-      const pubResult = await publishFileObject(fileObject, publishOptions);
-      fileObjectIds.set(entry.path, pubResult.objectId);
-
-    }
   }
 
-  const parsingMs = Date.now() - parsingStart;
   const coverage = aggregateCoverage(coverageOutcomes);
 
   return {
-    fileObjects,
     fileObjectIds,
     extractionResults,
     coverage,
@@ -1648,9 +2002,16 @@ async function extractAndPublishObjects(
     timings: {
       inventoryMs: 0,
       hashingMs,
-      parsingMs,
+      parsingMs: astGrepMs,
+      astGrepMs,
+      fileReadMs,
+      fileFactExtractionMs,
+      fileObjectPublicationMs,
+      relationshipMs: 0,
+      shardPublicationMs: 0,
+      snapshotPublicationMs: 0,
       lookupMs: 0,
-      publicationMs: 0,
+      publicationMs: fileObjectPublicationMs,
     },
   };
 }
@@ -1688,6 +2049,48 @@ function fileObjectToExtractionResult(fileObject: FileObject): FileExtractionRes
   };
 }
 
+/**
+ * Convert retained extraction facts into the immutable object payload only at
+ * the point where it is needed for publication or comparison. Keeping this
+ * derivation lazy prevents a second repository-sized reference graph from
+ * remaining live during cold indexing.
+ */
+function fileObjectFromExtractionResult(
+  result: FileExtractionResult,
+  parserVersion: string | null,
+): FileObject {
+  return {
+    sourceContentId: result.sourceContentId,
+    languageExtractorFingerprint: result.extractorFingerprint,
+    byteSize: result.byteSize,
+    language: result.language,
+    parserMode: result.parserMode,
+    definitions: result.definitions.map((definition) => ({
+      name: definition.name,
+      kind: definition.kind,
+      range: definition.range,
+      exported: definition.exported,
+      ...(definition.signature != null ? { signature: definition.signature } : {}),
+    })),
+    references: result.references.map((reference) => ({
+      name: reference.name,
+      range: reference.range,
+      referenceKind: reference.referenceKind,
+    })),
+    imports: result.imports.map((entry) => ({
+      requested: entry.requested,
+      range: entry.range,
+      importKind: entry.importKind,
+    })),
+    errors: result.errors.map((error) => error.message),
+    truncated: result.truncation.length > 0,
+    extractorVersion: parserVersion,
+    ruleSetFingerprint: createHash("sha256")
+      .update(result.extractorFingerprint)
+      .digest("hex"),
+  };
+}
+
 function semanticFileObject(fileObject: FileObject): unknown {
   return {
     languageExtractorFingerprint: fileObject.languageExtractorFingerprint,
@@ -1711,6 +2114,8 @@ type ShardPhaseResult = Readonly<{
   rebuiltSymbolShards: number;
   rebuiltRelationShards: number;
   bytesWritten: number;
+  relationshipMs: number;
+  shardPublicationMs: number;
 }>;
 
 /**
@@ -1730,12 +2135,31 @@ async function buildAndPublishShards(
   lockOwner: IndexLockOwner,
   signal: AbortSignal | undefined,
 ): Promise<ShardPhaseResult> {
+  const phaseStart = Date.now();
   const publishOptions: PublishObjectsOptions = {
     storageRoot,
     repositoryKey,
     ownerToken: lockOwner.ownerToken,
   };
 
+  // A clean, content-identical Git worktree has the same path-bound symbol
+  // and relationship shards. Rebinding its snapshot must not reopen every
+  // file object just to reconstruct those immutable shards.
+  if (previousIdentity !== null && isChangePlanEmpty(changePlan)) {
+    return {
+      symbolShardIds: [...prevShardIds.symbolShardIds.values()].sort(),
+      relationShardIds: [...prevShardIds.relationShardIds.values()].sort(),
+      symbolShardIdsByBucket: new Map(prevShardIds.symbolShardIds),
+      relationShardIdsByBucket: new Map(prevShardIds.relationShardIds),
+      rebuiltSymbolShards: 0,
+      rebuiltRelationShards: 0,
+      bytesWritten: 0,
+      relationshipMs: 0,
+      shardPublicationMs: 0,
+    };
+  }
+
+  const relationshipStart = Date.now();
   const computePaths = changePlan.entries
     .filter((entry) => entry.decision === "compute")
     .map((entry) => entry.path);
@@ -1749,11 +2173,15 @@ async function buildAndPublishShards(
     let factsStable = true;
     for (const filePath of computePaths) {
       const previousEntry = previousIdentity.inventory[filePath];
-      const currentObject = extractionResult.fileObjects.get(filePath);
-      if (!previousEntry || !currentObject) {
+      const currentFacts = extractionResult.extractionResults.get(filePath);
+      if (!previousEntry || !currentFacts) {
         factsStable = false;
         break;
       }
+      const currentObject = fileObjectFromExtractionResult(
+        currentFacts,
+        extractionResult.parserVersion,
+      );
       const previousObject = await readFileObject(
         fileObjectPath(storageRoot, repositoryKey, previousEntry.fileObjectId),
       );
@@ -1829,6 +2257,8 @@ async function buildAndPublishShards(
           rebuiltSymbolShards: 0,
           rebuiltRelationShards: pathsByBucket.size,
           bytesWritten,
+          relationshipMs: 0,
+          shardPublicationMs: Date.now() - phaseStart,
         };
       }
     }
@@ -1854,7 +2284,6 @@ async function buildAndPublishShards(
       if (fileObject === null) {
         throw new LocalCodeIndexUnavailableError("corrupt_index");
       }
-      extractionResult.fileObjects.set(entry.path, fileObject);
       extractionResult.extractionResults.set(
         entry.path,
         fileObjectToExtractionResult(fileObject),
@@ -2073,7 +2502,10 @@ async function buildAndPublishShards(
 
   const shardRebuildResult: ShardRebuildResult = await rebuildShards(shardInput);
 
+  const relationshipMs = Date.now() - relationshipStart;
+
   // ── Publish rebuilt shards ────────────────────────────────────────────
+  const shardPublicationStart = Date.now();
   let bytesWritten = 0;
 
   const publicationBatchSize = 128;
@@ -2127,6 +2559,8 @@ async function buildAndPublishShards(
     rebuiltSymbolShards: shardRebuildResult.rebuiltSymbolShardCount,
     rebuiltRelationShards: shardRebuildResult.rebuiltRelationShardCount,
     bytesWritten,
+    relationshipMs,
+    shardPublicationMs: Date.now() - shardPublicationStart,
   };
 }
 
@@ -2198,10 +2632,14 @@ async function publishSnapshotWithVerification(
   for (const entry of sourceState.entries) {
     const foId = extractionResult.fileObjectIds.get(entry.path);
     if (foId) {
+      const extracted = extractionResult.extractionResults.get(entry.path);
       inventory[entry.path] = {
-        sourceContentId: extractionResult.fileObjects.get(entry.path)?.sourceContentId
-          ?? entry.contentId,
+        sourceContentId: extracted?.sourceContentId ?? entry.contentId,
         fileObjectId: foId,
+        language: extracted?.language ?? entry.language,
+        parserMode: extracted?.parserMode ?? entry.parserMode,
+        languageExtractorFingerprint: extracted?.extractorFingerprint
+          ?? entry.languageExtractorFingerprint,
         metadata: {
           device: entry.metadata.device,
           inode: entry.metadata.inode,

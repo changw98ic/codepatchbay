@@ -181,6 +181,13 @@ export type LocalCodeIndexPhaseTimings = Readonly<{
   inventoryMs: number;
   hashingMs: number;
   parsingMs: number;
+  astGrepMs: number;
+  fileReadMs: number;
+  fileFactExtractionMs: number;
+  fileObjectPublicationMs: number;
+  relationshipMs: number;
+  shardPublicationMs: number;
+  snapshotPublicationMs: number;
   lookupMs: number;
   publicationMs: number;
 }>;
@@ -631,11 +638,10 @@ Symbol lookup keys are normalized with Unicode NFC and case preserved.
 Definitions and references are stored in one of 256 shards selected by the
 first byte of `SHA-256(symbol)`.
 
-File summaries and related-file records use the first two bytes of
-`SHA-256(normalized path)`. Path shards remain narrow so a one-file edit does
-not rewrite a large relationship object. Symbol shards use the bounded 256-way
-layout because symbol fan-out, not path fan-out, caused the small-file
-publication explosion.
+File summaries and related-file records use the first byte of
+`SHA-256(normalized path)`, yielding the same bounded 256-way layout as symbol
+shards. This keeps full cold-start publication from becoming one durable object
+per file while retaining deterministic, narrow incremental updates.
 
 Only touched shards are rebuilt during an incremental update. Untouched shard
 objects are reused by object ID.
@@ -656,7 +662,8 @@ Publication order is:
 3. write, `FileHandle.sync()`, close, and identity-check each temporary file;
 4. atomically publish each absent final object path with an exclusive
    same-filesystem hard link from the synced temporary file, unlink the
-   temporary name, and fsync every modified object directory;
+   temporary name, and fsync every modified object directory before the
+   publication batch reports success;
 5. exclusively create a temporary snapshot directory;
 6. exclusively create `index-map.json`, write canonical bytes, sync the file,
    close it, and verify its hash and length;
@@ -746,7 +753,12 @@ The implementation rejects the inventory with
 - an attribute or materialization configuration that cannot be parsed exactly;
 - an external diff requirement;
 - a path outside the canonical worktree;
-- a symbolic link or unsupported special file.
+- an untracked symbolic link or unsupported special file.
+
+A tracked symbolic link (Git mode `120000`) remains in the Git state
+observation but is not materialized, read, or sent to ast-grep. Its Git stage
+and status remain part of the source-state fingerprint, so a link change still
+invalidates the snapshot without allowing the indexer to follow its target.
 
 Repository configuration is not trusted to weaken these checks. If Git output
 cannot be parsed exactly, the index does not fall back to a clean classification.

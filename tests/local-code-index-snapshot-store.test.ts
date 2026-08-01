@@ -73,6 +73,9 @@ function makeIdentity(overrides?: Partial<SnapshotIdentity>): SnapshotIdentity {
       "src/index.ts": {
         sourceContentId: "e".repeat(64),
         fileObjectId: "f".repeat(64),
+        language: "typescript",
+        parserMode: "structural",
+        languageExtractorFingerprint: "fp-abc123",
         metadata: {
           device: "1000",
           inode: "12345",
@@ -222,11 +225,17 @@ describe("snapshot-store", () => {
           "z-file.ts": {
             sourceContentId: "a".repeat(64),
             fileObjectId: "b".repeat(64),
+            language: "typescript",
+            parserMode: "structural",
+            languageExtractorFingerprint: "fp-abc123",
             metadata: { device: "1", inode: "1", size: "1", mtimeNs: "1", ctimeNs: "1", mode: 0 },
           },
           "a-file.ts": {
             sourceContentId: "c".repeat(64),
             fileObjectId: "d".repeat(64),
+            language: "typescript",
+            parserMode: "structural",
+            languageExtractorFingerprint: "fp-abc123",
             metadata: { device: "1", inode: "1", size: "1", mtimeNs: "1", ctimeNs: "1", mode: 0 },
           },
         },
@@ -262,11 +271,17 @@ describe("snapshot-store", () => {
       const entry1 = {
         sourceContentId: "a".repeat(64),
         fileObjectId: "b".repeat(64),
+        language: "typescript",
+        parserMode: "structural",
+        languageExtractorFingerprint: "fp-abc123",
         metadata: { device: "1", inode: "1", size: "1", mtimeNs: "1", ctimeNs: "1", mode: 0 },
       };
       const entry2 = {
         sourceContentId: "c".repeat(64),
         fileObjectId: "d".repeat(64),
+        language: "typescript",
+        parserMode: "structural",
+        languageExtractorFingerprint: "fp-abc123",
         metadata: { device: "2", inode: "2", size: "2", mtimeNs: "2", ctimeNs: "2", mode: 0 },
       };
 
@@ -331,6 +346,13 @@ describe("snapshot-store", () => {
           inventoryMs: 10,
           hashingMs: 20,
           parsingMs: 30,
+          astGrepMs: 30,
+          fileReadMs: 0,
+          fileFactExtractionMs: 0,
+          fileObjectPublicationMs: 0,
+          relationshipMs: 0,
+          shardPublicationMs: 0,
+          snapshotPublicationMs: 0,
           lookupMs: 40,
           publicationMs: 50,
         },
@@ -563,6 +585,13 @@ describe("snapshot-store", () => {
           inventoryMs: 10,
           hashingMs: 20,
           parsingMs: 30,
+          astGrepMs: 30,
+          fileReadMs: 0,
+          fileFactExtractionMs: 0,
+          fileObjectPublicationMs: 0,
+          relationshipMs: 0,
+          shardPublicationMs: 0,
+          snapshotPublicationMs: 0,
           lookupMs: 40,
           publicationMs: 50,
         },
@@ -610,6 +639,13 @@ describe("snapshot-store", () => {
           inventoryMs: 5,
           hashingMs: 10,
           parsingMs: 15,
+          astGrepMs: 15,
+          fileReadMs: 0,
+          fileFactExtractionMs: 0,
+          fileObjectPublicationMs: 0,
+          relationshipMs: 0,
+          shardPublicationMs: 0,
+          snapshotPublicationMs: 0,
           lookupMs: 20,
           publicationMs: 25,
         },
@@ -730,6 +766,13 @@ describe("snapshot-store", () => {
           inventoryMs: 1,
           hashingMs: 0,
           parsingMs: 0,
+          astGrepMs: 0,
+          fileReadMs: 0,
+          fileFactExtractionMs: 0,
+          fileObjectPublicationMs: 0,
+          relationshipMs: 0,
+          shardPublicationMs: 0,
+          snapshotPublicationMs: 0,
           lookupMs: 2,
           publicationMs: 2,
         },
@@ -772,6 +815,9 @@ describe("snapshot-store", () => {
             [`${suffix}.ts`]: {
               sourceContentId: createHash("sha256").update(suffix).digest("hex"),
               fileObjectId: createHash("sha256").update(`fo-${suffix}`).digest("hex"),
+              language: "typescript",
+              parserMode: "structural",
+              languageExtractorFingerprint: "fp-abc123",
               metadata: { device: "1", inode: "1", size: "1", mtimeNs: "1", ctimeNs: "1", mode: 0 },
             },
           },
@@ -816,7 +862,7 @@ describe("snapshot-store", () => {
         rebuiltRelationShards: 0,
         bytesRead: 100,
         bytesWritten: 50,
-        timings: { inventoryMs: 1, hashingMs: 2, parsingMs: 3, lookupMs: 4, publicationMs: 5 },
+        timings: { inventoryMs: 1, hashingMs: 2, parsingMs: 3, astGrepMs: 3, fileReadMs: 0, fileFactExtractionMs: 0, fileObjectPublicationMs: 0, relationshipMs: 0, shardPublicationMs: 0, snapshotPublicationMs: 0, lookupMs: 4, publicationMs: 5 },
       });
 
       await writeRunReport({
@@ -836,7 +882,7 @@ describe("snapshot-store", () => {
         rebuiltRelationShards: 0,
         bytesRead: 0,
         bytesWritten: 0,
-        timings: { inventoryMs: 1, hashingMs: 0, parsingMs: 0, lookupMs: 2, publicationMs: 2 },
+        timings: { inventoryMs: 1, hashingMs: 0, parsingMs: 0, astGrepMs: 0, fileReadMs: 0, fileFactExtractionMs: 0, fileObjectPublicationMs: 0, relationshipMs: 0, shardPublicationMs: 0, snapshotPublicationMs: 0, lookupMs: 2, publicationMs: 2 },
       });
 
       const ids = await listRunIds(storageRoot, worktreeKey);
@@ -950,6 +996,9 @@ describe("snapshot-store", () => {
       const entry = {
         sourceContentId: "a".repeat(64),
         fileObjectId: "b".repeat(64),
+        language: "typescript",
+        parserMode: "structural",
+        languageExtractorFingerprint: "fp-abc123",
         metadata: { device: "1000", inode: "12345", size: "1024", mtimeNs: "1000000000", ctimeNs: "1000000000", mode: 33188 },
       };
 
@@ -1065,6 +1114,13 @@ describe("snapshot-store", () => {
           inventoryMs: 5,
           hashingMs: 10,
           parsingMs: 15,
+          astGrepMs: 15,
+          fileReadMs: 0,
+          fileFactExtractionMs: 0,
+          fileObjectPublicationMs: 0,
+          relationshipMs: 0,
+          shardPublicationMs: 0,
+          snapshotPublicationMs: 0,
           lookupMs: 5,
           publicationMs: 7,
         },

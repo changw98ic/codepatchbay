@@ -41,6 +41,43 @@ const completeSweBenchPlanMarkdown = [
   "- none",
 ].join("\n");
 
+test("a fused checklist plan is reused without a second planner call", async () => {
+  const cpbRoot = await tempRoot("cpb-fused-plan-reuse");
+  const sourcePath = await tempRoot("cpb-fused-plan-source");
+  const planPath = path.join(cpbRoot, "fused-plan.md");
+  await writeFile(planPath, completeSweBenchPlanMarkdown, "utf8");
+  let calls = 0;
+
+  const result = await runPlan({
+    cpbRoot,
+    dataRoot: cpbRoot,
+    project: "flow",
+    jobId: "job-fused-plan",
+    task: "Fix a coding task in a local repository.",
+    workflow: "standard",
+    planMode: "full",
+    sourcePath,
+    sourceContext: {
+      fusedPlanning: {
+        source: "checklist_planning_fusion",
+        planArtifact: { path: planPath, kind: "plan" },
+      },
+    },
+    pool: {
+      async execute() {
+        calls += 1;
+        throw new Error("a fused plan must not invoke a second planner");
+      },
+    },
+  });
+
+  assert.equal(result.status, "passed", result.failure?.reason);
+  assert.equal(calls, 0);
+  assert.equal(result.diagnostics?.precomputedPlan, true);
+  assert.equal(result.diagnostics?.precomputedPlanSource, "checklist_planning_fusion");
+  assert.equal(result.artifact?.path, planPath);
+});
+
 test("plan prompt uses the local checkout regardless of benchmark metadata", async () => {
   const cpbRoot = await tempRoot("cpb-swebench-plan-prompt");
   const sourcePath = await tempRoot("cpb-swebench-plan-source");

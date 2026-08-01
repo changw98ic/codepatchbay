@@ -504,18 +504,17 @@ test("runDagNode outcome: non-repairable execute failure lands durable dag_node_
 });
 
 // ═══════════════════════════════════════════════════════════════════════
-// OUTCOME-FINALIZER: scope-guard enforcement
+// OUTCOME-FINALIZER: scope-drift observation
 //
 // After a PASSING execute phase, runDagNode invokes evaluateExecuteScopeGuard.
 // The scope-guard reads phaseResult.artifact.metadata.changedFiles (populated
 // by the execute adapter from `git diff HEAD`) and compares them against
 // phaseSourceContext.retry.fixScope. A mutation outside the frozen fix scope
-// produces a terminal SCOPE_VIOLATION failure. This wiring — scope-guard only
-// fires for a passing execute node and its terminal return short-circuits
-// finalize — is what Phase 4 must preserve.
+// is recorded as scope drift. It must not reject needed source or test changes:
+// the worktree and protected-path controls own mutation safety.
 // ═══════════════════════════════════════════════════════════════════════
 
-test("runDagNode outcome: execute mutation outside retry.fixScope triggers SCOPE_VIOLATION terminal", async () => {
+test("runDagNode outcome: execute mutation outside retry.fixScope is observed and continues", async () => {
   // Real git repo so the execute adapter's `git diff HEAD` detects the
   // out-of-scope mutation. This is the same pattern used by the existing
   // verification-infra test in engine-run-job.test.ts.
@@ -530,7 +529,7 @@ test("runDagNode outcome: execute mutation outside retry.fixScope triggers SCOPE
   const failed: LooseRecord[] = [];
   const services = makeServices({ events, failed });
 
-  const { result } = await runEngine({
+  const { result, calls } = await runEngine({
     services,
     sourcePath,
     // retry.fixScope flows through prepare (phaseSourceContext = { ...sourceContext, ... })
@@ -538,9 +537,9 @@ test("runDagNode outcome: execute mutation outside retry.fixScope triggers SCOPE
     sourceContext: { retry: { fixScope: ["README.md"] } },
     poolOpts: {
       customResult: async ({ call }: { call: LooseRecord }) => {
-        // Executor returns valid output (so the phase passes and the
-        // scope-guard gets a chance to run) but mutates a file OUTSIDE the
-        // frozen fix scope as a side effect.
+    // Executor returns valid output (so the phase passes and the scope-drift
+    // observer gets a chance to run) but creates a supporting file outside the
+    // original repair hint.
         if (recordValue(call.meta).role === "executor") {
           await writeFile(path.join(sourcePath, "outside-scope.js"), "// injected\n", "utf8");
         }
@@ -549,13 +548,13 @@ test("runDagNode outcome: execute mutation outside retry.fixScope triggers SCOPE
     },
   });
 
-  assert.equal(result.status, "failed");
-  assert.equal(result.failure.kind, FailureKind.SCOPE_VIOLATION);
-  assert.equal(result.failure.phase, "execute");
-  assert.equal(result.failure.retryable, false);
+  assert.notEqual(recordValue(result.failure).kind, FailureKind.SCOPE_VIOLATION);
+  assert.ok(
+    calls.some((call) => recordValue(call.meta).role === "verifier"),
+    "scope drift must not stop downstream verification",
+  );
 
-  // The scope-guard emits its evaluated event with withinScope=false and the
-  // specific violating path before converting to a terminal failure.
+  // The scope observer keeps the original repair hint as audit evidence.
   const evaluated = events.find((e) => e.type === "scope_guard_evaluated");
   assert.ok(evaluated, "scope_guard_evaluated must be emitted for a passing execute node");
   assert.equal(evaluated.phase, "execute");
@@ -563,15 +562,15 @@ test("runDagNode outcome: execute mutation outside retry.fixScope triggers SCOPE
   assert.deepEqual(evaluated.violations, ["outside-scope.js"]);
   assert.deepEqual(evaluated.fixScope, ["README.md"]);
 
-  // The terminal failure is recorded as a dag_node_failed with the
-  // scope-guard code and failJob receives the same code.
+  // Scope drift is not a terminal failure.
   const nodeFailed = events.find(
     (e) => e.type === "dag_node_failed" && e.code === "scope_guard_violation",
   );
-  assert.ok(nodeFailed, "scope-guard violation must land as dag_node_failed");
-  assert.equal(nodeFailed.nodeId, "execute");
-  assert.equal(failed.length, 1);
-  assert.equal(failed[0].code, "scope_guard_violation");
+  assert.equal(nodeFailed, undefined);
+  assert.ok(
+    !failed.some((failure) => failure.code === "scope_guard_violation"),
+    "scope drift must never call failJob",
+  );
 });
 
 // ═══════════════════════════════════════════════════════════════════════

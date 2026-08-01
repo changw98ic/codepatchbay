@@ -1406,13 +1406,17 @@ async function cleanupWorkspace(state: WorkspaceState): Promise<TemporaryWorkspa
   return proof as TemporaryWorkspaceCleanupProof;
 }
 
-async function createRoot(prefix: string, env: NodeJS.ProcessEnv): Promise<WorkspaceState> {
+async function createRoot(
+  prefix: string,
+  env: NodeJS.ProcessEnv,
+  parentCandidate: string = tmpdir(),
+): Promise<WorkspaceState> {
   if (!prefix || prefix.includes("\0") || path.basename(prefix) !== prefix || !prefix.startsWith("cpb-") || !prefix.endsWith("-")) {
     throw Object.assign(new Error("temporary workspace prefix must be a cpb-* basename ending in '-'"), {
       code: "TEMPORARY_WORKSPACE_PREFIX_INVALID",
     });
   }
-  const parentPath = await realpath(tmpdir());
+  const parentPath = await realpath(parentCandidate);
   const parent = await openDirectoryAuthority(parentPath, "temporary workspace parent");
   let root: DirectoryAuthority | null = null;
   try {
@@ -1622,7 +1626,10 @@ export async function createTemporaryGitWorktree({
   try {
     common = await openDirectoryAuthority(commonPath, "temporary worktree Git common directory");
     commonConfig = await openFileAuthority(path.join(commonPath, "config"), "temporary worktree common Git config");
-    state = await createRoot(prefix, gitEnv);
+    // Keep the temporary worktree on the source repository's filesystem.
+    // Cleanup quarantines both the worktree root and Git's administrative
+    // directory with atomic renames, which cannot cross filesystem devices.
+    state = await createRoot(prefix, gitEnv, path.dirname(sourceTop));
     state.workspaceKind = "git_worktree";
     state.worktreePath = path.join(state.rootPath, "worktree");
     state.gitCoordinates = { sourcePath: source.path, commonDir: common.path };

@@ -483,23 +483,23 @@ describe("force=true change plan", () => {
     assert.strictEqual(plan.forced, true);
   });
 
-  test("force=true with existing objects map still forces compute", () => {
+  test("force=true with verified object IDs still forces compute", () => {
     const entryA = makeEntry("src/a.ts", sha256hex("content-a"), "typescript", fpTs);
     const prev = makeSourceState([entryA]);
     const curr = makeSourceState([entryA]);
 
-    // Provide an existing objects map that would normally cause reuse.
-    const existingObjects = new Map<string, string>();
-    existingObjects.set(entryA.contentId, "fake-object-id-12345");
+    // Provide a verified object ID that would normally cause reuse.
+    const existingObjectIds = new Set<string>();
+    existingObjectIds.add("fake-object-id-12345");
 
     const plan = buildChangePlan({
       previous: prev,
       current: curr,
       force: true,
-      existingObjects,
+      existingObjectIds,
     });
 
-    assert.strictEqual(plan.summary.compute, 1, "force=true must ignore existingObjects for reuse");
+    assert.strictEqual(plan.summary.compute, 1, "force=true must ignore existingObjectIds for reuse");
     assert.strictEqual(plan.summary.reuse, 0);
   });
 

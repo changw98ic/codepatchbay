@@ -248,6 +248,14 @@ export async function prepareTaskAndRiskMap(
     phaseSourceContext,
     sourceContext: ctx.sourceContext,
   });
+  const prepareStartedAtMs = Date.now();
+  await appendEvent(cpbRoot, project, jobId, {
+    type: "phase_started",
+    jobId,
+    project,
+    phase: "prepare_task",
+    ts: ts(),
+  });
   try {
     if (typeof prepareTask !== "function") {
       const err = Object.assign(new Error("prepareTask service is unavailable"), { code: "prepare_task_unavailable" });
@@ -294,13 +302,6 @@ export async function prepareTaskAndRiskMap(
     };
 
     await appendEvent(cpbRoot, project, jobId, {
-      type: "phase_started",
-      jobId,
-      project,
-      phase: "prepare_task",
-      ts: ts(),
-    });
-    await appendEvent(cpbRoot, project, jobId, {
       type: "riskmap_generated",
       jobId,
       project,
@@ -312,9 +313,27 @@ export async function prepareTaskAndRiskMap(
       verificationDepth: recordValue(riskMap).verificationDepth ?? null,
       adversarialRequired: Boolean(recordValue(riskMap).adversarialRequired),
       adversarialFocus: recordValue(riskMap).adversarialFocus ?? [],
+      validationProfile: recordValue(riskMap).validationProfile ?? null,
+      classificationReasons: recordValue(riskMap).classificationReasons ?? [],
       phaseBudgetPolicy,
       evidenceRequirements: phaseBudgetPolicy.evidenceRequirements,
       confidence: recordValue(riskMap).confidence ?? null,
+      ts: ts(),
+    });
+    const localIndexStats = recordValue(recordValue(prepareRecord.localCodeIndexReadiness).stats);
+    await appendEvent(cpbRoot, project, jobId, {
+      type: "phase_timing",
+      jobId,
+      project,
+      phase: "prepare_task",
+      durationMs: Date.now() - prepareStartedAtMs,
+      index: Object.keys(localIndexStats).length > 0 ? {
+        mode: localIndexStats.mode ?? null,
+        durationMs: localIndexStats.durationMs ?? null,
+        parsedFiles: localIndexStats.parsedFiles ?? null,
+        reusedFiles: localIndexStats.reusedFiles ?? null,
+        bytesRead: localIndexStats.bytesRead ?? null,
+      } : null,
       ts: ts(),
     });
     await appendEvent(cpbRoot, project, jobId, {
@@ -339,6 +358,15 @@ export async function prepareTaskAndRiskMap(
     return { kind: "ok", riskMap, phaseSourceContext, dynamicAgentPlan };
   } catch (err) {
     const fail = normalizePrepareFailure(err);
+    await appendEvent(cpbRoot, project, jobId, {
+      type: "phase_timing",
+      jobId,
+      project,
+      phase: "prepare_task",
+      durationMs: Date.now() - prepareStartedAtMs,
+      outcome: "blocked",
+      ts: ts(),
+    });
     await blockPreparedJob({ cpbRoot, project, jobId, appendEvent, blockJob, failure: fail });
     await reportProgress(ctx, {
       type: "job_blocked",

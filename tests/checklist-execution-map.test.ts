@@ -174,6 +174,57 @@ test("high-assurance execute discards unmapped untracked residue before freezing
   assert.deepEqual(recordValue(result.diagnostics?.candidateArtifact).changedFiles, ["README.md"]);
 });
 
+test("standard execute preserves a new untracked file inside frozen allowed scope", async () => {
+  const cpbRoot = await tempRoot("cpb-execmap-new-scoped-file");
+  const sourcePath = await makeSourceRoot();
+  await execFileAsync("git", ["init", "-q"], { cwd: sourcePath });
+  await execFileAsync("git", ["config", "user.email", "test@example.com"], { cwd: sourcePath });
+  await execFileAsync("git", ["config", "user.name", "Test User"], { cwd: sourcePath });
+  await execFileAsync("git", ["add", "-A"], { cwd: sourcePath });
+  await execFileAsync("git", ["commit", "-q", "-m", "initial fixture"], { cwd: sourcePath });
+  const scopedChecklist = checklist();
+  scopedChecklist.items[0].allowedFiles = ["docs/"];
+
+  const result = await runExecute({
+    cpbRoot,
+    dataRoot: path.join(cpbRoot, "runtime", "projects", "flow"),
+    project: "flow",
+    jobId: "job-new-scoped-file",
+    task: "Add documentation",
+    role: "executor",
+    agents: { executor: "codex" },
+    sourcePath,
+    sourceContext: { acceptanceChecklist: scopedChecklist },
+    previousResults: [],
+    env: {},
+    pool: {
+      async execute() {
+        await mkdir(path.join(sourcePath, "docs"), { recursive: true });
+        await writeFile(path.join(sourcePath, "docs", "guide.md"), "# Guide\n", "utf8");
+        return {
+          output: JSON.stringify({
+            status: "ok",
+            summary: "Added the requested guide",
+            tests: ["guide inspected"],
+            risks: [],
+            checklistMapping: [],
+          }),
+          providerKey: "codex",
+          variant: null,
+        };
+      },
+    },
+  });
+
+  assert.equal(result.status, "passed");
+  const executionMapArtifact = recordValue(recordValue(result.diagnostics).executionMapArtifact);
+  const executionMap = JSON.parse(await readFile(String(executionMapArtifact.path), "utf8"));
+  assert.deepEqual(executionMap.changedFiles, ["docs/guide.md"]);
+  assert.deepEqual(executionMap.unmappedChangedFiles, []);
+  assert.deepEqual(executionMap.discardedUntrackedFiles, []);
+  assert.deepEqual(recordValue(result.diagnostics?.candidateArtifact).changedFiles, ["docs/guide.md"]);
+});
+
 test("high-assurance execute preserves pre-existing untracked residue without current-execution ownership", async () => {
   const cpbRoot = await tempRoot("cpb-execmap-unowned-residue");
   const sourcePath = await makeSourceRoot();

@@ -20,6 +20,7 @@ import type { LooseRecord } from "../contracts/types.js";
 import { recordValue } from "../contracts/types.js";
 import { buildPhaseAcpEnv } from "./phase-env.js";
 import { resolveHighAssurancePolicy } from "../policy/high-assurance.js";
+import { resolveValidationProfile } from "../policy/validation-profile.js";
 import {
   captureCandidateArtifact,
   verifyCandidateArtifactIdentity,
@@ -203,6 +204,17 @@ ${Array.isArray(retry.fixScope) && retry.fixScope.length > 0 ? `Fix scope: ${ret
 ${retry.failureEvidence ? `Failure evidence:\n\`\`\`json\n${JSON.stringify(retry.failureEvidence, null, 2)}\n\`\`\`` : ""}
 ${retry.instruction ? `Repair instruction: ${retry.instruction}` : ""}
 ${retry.previousOutput ? `\nPrevious output for reference:\n\`\`\`\n${retry.previousOutput}\n\`\`\`` : ""}`;
+}
+
+function validationProfileSection(sourceContext: unknown) {
+  const profile = resolveValidationProfile(sourceContext);
+  if (profile === "smoke") {
+    return `\n\n## Validation profile: smoke\nRun the smallest repository-native check that directly exercises each required changed behavior. Do not expand into unrelated regression sweeps unless the focused evidence exposes a risk or failure.`;
+  }
+  if (profile === "standard") {
+    return `\n\n## Validation profile: standard\nRun focused checks for each changed behavior and its relevant regression path. Do not substitute a broad unrelated suite for direct evidence.`;
+  }
+  return `\n\n## Validation profile: verified\nPerform the full independent release-validation review. Treat the executor's conclusions as untrusted and seek a concrete counterexample before passing.`;
 }
 
 function safePathPart(value: unknown, fallback = "unknown") {
@@ -889,7 +901,9 @@ Return the standard verifier JSON envelope.` + JSON_INSTRUCTION;
 
 const execFile = promisify(execFileCb) as ExecFileAsync;
 const OUTPUT_TAIL_CHARS = 4000;
-const PROMPT_PLAN_CHARS = 12_000;
+// Verification receives the current diff and evidence ledger separately; an
+// eight-thousand-character plan excerpt is sufficient for independent review.
+const PROMPT_PLAN_CHARS = 8_000;
 const PROMPT_DIFF_CHARS = 16_000;
 const PROMPT_DIFF_STAT_CHARS = 40_000;
 
@@ -2426,6 +2440,29 @@ function limitText(text: unknown, maxChars: number): string {
   return `${value.slice(0, maxChars)}\n\n[truncated ${value.length - maxChars} chars]`;
 }
 
+function checklistPromptSummary(checklist: AcceptanceChecklist) {
+  return {
+    schemaVersion: checklist.schemaVersion,
+    jobId: checklist.jobId,
+    items: checklist.items.map((rawItem) => {
+      const item = recordValue(rawItem);
+      return {
+        id: item.id ?? null,
+        requirement: item.requirement ?? null,
+        predicateId: item.predicateId ?? null,
+        verificationMethod: item.verificationMethod ?? null,
+        allowedFiles: Array.isArray(item.allowedFiles) ? item.allowedFiles : [],
+        required: item.required === true,
+        expectedEvidence: item.expectedEvidence ?? null,
+        evidenceClass: item.evidenceClass ?? null,
+        evidenceOrigin: item.evidenceOrigin ?? null,
+        requiresRealPathEvidence: item.requiresRealPathEvidence === true,
+        observableContract: item.observableContract ?? null,
+      };
+    }),
+  };
+}
+
 function getRequiredArtifact(previousResults: PhaseResultRecord[] = [], kind: string) {
   for (let i = previousResults.length - 1; i >= 0; i--) {
     if (previousResults[i].artifact?.kind === kind) {
@@ -2470,7 +2507,9 @@ export async function buildVerifyPrompt(ctx: VerifyContext, planArtifact: PlanAr
   const promptAcceptanceChecklist = checklistContext.acceptanceChecklist;
   const blindVerification = checklistContext.blindVerification === true;
   const scopeReviewRequest = checklistContext.scopeReviewRequest || null;
-  const retrySection = buildRetrySection(recordValue(ctx.sourceContext));
+  const sourceContext = recordValue(ctx.sourceContext);
+  const retrySection = buildRetrySection(sourceContext);
+  const profileSection = validationProfileSection(sourceContext);
 
   let checklistSection = "";
   if (promptAcceptanceChecklist) {
@@ -2525,7 +2564,7 @@ Required envelope placement and checklistVerdict shape:
 }
 
 ### Frozen Acceptance Checklist
-${JSON.stringify(promptAcceptanceChecklist, null, 2)}
+${JSON.stringify(checklistPromptSummary(promptAcceptanceChecklist), null, 2)}
 
 ### Predeclared Evidence Ledger (ledgerId: ${ledger?.ledgerId || "none"})
 You may only cite evidence ids from this table:
@@ -2577,7 +2616,7 @@ ${JSON.stringify(scopeReviewRequest, null, 2)}
       verificationEvidence: promptVerificationEvidence,
       blindVerification,
       scopeReviewRequest,
-    }) + checklistSection + scopeReviewSection + retrySection;
+    }) + profileSection + checklistSection + scopeReviewSection + retrySection;
   }
 
   return `You are a software verification agent. Verify the following implementation:
@@ -2586,6 +2625,7 @@ ${phaseExecutionContract("verify")}
 
 Task: ${ctx.task}
 Project: ${ctx.project}
+${profileSection}
 ${blindVerification
     ? "\nPlan reference: deliberately withheld for independent blind verification\n"
     : planArtifact

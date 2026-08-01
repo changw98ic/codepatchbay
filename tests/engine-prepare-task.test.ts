@@ -312,7 +312,7 @@ async function runPrepareEngine({ prepareTask, includePrepareTask = true }: RunP
 }
 
 test("runJob blocks before phases when prepareTask service is missing", async () => {
-  const { result, starts, calls } = await runPrepareEngine({ includePrepareTask: false });
+  const { result, starts, calls, events } = await runPrepareEngine({ includePrepareTask: false });
 
   assert.equal(result.status, "blocked");
   assert.equal(result.failure.phase, "prepare_task");
@@ -320,6 +320,9 @@ test("runJob blocks before phases when prepareTask service is missing", async ()
   assert.match(String(result.failure.reason), /prepareTask|prepare_task/i);
   assert.deepEqual(starts, []);
   assert.equal(calls.length, 0);
+  const timing = events.find((event) => event.type === "phase_timing" && event.phase === "prepare_task");
+  assert.equal(timing?.outcome, "blocked");
+  assert.equal(typeof timing?.durationMs, "number");
 });
 
 test("runJob blocks local_code_index_unavailable from prepareTask before provider phase work", async () => {

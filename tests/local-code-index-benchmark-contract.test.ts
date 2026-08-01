@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, test } from "node:test";
@@ -21,12 +21,30 @@ import {
 } from "./benchmarks/local-code-index-v2/generate.js";
 import {
   ensureLocalCodeIndex,
+  fileObjectPath,
   localCodeIndexStatus,
   readSnapshotIdentity,
   resolveStorageRoot,
 } from "../core/indexing/local-code-index/index.js";
+import { observeGitSourceStateOnce } from "../core/indexing/local-code-index/git-observer.js";
 
 const execFileAsync = promisify(execFile);
+
+function reusableGitStateInput(payload: Awaited<ReturnType<typeof observeGitSourceStateOnce>>) {
+  return {
+    commonDir: payload.commonDir,
+    objectFormat: payload.objectFormat,
+    headCommit: payload.headCommit,
+    materializationConfig: payload.materializationConfig,
+    filterConfigs: payload.filterConfigs,
+    entries: payload.entries.map((entry) => ({
+      path: entry.path,
+      stage: entry.stage,
+      attributes: entry.attributes,
+      eolInfo: entry.eolInfo,
+    })),
+  };
+}
 
 describe("Local Code Index v2 benchmark contract", () => {
   test("defines exactly ten operations at both canonical fixture sizes", () => {
@@ -144,6 +162,148 @@ describe("Local Code Index v2 benchmark contract", () => {
       assert.equal(refreshed.stats.rebuiltSymbolShards, 0);
       assert.equal(refreshed.stats.rebuiltRelationShards, 1);
       assert.notEqual(refreshed.ref.snapshotId, reused.ref.snapshotId);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a clean linked Git worktree reuses repository index objects and shards", { timeout: 30_000 }, async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "lci-v2-worktree-reuse-"));
+    const source = path.join(root, "source");
+    const linkedWorktree = path.join(root, "linked-worktree");
+    const cpbRoot = path.join(root, "cpb");
+    try {
+      await mkdir(path.join(source, "src"), { recursive: true });
+      await writeFile(path.join(source, "src", "a.ts"), "export const alpha = 1;\n");
+      await writeFile(path.join(source, "src", "b.ts"), "export const beta = alpha;\n");
+      await execFileAsync("git", ["init", "-q", "-b", "main"], { cwd: source });
+      await execFileAsync("git", ["add", "--all"], { cwd: source });
+      await execFileAsync(
+        "git",
+        ["-c", "user.name=Benchmark", "-c", "user.email=benchmark@example.test", "commit", "-q", "-m", "base"],
+        { cwd: source },
+      );
+      await execFileAsync("git", ["worktree", "add", "--detach", "-q", linkedWorktree, "HEAD"], { cwd: source });
+      await mkdir(cpbRoot, { recursive: true });
+      assert.deepEqual(
+        reusableGitStateInput(await observeGitSourceStateOnce(source)),
+        reusableGitStateInput(await observeGitSourceStateOnce(linkedWorktree)),
+      );
+
+      const initial = await ensureLocalCodeIndex({ sourcePath: source, cpbRoot });
+      assert.equal(initial.stats.mode, "full");
+      assert.equal(initial.stats.parsedFiles, 2);
+      const indexEntries = await readdir(
+        path.join(cpbRoot, "indexes", "local-code", "v2", "repositories", initial.ref.repositoryKey),
+        { recursive: true },
+      );
+      assert.ok(
+        indexEntries.some((entry) => entry.includes("reusable-snapshots")),
+        `expected reusable snapshot catalog, found: ${indexEntries.join(", ")}`,
+      );
+
+      const reused = await ensureLocalCodeIndex({ sourcePath: linkedWorktree, cpbRoot });
+      const reuseRecords = (await readdir(
+        path.join(cpbRoot, "indexes", "local-code", "v2", "repositories", initial.ref.repositoryKey),
+        { recursive: true },
+      )).filter((entry) => entry.includes("reusable-snapshots") && entry.endsWith(".json"));
+      assert.equal(
+        reuseRecords.length,
+        1,
+        `linked worktree should match the original reusable state: ${reuseRecords.join(", ")}`,
+      );
+      assert.equal(reused.ref.repositoryKey, initial.ref.repositoryKey);
+      assert.notEqual(reused.ref.worktreeKey, initial.ref.worktreeKey);
+      assert.equal(reused.stats.mode, "reused");
+      assert.equal(reused.stats.parsedFiles, 0);
+      assert.equal(reused.stats.bytesRead, 0);
+      assert.equal(reused.stats.rebuiltSymbolShards, 0);
+      assert.equal(reused.stats.rebuiltRelationShards, 0);
+
+      const status = await localCodeIndexStatus({ sourcePath: linkedWorktree, cpbRoot });
+      assert.equal(status.available, true);
+      assert.equal(status.fresh, true);
+      assert.equal(status.exact, true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a linked worktree reuses identical bytes with different file identities", { timeout: 30_000 }, async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "lci-v2-mixed-identity-reuse-"));
+    const source = path.join(root, "source");
+    const linkedWorktree = path.join(root, "linked-worktree");
+    const cpbRoot = path.join(root, "cpb");
+    try {
+      await mkdir(path.join(source, "src"), { recursive: true });
+      // These files have byte-identical content but distinct extraction modes.
+      // Their immutable file objects must remain distinct while the linked
+      // worktree still reuses both of them.
+      await writeFile(path.join(source, "src", "empty.py"), "\n");
+      await writeFile(path.join(source, "src", "empty.html"), "\n");
+      await execFileAsync("git", ["init", "-q", "-b", "main"], { cwd: source });
+      await execFileAsync("git", ["add", "--all"], { cwd: source });
+      await execFileAsync(
+        "git",
+        ["-c", "user.name=Benchmark", "-c", "user.email=benchmark@example.test", "commit", "-q", "-m", "base"],
+        { cwd: source },
+      );
+      await execFileAsync("git", ["worktree", "add", "--detach", "-q", linkedWorktree, "HEAD"], { cwd: source });
+      await mkdir(cpbRoot, { recursive: true });
+
+      const initial = await ensureLocalCodeIndex({ sourcePath: source, cpbRoot });
+      const storageRoot = await resolveStorageRoot(cpbRoot, source);
+      const identity = await readSnapshotIdentity(
+        storageRoot,
+        initial.ref.worktreeKey,
+        initial.ref.snapshotId,
+      );
+      const objectIds = new Set(Object.values(identity?.inventory ?? {}).map(
+        (entry) => entry.fileObjectId,
+      ));
+      assert.equal(objectIds.size, 2, "different extraction identities need distinct objects");
+
+      const reused = await ensureLocalCodeIndex({ sourcePath: linkedWorktree, cpbRoot });
+      assert.equal(reused.stats.mode, "reused");
+      assert.equal(reused.stats.parsedFiles, 0);
+      assert.equal(reused.stats.bytesRead, 0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a rebuilt worktree keeps a verified first reusable catalog selection", { timeout: 30_000 }, async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "lci-v2-worktree-catalog-"));
+    const source = path.join(root, "source");
+    const linkedWorktree = path.join(root, "linked-worktree");
+    const cpbRoot = path.join(root, "cpb");
+    try {
+      await mkdir(path.join(source, "src"), { recursive: true });
+      await writeFile(path.join(source, "src", "a.ts"), "export const alpha = 1;\n");
+      await writeFile(path.join(source, "src", "b.ts"), "export const beta = alpha;\n");
+      await execFileAsync("git", ["init", "-q", "-b", "main"], { cwd: source });
+      await execFileAsync("git", ["add", "--all"], { cwd: source });
+      await execFileAsync(
+        "git",
+        ["-c", "user.name=Benchmark", "-c", "user.email=benchmark@example.test", "commit", "-q", "-m", "base"],
+        { cwd: source },
+      );
+      await execFileAsync("git", ["worktree", "add", "--detach", "-q", linkedWorktree, "HEAD"], { cwd: source });
+      await mkdir(cpbRoot, { recursive: true });
+
+      const initial = await ensureLocalCodeIndex({ sourcePath: source, cpbRoot });
+      const storageRoot = await resolveStorageRoot(cpbRoot, source);
+      const identity = await readSnapshotIdentity(storageRoot, initial.ref.worktreeKey, initial.ref.snapshotId);
+      const missingObjectId = Object.values(identity?.inventory || {})[0]?.fileObjectId;
+      assert.ok(missingObjectId, "expected an indexed file object");
+      await rm(fileObjectPath(storageRoot, initial.ref.repositoryKey, missingObjectId));
+
+      const rebuilt = await ensureLocalCodeIndex({ sourcePath: linkedWorktree, cpbRoot });
+      assert.equal(rebuilt.stats.mode, "full");
+      assert.equal(rebuilt.stats.parsedFiles, 2);
+      const status = await localCodeIndexStatus({ sourcePath: linkedWorktree, cpbRoot });
+      assert.equal(status.available, true);
+      assert.equal(status.fresh, true);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

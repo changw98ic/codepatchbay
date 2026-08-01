@@ -22,7 +22,10 @@ import { createTemporaryWorkspace } from "../runtime/temporary-workspace.js";
 import { fsyncDirectory } from "../../shared/hub-maintenance.js";
 
 const execFile = promisify(execFileCb);
-const PROMPT_PLAN_CHARS = 12_000;
+// The executor needs the actionable plan, not a full replay of planning
+// history. Keep the handoff compact so code inspection and test output retain
+// room in the provider context window.
+const PROMPT_PLAN_CHARS = 8_000;
 
 export type ExecuteCleanupTestHooks = {
   beforeQuarantineRename?: (context: {
@@ -1120,6 +1123,7 @@ Project: ${ctx.project}
 ${planSection}
 ${observableSection}
 Execute the implementation. Make code changes as needed.
+Put throwaway simulations, probes, and logs in the system temporary directory, never in the repository. Do not leave temporary files in the candidate worktree.
 Before declaring completion, map every explicit numbered/bulleted task obligation to a concrete production change or prove from repository-native evidence why its stated condition does not apply. Do not silently treat a later phase, migration step, or target-version bullet as out of scope.
 For versioned, future/current, migration, or deprecation tasks, determine the checkout's applicable phase from repository version metadata, whatsnew/changelog files, release configuration, or branch-owned tests. Do not use commit dates alone. Test the resulting default behavior plus wrappers, masked/subclass inputs, and compatibility bypasses that exercise the same conversion path.${retrySection}`;
 }

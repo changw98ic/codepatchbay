@@ -136,6 +136,9 @@ async function setupV2Index(
         {
           sourceContentId: "a".repeat(64),
           fileObjectId: "b".repeat(64),
+          language: "typescript",
+          parserMode: "structural",
+          languageExtractorFingerprint: "test-extractor",
           metadata: {
             device: "1",
             inode: "1",

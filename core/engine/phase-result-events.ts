@@ -58,6 +58,7 @@ export async function emitPhaseResultEvent({
   const diagnostics = recordValue(phaseResult.diagnostics);
   const promptArtifact = recordValue(diagnostics.promptArtifact);
   const candidateArtifact = recordValue(diagnostics.candidateArtifact);
+  const phaseTiming = recordValue(diagnostics.phaseTiming);
   const candidateId = stringOrNull(candidateArtifact.identityHash || diagnostics.validatedCandidateIdentityHash);
   const failure = failurePayload(phaseResult.failure);
   const artifactName = phaseResult.artifact?.name || null;
@@ -77,6 +78,7 @@ export async function emitPhaseResultEvent({
     promptArtifact: promptArtifact.name || null,
     acpAuditFile: diagnostics.acpAuditFile || null,
     usage: diagnostics.usage || null,
+    phaseTiming: Object.keys(phaseTiming).length > 0 ? phaseTiming : null,
     ...(attemptId ? { attemptId } : {}),
     ...(candidateId ? { candidateId } : {}),
     ts: now(),

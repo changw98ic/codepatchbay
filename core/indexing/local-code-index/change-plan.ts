@@ -13,6 +13,7 @@
 import { createHash } from "node:crypto";
 
 import { canonicalStringify } from "./canonical-json.js";
+import { deriveFileObjectId } from "./object-store.js";
 
 // ── Source-state entry types ────────────────────────────────────────────────
 
@@ -217,13 +218,13 @@ export type ChangePlanOptions = Readonly<{
    */
   force?: boolean;
   /**
-   * Map from content ID to existing file object ID for reuse decisions.
-   * When a content ID is present in this map and the extractor fingerprint
-   * matches, the entry is classified as `reuse` (unless force=true).
+   * File object IDs that were verified in the immutable object store.
    *
-   * Empty or missing keys imply `compute`.
+   * A source-content hash alone is insufficient: identical bytes can be
+   * indexed under different languages or parser modes and must therefore
+   * retain distinct file object IDs. Missing IDs imply `compute`.
    */
-  existingObjects?: ReadonlyMap<string, string>;
+  existingObjectIds?: ReadonlySet<string>;
 }>;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -243,6 +244,41 @@ function hashValue(value: unknown): string {
  */
 function extractorKey(entry: SourceStateEntry): string {
   return `${entry.language}\0${entry.parserMode}\0${entry.languageExtractorFingerprint}`;
+}
+
+/**
+ * Derive the only file object that can safely represent this source-state
+ * entry. The object ID includes language, parser mode, and extractor
+ * fingerprint in addition to the source bytes.
+ */
+function fileObjectIdForEntry(entry: SourceStateEntry): string {
+  return deriveFileObjectId(
+    entry.language,
+    entry.parserMode,
+    entry.languageExtractorFingerprint,
+    entry.contentId,
+  );
+}
+
+function verifiedFileObjectId(
+  entry: SourceStateEntry,
+  existingObjectIds: ReadonlySet<string> | undefined,
+): string | null {
+  const fileObjectId = fileObjectIdForEntry(entry);
+  return existingObjectIds === undefined || existingObjectIds.has(fileObjectId)
+    ? fileObjectId
+    : null;
+}
+
+function reusablePreviousEntry(
+  candidates: readonly SourceStateEntry[] | undefined,
+  current: SourceStateEntry,
+): SourceStateEntry | null {
+  if (candidates === undefined) return null;
+  const currentExtractorKey = extractorKey(current);
+  return candidates.find((candidate) =>
+    extractorKey(candidate) === currentExtractorKey,
+  ) ?? null;
 }
 
 /**
@@ -345,7 +381,7 @@ function buildPathIndex(
  * const plan = buildChangePlan({
  *   previous: lastSnapshot.sourceState,
  *   current: currentObservation,
- *   existingObjects: objectStore.getContentIdToFileObjectIdMap(),
+ *   existingObjectIds: objectStore.getVerifiedFileObjectIds(),
  * });
  *
  * for (const entry of plan.entries) {
@@ -356,7 +392,7 @@ function buildPathIndex(
  * ```
  */
 export function buildChangePlan(options: ChangePlanOptions): ChangePlan {
-  const { previous, current, force = false, existingObjects } = options;
+  const { previous, current, force = false, existingObjectIds } = options;
 
   // ── Build indices ───────────────────────────────────────────────────────
   const prevPathIndex = previous
@@ -397,16 +433,22 @@ export function buildChangePlan(options: ChangePlanOptions): ChangePlan {
       classification.hasAdditions = true;
 
       // Check if this content already exists under a different path (retarget).
-      const prevPathsForContent = prevContentIndex.get(currEntry.contentId);
-      if (prevPathsForContent && prevPathsForContent.length > 0) {
+      const previousEntriesForContent = (prevContentIndex.get(currEntry.contentId) ?? [])
+        .map((previousPath) => prevPathIndex.get(previousPath))
+        .filter((entry): entry is SourceStateEntry => entry !== undefined);
+      const retargetSource = reusablePreviousEntry(previousEntriesForContent, currEntry);
+      const existingId = retargetSource === null
+        ? null
+        : verifiedFileObjectId(currEntry, existingObjectIds);
+      if (retargetSource !== null && existingId !== null) {
         // Content existed under another path — this is a retarget.
-        const retargetFrom = prevPathsForContent[0]!;
+        const retargetFrom = retargetSource.path;
         classification.hasRenames = true;
 
         planEntries.push({
           path: currEntry.path,
           decision: "retarget",
-          existingFileObjectId: null, // Will be resolved by object store
+          existingFileObjectId: existingId,
           retargetFrom,
           reason: `content previously at ${retargetFrom}`,
         });
@@ -442,14 +484,24 @@ export function buildChangePlan(options: ChangePlanOptions): ChangePlan {
         });
       } else {
         // Normal mode: reuse existing object.
-        const existingId = existingObjects?.get(currEntry.contentId) ?? null;
-        planEntries.push({
-          path: currEntry.path,
-          decision: "reuse",
-          existingFileObjectId: existingId,
-          retargetFrom: null,
-          reason: "content and fingerprint unchanged",
-        });
+        const existingId = verifiedFileObjectId(currEntry, existingObjectIds);
+        if (existingId === null && existingObjectIds !== undefined) {
+          planEntries.push({
+            path: currEntry.path,
+            decision: "compute",
+            existingFileObjectId: null,
+            retargetFrom: null,
+            reason: "file object missing from immutable store",
+          });
+        } else {
+          planEntries.push({
+            path: currEntry.path,
+            decision: "reuse",
+            existingFileObjectId: existingId,
+            retargetFrom: null,
+            reason: "content and fingerprint unchanged",
+          });
+        }
       }
     } else if (contentChanged) {
       // ── Content changed — compute ──────────────────────────────────
@@ -464,15 +516,21 @@ export function buildChangePlan(options: ChangePlanOptions): ChangePlan {
       }
 
       // Check if the new content already exists under another path.
-      const prevPathsForNewContent = prevContentIndex.get(currEntry.contentId);
-      if (prevPathsForNewContent && prevPathsForNewContent.length > 0) {
+      const previousEntriesForContent = (prevContentIndex.get(currEntry.contentId) ?? [])
+        .map((previousPath) => prevPathIndex.get(previousPath))
+        .filter((entry): entry is SourceStateEntry => entry !== undefined);
+      const retargetSource = reusablePreviousEntry(previousEntriesForContent, currEntry);
+      const existingId = retargetSource === null
+        ? null
+        : verifiedFileObjectId(currEntry, existingObjectIds);
+      if (retargetSource !== null && existingId !== null) {
         // New content existed elsewhere — retarget.
         classification.hasRenames = true;
-        const retargetFrom = prevPathsForNewContent[0]!;
+        const retargetFrom = retargetSource.path;
         planEntries.push({
           path: currEntry.path,
           decision: "retarget",
-          existingFileObjectId: null,
+          existingFileObjectId: existingId,
           retargetFrom,
           reason: `content changed to match ${retargetFrom}`,
         });

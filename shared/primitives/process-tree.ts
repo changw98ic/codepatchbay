@@ -81,6 +81,8 @@ export interface KillTreeOptions {
   system?: ProcessTreeSystem;
   forceVerifyMs?: number;
   expectedRootIdentity?: ProcessIdentity;
+  /** Called only when SIGKILL is actually sent to an identity that survived the grace period. */
+  onForceKill?: () => void;
 }
 
 const defaultSystem: ProcessTreeSystem = {
@@ -725,6 +727,7 @@ export async function killTree(
     system = defaultSystem,
     forceVerifyMs = DEFAULT_FORCE_VERIFY_MS,
     expectedRootIdentity,
+    onForceKill,
   }: KillTreeOptions = {},
 ): Promise<void> {
   if (pid === 0) return;
@@ -826,13 +829,15 @@ export async function killTree(
     }
   }
   const signalKnownDescendants = (signal: NodeJS.Signals) => {
+    let signalled = false;
     for (const childIdentity of [...descendants].reverse()) {
       try {
-        signalTreeIdentity(childIdentity, signal, { allowGroup: useGroup, system });
+        signalled = signalTreeIdentity(childIdentity, signal, { allowGroup: useGroup, system }) || signalled;
       } catch (error) {
         recordCleanupError(error);
       }
     }
+    return signalled;
   };
   const rootStillSame = () => {
     try {
@@ -849,11 +854,12 @@ export async function killTree(
     }
   };
   const signalRoot = (signal: NodeJS.Signals) => {
-    if (!rootStillSame()) return;
+    if (!rootStillSame()) return false;
     try {
-      signalTreeIdentity(rootIdentity, signal, { allowGroup: useGroup, system });
+      return signalTreeIdentity(rootIdentity, signal, { allowGroup: useGroup, system });
     } catch (error) {
       recordCleanupError(error);
+      return false;
     }
   };
   const term = () => {
@@ -872,8 +878,9 @@ export async function killTree(
   };
   const force = () => {
     if (rootStillSame()) recaptureDescendants();
-    signalKnownDescendants("SIGKILL");
-    signalRoot("SIGKILL");
+    const descendantsForced = signalKnownDescendants("SIGKILL");
+    const rootForced = signalRoot("SIGKILL");
+    if (descendantsForced || rootForced) onForceKill?.();
   };
   term();
   return new Promise((resolve, reject) => {

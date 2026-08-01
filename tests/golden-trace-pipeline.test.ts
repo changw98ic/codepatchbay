@@ -227,10 +227,11 @@ function makePool() {
 //  2. job_started                  (appendEvent — createJobAndHandleBlocked)
 //  3. phase_started                (appendEvent — prepare_task)
 //  4. riskmap_generated            (appendEvent — prepare_task)
-//  5. phase_completed              (appendEvent — prepare_task)
-//  6. artifact_created             (appendEvent — acceptance-checklist)
-//  7. workflow_dag_materialized    (appendEvent)
-//  8. dynamic_agent_plan_generated (appendEvent)
+//  5. phase_timing                 (appendEvent — prepare_task)
+//  6. phase_completed              (appendEvent — prepare_task)
+//  7. artifact_created             (appendEvent — acceptance-checklist)
+//  8. workflow_dag_materialized    (appendEvent)
+//  9. dynamic_agent_plan_generated (appendEvent)
 //  --- plan phase (1 artifact: promptArtifact) ---
 //  9. phase_started                (startPhase port — plan)
 // 10. dag_node_started             (appendEvent — plan)
@@ -275,6 +276,7 @@ const GOLDEN_TRACE: string[] = [
   "job_started",
   "phase_started",
   "riskmap_generated",
+  "phase_timing",
   "phase_completed",
   "artifact_created",
   "workflow_dag_materialized",

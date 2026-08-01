@@ -4,6 +4,10 @@ import { updateEntry } from "./hub/hub-queue.js";
 import { ensureLocalCodeIndex } from "../../core/indexing/local-code-index/index.js";
 import type { LocalCodeIndexRef } from "../../core/indexing/local-code-index/index.js";
 import { generateDynamicAgentPlan } from "../../core/agents/dynamic-agent-plan.js";
+import {
+  resolveValidationProfile,
+  validationProfilePolicy,
+} from "../../core/policy/validation-profile.js";
 
 export class ProjectCapabilityMapUnavailableError extends Error {
   code: string;
@@ -167,7 +171,7 @@ function computeRiskMap({ task, maps, project, workflow, planMode }) {
   }
 
   const isDocsOnly = DOCS_ONLY_RE.test(text) && matched.length === 0;
-  const highRisk = matched.some((rule) => [
+  const highRiskDomains = matched.filter((rule) => [
     "security",
     "scheduler",
     "concurrency",
@@ -176,6 +180,15 @@ function computeRiskMap({ task, maps, project, workflow, planMode }) {
     "event_store",
     "subprocess",
   ].includes(rule.domain));
+  const highRiskFiles = filesForDomains(
+    maps.highRiskAreaMap,
+    highRiskDomains.map((rule) => rule.domain),
+  );
+  // A generic word such as "queue" or "parallel" is not enough to claim a
+  // high-risk code change. Promote only when the repository's own risk map
+  // identifies a matching source area; critical security language remains an
+  // explicit exception.
+  const highRisk = highRiskDomains.length > 0 && highRiskFiles.length > 0;
   const critical = domains.includes("security") && /\b(secret|credential|token|permission|auth)\b/i.test(text);
   const riskLevel = critical ? "critical" : highRisk ? "high" : isDocsOnly ? "low" : "medium";
   const verificationDepth = riskLevel === "critical" ? "paranoid" : riskLevel === "high" ? "strict" : "standard";
@@ -185,7 +198,7 @@ function computeRiskMap({ task, maps, project, workflow, planMode }) {
   return {
     riskLevel,
     domains,
-    highRiskFiles: filesForDomains(maps.highRiskAreaMap, domains),
+    highRiskFiles,
     safetyBoundaries: [...safetyBoundaries],
     verificationDepth,
     adversarialRequired,
@@ -197,6 +210,29 @@ function computeRiskMap({ task, maps, project, workflow, planMode }) {
       workflow: workflow || null,
       planMode: planMode || null,
     },
+    classificationReasons: [
+      ...matched.map((rule) => `task_signal:${rule.domain}`),
+      ...(highRisk ? ["repository_risk_area_matched"] : []),
+      ...(matched.length > 0 && !highRisk && !critical ? ["task_signal_without_repository_risk_area"] : []),
+    ],
+  };
+}
+
+function applyValidationProfile(riskMap: LooseRecord, profile: ReturnType<typeof resolveValidationProfile>) {
+  const profilePolicy = validationProfilePolicy(profile);
+  const critical = riskMap.riskLevel === "critical";
+  return {
+    ...riskMap,
+    validationProfile: profile,
+    verificationDepth: critical ? "paranoid" : profilePolicy.verificationDepth,
+    adversarialRequired: critical || profilePolicy.adversarialRequired,
+    adversarialFocus: critical || profilePolicy.adversarialRequired
+      ? riskMap.adversarialFocus
+      : [],
+    classificationReasons: [
+      ...valuesToStrings(riskMap.classificationReasons),
+      `validation_profile:${profile}`,
+    ],
   };
 }
 
@@ -249,16 +285,17 @@ export async function prepareTask(cpbRootOrOptions: LooseRecord | string, option
     sourcePath: typeof effectiveSourcePath === "string" ? effectiveSourcePath : "",
   });
   const maps = requireCapabilityMap(recordValue(registeredProject), sourceContextRecord);
-  let riskMap = computeRiskMap({
+  const validationProfile = resolveValidationProfile(sourceContextRecord);
+  let riskMap = applyValidationProfile(computeRiskMap({
     task,
     maps,
     project: registeredProject,
     workflow,
     planMode,
-  });
+  }), validationProfile);
   const productValidation = recordValue(sourceContextRecord.productValidation);
   if (productValidation.validationMode === "swe-bench-verified"
-    && productValidation.adversarialRequired === true) {
+    && validationProfile === "verified") {
     riskMap = {
       ...riskMap,
       verificationDepth: riskMap.verificationDepth === "paranoid" ? "paranoid" : "strict",
@@ -281,6 +318,7 @@ export async function prepareTask(cpbRootOrOptions: LooseRecord | string, option
       sourcePath: localCodeIndexResult.ref.sourcePath,
       tool: localCodeIndexResult.tool.name,
       toolVersion: localCodeIndexResult.tool.version,
+      stats: localCodeIndexResult.stats,
     },
   };
 }

@@ -94,7 +94,7 @@ test("adversarial counterexamples preserve structured repair targets", () => {
   assert.deepEqual(feedback.verdict, result.failure.cause.verdict);
 });
 
-test("verification feedback is bound to frozen checklist scope before mutation", () => {
+test("verification feedback preserves counterexample scope beyond the frozen checklist", () => {
   const baseFeedback = {
     schemaVersion: 1 as const,
     iteration: 1,
@@ -126,11 +126,14 @@ test("verification feedback is bound to frozen checklist scope before mutation",
     ...baseFeedback,
     fixScope: ["src/unrelated.ts"],
   });
-  assert.equal(outside.ok, false);
-  if (!outside.ok) assert.match(outside.reason, /outside the frozen acceptance contract/);
+  assert.equal(outside.ok, true);
+  if (outside.ok) {
+    assert.deepEqual(outside.feedback.fixScope, ["src/unrelated.ts"]);
+    assert.deepEqual(outside.feedback.allowedFixScope, ["src/warnings.ts", "tests/warnings/"]);
+  }
 });
 
-test("checklists without a declared file scope fail closed instead of expanding scope", () => {
+test("checklists without a declared file scope still allow a verified repair", () => {
   const feedback = {
     schemaVersion: 1 as const,
     iteration: 1,
@@ -150,8 +153,11 @@ test("checklists without a declared file scope fail closed instead of expanding 
     acceptanceChecklist: { items: [{ id: "AC-001", allowedFiles: [] }] },
   }, feedback);
 
-  assert.equal(bound.ok, false);
-  if (!bound.ok) assert.match(bound.reason, /outside the frozen acceptance contract/);
+  assert.equal(bound.ok, true);
+  if (bound.ok) {
+    assert.deepEqual(bound.feedback.fixScope, ["README.md"]);
+    assert.deepEqual(bound.feedback.allowedFixScope, []);
+  }
 });
 
 test("non-verification and explicitly non-retryable failures do not enter semantic repair", () => {
@@ -242,4 +248,21 @@ test("completion gate feedback preserves exact repair targets and chooses phase-
   assert.equal(context.retry.retryClass, "completion_gate_feedback");
   assert.match(String(context.retry.instruction), /Keep the candidate unchanged/);
   assert.equal(context.solver.iteration, 2);
+});
+
+test("completion-gate scope remediation preserves files that may need a scope amendment", () => {
+  const feedback = completionGateFeedbackFromFailure({
+    kind: "scope_violation",
+    reason: "execution map contains unmapped changed files",
+    cause: {
+      gateOutcome: "scope_violation",
+      routingRetryPhase: "execute",
+      details: { checklist: { unmappedChangedFiles: ["docs/guide.md"] } },
+    },
+  }, 1);
+
+  const context = completionGateRepairSourceContext({ original: true }, feedback);
+  assert.match(String(context.retry.instruction), /remove only throwaway residue/i);
+  assert.match(String(context.retry.instruction), /Do not delete a file that may be required/i);
+  assert.match(String(context.retry.instruction), /explicit frozen-scope amendment/i);
 });

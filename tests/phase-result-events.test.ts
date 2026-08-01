@@ -47,6 +47,7 @@ test("emitPhaseResultEvent writes phase_result event and progress payload", asyn
     promptArtifact: "prompt-1",
     acpAuditFile: "audit.jsonl",
     usage: { inputTokens: 12, outputTokens: 3 },
+    phaseTiming: null,
     failure: {
       kind: "verification_failed",
       reason: "VERDICT: FAIL",

@@ -103,6 +103,45 @@ test("ensureLocalCodeIndex uses the configured ast-grep executable for structura
   assert.notEqual(reparsed.ref.snapshotId, result.ref.snapshotId);
 });
 
+test("ensureLocalCodeIndex amortizes outline process startup while retaining bounded reference batches", async () => {
+  const root = await tempRoot("pub-parser-batches");
+  const sourcePath = path.join(root, "src");
+  const cpbRoot = path.join(root, ".cpb");
+  const fakeAstGrep = path.join(root, "fake-ast-grep");
+  const invocationLog = path.join(root, "parser-invocations.log");
+
+  await mkdir(sourcePath, { recursive: true });
+  await mkdir(cpbRoot, { recursive: true });
+  for (let index = 0; index < 121; index += 1) {
+    await writeFile(path.join(sourcePath, `file-${index}.ts`), `export const value${index} = ${index};\n`, "utf8");
+  }
+  await writeFile(
+    fakeAstGrep,
+    [
+      "#!/bin/sh",
+      "case \" $* \" in",
+      "  *\" --version \"*) printf '%s\\n' 'ast-grep 0.0.0-test'; exit 0 ;;",
+      "esac",
+      `printf '%s\\n' \"$1\" >> '${invocationLog}'`,
+    ].join("\n"),
+    "utf8",
+  );
+  await chmod(fakeAstGrep, 0o755);
+
+  await ensureLocalCodeIndex({
+    cpbRoot,
+    sourcePath,
+    astGrepBinaryPath: fakeAstGrep,
+  });
+
+  const invocations = (await readFile(invocationLog, "utf8"))
+    .trim()
+    .split("\n")
+    .filter(Boolean);
+  assert.equal(invocations.filter((value) => value === "outline").length, 1);
+  assert.equal(invocations.filter((value) => value === "run").length, 2);
+});
+
 test("ensureLocalCodeIndex is idempotent — running twice produces same snapshot", async () => {
   const root = await tempRoot("pub-idempotent");
   const sourcePath = path.join(root, "src");

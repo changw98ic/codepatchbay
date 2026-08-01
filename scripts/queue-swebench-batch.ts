@@ -21,6 +21,16 @@ import { createTemporaryWorkspace } from "../core/runtime/temporary-workspace.js
 import { compensateProjectRegistration, loadRegistry as loadHubRegistry, mutateRegistry, registerProject, registerProjectWithReceipt } from "../server/services/hub/hub-registry.js";
 import { AcpPool, envForAgent, providerKeyForAgent } from "../server/services/acp/acp-pool.js";
 import {
+  canonicalProjectConfigPath,
+  resolveAgentsForEntry,
+  writeProjectJson,
+} from "../server/services/agent/agent-config.js";
+import {
+  validationProfileFromProjectConfig,
+  validationProfilePolicy,
+  type ValidationProfile,
+} from "../core/policy/validation-profile.js";
+import {
   isDelegateAlive,
   waitForDelegateIncarnation,
   type QuotaDelegateLockReceipt,
@@ -32,7 +42,6 @@ import { WorkerStore } from "../shared/orchestrator/worker-store.js";
 import { recordValue, type LooseRecord } from "../shared/types.js";
 import {
   buildTask,
-  DEFAULT_PRODUCT_VALIDATION_AGENTS,
   deriveSweBenchDiagnosticCommands,
   deriveSweBenchVerificationCommands,
   resolveProductValidationAgents,
@@ -53,6 +62,10 @@ const PROVIDER_PREFLIGHT_GENERATOR = "scripts/queue-swebench-batch.ts#runSweBenc
 const LIVE_HANDSHAKE_GENERATOR = "scripts/queue-swebench-batch.ts#liveProviderPreflightHandshake";
 const CONTROL_PLANE_AUDIT_GENERATOR = "scripts/queue-swebench-batch.ts#controlPlaneAuditArtifact";
 const TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled"]);
+// A blocked assignment has stopped permanently, even though it is not an
+// acceptable SWE-bench result. The batch waiter must return its evidence
+// promptly rather than wait until it manufactures a timeout failure.
+const BATCH_WAIT_TERMINAL_STATUSES = new Set([...TERMINAL_STATUSES, "blocked"]);
 const HARD_CONSTRAINT_FAILURE_KINDS = new Set([
   "web_tool_denied",
   "read_only_mutation_denied",
@@ -94,7 +107,10 @@ type QueueOptions = {
   pageSize: number;
   planMode: ProductValidationPlanMode;
   providerPreflightMode: "live" | "structural";
+  validationProfile: ValidationProfile;
   agents: ProductValidationAgents;
+  projectConfigPath: string;
+  projectConfig: LooseRecord;
   hubRoot: string;
   cpbRoot: string;
   sourceRoot: string;
@@ -206,13 +222,20 @@ function hasFlag(args: string[], flag: string) {
   return args.includes(flag);
 }
 
-function phaseProviderRoute(agents: ProductValidationAgents) {
-  return [
-    { phase: "plan", role: "planner", agent: agents.planner },
-    { phase: "execute", role: "executor", agent: agents.executor },
-    { phase: "verify", role: "verifier", agent: agents.verifier },
-    { phase: "adversarial_verify", role: "adversarial_verifier", agent: agents.adversarial_verifier },
+function phaseProviderRoute(agents: ProductValidationAgents, validationProfile: ValidationProfile = "verified") {
+  const routes = [
+    { phase: "plan", role: "planner", ...agents.planner },
+    { phase: "execute", role: "executor", ...agents.executor },
+    { phase: "verify", role: "verifier", ...agents.verifier },
+    { phase: "adversarial_verify", role: "adversarial_verifier", ...agents.adversarial_verifier },
   ];
+  return validationProfilePolicy(validationProfile).adversarialRequired ? routes : routes.slice(0, -1);
+}
+
+function requiredWorkflowPhases(validationProfile: ValidationProfile) {
+  return validationProfilePolicy(validationProfile).adversarialRequired
+    ? ["prepare_task", "plan", "execute", "verify", "adversarial_verify"]
+    : ["prepare_task", "plan", "execute", "verify"];
 }
 
 function positiveInt(value: string | null, fallback: number, flag: string) {
@@ -621,6 +644,7 @@ function abortedProviderPreflight(generatedAt: string, reason: unknown) {
 
 export async function runSweBenchProviderPreflight({
   agents,
+  validationProfile = "verified",
   env = process.env,
   handshake = null,
   generatedAt = new Date().toISOString(),
@@ -628,6 +652,7 @@ export async function runSweBenchProviderPreflight({
   signal,
 }: {
   agents: ProductValidationAgents;
+  validationProfile?: ValidationProfile;
   env?: LooseRecord;
   handshake?: ProviderPreflightHandshake | null;
   generatedAt?: string;
@@ -654,14 +679,20 @@ export async function runSweBenchProviderPreflight({
   const violations: string[] = [];
   const failureKinds: string[] = [];
 
-  for (const route of phaseProviderRoute(agents)) {
+  for (const route of phaseProviderRoute(agents, validationProfile)) {
     if (signal?.aborted) {
       const safeReason = sanitizeLivePreflightReason(signal.reason instanceof Error ? signal.reason.message : String(signal.reason || "provider preflight aborted"));
       violations.push(`provider preflight aborted before ${route.role} provider handshake: ${safeReason}`);
       failureKinds.push("provider_unavailable");
       break;
     }
-    const providerKey = providerKeyForAgent(route.agent, envRecord);
+    const providerKey = providerKeyForAgent(
+      route.agent,
+      envRecord,
+      route.variant,
+      route.provider,
+      route.model,
+    );
     const phaseViolations: string[] = [];
     const registered = hasAgent(route.agent);
     const descriptor = registered ? getDescriptor(route.agent) : null;
@@ -697,7 +728,13 @@ export async function runSweBenchProviderPreflight({
     }
     if (registered) {
       try {
-        resolvedEnv = envForAgent(route.agent, envRecord);
+        resolvedEnv = envForAgent(
+          route.agent,
+          envRecord,
+          route.variant,
+          route.provider,
+          route.model,
+        );
       } catch (error) {
         const reason = sanitizeLivePreflightReason(error instanceof Error ? error.message : String(error));
         phaseViolations.push(`${route.role} provider env invalid for ${route.agent}/${providerKey}: ${reason}`);
@@ -1757,6 +1794,12 @@ export function validateSweBenchBatchReport({
   const manifestIds = new Set(assignments.map(assignmentInstanceId).filter(Boolean));
   const jobIds = new Set(jobs.map(reportJobInstanceId).filter(Boolean));
   const violations: string[] = [];
+  let validationProfile: ValidationProfile = "verified";
+  try {
+    validationProfile = validationProfileFromProjectConfig(manifestRecord);
+  } catch (error) {
+    violations.push(`manifest validation profile is invalid: ${error instanceof Error ? error.message : String(error)}`);
+  }
   const strictLiveReleaseEvidence = manifestRecord.providerPreflightMode === "live";
   const reportManifest = recordValue(reportRecord.manifest);
   const sourceManifest = recordValue(reportRecord.sourceManifest);
@@ -1866,12 +1909,15 @@ export function validateSweBenchBatchReport({
       }
     });
     const configuredAgents = recordValue(manifestRecord.agents || reportManifest.agents);
-    const expectedRoutes = phaseProviderRoute({
-      planner: stringValue(configuredAgents.planner),
-      executor: stringValue(configuredAgents.executor),
-      verifier: stringValue(configuredAgents.verifier),
-      adversarial_verifier: stringValue(configuredAgents.adversarial_verifier),
-    });
+    let expectedRoutes: ReturnType<typeof phaseProviderRoute> = [];
+    try {
+      expectedRoutes = phaseProviderRoute(
+        resolveProductValidationAgents({ agents: configuredAgents }),
+        validationProfile,
+      );
+    } catch (error) {
+      violations.push(`manifest project agent configuration is invalid: ${error instanceof Error ? error.message : String(error)}`);
+    }
     for (const expected of expectedRoutes) {
       const matching = preflightPhases.find((phaseValue) => {
         const phase = recordValue(phaseValue);
@@ -1977,7 +2023,7 @@ export function validateSweBenchBatchReport({
         violations.push(`completed live job ${instanceId || "(unknown)"} retains failure kind`);
       }
       const phaseEvidence = recordValue(jobRecord.phaseEvidence);
-      for (const phase of ["prepare_task", "plan", "execute", "verify", "adversarial_verify"]) {
+      for (const phase of requiredWorkflowPhases(validationProfile)) {
         const phaseRecord = recordValue(phaseEvidence[phase]);
         if (phaseRecord.ok !== true) {
           violations.push(`completed live job ${instanceId || "(unknown)"} is missing successful ${phase} evidence`);
@@ -2185,6 +2231,7 @@ export function buildSweBenchBatchReport({
       count: manifestRecord.count,
       assignmentCount: assignments.length,
       planMode: manifestRecord.planMode,
+      validationProfile: manifestRecord.validationProfile,
       agents,
       providerPreflight: providerPreflightSource ?? null,
       workerCleanup,
@@ -2285,6 +2332,7 @@ export async function writePreflightFailureOutputs({
     count: 0,
     planMode: options.planMode,
     providerPreflightMode: options.providerPreflightMode,
+    validationProfile: options.validationProfile,
     agents: options.agents,
     hubRoot: options.hubRoot,
     cpbRoot: options.cpbRoot,
@@ -2319,13 +2367,11 @@ export function buildBatchAssignmentInput({
   record,
   row,
   sourcePath,
-  agents,
   planMode,
 }: {
   record: SweBenchBatchRecord;
   row: LooseRecord;
   sourcePath: string;
-  agents: ProductValidationAgents;
   planMode: ProductValidationPlanMode;
 }): AssignmentInput {
   const entryId = safeId(record.benchmarkInstanceId);
@@ -2337,7 +2383,6 @@ export function buildBatchAssignmentInput({
     benchmarkInstanceId: record.benchmarkInstanceId,
     datasetRowRef: record.datasetRowRef,
     planMode,
-    agents,
     adversarialRequired: true,
   };
   return {
@@ -2358,7 +2403,6 @@ export function buildBatchAssignmentInput({
     metadata: {
       autoFinalize: true,
       finalizeMode: "dry-run",
-      agents,
       productValidation,
     },
   };
@@ -2385,7 +2429,7 @@ export function buildManagedWorkerEnv({
     CPB_WORKER_DISPATCH_ENABLED: "0",
     CPB_ACP_USE_MANAGED_POOL: "0",
     CPB_ACP_PERSISTENT_PROCESS: "0",
-    CPB_DYNAMIC_VERIFIER_AGENT: phaseAgents.verifier,
+    CPB_DYNAMIC_VERIFIER_AGENT: phaseAgents.verifier.agent,
     CPB_PRODUCT_VALIDATION_KEEP_WORKTREE: "1",
     CPB_WORKER_EXIT_ON_IDLE: "1",
     CPB_WORKER_IDLE_EXIT_MS: process.env.CPB_WORKER_IDLE_EXIT_MS || "60000",
@@ -2418,13 +2462,28 @@ export function defaultBatchWaitTimeoutMs({
 
 export function resolveBatchQueueOptions(argv: string[]): QueueOptions {
   const args = normalizedArgv(argv);
+  for (const removed of ["--agent", "--planner-agent", "--executor-agent", "--verifier-agent", "--adversarial-agent"]) {
+    if (args.includes(removed)) {
+      throw new Error(`${removed} was removed; configure agent/provider/model in --project-config`);
+    }
+  }
   const tmpRoot = path.join(os.tmpdir(), `cpb-swebench-batch-${Date.now()}`);
   const hubRoot = path.resolve(argValue(args, "--hub-root") || path.join(tmpRoot, "hub"));
   const hubRootExplicit = argValue(args, "--hub-root") !== null;
   const cpbRoot = path.resolve(argValue(args, "--cpb-root") || path.join(tmpRoot, "cpb"));
   const sourceRoot = path.resolve(argValue(args, "--source-root") || path.join(tmpRoot, "sources"));
   const outputPath = path.resolve(argValue(args, "--output") || path.join(hubRoot, "swebench-batch-queue-manifest.json"));
-  const agents = resolveProductValidationAgents(args);
+  const projectConfigArg = argValue(args, "--project-config");
+  if (!projectConfigArg) throw new Error("--project-config is required");
+  const projectConfigPath = path.resolve(projectConfigArg);
+  let projectConfig: LooseRecord;
+  try {
+    projectConfig = recordValue(JSON.parse(readFileSync(projectConfigPath, "utf8")));
+  } catch (error) {
+    throw new Error(`failed to read project config: ${projectConfigPath}`, { cause: error });
+  }
+  const agents = resolveProductValidationAgents(projectConfig);
+  const validationProfile = validationProfileFromProjectConfig(projectConfig);
   const count = positiveInt(argValue(args, "--count"), 50, "--count");
   const workerCount = positiveInt(argValue(args, "--worker-count"), 1, "--worker-count");
   const startWorkers = positiveInt(argValue(args, "--start-workers"), 0, "--start-workers");
@@ -2440,7 +2499,10 @@ export function resolveBatchQueueOptions(argv: string[]): QueueOptions {
     pageSize: positiveInt(argValue(args, "--page-size"), DEFAULT_PAGE_SIZE, "--page-size"),
     planMode: parsePlanMode(argValue(args, "--plan-mode")),
     providerPreflightMode,
+    validationProfile,
     agents,
+    projectConfigPath,
+    projectConfig,
     hubRoot,
     cpbRoot,
     sourceRoot,
@@ -3716,12 +3778,14 @@ export async function stopStartedWorkers(
       if (attempted.has(identity.incarnation)) continue;
       attempted.add(identity.incarnation);
       if (!identityIsAlive(identity)) continue;
-      cleanup.forcedKills += 1;
       try {
         await killTreeFn(identity.pid, graceMs, {
           requireDescendantScan: true,
           expectedRootIdentity: identity,
           forceVerifyMs,
+          onForceKill: () => {
+            cleanup.forcedKills += 1;
+          },
         });
       } catch (error) {
         const code = stringValue(recordValue(error).code, "unknown").toLowerCase();
@@ -3860,17 +3924,21 @@ async function collectExistingInstanceIds(pathsToScan: string[], signal?: AbortS
 async function cloneAtCommit({ repo, baseCommit, targetDir, signal }: { repo: string; baseCommit: string; targetDir: string; signal?: AbortSignal }) {
   throwIfAborted(signal);
   const originUrl = `https://github.com/${repo}.git`;
+  const baseBranch = "cpb/swebench-base";
   if (await pathExists(path.join(targetDir, ".git"))) {
     const head = await runCommand("git", ["rev-parse", "HEAD"], targetDir, undefined, { signal });
     if (head.code === 0) {
-      if (head.stdout.trim() === baseCommit) return;
+      if (head.stdout.trim() === baseCommit) {
+        await runRequired("git", ["checkout", "-B", baseBranch, baseCommit], targetDir, undefined, signal);
+        return;
+      }
       throw new Error(`existing source path ${targetDir} is not at expected commit ${baseCommit}`);
     }
     const remote = await runCommand("git", ["remote", "get-url", "origin"], targetDir, undefined, { signal });
     if (remote.code !== 0) await runRequired("git", ["remote", "add", "origin", originUrl], targetDir, undefined, signal);
     else if (remote.stdout.trim() !== originUrl) await runRequired("git", ["remote", "set-url", "origin", originUrl], targetDir, undefined, signal);
     await runRequiredWithRetries("git", ["fetch", "--depth=1", "origin", baseCommit], targetDir, { timeoutMs: 600_000, signal });
-    await runRequired("git", ["checkout", "--detach", "FETCH_HEAD"], targetDir, undefined, signal);
+    await runRequired("git", ["checkout", "-B", baseBranch, "FETCH_HEAD"], targetDir, undefined, signal);
     return;
   }
   if (await pathExists(targetDir)) {
@@ -3881,7 +3949,7 @@ async function cloneAtCommit({ repo, baseCommit, targetDir, signal }: { repo: st
   await runRequired("git", ["init"], targetDir, undefined, signal);
   await runRequired("git", ["remote", "add", "origin", originUrl], targetDir, undefined, signal);
   await runRequiredWithRetries("git", ["fetch", "--depth=1", "origin", baseCommit], targetDir, { timeoutMs: 600_000, signal });
-  await runRequired("git", ["checkout", "--detach", "FETCH_HEAD"], targetDir, undefined, signal);
+  await runRequired("git", ["checkout", "-B", baseBranch, "FETCH_HEAD"], targetDir, undefined, signal);
 }
 
 function workerIdFor(index: number, options: QueueOptions) {
@@ -3901,6 +3969,7 @@ export async function queueBatchAssignmentAtomically({
   workerId,
   input,
   sourcePath,
+  projectConfig,
   metadata,
   signal,
   hooks = {},
@@ -3910,17 +3979,29 @@ export async function queueBatchAssignmentAtomically({
   workerId: string;
   input: AssignmentInput;
   sourcePath: string;
+  projectConfig: LooseRecord;
   metadata: NonNullable<Parameters<typeof registerProject>[1]>;
   signal?: AbortSignal;
   hooks?: BatchAssignmentTransactionHooks;
 }) {
   throwIfAborted(signal);
+  const validationProfile = validationProfileFromProjectConfig(projectConfig);
+  const productValidation = {
+    ...recordValue(input.sourceContext.productValidation),
+    validationProfile,
+    adversarialRequired: validationProfile === "verified",
+  };
+  input.sourceContext = { ...input.sourceContext, productValidation };
+  input.metadata = { ...input.metadata, productValidation };
   const assignmentStore = new AssignmentStore(hubRoot);
   const workerStore = new WorkerStore(hubRoot);
   await Promise.all([assignmentStore.init(), workerStore.init()]);
   let projectReceipt: Awaited<ReturnType<typeof registerProjectWithReceipt>>["receipt"] | null = null;
   let assignmentReceipt: Awaited<ReturnType<AssignmentStore["enqueueWithReceipt"]>> | null = null;
   let inboxReceipt: Awaited<ReturnType<WorkerStore["writeInboxWithReceipt"]>> | null = null;
+  let projectConfigPath: string | null = null;
+  let previousProjectConfig: string | null = null;
+  let projectConfigWritten = false;
   let committed = false;
   let originalError: unknown = null;
   const rollback = async () => {
@@ -3936,6 +4017,17 @@ export async function queueBatchAssignmentAtomically({
     if (assignmentReceipt) {
       try {
         await assignmentStore.compensateEnqueueReceipt(assignmentReceipt);
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    if (projectConfigWritten && projectConfigPath) {
+      try {
+        if (previousProjectConfig === null) {
+          await rm(projectConfigPath, { force: true });
+        } else {
+          await writeFile(projectConfigPath, previousProjectConfig, "utf8");
+        }
       } catch (error) {
         errors.push(error);
       }
@@ -3976,6 +4068,26 @@ export async function queueBatchAssignmentAtomically({
         },
       );
     }
+    const projectRuntimeRoot = stringValue(project.project.projectRuntimeRoot);
+    if (!projectRuntimeRoot) throw new Error(`project runtime root missing for ${input.projectId}`);
+    projectConfigPath = canonicalProjectConfigPath(projectRuntimeRoot, input.projectId);
+    if (!projectConfigPath) throw new Error(`canonical project config path missing for ${input.projectId}`);
+    previousProjectConfig = await readFile(projectConfigPath, "utf8").catch((error) => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
+    });
+    await writeProjectJson(projectRuntimeRoot, input.projectId, {
+      ...projectConfig,
+      sourcePath,
+      name: input.projectId,
+    });
+    projectConfigWritten = true;
+    input.metadata = await resolveAgentsForEntry(
+      hubRoot,
+      cpbRoot,
+      input.projectId,
+      input.metadata,
+    );
     await hooks.afterRegister?.();
     throwIfAborted(signal);
     assignmentReceipt = await assignmentStore.enqueueWithReceipt(input, { workerId, orchestratorEpoch: 1 });
@@ -3984,6 +4096,7 @@ export async function queueBatchAssignmentAtomically({
       ...assignmentReceipt.attempt,
       workerId,
       status: "assigned",
+      projectRuntimeRoot,
       sourcePath: input.sourcePath,
       task: input.task,
       workflow: input.workflow,
@@ -4346,7 +4459,7 @@ export async function waitForAssignments(
     throwIfAborted(signal);
     const states = await Promise.all(assignments.map((assignment) => store.getAssignment(String(assignment.assignmentId))));
     throwIfAborted(signal);
-    const done = states.every((state) => state?.status && TERMINAL_STATUSES.has(String(state.status)));
+    const done = states.every((state) => state?.status && BATCH_WAIT_TERMINAL_STATUSES.has(String(state.status)));
     if (done) return states;
     if (deadline > 0 && Date.now() >= deadline) {
       return Promise.all(states.map(async (state, index) => {
@@ -4357,7 +4470,7 @@ export async function waitForAssignments(
             `timed-out assignment is missing from persisted state: ${requestedAssignmentId}`,
           );
         }
-        if (state.status && TERMINAL_STATUSES.has(String(state.status))) return state;
+        if (state.status && BATCH_WAIT_TERMINAL_STATUSES.has(String(state.status))) return state;
         const attempt = await store.getActiveAttempt(requestedAssignmentId);
         if (!attempt) {
           throw batchWaitTerminalizationError(
@@ -4445,11 +4558,7 @@ Options:
   --worker-prefix <name>  Worker id prefix. Defaults to w-swebench.
   --plan-mode <mode>      full or light. Defaults to full.
   --provider-preflight <m> live or structural. Defaults to live for real runs and structural for dry-run.
-  --planner-agent <n>     Planner agent. Defaults to codex.
-  --executor-agent <n>    Executor agent. Defaults to claude-glm.
-  --verifier-agent <n>    Verifier agent. Defaults to claude-mimo.
-  --adversarial-agent <n> Adversarial verifier agent. Defaults to claude-mimo.
-  --agent <n>             Single-agent override for controlled comparisons.
+  --project-config <path> Required project.json template with agent/provider/model selection.
   --start-workers <n>     Start n detached managed workers after queueing.
   --wait                  Wait for queued assignments to reach terminal status.
   --wait-timeout-ms <ms>  Batch wait timeout. Defaults to a worker-count-scaled full workflow window.
@@ -4499,6 +4608,7 @@ async function main() {
   try {
   const providerPreflight = await runSweBenchProviderPreflight({
       agents: options.agents,
+      validationProfile: options.validationProfile,
       handshake: options.providerPreflightMode === "live" ? liveProviderPreflightHandshake : null,
       artifactRoot: path.join(
         path.dirname(options.reportPath),
@@ -4533,7 +4643,6 @@ async function main() {
       record,
       row,
       sourcePath,
-      agents: options.agents,
       planMode: options.planMode,
     });
 
@@ -4559,6 +4668,7 @@ async function main() {
         workerId,
         input,
         sourcePath,
+        projectConfig: options.projectConfig,
         metadata: {
           productValidation: true,
           benchmarkDataset: DATASET,
@@ -4694,6 +4804,7 @@ async function main() {
     count: assignments.length,
     planMode: options.planMode,
     providerPreflightMode: options.providerPreflightMode,
+    validationProfile: options.validationProfile,
     agents: options.agents,
     hubRoot: options.hubRoot,
     cpbRoot: options.cpbRoot,

@@ -26,10 +26,13 @@ import type { AstGrepNode, AstGrepParseResult } from "./extract.js";
 const MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
 
 /**
- * Maximum number of files accepted per invocation.
- * Spec section 9.3: "maximum parser batch: 120 files".
+ * `outline` produces a compact, bounded summary and can safely amortize
+ * process startup across a large set of approved paths. Identifier scans are
+ * intentionally smaller because a reference-heavy file can emit far more JSON
+ * than its source size.
  */
-const MAX_BATCH_FILES = 120;
+export const AST_GREP_OUTLINE_BATCH_SIZE = 2_048;
+export const AST_GREP_REFERENCE_BATCH_SIZE = 120;
 
 /**
  * Maximum symbols per file (definitions + references combined).
@@ -552,7 +555,7 @@ export class AstGrepAdapter {
    * Invokes `ast-grep outline --json=stream --color never <paths...>` and
    * returns structured per-file results.
    *
-   * @param paths File paths to extract (max 120 per spec section 9.3).
+   * @param paths File paths to extract (max 2,048).
    * @param options.lang Optional language hint (e.g., "typescript").
    * @param options.signal Optional abort signal.
    * @returns Structured extraction results with version, errors, and truncation flag.
@@ -576,10 +579,10 @@ export class AstGrepAdapter {
       };
     }
 
-    if (paths.length > MAX_BATCH_FILES) {
+    if (paths.length > AST_GREP_OUTLINE_BATCH_SIZE) {
       throw new LocalCodeIndexUnavailableError("parser_output_invalid", {
         cause: new Error(
-          `Batch size ${paths.length} exceeds maximum ${MAX_BATCH_FILES}`,
+          `Outline batch size ${paths.length} exceeds maximum ${AST_GREP_OUTLINE_BATCH_SIZE}`,
         ),
       });
     }
@@ -676,7 +679,7 @@ export class AstGrepAdapter {
         errors: [],
       };
     }
-    if (paths.length > MAX_BATCH_FILES) {
+    if (paths.length > AST_GREP_REFERENCE_BATCH_SIZE) {
       throw new LocalCodeIndexUnavailableError("parser_output_invalid");
     }
     const args = [

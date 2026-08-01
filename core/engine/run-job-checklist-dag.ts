@@ -1,6 +1,7 @@
 import { FailureKind, failure, isValidFailureKind } from "../contracts/failure.js";
 import { generateDynamicAgentPlan, validateDynamicAgentPlan } from "../agents/dynamic-agent-plan.js";
 import { writeArtifact } from "../artifacts/artifact-store.js";
+import { validatePlanMarkdown } from "../artifacts/validators.js";
 import {
   buildAcceptanceChecklist,
   classifyAcceptanceRequirements,
@@ -149,6 +150,7 @@ export async function freezeChecklistAndMaterializeDag(
   };
 
   let acceptanceChecklist: AcceptanceChecklist | null = recordValue(phaseSourceContext.acceptanceChecklist);
+  let fusedPlanMarkdown: string | null = null;
   if (!phaseSourceContext.acceptanceChecklist) acceptanceChecklist = null;
   const documents = Array.isArray(phaseSourceContext.documents) ? phaseSourceContext.documents : [];
   const existingRequirementClassification = recordValue(phaseSourceContext.requirementClassification);
@@ -213,6 +215,9 @@ export async function freezeChecklistAndMaterializeDag(
         return { kind: "blocked", result: { status: "blocked", jobId, exitCode: 2, failure: decompFail } };
       }
       decomposedItems = decomposition.items;
+      if (decomposition.fusedPlanning === true && typeof decomposition.planMarkdown === "string") {
+        fusedPlanMarkdown = decomposition.planMarkdown;
+      }
     }
     acceptanceChecklist = await buildAcceptanceChecklist({
       jobId, project, task, documents, riskMap: recordValue(riskMap), requirementClassification, decomposedItems,
@@ -279,6 +284,54 @@ export async function freezeChecklistAndMaterializeDag(
     });
     throwIfNewlyAborted();
     phaseSourceContext = { ...phaseSourceContext, acceptanceChecklist, acceptanceChecklistArtifact };
+
+    if (fusedPlanMarkdown !== null) {
+      const planValidation = validatePlanMarkdown(fusedPlanMarkdown);
+      if (!planValidation.ok) {
+        const fail = failure({
+          kind: FailureKind.ARTIFACT_INVALID,
+          phase: "prepare_task",
+          reason: `fused planning artifact invalid: ${planValidation.reason}`,
+          retryable: true,
+        });
+        await failPreparedJob({ cpbRoot, project, jobId, appendEvent, failJob: ctx.failJob, failure: fail });
+        return { kind: "failed", result: { status: "failed", jobId, exitCode: 1, failure: fail } };
+      }
+      const fusedPlanArtifact = await writeArtifact(cpbRoot, {
+        project,
+        jobId,
+        kind: "plan",
+        content: fusedPlanMarkdown,
+        dataRoot,
+        signal: ctx.signal,
+        metadata: { task, generatedBy: "checklist_planning_fusion" },
+      });
+      await writeRuntimeArtifactEvent({
+        cpbRoot,
+        project,
+        jobId,
+        phase: "prepare_task",
+        artifact: fusedPlanArtifact,
+        appendEvent,
+        attemptId: ctx._attemptId,
+        now: ts,
+      });
+      phaseSourceContext = {
+        ...phaseSourceContext,
+        fusedPlanning: {
+          planArtifact: fusedPlanArtifact,
+          source: "checklist_planning_fusion",
+        },
+      };
+      await appendEvent(cpbRoot, project, jobId, {
+        type: "fused_planning_generated",
+        jobId,
+        project,
+        phase: "prepare_task",
+        planArtifact: fusedPlanArtifact,
+        ts: ts(),
+      });
+    }
 
     const dynamicAgentPlanRecord = recordValue(dynamicAgentPlan);
     if (dynamicAgentPlan && !dynamicAgentPlanRecord.acceptanceChecklistArtifactId && !dynamicAgentPlanRecord.acceptanceChecklistArtifact) {
