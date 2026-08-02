@@ -4991,6 +4991,14 @@ export class AcpPool {
           abortCleanup?.();
           abortCleanup = null;
         };
+        const terminateAndUntrack = () => terminateChild(child).then((result) => {
+          // terminateChild verifies that the process tree is gone before it
+          // resolves. Do not wait for Node's later `close` event to remove the
+          // child from the live set, or callers can observe a dead provider as
+          // still active after an abort/timeout has completed cleanup.
+          this.oneShotChildren.delete(child);
+          return result;
+        });
         child.once("close", () => {
           this.oneShotChildren.delete(child);
         });
@@ -5002,7 +5010,7 @@ export class AcpPool {
             rejectAfterCleanup(
               reject,
               new Error(`${agent} timed out after ${timeoutMs}ms`),
-              [terminateChild(child)],
+              [terminateAndUntrack()],
             );
           }, timeoutMs + ONE_SHOT_CLOSE_GRACE_MS)
           : null;
@@ -5011,7 +5019,7 @@ export class AcpPool {
           if (settled) return;
           settled = true;
           cleanup();
-          rejectAfterCleanup(reject, abortErrorForSignal(options.signal), [terminateChild(child)]);
+          rejectAfterCleanup(reject, abortErrorForSignal(options.signal), [terminateAndUntrack()]);
         });
         child.stdout.on("data", (chunk) => { stdout += chunk; });
         child.stderr.on("data", (chunk) => {
@@ -5022,7 +5030,7 @@ export class AcpPool {
           if (settled) return;
           settled = true;
           cleanup();
-          rejectAfterCleanup(reject, error, [terminateChild(child)]);
+          rejectAfterCleanup(reject, error, [terminateAndUntrack()]);
         });
         child.on("close", (code, signal) => {
           if (settled) return;

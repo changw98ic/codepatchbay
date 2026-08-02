@@ -1,30 +1,25 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-CodePatchBay is a pure Node.js ESM CLI tool with runtime workers. The root `cpb` launcher and `cli/cpb.ts` dispatch commands from `cli/commands/`. Core workflow contracts and engines live in `core/`; orchestration services in `server/`; worker helpers in `runtime/`; bridge entrypoints in `bridges/`; shared utilities in `shared/`. The only HTTP endpoint is `cpb stream` (Node native `http` + SSE). Tests live in `tests/`, docs in `docs/` and `wiki/`, and support assets in `assets/`, `templates/`, and `skills/`.
+CodePatchBay is a pure Node.js ESM CLI tool with runtime workers. The root `cpb` launcher and `cli/cpb.ts` dispatch commands from `cli/commands/`. Core workflow contracts and engines live in `core/`; orchestration services in `server/`; worker helpers in `runtime/`; bridge entrypoints in `bridges/`; shared utilities in `shared/`. The only HTTP endpoint is `cpb stream` (Node native `http` + SSE). Tests are split into `tests/unit/`, local real-process `tests/e2e/`, and opt-in real-provider `tests/live-e2e/`; retained fixtures and benchmark generators also live under `tests/`. Docs live in `docs/` and `wiki/`, and support assets in `assets/`, `templates/`, and `skills/`.
 
 ## Local Code Index & Repository Lookup
 For repository understanding tasks, use `cpb code-index` and the repository-owned local index. The index is stored outside the source tree; it does not use MCP, a daemon, a PID file, a socket, or source-tree index state.
 
 Before relying on indexed results, run `cpb code-index status -s .`. If it does not report `available: true` and `fresh: true`, run `cpb code-index build -s .`, then check status again. Use `cpb code-index query definitions --symbol <name>` for symbol definitions, `cpb code-index query references --symbol <name>` for references, `cpb code-index query inventory` for file listings, and direct file reads for exact source text. If the index tool is unavailable, the index may explicitly fall back to a Git/file inventory; report that limitation and do not claim symbol or call-graph coverage. Never treat the mere presence of an index file as proof that it is fresh.
 
-## Build, Test, and Development Commands
+## Build and Development Commands
 - `npm ci`: install dependencies.
-- `npm test` or `npm run test:node`: run the custom Node test runner over all `tests/**/*.test.ts`.
-- `npm run test:main`: run the 222-file main-flow contract/unit profile plus shell checks; real-process integration suites are excluded from PR CI.
-- `npm run test:integration`: run the remaining integration suites manually when changing process, ACP, worker, reconciliation, or authority boundaries.
-- `npm run test:specialized`: run benchmark, evaluation, release-rehearsal, and packaging-specific tests excluded from the main-flow profile.
-- `node dist-tests/scripts/run-node-tests.js --main --list`: list the main-flow profile without executing it.
 - `npm run build:node`: compile TypeScript to `dist/`.
-- `npm run build:tests`: compile tests to `dist-tests/`.
+- `npm run typecheck`: check production TypeScript without emitting files.
 - `npm run build:node && node dist/scripts/ci-smoke.js`: run the local setup/demo smoke path.
 - `npm run verify:stabilization`: run the release-only evidence gate manually; it is intentionally not part of every PR CI job.
 
 ## Coding Style & Naming Conventions
-Use ES modules throughout. `.editorconfig` enforces UTF-8, LF endings, final newlines, trimmed trailing whitespace, and two-space indentation. TypeScript strict mode. Use kebab-case for command and test files, camelCase for functions. Keep new CLI commands in `cli/commands/`.
+Use ES modules throughout. `.editorconfig` enforces UTF-8, LF endings, final newlines, trimmed trailing whitespace, and two-space indentation. TypeScript strict mode. Use kebab-case for command files and camelCase for functions. Keep new CLI commands in `cli/commands/`.
 
-## Testing Guidelines
-Backend and CLI coverage uses Node’s built-in test runner via `*.test.ts`; shell integration checks use `tests/cpb-*.test.sh`. Add focused regression tests for handoff, event, phase, runtime, CLI, or review behavior. Do not edit fakes, fixtures, snapshots, or test doubles just to hide production behavior changes. No fixed coverage threshold is enforced; document untested risk in the PR.
+## Verification Guidelines
+Use `npm run test:unit` for public module behavior and `npm run test:e2e` for local CLI, process, HTTP, and filesystem behavior. `npm test` runs both layers and never contacts an external model provider. Real Codex and Claude Code checks require explicit opt-in with `CPB_LIVE_E2E=1 npm run test:live:e2e`; missing authentication is a failure, not a skipped pass. Keep provider and GitHub evidence separate: live provider tests use disposable local directories and do not authorize GitHub changes. Validate changes with the smallest relevant combination of these tests, `npm run typecheck`, `npm run build:node`, the CI smoke command, and real task evidence. Do not claim behavior is verified when only compilation was checked.
 
 ## Commit & Pull Request Guidelines
 History uses short imperative subjects with concrete scope, such as `Fix bridge import paths and add missing phase shell wrappers` or `Add dynamic workflow engine, bridges, and DW acceptance gates`. Keep diffs small and focused. Fill `.github/pull_request_template.md` with summary, change type, safety checklist, and verification. Do not include secrets, runtime state, logs, `.env` files, generated dependency folders, or unverified guarantees. Link issues when relevant and update docs for behavior changes.
