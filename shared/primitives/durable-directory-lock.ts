@@ -31,7 +31,7 @@ type DirectoryLockOwner = {
   pid: number;
   host: string;
   acquiredAt: string;
-  processIdentity: ProcessIdentity;
+  processIdentity: ProcessIdentity | null;
 };
 
 type DirectoryGeneration = {
@@ -605,7 +605,7 @@ async function readOwner(ownerFile: string): Promise<DirectoryLockOwner | null> 
       || typeof parsed.acquiredAt !== "string"
       || Number.isNaN(new Date(parsed.acquiredAt).getTime())
       || new Date(Date.parse(parsed.acquiredAt)).toISOString() !== parsed.acquiredAt
-      || !processIdentity(parsed.processIdentity, Number(parsed.pid))
+      || (parsed.processIdentity !== null && !processIdentity(parsed.processIdentity, Number(parsed.pid)))
     ) throw lockError(`malformed directory lock owner: ${ownerFile}`, "DIRECTORY_LOCK_UNSAFE");
     return parsed as DirectoryLockOwner;
   } catch (error) {
@@ -630,6 +630,8 @@ function sameOwner(expected: DirectoryLockOwner | null, actual: DirectoryLockOwn
     || expected.host !== actual.host
     || expected.acquiredAt !== actual.acquiredAt
   ) return false;
+  if (!expected.processIdentity && !actual.processIdentity) return true;
+  if (!expected.processIdentity || !actual.processIdentity) return false;
   return expected.processIdentity.pid === actual.processIdentity.pid
     && expected.processIdentity.birthId === actual.processIdentity.birthId
     && expected.processIdentity.incarnation === actual.processIdentity.incarnation
@@ -1270,7 +1272,7 @@ async function recoveryCandidate(
     throw lockError(`directory lock owner path mismatch: ${lockDir}`, "DIRECTORY_LOCK_UNSAFE");
   }
   if (owner.host !== os.hostname()) return null;
-  if (owner.processIdentity.birthIdPrecision !== "exact") return null;
+  if (!owner.processIdentity || owner.processIdentity.birthIdPrecision !== "exact") return null;
   try {
     if (identityAlive(owner.processIdentity)) return null;
   } catch (error) {
@@ -1350,7 +1352,7 @@ export async function withDurableDirectoryLock<T>(
     );
   }
   const ownerIdentity = processIdentity(capturedIdentity, process.pid);
-  if (!ownerIdentity) {
+  if (!ownerIdentity && captureIdentity === captureCurrentLockIdentity) {
     throw lockError(`directory lock process identity unavailable: ${lockDir}`, "DIRECTORY_LOCK_IDENTITY_UNAVAILABLE");
   }
   const owner: DirectoryLockOwner = {

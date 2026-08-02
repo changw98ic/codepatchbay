@@ -77,7 +77,7 @@ export type IndexLockOwner = {
   ownerToken: string;
   timestamp: string;
   host: string;
-  processIdentity: ProcessIdentity;
+  processIdentity: ProcessIdentity | null;
 };
 
 // ── Acquisition options ────────────────────────────────────────────────────
@@ -265,8 +265,9 @@ function validateOwner(
   if (typeof o.ownerToken !== "string" || !o.ownerToken) return null;
   if (typeof o.timestamp !== "string" || !Number.isFinite(Date.parse(o.timestamp))) return null;
   if (typeof o.host !== "string" || !o.host) return null;
-  const identity = validateProcessIdentity(o.processIdentity, Number(o.pid));
-  if (!identity) return null;
+  // Allow null processIdentity (fenced mode) — owner was written without process identity
+  const identity = o.processIdentity === null ? null : validateProcessIdentity(o.processIdentity, Number(o.pid));
+  if (o.processIdentity !== null && !identity) return null;
   return {
     scopeKind: o.scopeKind as IndexLockScopeKind,
     scopeKey: o.scopeKey as string,
@@ -519,6 +520,7 @@ function isOwnerAlive(
   isAlive: (identity: ProcessIdentity) => boolean,
 ): boolean {
   try {
+    if (!owner.processIdentity) return true; // fenced mode — cannot determine liveness, treat as alive
     if (owner.processIdentity.birthIdPrecision !== "exact") return false;
     return isAlive(owner.processIdentity);
   } catch {
@@ -596,7 +598,9 @@ export async function acquireIndexLock(
       { cause },
     );
   }
-  if (!identity) {
+  if (!identity && captureIdentity !== getCachedProcessIdentity) {
+    // Explicit captureIdentity returning null = fenced mode (caller accepts no liveness check)
+  } else if (!identity) {
     throw lockError(
       `index lock process identity unavailable: ${lockDir}`,
       "index_lock_invalid",
@@ -814,7 +818,10 @@ async function staleOwnerRecovery(
       lockDir,
     );
   }
-  if (reReadOwner.processIdentity.incarnation !== staleOwner.processIdentity.incarnation) {
+  if (
+    reReadOwner.processIdentity && staleOwner.processIdentity &&
+    reReadOwner.processIdentity.incarnation !== staleOwner.processIdentity.incarnation
+  ) {
     throw lockError(
       `index lock owner identity changed during recovery election: ${lockDir}`,
       "index_lock_lost",
