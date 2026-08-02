@@ -328,6 +328,8 @@ npm test
 npm run verify:release-gate
 ```
 
+`npm test` 包含单元测试和不联网的本地真实进程端到端测试。真实 Codex 与 Claude Code 测试需要显式运行 `CPB_LIVE_E2E=1 npm run test:live:e2e`；详细说明见 [测试指南](docs/testing.md)。
+
 ## License
 
 [AGPL-3.0](LICENSE) — 免费使用和修改，但衍生作品必须开源。商业授权可联系作者。

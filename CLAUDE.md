@@ -69,11 +69,11 @@ cpb                         # bin 入口 → cli/cpb.ts (纯 Node.js 命令路�
 │
 ├── cli/                    # cpb.ts 路由 + commands/*.ts (17 commands)
 ├── shared/                 # 跨层共享 (logger / orchestrator store)
-├── scripts/                # 构建/测试/verify 脚本 (build:node, run-node-tests, verify-p0-p1)
+├── scripts/                # 构建与验证脚本
 ├── wiki/                   # 共享记忆文件系统 (schema.md 宪法 + projects/)
 ├── profiles/               # ★ 5 个角色: planner / executor / reviewer / verifier / remediator (各含 soul.md + config.json)
 ├── templates/handoff/      # 交接文档模板 (plan-to-execute, execute-to-review)
-└── tests/                  # 230+ .test.ts (Node 内置 runner) + integration/ + fixtures/ + helpers/
+└── tests/                  # unit / 本地真实进程 e2e / 显式启用的真实 provider live-e2e
 ```
 
 ## 技术栈
@@ -87,7 +87,7 @@ cpb                         # bin 入口 → cli/cpb.ts (纯 Node.js 命令路�
 | HTTP（可选） | Node 原生 `http` + SSE（仅 `cpb stream`，非框架） |
 | 持久化 | 文件系统（JSONL events / JSON state / Markdown wiki / checkpoint） |
 | 并发控制 | leader-lock（单 leader）+ worker-supervisor + reconciler，checkpoint 恢复 |
-| 构建/测试 | `tsc` 编译；Node 内置 test runner；shell 冒烟测试 |
+| 构建/验证 | `tsc` 编译；类型检查；运行时冒烟检查 |
 
 ## 核心数据流
 
@@ -172,40 +172,20 @@ cpb setup                                 # 交互式 setup 向导
 
 # === 开发 ===
 npm run build        # tsc → dist/ (build:node)
-npm run build:tests # tsc tests → dist-tests/
-npm test            # build:node + build:tests + run-node-tests + shell 冒烟
-npm run test:unit / test:integration
-npm run typecheck   # tsc --noEmit (node + tests configs)
+npm run typecheck   # tsc --noEmit（生产代码）
 npm run typecheck:strict:engine      # core/engine 严格门禁（稳定化周期红线）
 npm run typecheck:type-debt:engine   # broad-any 债务守卫
-npm run verify:p0p1      # build + 构建 + P0/P1 验证门
-npm run verify:release-gate  # PR 触及发布门禁时必跑（见 README 稳定化周期）
 npm run verify:commit-size   # HEAD 提交超 1000 行或 30 文件须带说明 body（CPB_COMMIT_SIZE_OVERRIDE 绕过）
 ```
 
-## 测试结构
+## 验证方式
 
-- `tests/*.test.ts` — **230+ 个** Node 内置 test runner 单元/集成测试（编译到 `dist-tests/` 执行）
-- `tests/integration/` — 端到端集成测试
-- `tests/fixtures/` — fake ACP agent stub
-- `tests/helpers/` — 测试工具（spawn-file 等）
-- `tests/cpb-bridges.test.sh` / `cpb-jobs.test.sh` — shell 冒烟测试
-- 测试包含 **10 轮 adversarial-round-{1..10}** 验证
-- 入口: `npm test`（经 `pretest:node` 自动 `build:node + build:tests`）→ `node dist-tests/scripts/run-node-tests.js`
-
-### 跑单个测试
-
-runner 接受文件路径参数（自动剥 `dist-tests/`/`dist/` 前缀并 `.ts→.js`），改过源码先编译：
-
-```bash
-npm run build:tests                                                       # 若刚改过源码/测试
-node dist-tests/scripts/run-node-tests.js tests/path/to/file.test.ts      # 单文件
-node dist-tests/scripts/run-node-tests.js tests/foo.test.ts tests/bar.test.ts  # 多文件
-node dist-tests/scripts/run-node-tests.js --unit         # 仅 unit
-node dist-tests/scripts/run-node-tests.js --integration  # 仅 integration
-```
-
-runner 启动时清掉所有 `CPB_*` 环境变量并强制 `CPB_CHECKLIST_DECOMPOSE=0` / `CPB_WORKER_DISPATCH_ENABLED=0`（测试用 fake agent pool，生产默认行为不受影响）。
+- `npm run test:unit` 运行公开模块行为测试；`npm run test:e2e` 运行真实 CLI、子进程、HTTP 和文件系统测试。
+- `npm test` 运行以上两层，不联系外部模型 provider。
+- `CPB_LIVE_E2E=1 npm run test:live:e2e` 才会运行真实 Codex 与 Claude Code；缺少登录或凭据必须失败，不能用 skip 冒充通过。
+- `tests/fixtures/`、`tests/helpers/` 和 benchmark 生成器继续作为测试支持文件。
+- 普通代码改动至少运行最小相关测试、`npm run typecheck` 和 `npm run build:node`。
+- 外部 provider 与 GitHub 分开授权；live provider 测试只使用本地临时目录，不自动创建或修改 GitHub 内容。
 
 ## HTTP 服务（仅可选）
 
@@ -227,5 +207,61 @@ GET  /jobs            # job 列表 JSON
 - 持久化根由 `CPB_ROOT` / `CPB_EXECUTOR_ROOT` / hub root 解析
 - Pipeline 的 total timeout 通过 watchdog 写 state flag，不杀进程
 - `wiki/schema.md` 是 Wiki 宪法，所有 agent 必须遵守其写入权限和不可变规则
-- 所有 `.ts` 编译到 `dist/` 运行；改完源码需 `npm run build` 才生效（`npm test` 经 `pretest:node` 会自动 build，单独跑 `node dist-tests/...` 需手动 `npm run build:tests`）
-- **稳定化周期（README 红线）**：当前冻结横向能力扩张——**不新增** agent 类型、workflow 类别、scheduler 特性或 provider 集成，优先清偿执行内核恢复边界 / 事件顺序 / provider handoff 拆分 / managed-worker 隔离证据。触及发布门禁的 PR 必须跑 `npm run verify:release-gate`，并在 PR 中说明是否触及门禁
+- 所有生产 `.ts` 编译到 `dist/` 运行；改完源码需运行 `npm run build` 才生效
+- **稳定化周期（README 红线）**：当前冻结横向能力扩张——**不新增** agent 类型、workflow 类别、scheduler 特性或 provider 集成，优先清偿执行内核恢复边界 / 事件顺序 / provider handoff 拆分 / managed-worker 隔离证据。触及发布路径的改动必须运行构建、类型检查、CI 冒烟和对应真实任务，并在 PR 中如实说明验证范围
+
+
+<!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:6cd5cc61 -->
+## Beads Issue Tracker
+
+This project uses **bd (beads)** for issue tracking. Run `bd prime` to see full workflow context and commands.
+
+### Quick Reference
+
+```bash
+bd ready              # Find available work
+bd show <id>          # View issue details
+bd update <id> --claim  # Claim work
+bd close <id>         # Complete work
+```
+
+### Rules
+
+- Use `bd` for ALL task tracking — do NOT use TodoWrite, TaskCreate, or markdown TODO lists
+- Run `bd prime` for detailed command reference and session close protocol
+- Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
+
+**Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md for details and anti-patterns.
+
+## Agent Context Profiles
+
+The managed Beads block is task-tracking guidance, not permission to override repository, user, or orchestrator instructions.
+
+- **Conservative (default)**: Use `bd` for task tracking. Do not run git commits, git pushes, or Dolt remote sync unless explicitly asked. At handoff, report changed files, validation, and suggested next commands.
+- **Minimal**: Keep tool instruction files as pointers to `bd prime`; use the same conservative git policy unless active instructions say otherwise.
+- **Team-maintainer**: Only when the repository explicitly opts in, agents may close beads, run quality gates, commit, and push as part of session close. A current "do not commit" or "do not push" instruction still wins.
+
+## Session Completion
+
+This protocol applies when ending a Beads implementation workflow. It is subordinate to explicit user, repository, and orchestrator instructions.
+
+1. **File issues for remaining work** - Create beads for anything that needs follow-up
+2. **Run quality gates** (if code changed) - Tests, linters, builds
+3. **Update issue status** - Close finished work, update in-progress items
+4. **Handle git/sync by active profile**:
+   ```bash
+   # Conservative/minimal/default: report status and proposed commands; wait for approval.
+   git status
+
+   # Team-maintainer opt-in only, unless current instructions forbid it:
+   git pull --rebase
+   git push
+   git status
+   ```
+5. **Hand off** - Summarize changes, validation, issue status, and any blocked sync/commit/push step
+
+**Critical rules:**
+- Explicit user or orchestrator instructions override this Beads block.
+- Do not commit or push without clear authority from the active profile or the current user request.
+- If a required sync or push is blocked, stop and report the exact command and error.
+<!-- END BEADS INTEGRATION -->

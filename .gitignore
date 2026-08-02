@@ -56,3 +56,9 @@ hyperframes-video/
 
 CPB.md
 dist-baseline/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/

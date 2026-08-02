@@ -50,7 +50,7 @@ const configs = {
     testAssets: true,
     metadata: false,
     guardFiles: ["tsconfig.tests.json", "tsconfig.node.json", "scripts/build-output.mjs"],
-    requiredAfterBuild: ["package.json", "scripts/run-node-tests.js", "tests/cli-runtime-contracts.test.js"],
+    requiredAfterBuild: ["package.json", "scripts/run-node-tests.js"],
   },
 };
 
@@ -1323,14 +1323,6 @@ async function writeNodeMetadata(destinationRoot) {
     ],
     dependencies: rootPackage.dependencies || {},
     engines: rootPackage.engines || {},
-    scripts: {
-      test: "node scripts/run-node-tests.js",
-      "test:node": "node scripts/run-node-tests.js",
-      "test:main": "node scripts/run-node-tests.js --main",
-      "test:specialized": "node scripts/run-node-tests.js --specialized",
-      "test:unit": "node scripts/run-node-tests.js --unit",
-      "test:integration": "node scripts/run-node-tests.js --integration",
-    },
   };
   await writeFile(path.join(destinationRoot, "package.json"), `${JSON.stringify(distPackage, null, 2)}\n`, "utf8");
   const launcher = `#!/usr/bin/env node

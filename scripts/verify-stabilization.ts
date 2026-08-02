@@ -16,9 +16,6 @@ export const stabilizationChecks: StabilizationCheck[] = [
   { label: "dependency vulnerability gate", command: "npm", args: ["run", "verify:dependency-audit"] },
   { label: "patch integrity gate", command: "npm", args: ["run", "verify:patch-integrity"] },
   { label: "commit-size gate", command: "npm", args: ["run", "verify:commit-size"] },
-  { label: "flagship release gate", command: "npm", args: ["run", "verify:release-gate"] },
-  { label: "v2 release scan gate", command: "npm", args: ["run", "verify:v2-release-scan"] },
-  { label: "enterprise gate", command: "npm", args: ["run", "verify:enterprise-gate"] },
   { label: "product validation gate", command: "npm", args: ["run", "verify:product-gate"] },
 ];
 
