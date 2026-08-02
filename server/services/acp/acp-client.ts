@@ -668,7 +668,7 @@ function isReadOrSearchToolUpdate(summary: LooseRecord = {}) {
   return /\b(?:Read(?:\s+File)?|Search|Grep|Glob)\b/i.test(text);
 }
 
-function isMutatingToolUpdate(summary: LooseRecord = {}) {
+export function isMutatingToolUpdate(summary: LooseRecord = {}) {
   const kind = textValue(summary.kind).trim().toLowerCase();
   if (["edit", "write", "multi_edit", "mutation"].includes(kind)) return true;
   const text = [
@@ -676,7 +676,9 @@ function isMutatingToolUpdate(summary: LooseRecord = {}) {
     summary.toolName,
     summary.serverName,
   ].map((value) => textValue(value).trim()).filter(Boolean).join(" ");
-  return /\b(?:Edit|Write|MultiEdit|Apply\s+Patch|write_text_file|fs\/write_text_file)\b/i.test(text);
+  // Match both "Apply Patch" (space) and "apply_patch" (underscore) variants;
+  // also covers create_file / write_file / fs/ write_text_file / patch_file.
+  return /\b(?:Edit|MultiEdit|Write|Apply[_\s]+Patch|create_file|write_file|write_text_file|fs\/write_text_file|patch_file)\b/i.test(text);
 }
 
 function numberFrom(value: unknown): number | null {
