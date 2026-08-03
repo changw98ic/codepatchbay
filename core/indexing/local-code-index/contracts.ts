@@ -308,6 +308,7 @@ export type LocalCodeIndexQueryResult =
         path: string;
         language: string;
         size: number;
+        nodeCount: number;
         coverage: LocalCodeIndexCoverage;
       }>[];
       nextCursor: string | null;

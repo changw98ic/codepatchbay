@@ -1,152 +1,70 @@
 #!/usr/bin/env node
-import { execFileSync } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
-import { stabilizationChecks } from "./verify-stabilization.js";
-import { verifyPatchIntegrityStatus } from "./verify-patch-integrity.js";
-import {
-  formatProductGateViolations,
-  verifyProductGateEvidenceFile,
-} from "./verify-product-gate.js";
-import { verifyLiveReleaseEvidenceFile } from "./verify-live-release-evidence.js";
+import { pathToFileURL } from "node:url";
 
-const PRODUCT_GATE_EVIDENCE_FILE = "docs/product/cpb-flagship-product-validation.json";
+import { createReleaseVerificationTrust, type ReleaseVerificationTrust } from "../core/contracts/release-evidence.js";
+import { verifyReleaseReadiness } from "./release-gate-receipts.js";
 
-function gitStatus(root: string) {
-  return execFileSync("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all"], {
-    cwd: root,
-    encoding: "utf8",
+type ReadinessInput = Readonly<{
+  sourceRoot?: string;
+  runtimeRoot?: string;
+  releaseSourceFingerprint: string;
+  sessionId: string;
+  trust: ReleaseVerificationTrust;
+  referenceTime?: Date;
+}>;
+
+export async function buildReleaseReadinessReport(input: ReadinessInput) {
+  return verifyReleaseReadiness({
+    sourceRoot: path.resolve(input.sourceRoot || process.cwd()),
+    runtimeRoot: path.resolve(input.runtimeRoot || path.join(os.homedir(), ".cpb")),
+    releaseSourceFingerprint: input.releaseSourceFingerprint,
+    sessionId: input.sessionId,
+    trust: input.trust,
+    referenceTime: input.referenceTime,
   });
 }
 
-async function productGateStatus(root: string, referenceTime: Date | string | number) {
-  const evidencePath = path.resolve(root, PRODUCT_GATE_EVIDENCE_FILE);
-  const raw = await readFile(evidencePath, "utf8").catch((error: unknown) => {
-    const code = error && typeof error === "object" && "code" in error ? error.code : null;
-    if (code === "ENOENT") {
-      return null;
-    }
-    throw error;
-  });
-  if (raw === null) {
-    return {
-      ok: false,
-      evidenceFile: PRODUCT_GATE_EVIDENCE_FILE,
-      recordCount: 0,
-      missingEvidence: true,
-      violations: [
-        {
-          path: PRODUCT_GATE_EVIDENCE_FILE,
-          reason: "missing product validation evidence file",
-        },
-      ],
-    };
-  }
-  let evidence: unknown;
-  try {
-    evidence = JSON.parse(raw);
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    return {
-      ok: false,
-      evidenceFile: PRODUCT_GATE_EVIDENCE_FILE,
-      recordCount: 0,
-      missingEvidence: false,
-      violations: [
-        {
-          path: PRODUCT_GATE_EVIDENCE_FILE,
-          reason: `invalid product validation JSON: ${message}`,
-        },
-      ],
-    };
-  }
-  const result = await verifyProductGateEvidenceFile(evidence, { root, referenceTime });
-  return {
-    ok: result.ok,
-    evidenceFile: PRODUCT_GATE_EVIDENCE_FILE,
-    recordCount: result.recordCount,
-    supplementalOfficialScoreBundleCount: result.supplementalOfficialScoreBundleCount,
-    missingEvidence: false,
-    violations: result.violations,
-  };
-}
-
-export async function buildReleaseReadinessReport({
-  root = process.cwd(),
-  referenceTime = new Date(),
-}: {
-  root?: string;
-  referenceTime?: Date | string | number;
-} = {}) {
-  const patchIntegrity = verifyPatchIntegrityStatus(gitStatus(root));
-  const [productGate, liveReleaseEvidence] = await Promise.all([
-    productGateStatus(root, referenceTime),
-    verifyLiveReleaseEvidenceFile({ root, referenceTime }),
-  ]);
-  const remaining = [];
-  if (!patchIntegrity.ok) {
-    remaining.push({
-      gate: "patch-integrity",
-      reason: "untracked implementation files remain outside the reviewed patch",
-      files: patchIntegrity.untrackedImplementationFiles,
-    });
-  }
-  if (!productGate.ok) {
-    remaining.push({
-      gate: "product-gate",
-      reason: productGate.missingEvidence
-        ? "missing 3 real product validation records (maintainer/team dry-runs or SWE-bench Verified dry-run samples)"
-        : "product validation evidence does not satisfy the gate",
-      evidenceFile: productGate.evidenceFile,
-      violations: productGate.violations,
-    });
-  }
-  if (!liveReleaseEvidence.ok) {
-    remaining.push({
-      gate: "live-release-evidence",
-      reason: liveReleaseEvidence.missingEvidence
-        ? "missing mandatory live provider and disposable draft-PR rehearsal evidence"
-        : "live release evidence does not satisfy the fail-closed contract",
-      evidenceFile: liveReleaseEvidence.evidenceFile,
-      violations: liveReleaseEvidence.violations,
-    });
-  }
-
-  return {
-    schemaVersion: 1,
-    generatedAt: new Date().toISOString(),
-    stabilizationCommand: "npm run verify:stabilization",
-    stabilizationChecks: stabilizationChecks.map((check) => ({
-      label: check.label,
-      command: [check.command, ...check.args].join(" "),
-    })),
-    gates: {
-      patchIntegrity: {
-        ok: patchIntegrity.ok,
-        untrackedImplementationFiles: patchIntegrity.untrackedImplementationFiles,
-      },
-      productGate,
-      liveReleaseEvidence,
-    },
-    ready: remaining.length === 0,
-    remaining,
-  };
+function option(args: readonly string[], name: string): string | null {
+  const index = args.indexOf(name);
+  if (index < 0) return null;
+  const value = args[index + 1];
+  if (!value || value.startsWith("--")) throw new Error(`${name} requires a value`);
+  return value;
 }
 
 async function main() {
-  const report = await buildReleaseReadinessReport();
-  console.log(JSON.stringify(report, null, 2));
-  if (!report.ready) {
-    const productViolations = formatProductGateViolations(report.gates.productGate.violations);
-    if (productViolations) console.error(productViolations);
-    console.error(JSON.stringify(report.remaining, null, 2));
-    process.exitCode = 1;
+  const args = process.argv.slice(2);
+  const sourceRoot = path.resolve(option(args, "--source-root") || process.env.CPB_RELEASE_SOURCE_ROOT || process.cwd());
+  const runtimeRoot = path.resolve(option(args, "--runtime-root") || process.env.CPB_ROOT || path.join(os.homedir(), ".cpb"));
+  const releaseSourceFingerprint = option(args, "--fingerprint") || process.env.CPB_RELEASE_SOURCE_FINGERPRINT;
+  const sessionId = option(args, "--session") || process.env.CPB_RELEASE_GATE_SESSION_ID;
+  if (!releaseSourceFingerprint || !sessionId) {
+    throw Object.assign(new Error("release readiness requires --fingerprint and --session"), {
+      code: "RELEASE_GATE_RECEIPT_INVALID",
+    });
   }
+  const trust = createReleaseVerificationTrust({
+    keyId: process.env.CPB_RELEASE_GATE_TRUSTED_KEY_ID || "",
+    publicKeyBase64Url: process.env.CPB_RELEASE_GATE_TRUSTED_PUBLIC_KEY || "",
+  });
+  const report = await buildReleaseReadinessReport({
+    sourceRoot,
+    runtimeRoot,
+    releaseSourceFingerprint,
+    sessionId,
+    trust,
+  });
+  process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+  if (!report.ready) process.exitCode = 1;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   main().catch((error) => {
-    console.error(error instanceof Error ? error.message : String(error));
+    const code = error && typeof error === "object" && "code" in error ? String(error.code) : "RELEASE_GATE_RECEIPT_INVALID";
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`${code}: ${message}\n`);
     process.exitCode = 1;
   });
 }

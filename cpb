@@ -7,8 +7,9 @@ import path from "node:path";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const distRoot = path.resolve(__dirname, "dist");
-process.env.CPB_ROOT = process.env.CPB_ROOT || path.resolve(__dirname);
 process.env.CPB_EXECUTOR_ROOT = process.env.CPB_EXECUTOR_ROOT || distRoot;
+const { cpbHome } = await import("./dist/core/paths.js");
+process.env.CPB_ROOT = process.env.CPB_ROOT || path.resolve(cpbHome());
 
 const { main } = await import("./dist/cli/cpb.js");
 const code = await main();

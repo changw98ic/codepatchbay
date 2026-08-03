@@ -60,22 +60,33 @@ function topFiles(files: LooseRecord[], predicate: (file: LooseRecord) => boolea
 
 async function queryLocalCodeIndexInventory(ref: LocalCodeIndexRef, cpbRoot?: string) {
   try {
-    const result = await queryLocalCodeIndex(
-      ref,
-      { kind: "inventory", limit: 500 },
-      { cpbRoot },
-    );
-    if (result.kind !== "inventory") {
-      throw new LocalCodeIndexUnavailableError("missing_local_code_index", {
-        sourcePath: ref.sourcePath,
-      });
-    }
-    return result.files.map((file) => ({
-      path: toPosixPath(file.path),
-      language: file.language || "unknown",
-      nodeCount: 0,
-      size: Number(file.size || 0),
-    }));
+    const files = [];
+    let cursor: string | undefined;
+    do {
+      const result = await queryLocalCodeIndex(
+        ref,
+        {
+          kind: "inventory",
+          limit: 500,
+          ...(cursor === undefined ? {} : { cursor }),
+        },
+        { cpbRoot },
+      );
+      if (result.kind !== "inventory") {
+        throw new LocalCodeIndexUnavailableError("missing_local_code_index", {
+          sourcePath: ref.sourcePath,
+        });
+      }
+      files.push(...result.files.map((file) => ({
+        path: toPosixPath(file.path),
+        language: file.language || "unknown",
+        nodeCount: Number(file.nodeCount || 0),
+        size: Number(file.size || 0),
+        coverage: file.coverage,
+      })));
+      cursor = result.nextCursor ?? undefined;
+    } while (cursor !== undefined);
+    return files;
   } catch (err) {
     if (err instanceof LocalCodeIndexUnavailableError) throw err;
     throw new LocalCodeIndexUnavailableError("missing_local_code_index", {
@@ -83,6 +94,32 @@ async function queryLocalCodeIndexInventory(ref: LocalCodeIndexRef, cpbRoot?: st
       cause: err instanceof Error ? err.message : String(err),
     });
   }
+}
+
+export function assessCapabilityMapConfidence({
+  files,
+  indexFresh,
+  toolAvailable,
+  toolVersion,
+}: {
+  files: LooseRecord[];
+  indexFresh: boolean;
+  toolAvailable: boolean;
+  toolVersion: string | null;
+}) {
+  const sourceFiles = files.filter(isSourceFile);
+  if (!indexFresh || !toolAvailable || !toolVersion || sourceFiles.length === 0) {
+    return "low";
+  }
+  if (sourceFiles.some((file) =>
+    file.language === "unknown"
+    || file.coverage !== "ast-grep-structural"
+  )) {
+    return "low";
+  }
+  return sourceFiles.some((file) => Number(file.nodeCount || 0) > 0)
+    ? "high"
+    : "low";
 }
 
 async function packageScripts(sourcePath: string) {
@@ -159,6 +196,12 @@ export async function generateProjectCapabilityMaps({ cpbRoot, sourcePath }: Loo
   const testFiles = files.filter(isTestFile);
   const coreModules = topFiles(files, isSourceFile, 30);
   const testSurfaces = topFiles(files, isTestFile, 30);
+  const confidence = assessCapabilityMapConfidence({
+    files,
+    indexFresh: status.fresh,
+    toolAvailable: tool.available,
+    toolVersion: tool.version,
+  });
 
   const localCodeIndex = {
     ref,
@@ -180,11 +223,11 @@ export async function generateProjectCapabilityMaps({ cpbRoot, sourcePath }: Loo
   };
 
   return {
-    capabilityMapConfidence: "high",
+    capabilityMapConfidence: confidence,
     codeIndexReadiness,
     project_capability_map: {
       schemaVersion: CAPABILITY_SCHEMA_VERSION,
-      confidence: "high",
+      confidence,
       source: "local-code-index",
       generatedAt,
       localCodeIndex,
@@ -201,14 +244,14 @@ export async function generateProjectCapabilityMaps({ cpbRoot, sourcePath }: Loo
     },
     safety_boundary_map: {
       schemaVersion: CAPABILITY_SCHEMA_VERSION,
-      confidence: "high",
+      confidence,
       source: "local-code-index",
       generatedAt,
       boundaries,
     },
     high_risk_area_map: {
       schemaVersion: CAPABILITY_SCHEMA_VERSION,
-      confidence: "high",
+      confidence,
       source: "local-code-index",
       generatedAt,
       areas,

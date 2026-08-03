@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "kind": "cpb-real-live-pipeline-e2e",
+  "runId": "1785693166499-8501488f-fe0d-4279-aa3b-040f6425d61c",
+  "recordedAt": "2026-08-02T17:52:46.562Z",
+  "provider": "codex",
+  "realProviderRequired": true,
+  "fakeProvider": false,
+  "queue": {
+    "id": "q-msc3ltxg-urxd",
+    "status": "completed",
+    "projectId": "live-pipeline-codex"
+  },
+  "assignment": {
+    "assignmentId": "a-q-msc3ltxg-urxd",
+    "status": "completed",
+    "attempt": 1,
+    "workerId": "w-de36006e"
+  },
+  "result": {
+    "status": "completed",
+    "jobStatus": "completed",
+    "jobId": "job-q-msc3ltxg-urxd"
+  },
+  "phases": [
+    "execute",
+    "verify"
+  ],
+  "evidence": {
+    "checklistArtifact": "acceptance-checklist-199158.md",
+    "executeEvent": null,
+    "verifyEvent": null,
+    "finalizerEvent": "audit_finalized",
+    "eventCount": 39,
+    "finalizer": {
+      "required": true,
+      "ok": true,
+      "status": "review_bundle",
+      "code": null
+    },
+    "finalizationStatus": "review_bundle",
+    "worktreePath": "/private/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-live-pipeline-codex-SX1SHc/hub/projects/live-pipeline-codex/worktrees/.cpb-cleanup-quarantine-job-q-msc3ltxg-urxd-pipeline-3fb739060968-1785693275915-c9186d19-4d14-473f-a635-da4c945d23bd/worktree",
+    "worktreeCleanup": {
+      "disposition": "quarantined",
+      "cleanupVerified": true,
+      "canonicalPathRemoved": true,
+      "quarantinePreserved": true
+    },
+    "editedFile": "target.txt",
+    "cleanup": {
+      "orchestratorStopped": true,
+      "runtimeRetained": false,
+      "temporaryRootRemoved": true,
+      "workers": [
+        {
+          "workerId": "w-de36006e",
+          "status": "exited"
+        }
+      ],
+      "error": null
+    }
+  },
+  "ok": true,
+  "completedAt": "2026-08-02T17:54:40.407Z"
+}

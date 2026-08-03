@@ -5,6 +5,7 @@
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { access, constants, readFile } from "node:fs/promises";
+import { cpbHome } from "../core/paths.js";
 
 // Graceful EPIPE handling when piped to head/tail
 process.stdout.on("error", (err) => {
@@ -14,8 +15,8 @@ process.stdout.on("error", (err) => {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const CPB_ROOT = path.resolve(process.env.CPB_ROOT || path.join(__dirname, ".."));
-const CPB_EXECUTOR_ROOT = path.resolve(process.env.CPB_EXECUTOR_ROOT || CPB_ROOT);
+const CPB_ROOT = path.resolve(process.env.CPB_ROOT || cpbHome());
+const CPB_EXECUTOR_ROOT = path.resolve(process.env.CPB_EXECUTOR_ROOT || path.join(__dirname, ".."));
 
 const CYAN = "\x1b[0;36m";
 const GREEN = "\x1b[0;32m";

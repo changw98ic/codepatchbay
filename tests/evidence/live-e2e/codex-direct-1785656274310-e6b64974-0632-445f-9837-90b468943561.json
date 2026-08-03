@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "kind": "cpb-real-live-provider-e2e",
+  "runId": "1785656274310-e6b64974-0632-445f-9837-90b468943561",
+  "recordedAt": "2026-08-02T07:37:54.311Z",
+  "provider": "codex",
+  "realProviderRequired": true,
+  "fakeProvider": false,
+  "path": "acp-direct-provider-edit",
+  "jobId": "live-codex",
+  "attempt": 1,
+  "status": "completed",
+  "ok": true,
+  "editedFile": "provider-proof.txt",
+  "providerKey": "codex",
+  "auditEvents": [
+    "agent_launch",
+    "session_new_request",
+    "session_new",
+    "tool_call",
+    "tool_call",
+    "prompt_usage",
+    "session_close"
+  ],
+  "auditEventCount": 7
+}

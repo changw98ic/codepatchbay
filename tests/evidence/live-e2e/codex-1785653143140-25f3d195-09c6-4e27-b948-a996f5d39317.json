@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "kind": "cpb-real-live-pipeline-e2e",
+  "runId": "1785653143140-25f3d195-09c6-4e27-b948-a996f5d39317",
+  "recordedAt": "2026-08-02T06:45:43.218Z",
+  "provider": "codex",
+  "realProviderRequired": true,
+  "fakeProvider": false,
+  "queue": {
+    "status": "not_started"
+  },
+  "assignment": {
+    "status": "not_started"
+  },
+  "result": {
+    "status": "not_written"
+  },
+  "phases": [],
+  "evidence": {},
+  "ok": false,
+  "failure": {
+    "message": "local_code_index_unavailable: unsafe_storage_root; sourcePath=/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-live-pipeline-codex-zPvPfI/cpb",
+    "code": "local_code_index_unavailable"
+  }
+}

@@ -9,13 +9,13 @@ the right to license or code under terms incompatible with the AGPL.
 
 ## Project scope
 
-CodePatchbay is currently focused on one narrow workflow:
+CodePatchBay is focused on one local delivery workflow:
 
 ```text
-Codex plans -> Claude Code executes -> Codex checks
+plan -> execute -> verify -> review or deliver
 ```
 
-Please keep contributions aligned with that scope unless an issue or maintainer discussion explicitly widens it.
+Agents connect through ACP or a supported CLI gateway. Please keep contributions aligned with the existing CLI, Hub, worker, evidence, and release paths unless an issue or maintainer discussion explicitly widens the product scope.
 
 ## Good first contribution areas
 
@@ -23,7 +23,7 @@ Please keep contributions aligned with that scope unless an issue or maintainer 
 - clean-machine setup notes
 - safer defaults and clearer error messages
 - ACP permission policy examples
-- Web UI polish for existing screens
+- CLI, Hub API, and stream-service usability
 - tests for existing event, lease, supervisor, review, and notification behavior
 - a stub/demo mode that does not require real agent credentials
 
@@ -43,8 +43,10 @@ The GitHub workflow runs Node and shell checks. Locally, the common commands are
 ```bash
 npm ci
 npm run typecheck
-npm test
-npm run build:web
+npm run test:main
+npm run test:integration
 ```
+
+Run `npm run test:integration` when changing process, ACP, worker, reconciliation, or authority boundaries. Use `npm run test:specialized` for benchmark, evaluation, release-rehearsal, or packaging work.
 
 Do not run agents against repositories you do not control.

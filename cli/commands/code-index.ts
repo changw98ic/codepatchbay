@@ -50,6 +50,7 @@ type ParsedCommon =
       sourcePath: string;
       cpbRoot: string | undefined;
       json: boolean;
+      syntaxOnly: boolean;
       remaining: string[];
     }>
   | Readonly<{ ok: false; message: string }>;
@@ -62,6 +63,7 @@ function parseCommon(
   let explicitSource: string | undefined;
   let explicitRoot: string | undefined;
   let json = false;
+  let syntaxOnly = false;
   const positionals: string[] = [];
   const remaining: string[] = [];
 
@@ -87,6 +89,11 @@ function parseCommon(
     }
     if (arg === "--json") {
       json = true;
+      continue;
+    }
+    if (arg === "--syntax-only") {
+      if (syntaxOnly) return { ok: false, message: "--syntax-only may be specified only once" };
+      syntaxOnly = true;
       continue;
     }
     if (commandValueFlags.has(arg)) {
@@ -121,6 +128,7 @@ function parseCommon(
         ? path.resolve(routerRoot)
         : undefined,
     json,
+    syntaxOnly,
     remaining,
   };
 }
@@ -160,6 +168,7 @@ async function statusCommand(
   if (parsed.remaining.length > 0) {
     return syntaxError(`unknown option: ${parsed.remaining[0]}`);
   }
+  if (parsed.syntaxOnly) return 0;
   const status = await localCodeIndexStatus({
     sourcePath: parsed.sourcePath,
     cpbRoot: parsed.cpbRoot,
@@ -181,6 +190,7 @@ async function buildCommand(
   if (parsed.remaining.filter((option) => option === "--force").length > 1) {
     return syntaxError("--force may be specified only once");
   }
+  if (parsed.syntaxOnly) return 0;
   const force = parsed.remaining.includes("--force");
   const result = await ensureLocalCodeIndex({
     sourcePath: parsed.sourcePath,
@@ -201,12 +211,20 @@ async function buildCommand(
 }
 
 const QUERY_VALUE_FLAGS = new Set([
-  "--definitions",
-  "--references",
-  "--imports",
-  "--file-summary",
-  "--related-file",
+  "--symbol",
+  "--path",
+  "--match",
+  "--cursor",
   "--limit",
+]);
+
+const QUERY_KINDS = new Set([
+  "definitions",
+  "references",
+  "imports",
+  "file-summary",
+  "related-files",
+  "inventory",
 ]);
 
 function optionValues(args: string[], name: string): string[] {
@@ -228,56 +246,89 @@ function parseLimit(args: string[]): number | undefined {
   return value;
 }
 
-function parseQuery(args: string[]): LocalCodeIndexQuery {
-  const selectors = [
-    "--definitions",
-    "--references",
-    "--imports",
-    "--file-summary",
-    "--related-file",
-    "--inventory",
-  ].filter((flag) => args.includes(flag));
-  if (selectors.length !== 1) {
-    throw new Error("query requires exactly one query selector");
+function requireOptionValues(
+  args: string[],
+  name: string,
+  { multiple = false }: { multiple?: boolean } = {},
+): string[] {
+  const values = optionValues(args, name);
+  if (values.length === 0) throw new Error(`${name} is required`);
+  if (!multiple && values.length > 1) {
+    throw new Error(`${name} may be specified only once`);
   }
-  const selector = selectors[0]!;
+  return values;
+}
+
+function rejectUnknownQueryOptions(
+  args: string[],
+  allowed: ReadonlySet<string>,
+): void {
+  for (let index = 0; index < args.length; index += 2) {
+    const option = args[index]!;
+    if (!allowed.has(option)) throw new Error(`unknown option: ${option}`);
+    if (args[index + 1] === undefined) throw new Error(`${option} requires a value`);
+  }
+}
+
+function parseQuery(kind: string, args: string[]): LocalCodeIndexQuery {
   const limit = parseLimit(args);
-  switch (selector) {
-    case "--definitions":
+  switch (kind) {
+    case "definitions": {
+      rejectUnknownQueryOptions(args, new Set(["--symbol", "--match", "--limit"]));
+      const symbol = requireOptionValues(args, "--symbol")[0]!;
+      const matches = optionValues(args, "--match");
+      if (matches.length > 1) throw new Error("--match may be specified only once");
+      const match = matches[0] ?? "exact";
+      if (match !== "exact" && match !== "prefix") {
+        throw new Error("--match must be exact or prefix");
+      }
       return {
         kind: "definitions",
-        symbol: optionValues(args, selector)[0]!,
-        match: "exact",
+        symbol,
+        match,
         ...(limit === undefined ? {} : { limit }),
       };
-    case "--references":
+    }
+    case "references":
+      rejectUnknownQueryOptions(args, new Set(["--symbol", "--limit"]));
       return {
         kind: "references",
-        symbol: optionValues(args, selector)[0]!,
+        symbol: requireOptionValues(args, "--symbol")[0]!,
         match: "exact",
         ...(limit === undefined ? {} : { limit }),
       };
-    case "--imports":
+    case "imports":
+      rejectUnknownQueryOptions(args, new Set(["--path", "--limit"]));
       return {
         kind: "imports",
-        path: optionValues(args, selector)[0]!,
+        path: requireOptionValues(args, "--path")[0]!,
         ...(limit === undefined ? {} : { limit }),
       };
-    case "--file-summary":
-      return { kind: "file-summary", path: optionValues(args, selector)[0]! };
-    case "--related-file":
+    case "file-summary":
+      rejectUnknownQueryOptions(args, new Set(["--path"]));
+      return { kind: "file-summary", path: requireOptionValues(args, "--path")[0]! };
+    case "related-files":
+      rejectUnknownQueryOptions(args, new Set(["--path", "--symbol", "--limit"]));
       return {
         kind: "related-files",
-        paths: optionValues(args, selector),
+        paths: requireOptionValues(args, "--path", { multiple: true }),
+        ...(optionValues(args, "--symbol").length === 0
+          ? {}
+          : { symbols: optionValues(args, "--symbol") }),
         ...(limit === undefined ? {} : { limit }),
       };
-    case "--inventory":
+    case "inventory": {
+      rejectUnknownQueryOptions(args, new Set(["--cursor", "--limit"]));
+      const cursors = optionValues(args, "--cursor");
+      if (cursors.length > 1) throw new Error("--cursor may be specified only once");
       return {
         kind: "inventory",
+        ...(cursors[0] === undefined ? {} : { cursor: cursors[0] }),
         ...(limit === undefined ? {} : { limit }),
       };
+    }
     default:
-      throw new Error("unsupported query selector");
+      throw new Error(`unsupported query kind: ${kind}`);
   }
 }
 
@@ -322,14 +373,19 @@ async function queryCommand(
   args: string[],
   routerRoot: string | undefined,
 ): Promise<CliExitCode> {
-  const parsed = parseCommon(args, routerRoot, QUERY_VALUE_FLAGS);
+  const kind = args[0];
+  if (!kind || !QUERY_KINDS.has(kind)) {
+    return syntaxError(`query kind must be one of: ${[...QUERY_KINDS].join(", ")}`);
+  }
+  const parsed = parseCommon(args.slice(1), routerRoot, QUERY_VALUE_FLAGS);
   if ("message" in parsed) return syntaxError(parsed.message);
   let query: LocalCodeIndexQuery;
   try {
-    query = parseQuery(parsed.remaining);
+    query = parseQuery(kind, parsed.remaining);
   } catch (error: unknown) {
     return syntaxError(error instanceof Error ? error.message : String(error));
   }
+  if (parsed.syntaxOnly) return 0;
   const status = await requireFreshStatus(parsed.sourcePath, parsed.cpbRoot);
   const result = await queryLocalCodeIndex(status.ref, query, {
     cpbRoot: parsed.cpbRoot,
@@ -348,6 +404,7 @@ async function inspectCommand(
   if (parsed.remaining.length > 0) {
     return syntaxError(`unknown option: ${parsed.remaining[0]}`);
   }
+  if (parsed.syntaxOnly) return 0;
   const status = await localCodeIndexStatus({
     sourcePath: parsed.sourcePath,
     cpbRoot: parsed.cpbRoot,
@@ -366,6 +423,7 @@ async function gcCommand(
   if (parsed.remaining.length > 0) {
     return syntaxError(`unknown option: ${parsed.remaining[0]}`);
   }
+  if (parsed.syntaxOnly) return 0;
   const status = await requireFreshStatus(parsed.sourcePath, parsed.cpbRoot);
   const storageRoot = await resolveStorageRoot(parsed.cpbRoot, parsed.sourcePath);
   const result = await garbageCollect({
@@ -391,6 +449,7 @@ async function inspectLockCommand(
   if (scope !== "worktree" && scope !== "repository") {
     return syntaxError("--scope must be worktree or repository");
   }
+  if (parsed.syntaxOnly) return 0;
   const status = await requireFreshStatus(parsed.sourcePath, parsed.cpbRoot);
   const storageRoot = await resolveStorageRoot(parsed.cpbRoot, parsed.sourcePath);
   const lockDir = scope === "repository"
@@ -442,6 +501,7 @@ async function repairLockCommand(
   if (action !== "quarantine-election" && electionDirs[0]) {
     return syntaxError("--election-dir is only valid with quarantine-election");
   }
+  if (parsed.syntaxOnly) return 0;
   const status = await requireFreshStatus(parsed.sourcePath, parsed.cpbRoot);
   const storageRoot = await resolveStorageRoot(parsed.cpbRoot, parsed.sourcePath);
   const lockDir = scope === "repository"
@@ -469,6 +529,7 @@ async function evidenceCommand(
   const task = optionValues(parsed.remaining, "--task")[0]
     ?? optionValues(parsed.remaining, "-t")[0];
   if (!task) return syntaxError("evidence requires --task <text>");
+  if (parsed.syntaxOnly) return 0;
   const status = await requireFreshStatus(parsed.sourcePath, parsed.cpbRoot);
   const results: Record<string, LocalCodeIndexQueryResult> = {};
   const symbols = taskSymbolCandidates(task);
@@ -522,14 +583,20 @@ const USAGE = `${BOLD}cpb code-index${NC} — canonical Local Code Index v2
 ${BOLD}Usage:${NC}
   cpb code-index build [source] [--source path] [--cpb-root path] [--json]
   cpb code-index status [source] [--source path] [--cpb-root path] [--json]
-  cpb code-index query [source] --definitions symbol [--json]
-  cpb code-index query [source] --references symbol [--json]
-  cpb code-index query [source] --related-file path [--json]
+  cpb code-index query definitions --symbol name [--source path] [--json]
+  cpb code-index query references --symbol name [--source path] [--json]
+  cpb code-index query imports --path path [--source path] [--json]
+  cpb code-index query file-summary --path path [--source path] [--json]
+  cpb code-index query related-files --path path [--symbol name] [--json]
+  cpb code-index query inventory [--source path] [--json]
   cpb code-index inspect [source] --json
   cpb code-index gc [source] [--json]
   cpb code-index inspect-lock [source] [--scope worktree|repository] [--json]
   cpb code-index repair-lock [source] --action action [--scope scope] [--json]
   cpb code-index evidence [source] --task text [--json]
+
+${BOLD}Validation option:${NC}
+  --syntax-only  Validate arguments without reading, building, repairing, or collecting the index
 
 ${BOLD}Exit codes:${NC}
   0  operation completed with an available, fresh, exact index

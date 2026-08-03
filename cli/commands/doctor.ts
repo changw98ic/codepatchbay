@@ -98,7 +98,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
   const json = args.includes("--json");
 
   const { runReadinessChecks, formatReadinessHuman, formatReadinessJson } = await import("../../server/services/readiness-checks.js");
-  const result = await runReadinessChecks({ cpbRoot });
+  const result = await runReadinessChecks({ cpbRoot, executorRoot });
 
   // Hub-specific consistency checks
   const { resolveHubRoot } = await import("../../server/services/hub/hub-registry.js");
@@ -120,7 +120,7 @@ export async function run(args, { cpbRoot, executorRoot }) {
   if (smoke) {
     try {
       const { runFakeAcpSmoke } = await import("../../server/services/infra.js");
-      const execRoot = path.resolve(executorRoot || process.env.CPB_EXECUTOR_ROOT || cpbRoot);
+      const execRoot = path.resolve(executorRoot || process.cwd());
       const smokeResult = await runFakeAcpSmoke({ executorRoot: execRoot });
       results.smokeTest = { ok: smokeResult.ok, inbox: smokeResult.artifacts.inbox.length, outputs: smokeResult.artifacts.outputs.length };
       if (!smokeResult.ok) result.summary.success = false;

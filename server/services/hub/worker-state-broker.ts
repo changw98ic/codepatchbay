@@ -193,11 +193,16 @@ export async function handleWorkerStateBroker({
   if (MUTATING_BROKER_OPERATIONS.has(op)) await beforeMutation?.({ workerId, op });
   switch (op) {
     case "worker.register":
-      return await workers.registerWorker(workerId, {
-        ...pick(isRecord(args.meta) ? args.meta as LooseRecord : {}, ["pid", "host", "status", "startedAt", "lastHeartbeatAt"]),
+      return await workers.updateWorkerIf(workerId, {
+        ...pick(isRecord(args.meta) ? args.meta as LooseRecord : {}, ["pid", "host", "startedAt", "lastHeartbeatAt"]),
+        status: worker.status === "starting" ? "ready" : worker.status,
         projectId: worker.projectId ?? null,
         brokerTokenHash: worker.brokerTokenHash,
+      }, {
         incarnationToken,
+        status: String(worker.status || ""),
+        currentAssignmentId: worker.currentAssignmentId ?? null,
+        currentAttemptToken: worker.currentAttemptToken ?? null,
       });
     case "worker.update": {
       const updates = pick(isRecord(args.updates) ? args.updates as LooseRecord : {}, [

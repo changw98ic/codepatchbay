@@ -187,7 +187,11 @@ import type {
   IndexMap,
 } from "./snapshot-store.js";
 
-import { aggregateCoverage } from "./coverage.js";
+import {
+  aggregateCoverage,
+  coverageForExtractionMode,
+  isCoverageSummary,
+} from "./coverage.js";
 import type { FileCoverageOutcome } from "./coverage.js";
 
 // ── Constants ──────────────────────────────────────────────────────────────
@@ -392,6 +396,8 @@ async function ensureLocalCodeIndexInner(
         currentPtr.snapshotId,
       );
       if (pointerIdentity === null || pointerIdentity.repositoryKey !== repositoryKey) {
+        currentPtr = null;
+      } else if (!hasCanonicalCoverageShape(pointerIdentity)) {
         currentPtr = null;
       }
     }
@@ -875,6 +881,15 @@ export async function localCodeIndexStatus(
       sourcePath: canonicalSource,
     };
   }
+  if (!hasCanonicalCoverageShape(identity)) {
+    return {
+      available: false as const,
+      fresh: false as const,
+      exact: false as const,
+      reason: "unsupported_index_schema",
+      sourcePath: canonicalSource,
+    };
+  }
 
   // ── Verify identity hash ──────────────────────────────────────────────
   const identityBytes = new TextEncoder().encode(canonicalStringify(identity));
@@ -913,12 +928,7 @@ export async function localCodeIndexStatus(
     version: identity.toolState.version,
     extractorFingerprint: identity.extractorFingerprint,
     available: identity.toolState.available,
-    coverage: {
-      effective: identity.toolState.coverage,
-      partial: false,
-      failedFiles: 0,
-      oversizedFiles: 0,
-    },
+    coverage: { ...identity.toolState.coverage },
     errors: [...identity.toolState.errors],
   };
 
@@ -1226,14 +1236,22 @@ function convertIdentityToSourceState(
 }
 
 function hasCompleteExtractionIdentity(identity: SnapshotIdentity): boolean {
-  return Object.values(identity.inventory).every((entry) =>
+  return hasCanonicalCoverageShape(identity)
+    && Object.values(identity.inventory).every((entry) =>
     typeof entry.language === "string"
     && entry.language.length > 0
     && typeof entry.parserMode === "string"
     && entry.parserMode.length > 0
     && typeof entry.languageExtractorFingerprint === "string"
     && entry.languageExtractorFingerprint.length > 0,
-  );
+    );
+}
+
+function hasCanonicalCoverageShape(identity: SnapshotIdentity): boolean {
+  const toolState = (identity as unknown as {
+    toolState?: { coverage?: unknown };
+  }).toolState;
+  return isCoverageSummary(toolState?.coverage);
 }
 
 function hasAllInventoryObjects(
@@ -1345,10 +1363,7 @@ function reusedEnsureResult(
   const indexedBytes = Object.values(identity.inventory)
     .reduce((total, entry) => total + (parseInt(entry.metadata.size, 10) || 0), 0);
   const coverage: LocalCodeIndexCoverageSummary = {
-    effective: identity.toolState.coverage,
-    partial: false,
-    failedFiles: 0,
-    oversizedFiles: 0,
+    ...identity.toolState.coverage,
   };
   return {
     available: true,
@@ -1791,11 +1806,10 @@ async function extractAndPublishObjects(
       const stateEntry = sourceEntriesByPath.get(entry.path);
       if (stateEntry && entry.existingFileObjectId) {
         fileObjectIds.set(entry.path, entry.existingFileObjectId);
-        const coverage = stateEntry.parserMode === "structural"
-          ? "ast-grep-structural"
-          : stateEntry.parserMode === "lexical-fallback"
-            ? "lexical-reference-fallback"
-            : "file-inventory-only";
+        const coverage = coverageForExtractionMode(
+          stateEntry.language,
+          stateEntry.parserMode,
+        );
         coverageOutcomes.push(coverage);
       }
     }
@@ -2019,11 +2033,7 @@ async function extractAndPublishObjects(
 // ── Relationships and shards ───────────────────────────────────────────────
 
 function fileObjectCoverage(fileObject: FileObject): FileExtractionResult["coverage"] {
-  return fileObject.parserMode === "structural"
-    ? "ast-grep-structural"
-    : fileObject.parserMode === "lexical-fallback"
-      ? "lexical-reference-fallback"
-      : "file-inventory-only";
+  return coverageForExtractionMode(fileObject.language, fileObject.parserMode);
 }
 
 function fileObjectToExtractionResult(fileObject: FileObject): FileExtractionResult {
@@ -2612,7 +2622,7 @@ async function publishSnapshotWithVerification(
     version: extractionResult.parserVersion,
     extractorFingerprint: extractionResult.extractorFingerprint,
     available: extractionResult.parserVersion !== null,
-    coverage: extractionResult.coverage.effective,
+    coverage: extractionResult.coverage,
     errors: [],
   };
 
