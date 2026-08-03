@@ -1,0 +1,22 @@
+{
+  "extends": "./tsconfig.node.json",
+  "compilerOptions": {
+    "strict": true,
+    "noImplicitAny": true,
+    "noEmit": true
+  },
+  "include": [
+    "core/contracts/canonical-json.ts",
+    "core/contracts/release-evidence.ts",
+    "scripts/release-source-fingerprint.ts",
+    "scripts/release-gate-receipts.ts",
+    "scripts/release-readiness-report.ts",
+    "scripts/verify-release-gate.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "dist-tests",
+    "tests"
+  ]
+}

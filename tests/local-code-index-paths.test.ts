@@ -15,6 +15,7 @@ import path from "node:path";
 import { test } from "node:test";
 
 import {
+  resolveStorageRoot,
   resolveStorageAuthority,
   withFsAuthorityTestAdapter,
   sourceAboveAuthority,
@@ -69,6 +70,25 @@ test("resolveStorageAuthority: explicit cpbRoot creates authority under cpbRoot/
       assert.ok(result.authority.startsWith(realRoot));
       assert.equal(result.source, "explicit");
     }
+  } finally {
+    await rm(realRoot, { recursive: true, force: true });
+  }
+});
+
+test("resolveStorageRoot rejects a Git source checkout as another project's runtime root", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "cpb-source-root-reject-"));
+  const realRoot = await realpath(root);
+  const sourcePath = path.join(realRoot, "target-project");
+  const cpbSourceRoot = path.join(realRoot, "codepatchbay-source");
+  try {
+    await mkdir(sourcePath, { recursive: true });
+    await mkdir(path.join(cpbSourceRoot, ".git"), { recursive: true });
+
+    await assert.rejects(
+      resolveStorageRoot(cpbSourceRoot, sourcePath),
+      (error: unknown) => (error as { reason?: string }).reason === "unsafe_storage_root",
+    );
+    assert.equal(existsSync(path.join(cpbSourceRoot, "indexes")), false);
   } finally {
     await rm(realRoot, { recursive: true, force: true });
   }

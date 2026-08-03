@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "kind": "cpb-real-live-provider-e2e",
+  "runId": "1785656561187-82a25da0-cadf-48e9-b41c-8b426d206488",
+  "recordedAt": "2026-08-02T07:42:41.188Z",
+  "provider": "claude",
+  "realProviderRequired": true,
+  "fakeProvider": false,
+  "path": "acp-direct-provider-edit",
+  "jobId": "live-claude",
+  "attempt": 1,
+  "status": "failed",
+  "ok": false,
+  "editedFile": "provider-proof.txt",
+  "failure": {
+    "message": "Claude Code live provider execution failed: {\"message\":\"claude exited 1 signal=none: Error handling request {\\n  jsonrpc: '2.0',\\n  id: 2,\\n  method: 'session/new',\\n  params: {\\n    cwd: '<temporary-workspace>/workspace',\\n    mcpServers: []\\n  }\\n} {\\n  code: -32603,\\n  message: 'Internal error',\\n  data: { details: 'Query closed before response received' }\\n}\\nInternal error\\n\",\"code\":null}",
+    "code": null
+  }
+}

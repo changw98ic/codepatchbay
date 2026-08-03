@@ -255,11 +255,13 @@ cpb github doctor [--json]
 cpb hub [status|start|stop|projects|...]
 
 # 本地代码索引
-cpb code-index build [-s <path>]   # 构建或刷新本地代码索引
-cpb code-index status [-s <path>]  # 检查索引状态
-cpb code-index query <kind> [...]  # 查询符号、文件、关系
-cpb code-index evidence [-t <task>]  # 从查询结果构建证据包
-cpb code-index gc                  # 在 repository lock 下运行垃圾回收
+cpb code-index build -s . --json   # 构建或刷新当前仓库的本地代码索引
+cpb code-index status -s . --json  # 检查当前仓库的索引状态
+cpb code-index query definitions --symbol runJob -s . --json
+cpb code-index query references --symbol runJob -s . --json
+cpb code-index query inventory -s . --json
+cpb code-index evidence -s . -t runJob --json  # 从查询结果构建证据包
+cpb code-index gc -s . --json      # 在 repository lock 下运行垃圾回收
 
 # 设置与诊断
 cpb setup [--recommended|--interactive|--json]

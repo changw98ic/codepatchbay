@@ -6,6 +6,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { tempRoot } from "../helpers.js";
 import { runAgent } from "../../core/agents/agent-runner.js";
+import { loadRegistry } from "../../core/agents/registry.js";
 import { FailureKind } from "../../core/contracts/failure.js";
 import { AcpPool, poolClientKey, readAcpUsageFromAudit, resolvePoolWaitTimeoutMs } from "../../server/services/acp/acp-pool.js";
 import { buildAcpPoolEnv, buildChildEnv } from "../../core/policy/child-env.js";
@@ -2321,6 +2322,7 @@ test("runAgent classifies AbortError as a runtime interruption", async () => {
 });
 
 test("runAgent restricts read-only phases to phase output paths by default", async () => {
+  await loadRegistry("");
   const dataRoot = path.join(await tempRoot("cpb-run-agent-readonly-env"), "runtime", "projects", "flow");
   const observed: any[] = [];
   const pool = {
@@ -2344,7 +2346,8 @@ test("runAgent restricts read-only phases to phase output paths by default", asy
   });
 
   assert.equal(observed[0].options.env.CPB_ACP_WRITE_ALLOW, `${dataRoot}/phase-io/verify/*`);
-  assert.equal(observed[0].options.env.CPB_AGENT_SANDBOX, "required");
+  assert.equal(observed[0].options.env.CPB_AGENT_SANDBOX, "off");
+  assert.equal(observed[0].options.env.CPB_AGENT_SANDBOX_MODE, "off");
   assert.equal(observed[0].options.env.TMPDIR, `${dataRoot}/phase-io/verify/.tmp/job-readonly-verify`);
   assert.equal(observed[0].options.env.TEMP, observed[0].options.env.TMPDIR);
   assert.equal(observed[0].options.env.TMP, observed[0].options.env.TMPDIR);
@@ -2381,7 +2384,8 @@ test("runAgent restricts read-only phases to phase output paths by default", asy
   });
 
   assert.equal(observed[2].options.env.CPB_ACP_WRITE_ALLOW, undefined);
-  assert.equal(observed[2].options.env.CPB_AGENT_SANDBOX, "required");
+  assert.equal(observed[2].options.env.CPB_AGENT_SANDBOX, "off");
+  assert.equal(observed[2].options.env.CPB_AGENT_SANDBOX_MODE, "off");
 
   await runAgent({
     phase: "execute",

@@ -120,7 +120,19 @@ async function writeSnapshot(
     extractorFingerprint: hex64("extractor"),
     symbolShardIds: objects.symbolShardIds ?? [],
     relationShardIds: objects.relationShardIds ?? [],
-    toolState: { name: "ast-grep", version: null, extractorFingerprint: hex64("ext"), available: false, coverage: "file-inventory-only", errors: [] },
+    toolState: {
+      name: "ast-grep",
+      version: null,
+      extractorFingerprint: hex64("ext"),
+      available: false,
+      coverage: {
+        effective: "file-inventory-only",
+        partial: true,
+        failedFiles: 0,
+        oversizedFiles: 0,
+      },
+      errors: [],
+    },
     indexMapHash: hex64("indexmap"),
     indexMapByteLength: 0,
   };

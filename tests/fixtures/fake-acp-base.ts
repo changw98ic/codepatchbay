@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { writeFile } from "node:fs/promises";
 import readline from "node:readline";
+import { fileURLToPath } from "node:url";
 
 const PROTOCOL_VERSION = 1;
 const mode = process.env.CPB_FAKE_ACP_MODE || "default";
@@ -106,7 +107,8 @@ async function runTerminalAction(text) {
 
   if (text.includes("ACTION: test_terminal")) {
     try {
-      await requestTerminal(process.execPath, ["--test", "--help"]);
+      const fixture = fileURLToPath(new URL("./fake-terminal-suite.js", import.meta.url));
+      await requestTerminal(process.execPath, ["--test", fixture]);
       sendChunk("terminal-allowed\n");
     } catch {
       sendChunk("terminal-denied\n");

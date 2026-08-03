@@ -395,7 +395,7 @@ export class HubOrchestrator {
         const expectedWorker: Record<string, unknown> = {
           currentAssignmentId: null,
           currentAttemptToken: null,
-          status: "ready",
+          status: ["starting", "ready"],
         };
         if (typeof worker.incarnationToken === "string") {
           expectedWorker.incarnationToken = worker.incarnationToken;

@@ -1,10 +1,16 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 
 import { ensureLocalCodeIndex, localCodeIndexStatus } from "../core/indexing/local-code-index/service.js";
 import { queryLocalCodeIndex } from "../core/indexing/local-code-index/query.js";
+import { canonicalStringify } from "../core/indexing/local-code-index/canonical-json.js";
+import {
+  snapshotIdentityPath,
+  worktreeCurrentPointer,
+} from "../core/indexing/local-code-index/paths.js";
 import { tempRoot } from "./helpers.js";
 
 // ── Publication: ensure writes index and status reports correctly ────────────
@@ -38,6 +44,7 @@ test("ensureLocalCodeIndex uses the configured ast-grep executable for structura
     "export function configuredParser(): void {} configuredParser();\n",
     "utf8",
   );
+  await writeFile(path.join(sourcePath, "README.md"), "# parser fixture\n", "utf8");
   await writeFile(
     fakeAstGrep,
     [
@@ -66,7 +73,16 @@ test("ensureLocalCodeIndex uses the configured ast-grep executable for structura
 
   assert.equal(result.tool.available, true);
   assert.equal(result.tool.version, "0.0.0-test");
-  assert.equal(result.tool.coverage.effective, "ast-grep-structural");
+  assert.deepEqual(result.tool.coverage, {
+    effective: "file-inventory-only",
+    partial: true,
+    failedFiles: 0,
+    oversizedFiles: 0,
+  });
+
+  const status = await localCodeIndexStatus({ cpbRoot, sourcePath });
+  assert.equal(status.available, true);
+  assert.deepEqual(status.tool.coverage, result.tool.coverage);
 
   const query = await queryLocalCodeIndex(result.ref, {
     kind: "definitions",
@@ -76,6 +92,7 @@ test("ensureLocalCodeIndex uses the configured ast-grep executable for structura
   assert.equal(query.kind, "definitions");
   assert.equal(query.occurrences.length, 1);
   assert.equal(query.occurrences[0]?.path, "index.ts");
+  assert.equal(query.occurrences[0]?.coverage, "ast-grep-structural");
 
   const references = await queryLocalCodeIndex(result.ref, {
     kind: "references",
@@ -86,6 +103,42 @@ test("ensureLocalCodeIndex uses the configured ast-grep executable for structura
   assert.equal(references.occurrences.length, 1);
   assert.equal(references.occurrences[0]?.path, "index.ts");
   assert.equal(references.occurrences[0]?.range.startColumn, 36);
+  assert.equal(references.occurrences[0]?.coverage, "ast-grep-structural");
+
+  const summary = await queryLocalCodeIndex(result.ref, {
+    kind: "file-summary",
+    path: "index.ts",
+  }, { cpbRoot });
+  assert.equal(summary.kind, "file-summary");
+  assert.equal(summary.file?.language, "typescript");
+  assert.equal(summary.file?.coverage, "ast-grep-structural");
+
+  const inventory = await queryLocalCodeIndex(result.ref, {
+    kind: "inventory",
+  }, { cpbRoot });
+  assert.equal(inventory.kind, "inventory");
+  assert.deepEqual(
+    inventory.files.map((file) => ({
+      path: file.path,
+      language: file.language,
+      coverage: file.coverage,
+      nodeCount: file.nodeCount,
+    })),
+    [
+      {
+        path: "README.md",
+        language: "markdown",
+        coverage: "file-inventory-only",
+        nodeCount: 1,
+      },
+      {
+        path: "index.ts",
+        language: "typescript",
+        coverage: "ast-grep-structural",
+        nodeCount: 2,
+      },
+    ],
+  );
 
   const parserSource = await readFile(fakeAstGrep, "utf8");
   await writeFile(
@@ -99,7 +152,7 @@ test("ensureLocalCodeIndex uses the configured ast-grep executable for structura
     astGrepBinaryPath: fakeAstGrep,
   });
   assert.equal(reparsed.tool.version, "0.0.1-test");
-  assert.equal(reparsed.stats.parsedFiles, 1);
+  assert.equal(reparsed.stats.parsedFiles, 2);
   assert.notEqual(reparsed.ref.snapshotId, result.ref.snapshotId);
 });
 
@@ -192,6 +245,36 @@ test("localCodeIndexStatus reports exact after ensure publishes", async () => {
   const status = await localCodeIndexStatus({ cpbRoot, sourcePath });
   assert.equal(status.available, true, "should be available after ensure");
   assert.equal(status.exact, true, "should be exact when source hasn't changed");
+});
+
+test("localCodeIndexStatus rejects snapshots with the retired scalar coverage shape", async () => {
+  const root = await tempRoot("pub-status-old-coverage");
+  const sourcePath = path.join(root, "src");
+  const cpbRoot = path.join(root, ".cpb");
+  await mkdir(sourcePath, { recursive: true });
+  await mkdir(cpbRoot, { recursive: true });
+  await writeFile(path.join(sourcePath, "a.ts"), "export const a = 1;\n", "utf8");
+
+  const result = await ensureLocalCodeIndex({ cpbRoot, sourcePath });
+  const storageRoot = path.join(cpbRoot, "indexes", "local-code", "v2");
+  const identityPath = snapshotIdentityPath(
+    storageRoot,
+    result.ref.worktreeKey,
+    result.ref.snapshotId,
+  );
+  const identity = JSON.parse(await readFile(identityPath, "utf8"));
+  identity.toolState.coverage = "file-inventory-only";
+  const identityBytes = canonicalStringify(identity);
+  await writeFile(identityPath, identityBytes, "utf8");
+
+  const pointerPath = worktreeCurrentPointer(storageRoot, result.ref.worktreeKey);
+  const pointer = JSON.parse(await readFile(pointerPath, "utf8"));
+  pointer.identityHash = createHash("sha256").update(identityBytes).digest("hex");
+  await writeFile(pointerPath, canonicalStringify(pointer), "utf8");
+
+  const status = await localCodeIndexStatus({ cpbRoot, sourcePath });
+  assert.equal(status.available, false);
+  assert.equal(status.reason, "unsupported_index_schema");
 });
 
 test("localCodeIndexStatus reports available after source changes (stored snapshot is valid)", async () => {

@@ -82,9 +82,8 @@ function isSameOrDescendant(child: string, parent: string): boolean {
  *
  * Resolution order (spec section 7.1):
  *  1. When `cpbRoot` is provided, use `<cpbRoot>/indexes/local-code/v2/`.
- *  2. Otherwise, fall back to `<sourcePath>/.cpb-local-index/` only when
- *     the caller has not supplied a CPB root.  (In practice the engine
- *     always supplies a CPB root.)
+ *  2. Otherwise, use the current user's protected local-index directory under
+ *     the canonical operating-system temporary root.
  *
  * The resolved root must **not** be equal to or nested under the canonical
  * source root.
@@ -98,10 +97,27 @@ export async function resolveStorageRoot(
   let safeCpbRoot: string | undefined;
   if (cpbRoot && typeof cpbRoot === "string") {
     const canonicalCpbRoot = await canonicalize(cpbRoot, "unsafe_storage_root");
-    const candidate = path.resolve(canonicalCpbRoot, INDEX_SUBPATH);
-    if (!isSameOrDescendant(candidate, canonicalSource)) {
-      safeCpbRoot = canonicalCpbRoot;
+    try {
+      await lstat(path.join(canonicalCpbRoot, ".git"));
+      throw new LocalCodeIndexUnavailableError("unsafe_storage_root", {
+        sourcePath: canonicalSource,
+      });
+    } catch (error) {
+      if (error instanceof LocalCodeIndexUnavailableError) throw error;
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw new LocalCodeIndexUnavailableError("unsafe_storage_root", {
+          sourcePath: canonicalSource,
+          cause: error,
+        });
+      }
     }
+    const candidate = path.resolve(canonicalCpbRoot, INDEX_SUBPATH);
+    if (isSameOrDescendant(candidate, canonicalSource)) {
+      throw new LocalCodeIndexUnavailableError("unsafe_storage_root", {
+        sourcePath: canonicalSource,
+      });
+    }
+    safeCpbRoot = canonicalCpbRoot;
   }
 
   const result = await resolveStorageAuthority({

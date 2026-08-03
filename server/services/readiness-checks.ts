@@ -3,7 +3,6 @@ import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import type { BigIntStats } from "node:fs";
 import {
-  access,
   constants as fsConstants,
   lstat,
   readdir,
@@ -16,6 +15,7 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
+import { createRequire } from "node:module";
 
 import { redactSecrets } from "./observability/observability.js";
 import { inspectHubAccessAuditUsage } from "./audit/hub-access-audit.js";
@@ -61,7 +61,7 @@ import {
 
 const execFileAsync = promisify(execFile);
 const SUBPROCESS_TIMEOUT_MS = 5_000;
-const MIN_NODE_MAJOR = 18;
+const EXECUTOR_PACKAGE_MAX_BYTES = 1024 * 1024;
 const DISK_WARN_BYTES = 100 * 1024 * 1024;
 const HUB_WORKER_TTL = 120_000;
 
@@ -102,7 +102,10 @@ type ReadinessRecord = LooseRecord & {
   sourcePath?: string;
   projectRuntimeRoot?: string;
   cpbRoot?: string;
+  runtimeRoot?: string;
   hubRoot?: string;
+  executorRoot?: string;
+  releaseStoreRoot?: string;
   cwd?: string;
   platform?: NodeJS.Platform;
   probe?: unknown;
@@ -248,10 +251,10 @@ export function deriveReadinessLevels(checks: Check[] = []) {
     {
       level: 1,
       id: "tests-build",
-      name: "Node tests, web tests, and web build",
+      name: "Node tests and build",
       status: "skipped",
       evidence: { reason: "doctor does not run long test/build gates" },
-      recommendedAction: "Run: cpb doctor or npm test && npm --workspace codepatchbay-web test -- --run && npm run build:web",
+      recommendedAction: "Run from executorRoot: npm test && npm run build:node",
     },
     {
       level: 2,
@@ -296,16 +299,70 @@ export function deriveReadinessLevels(checks: Check[] = []) {
 
 // --- Individual checks ---
 
-async function checkNode() {
-  const ver = process.version;
-  const major = parseInt(ver.slice(1).split(".")[0], 10);
-  if (major < MIN_NODE_MAJOR) {
-    return error("node-version", "toolchain", `Node.js ${ver} is below minimum v${MIN_NODE_MAJOR}`, {
-      remediation: `Install Node.js v${MIN_NODE_MAJOR} or later.`,
+type ExecutorPackage = Readonly<{
+  engines?: Readonly<{ node?: unknown }>;
+  dependencies?: Readonly<Record<string, unknown>>;
+}>;
+
+async function readExecutorPackageForDoctor(executorRoot: string): Promise<ExecutorPackage> {
+  const packagePath = path.join(executorRoot, "package.json");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await readBoundedRegularFileNoFollow(packagePath, {
+      maxBytes: EXECUTOR_PACKAGE_MAX_BYTES,
+    }));
+  } catch (cause) {
+    throw Object.assign(new Error(`executor package.json is missing or invalid: ${packagePath}`), {
+      code: "CPB_EXECUTOR_PACKAGE_INVALID",
+      cause,
     });
   }
-  return ok("node-version", "toolchain", `Node.js ${ver}`);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw Object.assign(new Error(`executor package.json is not an object: ${packagePath}`), {
+      code: "CPB_EXECUTOR_PACKAGE_INVALID",
+    });
+  }
+  return parsed as ExecutorPackage;
 }
+
+function minimumNodeMajor(requirement: unknown): number | null {
+  if (typeof requirement !== "string") return null;
+  const match = requirement.trim().match(/^>=\s*(\d+)(?:\.\d+){0,2}$/);
+  if (!match) return null;
+  const major = Number(match[1]);
+  return Number.isSafeInteger(major) && major > 0 ? major : null;
+}
+
+async function checkNode(executorRoot: string) {
+  const ver = process.version;
+  const major = parseInt(ver.slice(1).split(".")[0], 10);
+  let requirement: unknown;
+  try {
+    requirement = (await readExecutorPackageForDoctor(executorRoot)).engines?.node;
+  } catch (cause) {
+    return error("executor-package", "toolchain", cause instanceof Error ? cause.message : String(cause), {
+      remediation: `Ensure executorRoot contains a readable package.json: ${executorRoot}`,
+    });
+  }
+  const requiredMajor = minimumNodeMajor(requirement);
+  if (requiredMajor === null) {
+    return error("node-version", "toolchain", "Executor package.json has no supported engines.node requirement", {
+      details: { executorRoot, requirement: requirement ?? null },
+      remediation: "Set package.json engines.node to an explicit minimum such as >=20.0.0.",
+    });
+  }
+  if (major < requiredMajor) {
+    return error("node-version", "toolchain", `Node.js ${ver} does not satisfy ${String(requirement)}`, {
+      details: { executorRoot, requirement },
+      remediation: `Install Node.js v${requiredMajor} or later.`,
+    });
+  }
+  return ok("node-version", "toolchain", `Node.js ${ver} satisfies ${String(requirement)}`, {
+    details: { executorRoot, requirement },
+  });
+}
+
+export const _checkDoctorNodeForTests = checkNode;
 
 async function checkNpm() {
   try {
@@ -1499,17 +1556,37 @@ export async function runAgentSandboxSelfTestCheck({
 
 // --- Orchestrator ---
 
-async function checkServerDeps(cpbRoot: string) {
-  const nmPath = path.join(path.resolve(cpbRoot), "server", "node_modules");
+async function checkExecutorDependencies(executorRoot: string) {
+  let pkg: ExecutorPackage;
   try {
-    await access(nmPath, fsConstants.R_OK);
-    return ok("server-deps", "toolchain", "Server dependencies installed");
-  } catch {
-    return warn("server-deps", "toolchain", "Server dependencies not installed", {
-      remediation: "Run: cd server && npm install",
+    pkg = await readExecutorPackageForDoctor(executorRoot);
+  } catch (cause) {
+    return error("executor-dependencies", "toolchain", cause instanceof Error ? cause.message : String(cause), {
+      remediation: `Ensure executorRoot contains the installed CPB package: ${executorRoot}`,
     });
   }
+  const dependencyNames = Object.keys(pkg.dependencies || {}).sort();
+  const requireFromExecutor = createRequire(path.join(executorRoot, "package.json"));
+  const missing: string[] = [];
+  for (const dependency of dependencyNames) {
+    try {
+      requireFromExecutor.resolve(dependency);
+    } catch {
+      missing.push(dependency);
+    }
+  }
+  if (missing.length > 0) {
+    return error("executor-dependencies", "toolchain", `Executor dependencies unavailable: ${missing.join(", ")}`, {
+      details: { executorRoot, missing },
+      remediation: `Run npm install in the package containing executorRoot: ${executorRoot}`,
+    });
+  }
+  return ok("executor-dependencies", "toolchain", `${dependencyNames.length} executor dependency package(s) available`, {
+    details: { executorRoot, dependencies: dependencyNames },
+  });
 }
+
+export const _checkExecutorDependenciesForTests = checkExecutorDependencies;
 
 async function checkGithubReadiness(hubRoot: string) {
   const checks = [];
@@ -1582,9 +1659,15 @@ async function checkGithubReadiness(hubRoot: string) {
   return checks;
 }
 
-export async function runReadinessChecks({ cpbRoot, hubRoot, adapterOverrides, env = process.env }: ReadinessRecord & { env?: ReadinessEnv } = {}) {
-  const resolvedCpbRoot = path.resolve(cpbRoot || env.CPB_ROOT || process.cwd());
-  const resolvedHubRoot = path.resolve(hubRoot || resolveHubRoot(resolvedCpbRoot));
+export async function runReadinessChecks({ cpbRoot, runtimeRoot, hubRoot, executorRoot, releaseStoreRoot, adapterOverrides, env = process.env }: ReadinessRecord & { env?: ReadinessEnv } = {}) {
+  const resolvedRuntimeRoot = path.resolve(runtimeRoot || cpbRoot || env.CPB_ROOT || process.cwd());
+  const resolvedHubRoot = path.resolve(hubRoot || resolveHubRoot(resolvedRuntimeRoot));
+  const resolvedExecutorRoot = path.resolve(executorRoot || env.CPB_EXECUTOR_ROOT || process.cwd());
+  const resolvedReleaseStoreRoot = path.resolve(
+    releaseStoreRoot
+      || env.CPB_RELEASE_ROOT
+      || path.join(resolvedRuntimeRoot, "releases"),
+  );
   let setup = null;
   let setupChecks: Check[] = [];
   try {
@@ -1626,16 +1709,16 @@ export async function runReadinessChecks({ cpbRoot, hubRoot, adapterOverrides, e
     ];
   }
 
-  const sandboxChecks = buildAgentSandboxReadinessChecks({ env, cwd: resolvedCpbRoot });
+  const sandboxChecks = buildAgentSandboxReadinessChecks({ env, cwd: resolvedRuntimeRoot });
 
   const [githubChecks, sandboxSelfTestCheck, ...results] = await Promise.all([
     checkGithubReadiness(resolvedHubRoot),
-    runAgentSandboxSelfTestCheck({ env, cwd: resolvedCpbRoot }),
-    checkNode(),
+    runAgentSandboxSelfTestCheck({ env, cwd: resolvedRuntimeRoot }),
+    checkNode(resolvedExecutorRoot),
     checkNpm(),
     checkGit(),
-    checkServerDeps(resolvedCpbRoot),
-    checkDiskSpace(resolvedCpbRoot, "project"),
+    checkExecutorDependencies(resolvedExecutorRoot),
+    checkDiskSpace(resolvedRuntimeRoot, "runtime"),
     checkDiskSpace(resolvedHubRoot, "hub"),
     ...adapterChecks,
     checkHubLiveness(resolvedHubRoot),
@@ -1645,9 +1728,9 @@ export async function runReadinessChecks({ cpbRoot, hubRoot, adapterOverrides, e
     checkHubStateBackend(resolvedHubRoot, env),
     checkHubAccessAudit(resolvedHubRoot, env),
     checkRegistryConsistency(resolvedHubRoot),
-    checkStaleJobs(resolvedCpbRoot, resolvedHubRoot),
+    checkStaleJobs(resolvedRuntimeRoot, resolvedHubRoot),
     checkStaleWorkers(resolvedHubRoot),
-    checkOrphanLeases(resolvedCpbRoot, resolvedHubRoot),
+    checkOrphanLeases(resolvedRuntimeRoot, resolvedHubRoot),
     checkProviderBackoff(resolvedHubRoot),
     checkHubProjectPollution(resolvedHubRoot),
   ]);
@@ -1670,8 +1753,10 @@ export async function runReadinessChecks({ cpbRoot, hubRoot, adapterOverrides, e
     command: "cpb doctor",
     generatedAt: new Date().toISOString(),
     roots: {
-      executorRoot: resolvedCpbRoot,
+      executorRoot: resolvedExecutorRoot,
+      runtimeRoot: resolvedRuntimeRoot,
       hubRoot: resolvedHubRoot,
+      releaseStoreRoot: resolvedReleaseStoreRoot,
       projectRuntimeRoots,
     },
     setup,

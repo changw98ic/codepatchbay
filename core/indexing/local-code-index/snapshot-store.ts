@@ -36,7 +36,10 @@ import { mkdir, open, readdir, rename, unlink } from "node:fs/promises";
 import path from "node:path";
 
 import { LocalCodeIndexUnavailableError } from "./contracts.js";
-import type { LocalCodeIndexPhaseTimings } from "./contracts.js";
+import type {
+  LocalCodeIndexCoverageSummary,
+  LocalCodeIndexPhaseTimings,
+} from "./contracts.js";
 import { canonicalStringify } from "./canonical-json.js";
 import {
   snapshotDir,
@@ -149,8 +152,8 @@ export type SnapshotToolState = Readonly<{
   extractorFingerprint: string;
   /** Whether the tool was available during this snapshot. */
   available: boolean;
-  /** Effective coverage level. */
-  coverage: "ast-grep-structural" | "lexical-reference-fallback" | "file-inventory-only";
+  /** Exact whole-snapshot coverage summary. */
+  coverage: LocalCodeIndexCoverageSummary;
   /** Any errors encountered during tool invocation. */
   errors: readonly string[];
 }>;

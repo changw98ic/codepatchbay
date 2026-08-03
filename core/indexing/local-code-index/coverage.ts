@@ -25,6 +25,44 @@ import {
   LOCAL_CODE_INDEX_COVERAGE_ORDER,
 } from "./contracts.js";
 
+const INVENTORY_ONLY_LANGUAGES = new Set([
+  "json",
+  "yaml",
+  "css",
+  "html",
+  "markdown",
+]);
+
+/** Reconstruct the exact public coverage from persisted extraction facts. */
+export function coverageForExtractionMode(
+  language: string,
+  parserMode: string,
+): LocalCodeIndexCoverage {
+  if (INVENTORY_ONLY_LANGUAGES.has(language)) return "file-inventory-only";
+  if (parserMode === "structural") return "ast-grep-structural";
+  if (parserMode === "lexical-fallback") return "lexical-reference-fallback";
+  return "file-inventory-only";
+}
+
+export function isCoverageSummary(
+  value: unknown,
+): value is LocalCodeIndexCoverageSummary {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const candidate = value as Record<string, unknown>;
+  return (
+    candidate.effective === "ast-grep-structural"
+    || candidate.effective === "lexical-reference-fallback"
+    || candidate.effective === "file-inventory-only"
+  )
+    && typeof candidate.partial === "boolean"
+    && Number.isInteger(candidate.failedFiles)
+    && Number(candidate.failedFiles) >= 0
+    && Number.isInteger(candidate.oversizedFiles)
+    && Number(candidate.oversizedFiles) >= 0;
+}
+
 // ── Per-file input ───────────────────────────────────────────────────────────
 
 /**

@@ -101,7 +101,7 @@ function makeDefinitionsResult(
 }
 
 function makeInventoryResult(
-  files: Array<{ path: string; language: string; size: number; coverage: "ast-grep-structural" | "lexical-reference-fallback" | "file-inventory-only" }>,
+  files: Array<{ path: string; language: string; size: number; nodeCount?: number; coverage: "ast-grep-structural" | "lexical-reference-fallback" | "file-inventory-only" }>,
   opts?: { truncated?: boolean; snapshotId?: string },
 ): LocalCodeIndexQueryResult {
   return {
@@ -110,7 +110,7 @@ function makeInventoryResult(
     coverage: COVERAGE,
     truncated: opts?.truncated ?? false,
     durationMs: 5,
-    files,
+    files: files.map((file) => ({ ...file, nodeCount: file.nodeCount ?? 0 })),
     nextCursor: null,
   };
 }

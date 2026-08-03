@@ -111,7 +111,12 @@ async function writeMinimalV2LocalCodeIndex(cpbRoot, sourcePath) {
       version: null,
       extractorFingerprint: "fake-extractor",
       available: false,
-      coverage: "file-inventory-only",
+      coverage: {
+        effective: "file-inventory-only",
+        partial: true,
+        failedFiles: 0,
+        oversizedFiles: 0,
+      },
       errors: [],
     },
     indexMapHash: createHash("sha256").update("fake-index-map").digest("hex"),
@@ -1560,7 +1565,7 @@ test("HubOrchestrator.tick writes inbox then keeps queue, assignment, and worker
   await orchestrator.workerStore.init();
   const worker = await orchestrator.workerStore.registerWorker("w-dispatch", {
     projectId: "proj",
-    status: "ready",
+    status: "starting",
   });
   orchestrator.running = true;
   orchestrator.leaderLock = {

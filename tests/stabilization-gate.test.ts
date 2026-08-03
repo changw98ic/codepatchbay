@@ -78,6 +78,10 @@ test("package exposes stabilization verifier entrypoint", async () => {
   assert.equal(pkg.scripts["test:main"], "npm run test:node -- --main && npm run test:shell");
   assert.equal(pkg.scripts["test:integration"], "node dist-tests/scripts/run-node-tests.js --integration");
   assert.equal(pkg.scripts["test:specialized"], "npm run test:node -- --specialized");
+  assert.equal(
+    pkg.scripts["test:live"],
+    "npm run build:node && npm run build:tests && node dist-tests/scripts/run-node-tests.js --live",
+  );
   assert.doesNotMatch(pkg.scripts["build:tests"], /dist\/tests/);
   assert.equal(
     pkg.scripts["verify:dependency-audit"],
@@ -91,7 +95,10 @@ test("main-flow profile excludes specialized and process integration suites", as
   assert.match(runner, /!specializedTestFiles\.has\(file\)/);
   assert.match(runner, /!dedicatedLocalIndexTestFiles\.has\(file\)/);
   assert.match(runner, /!file\.startsWith\("tests\/integration\/"\)/);
-  assert.match(runner, /const allFiles = mainOnly\s*\n\s*\? mainFlowFiles/);
+  assert.match(runner, /const isLiveTestFile = \(file: string\) => file\.startsWith\("tests\/live-e2e\/"\)/);
+  assert.match(runner, /&& !isLiveTestFile\(file\)/);
+  assert.match(runner, /const ordinaryDiscoveredFiles = discoveredFiles\.filter\(\(file\) => !isLiveTestFile\(file\)\)/);
+  assert.match(runner, /const allFiles = liveOnly\s*\n\s*\? discoveredFiles\.filter\(isLiveTestFile\)/);
 });
 
 test("node test runner reports terminating signals and bounds slow-suite concurrency", async () => {

@@ -55,7 +55,12 @@ function makeToolState(): SnapshotIdentity["toolState"] {
     version: "1.0.0",
     extractorFingerprint: "fp-abc123",
     available: true,
-    coverage: "ast-grep-structural",
+    coverage: {
+      effective: "ast-grep-structural",
+      partial: false,
+      failedFiles: 0,
+      oversizedFiles: 0,
+    },
     errors: [],
   };
 }

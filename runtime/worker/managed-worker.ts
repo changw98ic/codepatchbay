@@ -1268,11 +1268,12 @@ export async function main() {
     : null;
   let assignmentStore: ManagedAssignmentStore;
   let workerStore: ManagedWorkerStore;
-  let sharedWorkerState: boolean;
+  let workerReservationRequired: boolean;
+  let preRegisteredWorker: LooseRecord | null = null;
   if (brokerClient) {
     assignmentStore = brokerClient;
     workerStore = brokerClient;
-    sharedWorkerState = true;
+    workerReservationRequired = true;
   } else {
     const directAssignmentStore = new AssignmentStore(hubRoot);
     await directAssignmentStore.init();
@@ -1280,7 +1281,8 @@ export async function main() {
     await directWorkerStore.init();
     assignmentStore = directAssignmentStore;
     workerStore = directWorkerStore;
-    sharedWorkerState = false;
+    preRegisteredWorker = await directWorkerStore.getWorker(workerId);
+    workerReservationRequired = preRegisteredWorker !== null;
   }
 
   // Both stores cache the trusted backend during init. Never expose
@@ -1290,17 +1292,43 @@ export async function main() {
   delete process.env.CPB_HUB_WORKER_BROKER_URL;
   delete process.env.CPB_HUB_WORKER_BROKER_TOKEN;
 
-  // Register self
-  await workerStore.registerWorker(workerId, {
+  const registration = {
     workerId,
     pid: process.pid,
     host: os.hostname(),
-    status: "ready",
     startedAt: new Date().toISOString(),
     lastHeartbeatAt: new Date().toISOString(),
     incarnationToken: workerIncarnationToken,
     processIdentity: workerProcessIdentity,
-  });
+  };
+  if (brokerClient) {
+    const activated = await workerStore.registerWorker(workerId, registration);
+    if (!activated) throw new Error("managed worker broker registration lost its startup reservation");
+  } else if (preRegisteredWorker) {
+    if (preRegisteredWorker.incarnationToken !== workerIncarnationToken) {
+      throw new Error("managed worker startup found a different worker incarnation");
+    }
+    const previousStatus = String(preRegisteredWorker.status || "");
+    if (!["starting", "ready", "assigned", "running"].includes(previousStatus)) {
+      throw new Error(`managed worker cannot activate from status ${previousStatus || "unknown"}`);
+    }
+    const activated = await workerStore.updateWorkerIf(workerId, {
+      ...registration,
+      status: previousStatus === "starting" ? "ready" : previousStatus,
+    }, {
+      incarnationToken: workerIncarnationToken,
+      status: previousStatus,
+      currentAssignmentId: typeof preRegisteredWorker.currentAssignmentId === "string"
+        ? preRegisteredWorker.currentAssignmentId
+        : null,
+      currentAttemptToken: typeof preRegisteredWorker.currentAttemptToken === "string"
+        ? preRegisteredWorker.currentAttemptToken
+        : null,
+    });
+    if (!activated) throw new Error("managed worker startup reservation changed during activation");
+  } else {
+    await workerStore.registerWorker(workerId, { ...registration, status: "ready" });
+  }
 
   // Start heartbeat
   const heartbeatTimer = setInterval(async () => {
@@ -1436,7 +1464,7 @@ export async function main() {
         currentAssignmentId: assignmentId,
         currentAttemptToken: assignment.attemptToken,
       };
-      const runningWorker = sharedWorkerState
+      const runningWorker = workerReservationRequired
         ? await workerStore.updateWorkerIf(workerId, runningUpdates, {
             incarnationToken: workerIncarnationToken,
             currentAssignmentId: assignmentId,

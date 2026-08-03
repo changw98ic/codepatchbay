@@ -158,7 +158,12 @@ async function setupV2Index(
       version: "test",
       extractorFingerprint: "test-extractor",
       available: true,
-      coverage: "ast-grep-structural" as const,
+      coverage: {
+        effective: "ast-grep-structural" as const,
+        partial: false,
+        failedFiles: 0,
+        oversizedFiles: 0,
+      },
       errors: [],
     },
   };

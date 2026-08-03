@@ -264,11 +264,13 @@ cpb github doctor [--json]
 cpb hub [status|start|stop|projects|...]
 
 # Local code index
-cpb code-index build [-s <path>]   # Build or refresh the local code index
-cpb code-index status [-s <path>]  # Check index status
-cpb code-index query <kind> [...]  # Query symbols, files, relationships
-cpb code-index evidence [-t <task>]  # Build evidence pack from query results
-cpb code-index gc                  # Run garbage collection under repository lock
+cpb code-index build -s . --json   # Build or refresh the current repository index
+cpb code-index status -s . --json  # Check the current repository index
+cpb code-index query definitions --symbol runJob -s . --json
+cpb code-index query references --symbol runJob -s . --json
+cpb code-index query inventory -s . --json
+cpb code-index evidence -s . -t runJob --json  # Build an evidence pack from query results
+cpb code-index gc -s . --json      # Run garbage collection under the repository lock
 
 # Setup & diagnostics
 cpb setup [--recommended|--interactive|--json]

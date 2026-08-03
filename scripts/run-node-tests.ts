@@ -173,11 +173,16 @@ const dedicatedLocalIndexTestFiles = new Set([
 const mainOnly = process.argv.includes("--main");
 const specializedOnly = process.argv.includes("--specialized");
 const integrationOnly = process.argv.includes("--integration");
+const unitOnly = process.argv.includes("--unit");
+const liveOnly = process.argv.includes("--live");
 const listOnly = process.argv.includes("--list");
-if ((mainOnly ? 1 : 0) + (specializedOnly ? 1 : 0) + (integrationOnly ? 1 : 0) > 1) {
-  console.error("--main, --specialized, and --integration are mutually exclusive");
+if ([mainOnly, specializedOnly, integrationOnly, unitOnly, liveOnly].filter(Boolean).length > 1) {
+  console.error("--main, --specialized, --integration, --unit, and --live are mutually exclusive");
   process.exit(1);
 }
+
+const isLiveTestFile = (file: string) => file.startsWith("tests/live-e2e/");
+const ordinaryDiscoveredFiles = discoveredFiles.filter((file) => !isLiveTestFile(file));
 
 // Integration suites spawn ACP, worker, Hub, and process-tree children. The
 // main profile deliberately leaves them to the manual/release E2E lanes; a
@@ -187,28 +192,32 @@ const mainFlowFiles = discoveredFiles.filter((file) => (
   !specializedTestFiles.has(file)
   && !dedicatedLocalIndexTestFiles.has(file)
   && !file.startsWith("tests/integration/")
+  && !isLiveTestFile(file)
 ));
 
-const allFiles = mainOnly
-  ? mainFlowFiles
-  : specializedOnly
-    ? discoveredFiles.filter((file) => specializedTestFiles.has(file))
-    : integrationOnly
-      ? discoveredFiles.filter((file) => file.startsWith("tests/integration/"))
-    : discoveredFiles;
+const allFiles = liveOnly
+  ? discoveredFiles.filter(isLiveTestFile)
+  : mainOnly
+    ? mainFlowFiles
+    : specializedOnly
+      ? ordinaryDiscoveredFiles.filter((file) => specializedTestFiles.has(file))
+      : integrationOnly
+        ? ordinaryDiscoveredFiles.filter((file) => file.startsWith("tests/integration/"))
+        : ordinaryDiscoveredFiles;
 
 if (allFiles.length === 0) {
-  console.error(mainOnly
-    ? "No main-flow Node test files found"
-    : specializedOnly
-      ? "No specialized Node test files found"
-      : "No Node test files found");
+  console.error(liveOnly
+    ? "No live-provider Node test files found"
+    : mainOnly
+      ? "No main-flow Node test files found"
+      : specializedOnly
+        ? "No specialized Node test files found"
+        : integrationOnly
+          ? "No integration Node test files found"
+          : unitOnly
+            ? "No fast unit Node test files found"
+            : "No Node test files found");
   process.exit(1);
-}
-
-if (listOnly) {
-  for (const file of allFiles) console.log(file);
-  process.exit(0);
 }
 
 const integrationFiles = allFiles.filter((f) => f.startsWith("tests/integration/"));
@@ -395,14 +404,39 @@ const parallelUnitFiles = unitFiles.filter((f) => !isolatedUnitTestFiles.include
 const isolatedFiles = integrationFiles.filter((f) => isolatedIntegrationFiles.has(f));
 const parallelIntegrationFiles = integrationFiles.filter((f) => !isolatedFiles.includes(f));
 
-// When --unit flag is passed, run only the fast parallel unit files.
-// Slow (>1s) and real-process-isolated unit tests are skipped here and run
-// via the default full `npm test`, so coverage is unchanged.
-const unitOnly = process.argv.includes("--unit");
-// When --integration flag is passed, only run integration tests
+const selectedFiles = unitOnly ? parallelUnitFiles : allFiles;
+if (selectedFiles.length === 0) {
+  console.error(unitOnly ? "No fast unit Node test files found" : "No Node test files found");
+  process.exit(1);
+}
+
+if (listOnly) {
+  for (const file of selectedFiles) console.log(file);
+  process.exit(0);
+}
+
+const liveEnvironmentKeys = [
+  "CPB_LIVE_E2E_PIPELINE_AGENTS",
+  "CPB_LIVE_E2E_PIPELINE_TIMEOUT_MS",
+  "CPB_LIVE_E2E_KEEP_RUNTIME",
+];
+const liveEnvironment = Object.fromEntries(liveEnvironmentKeys.flatMap((key) => (
+  process.env[key] === undefined ? [] : [[key, process.env[key]]]
+)));
 
 try {
-  if (unitOnly) {
+  if (liveOnly) {
+    await runTests(selectedFiles, {
+      concurrency: 1,
+      label: "live provider E2E tests",
+      env: {
+        ...liveEnvironment,
+        CPB_LIVE_E2E: "1",
+        CPB_WORKER_DISPATCH_ENABLED: "1",
+        CPB_CHECKLIST_DECOMPOSE: "1",
+      },
+    });
+  } else if (unitOnly) {
     // Fast feedback path: only quick parallel unit files. Slow + isolated
     // unit tests run via the default full `npm test`.
     if (parallelUnitFiles.length > 0) {
@@ -418,7 +452,9 @@ try {
       await runTests(isolatedFiles, { concurrency: 1, label: "isolated integration tests" });
     }
   } else {
-    // Default: run everything
+    // Default: run every deterministic test. Real-provider tests require the
+    // explicit --live profile so normal local and CI runs cannot spend model
+    // quota or write live evidence as an accidental side effect.
     // Unit tests: fast files run in parallel; slow (>1s) files run in their
     // own parallel batch; real-process-isolated files run serially.
     if (parallelUnitFiles.length > 0) {

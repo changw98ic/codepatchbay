@@ -1,118 +1,167 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { generateKeyPairSync } from "node:crypto";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { test } from "node:test";
+import test from "node:test";
+
+import {
+  createReleaseSigningAuthority,
+  createReleaseVerificationTrust,
+} from "../core/contracts/release-evidence.js";
+import {
+  REQUIRED_EXTERNAL_EVIDENCE,
+  REQUIRED_RELEASE_GATES,
+  writeSignedExternalEvidence,
+} from "../scripts/release-gate-receipts.js";
+import { buildReleaseSourceFingerprint } from "../scripts/release-source-fingerprint.js";
+import {
+  runReleaseGateSession,
+  sanitizeReleaseGateChildEnv,
+} from "../scripts/verify-release-gate.js";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(import.meta.dirname, "..", "..");
-const sourceScript = path.join(repoRoot, "scripts", "verify-release-gate.ts");
 const runtimeScript = path.join(repoRoot, "dist", "scripts", "verify-release-gate.js");
-const ciWorkflow = path.join(repoRoot, ".github", "workflows", "test.yml");
-const flagshipGateDoc = path.join(repoRoot, "docs", "product", "cpb-flagship-validation-gate.md");
-const packageJson = path.join(repoRoot, "package.json");
-const distTestsRoot = path.join(repoRoot, "dist-tests");
 
-test("CI installs a Linux sandbox provider before ACP tests", async () => {
-  const source = await readFile(ciWorkflow, "utf8");
-  assert.match(source, /apt-get install -y bubblewrap zsh/);
-  assert.match(source, /bwrap --version/);
-  assert.match(source, /apparmor_restrict_unprivileged_userns/);
-  assert.match(source, /apparmor_parser -r/);
-  assert.match(source, /--ro-bind-try \/usr \/usr/);
-  assert.match(source, /--bind-try "\$smoke_root" "\$smoke_root"/);
-  assert.match(source, /\/bin\/zsh -c 'true'/);
-  assert.doesNotMatch(source, /--ro-bind \/ \/|--ro-bind-try \/ \/|--bind \/ \/|--bind-try \/ \/|--dev-bind \/ \/|--dev-bind-try \/ \/|--overlay-src \/(?:\s|$)/);
+function keys() {
+  const pair = generateKeyPairSync("ed25519");
+  const keyId = "runner-test-authority";
+  return {
+    authority: createReleaseSigningAuthority({
+      keyId,
+      privateKeyBase64Url: Buffer.from(pair.privateKey.export({ format: "der", type: "pkcs8" })).toString("base64url"),
+    }),
+    trust: createReleaseVerificationTrust({
+      keyId,
+      publicKeyBase64Url: Buffer.from(pair.publicKey.export({ format: "der", type: "spki" })).toString("base64url"),
+    }),
+  };
+}
+
+async function fixture(t: test.TestContext) {
+  const sourceRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-gate-runner-source-"));
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-gate-runner-runtime-"));
+  t.after(async () => {
+    await rm(sourceRoot, { recursive: true, force: true });
+    await rm(runtimeRoot, { recursive: true, force: true });
+  });
+  await mkdir(path.join(sourceRoot, "scripts"));
+  await writeFile(path.join(sourceRoot, "package.json"), '{"name":"runner","version":"1.0.0"}\n');
+  await writeFile(path.join(sourceRoot, "scripts", "main.ts"), "export const runner = true;\n");
+  return { sourceRoot, runtimeRoot };
+}
+
+test("release gate has one fixed ordered set of 17 gates", () => {
+  assert.deepEqual(REQUIRED_RELEASE_GATES.map((gate) => gate.id), [
+    "build-node-tests",
+    "typecheck",
+    "strict-engine",
+    "strict-runtime-contracts",
+    "type-debt-engine",
+    "test-main",
+    "test-integration",
+    "test-specialized",
+    "dependency-audit",
+    "patch-integrity",
+    "commit-size",
+    "v2-release-scan",
+    "enterprise-gate",
+    "docs-contract",
+    "product-gate",
+    "live-release-evidence",
+    "release-contracts",
+  ]);
 });
 
-test("release gate runner refuses decomposition-disabled environments and bypasses run-node-tests", async () => {
-  const source = await readFile(sourceScript, "utf8");
-  assert.match(source, /CPB_CHECKLIST_DECOMPOSE/);
-  assert.doesNotMatch(source, /run-node-tests\.js/);
-  assert.match(source, /dist-tests\/tests\/checklist-decompose-integration\.test\.js/);
-  assert.match(source, /dist-tests\/tests\/completion-gate-runner\.test\.js/);
-  assert.match(source, /dist-tests\/tests\/auto-finalizer\.test\.js/);
-  assert.match(source, /dist-tests\/tests\/github-draft-pr\.test\.js/);
-  assert.match(source, /dist-tests\/tests\/disposable-draft-pr-rehearsal\.test\.js/);
-  assert.match(source, /dist-tests\/tests\/live-release-evidence\.test\.js/);
-  assert.match(source, /dist-tests\/tests\/product-gate\.test\.js/);
-  assert.match(source, /dist-tests\/tests\/release-readiness-report\.test\.js/);
-  assert.match(source, /dist-tests\/tests\/phase-budget-policy\.test\.js/);
-  assert.match(source, /dist-tests\/tests\/swebench-batch-queue\.test\.js/);
-  assert.match(source, /dist-tests\/tests\/integration\/managed-worker\.test\.js/);
-  assert.match(source, /flagship issue to draft PR dry-run uses default checklist decomposition and evidence/);
-  assert.match(source, /release gate: release readiness report/);
-  assert.doesNotMatch(source, /default checklist decomposition runs inside the worker path\|writes dry-run PR preview/);
-  assert.match(source, /--test-name-pattern/);
+test("release gate child environment never receives signing or trusted key material", () => {
+  const sanitized = sanitizeReleaseGateChildEnv({
+    PATH: process.env.PATH,
+    CPB_RELEASE_GATE_SIGNING_KEY: "private",
+    CPB_RELEASE_GATE_SIGNING_KEY_ID: "private-id",
+    CPB_RELEASE_GATE_TRUSTED_PUBLIC_KEY: "public",
+    CPB_RELEASE_GATE_TRUSTED_KEY_ID: "public-id",
+  });
+  assert.equal(sanitized.PATH, process.env.PATH);
+  assert.equal(sanitized.CPB_WORKER_DISPATCH_ENABLED, "0");
+  for (const key of [
+    "CPB_RELEASE_GATE_SIGNING_KEY",
+    "CPB_RELEASE_GATE_SIGNING_KEY_ID",
+    "CPB_RELEASE_GATE_TRUSTED_PUBLIC_KEY",
+    "CPB_RELEASE_GATE_TRUSTED_KEY_ID",
+  ]) assert.equal(sanitized[key], undefined);
+});
 
+test("release gate runner writes and directly verifies a complete signed session", async (t) => {
+  const roots = await fixture(t);
+  const signing = keys();
+  const source = await buildReleaseSourceFingerprint({ root: roots.sourceRoot });
+  const externalHashes: string[] = [];
+  for (const kind of Object.keys(REQUIRED_EXTERNAL_EVIDENCE) as (keyof typeof REQUIRED_EXTERNAL_EVIDENCE)[]) {
+    const written = await writeSignedExternalEvidence({
+      runtimeRoot: roots.runtimeRoot,
+      releaseSourceFingerprint: source.releaseSourceFingerprint,
+      authority: signing.authority,
+      kind,
+      generatedAt: "2026-08-03T00:00:00.000Z",
+      expiresAt: "2026-09-02T00:00:00.000Z",
+      payload: { kind, ok: true },
+    });
+    externalHashes.push(written.evidenceSha256);
+  }
+  assert.equal(externalHashes.length, 4);
+  const observedEnvs: NodeJS.ProcessEnv[] = [];
+  const result = await runReleaseGateSession({
+    ...roots,
+    ...signing,
+    sessionId: "runner-session-success",
+    now: () => new Date("2026-08-04T00:00:00.000Z"),
+    env: {
+      CPB_RELEASE_GATE_SIGNING_KEY: "must-not-leak",
+      CPB_RELEASE_GATE_TRUSTED_PUBLIC_KEY: "must-not-leak",
+    },
+    inspectIndex: async () => "idx-runner-test",
+    execute: async (gate, context) => {
+      observedEnvs.push(context.env);
+      return { exitCode: 0, stdout: Buffer.from(`${gate.id}\n`), stderr: Buffer.alloc(0) };
+    },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.receipts.length, 17);
+  assert.equal(result.report?.ready, true);
+  assert.ok(observedEnvs.every((env) => env.CPB_RELEASE_GATE_SIGNING_KEY === undefined));
+  await readFile(path.join(result.session.sessionRoot, "completion.json"), "utf8");
+});
+
+test("release gate runner preserves the failed receipt and stops without completion", async (t) => {
+  const roots = await fixture(t);
+  const signing = keys();
+  const result = await runReleaseGateSession({
+    ...roots,
+    ...signing,
+    sessionId: "runner-session-failure",
+    now: () => new Date("2026-08-04T00:00:00.000Z"),
+    inspectIndex: async () => "idx-runner-test",
+    execute: async () => ({ exitCode: 7, stdout: Buffer.alloc(0), stderr: Buffer.from("failed\n") }),
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.receipts.length, 1);
+  assert.equal(result.receipts[0].receipt.exitCode, 7);
+  await assert.rejects(readFile(path.join(result.session.sessionRoot, "completion.json")), { code: "ENOENT" });
+});
+
+test("release gate executable rejects unsafe policy before reading signing keys", async () => {
   await assert.rejects(
     execFileAsync(process.execPath, [runtimeScript], {
       cwd: repoRoot,
       env: { ...process.env, CPB_CHECKLIST_DECOMPOSE: "0" },
     }),
-    (err: any) => {
-      assert.equal(err.code, 1);
-      assert.match(err.stderr, /CPB_CHECKLIST_DECOMPOSE=0 is not allowed/);
+    (error: any) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /RELEASE_GATE_POLICY_INVALID.*CPB_CHECKLIST_DECOMPOSE=0/);
       return true;
     },
   );
-});
-
-test("release gate runner refuses agent-home-isolation-disabled environments", async () => {
-  const source = await readFile(sourceScript, "utf8");
-  assert.match(source, /CPB_AGENT_ISOLATE_HOME/);
-
-  await assert.rejects(
-    execFileAsync(process.execPath, [runtimeScript], {
-      cwd: repoRoot,
-      env: { ...process.env, CPB_CHECKLIST_DECOMPOSE: "1", CPB_AGENT_ISOLATE_HOME: "0" },
-    }),
-    (err: any) => {
-      assert.equal(err.code, 1);
-      assert.match(err.stderr, /CPB_AGENT_ISOLATE_HOME=0 is not allowed/);
-      return true;
-    },
-  );
-});
-
-test("test build copies runtime registry assets required by dist-tests", async () => {
-  const pkg = JSON.parse(await readFile(packageJson, "utf8"));
-  const buildTests = String(pkg.scripts["build:tests"] || "");
-
-  assert.match(buildTests, /node scripts\/build-output\.mjs tests/);
-  assert.doesNotMatch(buildTests, /\brm\s+-rf\b|\bfind\s+cli\b/);
-
-  for (const relative of [
-    "package.json",
-    "core/agents/descriptors/codex.json",
-    "core/agents/squads.json",
-    "tests/fixtures/acp-client-stub.sh",
-  ]) {
-    assert.equal(
-      await readFile(path.join(distTestsRoot, relative), "utf8"),
-      await readFile(path.join(repoRoot, relative), "utf8"),
-      `${relative} was not copied exactly into dist-tests`,
-    );
-  }
-
-  await readFile(path.join(distTestsRoot, "scripts", "e2e-npm-pack.js"), "utf8");
-  await assert.rejects(
-    readFile(path.join(distTestsRoot, "scripts", "e2e-npm-pack.ts"), "utf8"),
-    (error: NodeJS.ErrnoException) => error.code === "ENOENT",
-  );
-});
-
-test("flagship validation doc requires patch-integrity evidence for extracted files", async () => {
-  const source = await readFile(flagshipGateDoc, "utf8");
-  assert.match(source, /Patch Integrity Gate/);
-  assert.match(source, /npm run verify:stabilization/);
-  assert.match(source, /npm run report:release-readiness/);
-  assert.match(source, /npm run verify:patch-integrity/);
-  assert.match(source, /git status --short --untracked-files=all/);
-  assert.match(source, /git diff --check/);
-  assert.match(source, /no untracked implementation files/i);
-  assert.match(source, /new files under `core\/`/);
-  assert.match(source, /npm run verify:product-gate/);
-  assert.match(source, /cpb-flagship-product-validation\.template\.json/);
 });

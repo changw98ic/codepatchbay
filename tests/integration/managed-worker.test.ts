@@ -23,6 +23,7 @@ import { finalizerMutationFenceDigest } from "../../server/services/finalizer-co
 import { registerProject } from "../../server/services/hub/hub-registry.js";
 import { getJob } from "../../server/services/job/job-store.js";
 import { AssignmentStore } from "../../shared/orchestrator/assignment-store.js";
+import { WorkerStore } from "../../shared/orchestrator/worker-store.js";
 import type { ProcessIdentity } from "../../core/runtime/process-tree.js";
 import { recordValue } from "../../core/contracts/types.js";
 import { readJson, tempRoot, writeJson } from "../helpers.js";
@@ -638,6 +639,44 @@ test("managed worker stays alive in persistent mode with an empty inbox", async 
     assert.equal(registry.status, "ready");
     await new Promise((resolve) => setTimeout(resolve, 750));
     assert.equal(worker.child.exitCode, null, worker.stderr);
+  } finally {
+    worker.child.kill("SIGTERM");
+    await worker.done.catch(() => null);
+  }
+});
+
+test("managed worker startup preserves an orchestrator assignment reservation", async () => {
+  const hubRoot = await tempRoot("cpb-managed-startup-reservation");
+  const cpbRoot = await tempRoot("cpb-managed-startup-reservation-cpb");
+  const workerId = "w-startup-reservation";
+  const incarnationToken = "startup-reservation-incarnation";
+  const store = new WorkerStore(hubRoot);
+  await store.init();
+  await store.registerWorker(workerId, {
+    status: "assigned",
+    currentAssignmentId: "a-startup-reservation",
+    currentAttemptToken: "attempt-startup-reservation",
+    incarnationToken,
+  });
+
+  const worker = spawnWorker({
+    workerId,
+    hubRoot,
+    cpbRoot,
+    once: false,
+    timeoutMs: 5_000,
+    env: { CPB_WORKER_INCARNATION_TOKEN: incarnationToken },
+  });
+
+  try {
+    const registry = await waitFor(async () => {
+      const current = await store.getWorker(workerId);
+      return current?.pid ? current : null;
+    }, { timeoutMs: 3_000 });
+    assert.equal(registry.status, "assigned");
+    assert.equal(registry.currentAssignmentId, "a-startup-reservation");
+    assert.equal(registry.currentAttemptToken, "attempt-startup-reservation");
+    assert.equal(registry.incarnationToken, incarnationToken);
   } finally {
     worker.child.kill("SIGTERM");
     await worker.done.catch(() => null);

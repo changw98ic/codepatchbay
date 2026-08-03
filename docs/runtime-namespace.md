@@ -3,6 +3,11 @@
 CodePatchBay has one runtime namespace: the registered Hub project runtime
 root. The source repository and its runtime state are separate trees.
 
+The CLI bootstrap root (`CPB_ROOT`) defaults to `CPB_HOME`, or `~/.cpb` when
+`CPB_HOME` is unset. `CPB_EXECUTOR_ROOT` points to the installed `dist`
+directory. Neither an installed package directory nor a source checkout is an
+implicit data root.
+
 For a Hub at `<hub>` and project id `<project>`:
 
 ```text

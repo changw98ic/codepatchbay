@@ -86,6 +86,8 @@ import type {
 
 import {
   aggregateCoverage,
+  coverageForExtractionMode,
+  isCoverageSummary,
   singleFileSummary,
 } from "./coverage.js";
 import type { FileCoverageOutcome } from "./coverage.js";
@@ -414,11 +416,10 @@ function buildCoverageMap(
 ): ReadonlyMap<string, LocalCodeIndexCoverage> {
   const map = new Map<string, LocalCodeIndexCoverage>();
   for (const [filePath, invEntry] of Object.entries(identity.inventory)) {
-    // Coverage is stored in the tool state at snapshot level.
-    // Per-file coverage is derived from the extraction result that
-    // produced the file object. For query purposes we use the
-    // snapshot's effective coverage as the default.
-    map.set(filePath, identity.toolState.coverage as LocalCodeIndexCoverage);
+    map.set(
+      filePath,
+      coverageForExtractionMode(invEntry.language, invEntry.parserMode),
+    );
   }
   return map;
 }
@@ -777,7 +778,10 @@ async function executeFileSummaryQuery(
   signal?.throwIfAborted();
 
   // Build the file summary.
-  const coverage = identity.toolState.coverage as LocalCodeIndexCoverage;
+  const coverage = coverageForExtractionMode(
+    fileObject.language,
+    fileObject.parserMode,
+  );
 
   const definitions: SymbolOccurrence[] = fileObject.definitions.map((d) => ({
     symbol: d.name,
@@ -985,20 +989,33 @@ async function executeInventoryQuery(
 
   // Build inventory items with coverage.
   const coverageMap = buildCoverageMap(identity);
-  const items: readonly Readonly<{
+  const items: Array<Readonly<{
     path: string;
     language: string;
     size: number;
+    nodeCount: number;
     coverage: LocalCodeIndexCoverage;
-  }>[] = pagePaths.map((p) => {
+  }>> = [];
+  for (const p of pagePaths) {
+    signal?.throwIfAborted();
     const inv = identity.inventory[p]!;
-    return {
+    const fileObject = await readFileObject(
+      fileObjectPath(storageRoot, repositoryKey, inv.fileObjectId),
+    );
+    if (fileObject === null) {
+      throw new LocalCodeIndexUnavailableError("corrupt_index", { snapshotId });
+    }
+    items.push({
       path: p,
-      language: "unknown", // Language is in the file object, not inventory.
+      language: fileObject.language,
       size: parseInt(inv.metadata.size, 10) || 0,
-      coverage: (coverageMap.get(p) ?? identity.toolState.coverage) as LocalCodeIndexCoverage,
-    };
-  });
+      nodeCount: fileObject.definitions.length + fileObject.references.length,
+      coverage: coverageForExtractionMode(
+        fileObject.language,
+        fileObject.parserMode,
+      ),
+    });
+  }
 
   // Build next cursor.
   let nextCursor: string | null = null;
@@ -1167,6 +1184,13 @@ export async function queryLocalCodeIndex(
     }
 
     if (identity.schemaVersion !== 2) {
+      throw new LocalCodeIndexUnavailableError("unsupported_index_schema", {
+        snapshotId: ref.snapshotId,
+      });
+    }
+    if (!isCoverageSummary((identity as unknown as {
+      toolState?: { coverage?: unknown };
+    }).toolState?.coverage)) {
       throw new LocalCodeIndexUnavailableError("unsupported_index_schema", {
         snapshotId: ref.snapshotId,
       });

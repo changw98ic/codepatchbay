@@ -157,6 +157,30 @@ test("query crosses only the canonical v2 query interface", async () => {
 
     const query = runCodeIndexCli([
       "query",
+      "definitions",
+      "--symbol",
+      "cliFixture",
+      "--source",
+      fx.sourcePath,
+      "--cpb-root",
+      fx.cpbRoot,
+      "--json",
+    ]);
+    assert.equal(query.status, 0, query.stderr || query.stdout);
+    const result = JSON.parse(query.stdout);
+    assert.equal(result.kind, "definitions");
+    assert.ok(result.occurrences.some((item: { symbol: string }) => item.symbol === "cliFixture"));
+  } finally {
+    await rm(fx.root, { recursive: true, force: true });
+  }
+});
+
+test("query rejects the removed selector-flag syntax", async () => {
+  const fx = await fixture("removed-query-syntax");
+  try {
+    const query = runCodeIndexCli([
+      "query",
+      "--source",
       fx.sourcePath,
       "--cpb-root",
       fx.cpbRoot,
@@ -164,10 +188,7 @@ test("query crosses only the canonical v2 query interface", async () => {
       "cliFixture",
       "--json",
     ]);
-    assert.equal(query.status, 0, query.stderr || query.stdout);
-    const result = JSON.parse(query.stdout);
-    assert.equal(result.kind, "definitions");
-    assert.ok(result.occurrences.some((item: { symbol: string }) => item.symbol === "cliFixture"));
+    assert.equal(query.status, 2, query.stderr || query.stdout);
   } finally {
     await rm(fx.root, { recursive: true, force: true });
   }

@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "kind": "cpb-real-live-pipeline-e2e",
+  "runId": "1785686093154-98e0d892-ff30-435a-bdb6-689a2ea994c1",
+  "recordedAt": "2026-08-02T15:54:53.530Z",
+  "provider": "codex",
+  "realProviderRequired": true,
+  "fakeProvider": false,
+  "queue": {
+    "status": "pending"
+  },
+  "assignment": {
+    "status": "not_started"
+  },
+  "result": {
+    "status": "not_written"
+  },
+  "phases": [],
+  "evidence": {},
+  "ok": false,
+  "failure": {
+    "message": "live pipeline did not reach a terminal state within 900000ms: {\"queue\":\"scheduled\",\"assignment\":\"assigned\"}",
+    "code": null
+  }
+}

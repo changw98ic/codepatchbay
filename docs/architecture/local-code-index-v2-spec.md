@@ -391,6 +391,7 @@ export type LocalCodeIndexQueryResult =
         path: string;
         language: string;
         size: number;
+        nodeCount: number;
         coverage: LocalCodeIndexCoverage;
       }>[];
       nextCursor: string | null;
@@ -412,6 +413,8 @@ results sort by normalized path, range start, range end, then symbol kind.
 Prefix definitions sort by exact-name match first, then symbol name, then the
 same location order. Related files sort by descending score and normalized path.
 Inventory sorts by normalized path.
+`nodeCount` is the number of extracted definitions plus references in the
+immutable file object; callers must not substitute a fixed value.
 
 Cursor payloads are integrity-checked with an unkeyed SHA-256 checksum over
 schema version, snapshot ID, query kind, and last returned key. This detects
@@ -507,7 +510,9 @@ These are internal seams. They are not exposed through the public interface.
 2. the CPB local index cache root.
 
 The implementation rejects a storage root inside the canonical source root. It
-does not silently choose a source-tree directory.
+does not silently choose a source-tree directory. An explicit CPB root that is
+itself a Git source checkout is also rejected, so one project's index cannot be
+stored in another project's working tree.
 
 ### 7.2 Repository, worktree, and source keys
 
@@ -604,10 +609,11 @@ corrupt.
 - Git common directory, HEAD, branch, and object format when applicable;
 - worktree state fingerprint;
 - file inventory mapping normalized path to source content ID, file object ID,
-  and pinned metadata identity;
+  effective language, parser mode, and pinned metadata identity;
 - object extractor fingerprint;
 - symbol and relationship lookup shard object IDs;
-- tool state and explicit fallback coverage;
+- tool state and the exact whole-snapshot coverage summary, including
+  `partial`, failed-file, and oversized-file counts;
 
 The snapshot ID is:
 
@@ -1132,12 +1138,18 @@ The CLI supports:
 ```text
 cpb code-index build <path>
 cpb code-index status <path>
-cpb code-index query <path> --definitions <symbol>
-cpb code-index query <path> --references <symbol>
-cpb code-index query <path> --related-file <path>
+cpb code-index query definitions --symbol <symbol> [-s <path>]
+cpb code-index query references --symbol <symbol> [-s <path>]
+cpb code-index query imports --path <path> [-s <source>]
+cpb code-index query file-summary --path <path> [-s <source>]
+cpb code-index query related-files --path <path> [--symbol <symbol>]
+cpb code-index query inventory [-s <path>]
 cpb code-index inspect <path> --json
 cpb code-index gc <path>
 ```
+
+The query kind is positional. Retired selector flags such as `--definitions`
+and `--references` are syntax errors rather than aliases.
 
 There is one canonical command name: `code-index`. The standalone development
 script uses the same module and argument contract.

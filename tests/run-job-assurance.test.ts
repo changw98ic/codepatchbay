@@ -68,6 +68,7 @@ function inventoryResult(files: Array<{ path: string; size: number }>): LocalCod
       path: f.path,
       language: "typescript",
       size: f.size,
+      nodeCount: 1,
       coverage: "ast-grep-structural" as const,
     })),
     nextCursor: null,

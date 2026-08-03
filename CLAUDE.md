@@ -38,7 +38,7 @@ cpb                         # bin 入口 → cli/cpb.ts (纯 Node.js 命令路�
 │   ├── setup/              # setup wizard / detect / install-plan / health-check / agent-catalog (6 files)
 │   ├── triage/  handoff/  evolve/  job/  auth/  paths.ts
 │
-├── server/                 # ★ 不是 HTTP server，是 hub/队列编排层
+├── server/                 # Hub HTTP API + hub/队列编排层
 │   ├── orchestrator/       # 多 worker 调度
 │   │   ├── hub-orchestrator.ts # 主调度循环 (tick 2s / janitor 30s / backoff)
 │   │   ├── leader-lock.ts      # leader 选举 (单 leader 多 worker)
@@ -52,7 +52,7 @@ cpb                         # bin 入口 → cli/cpb.ts (纯 Node.js 命令路�
 │       ├── hub/hub-queue.js + hub-registry.js # 任务队列 + 项目注册
 │       ├── job/   event/   project/  acp/  provider-*.ts (provider 适配 + 配额 + usage)
 │       ├── phase-runner.ts / phase-context.ts / permission-matrix.ts
-│       └── stream/stream-server.ts # ★ 唯一的 HTTP: Node 原生 SSE (node:http), 由 `cpb stream` 启动
+│       └── stream/stream-server.ts # 独立的 Node 原生 SSE/只读 job 服务，由 `cpb stream` 启动
 │
 ├── bridges/                # 运行时胶水 (worker 进程执行用, 不是领域核心)
 │   ├── run-phase.ts / job-runner.ts
@@ -84,7 +84,7 @@ cpb                         # bin 入口 → cli/cpb.ts (纯 Node.js 命令路�
 | 运行时 | Node.js ≥ 20，**仅依赖 `chokidar`**（文件监听） |
 | CLI | 纯 Node.js（`cli/cpb.ts`，无第三方 CLI 框架） |
 | ACP 通信 | JSON-RPC over stdio |
-| HTTP（可选） | Node 原生 `http` + SSE（仅 `cpb stream`，非框架） |
+| HTTP（可选） | Node 原生 `http`：Hub API，以及独立的 `cpb stream` SSE/只读服务 |
 | 持久化 | 文件系统（JSONL events / JSON state / Markdown wiki / checkpoint） |
 | 并发控制 | leader-lock（单 leader）+ worker-supervisor + reconciler，checkpoint 恢复 |
 | 构建/测试 | `tsc` 编译；Node 内置 test runner；shell 冒烟测试 |
@@ -170,22 +170,41 @@ cpb doctor [--json]                       # 健康检查 (exit 0=ok, 1=errors)
 cpb setup --quickstart --demo             # 本地无密钥演示
 cpb setup                                 # 交互式 setup 向导
 
-# === 开发 ===
-npm run build        # tsc → dist/ (build:node)
-npm run build:tests # tsc tests → dist-tests/
-npm test            # build:node + build:tests + run-node-tests + shell 冒烟
-npm run test:unit / test:integration
-npm run typecheck   # tsc --noEmit (node + tests configs)
-npm run typecheck:strict:engine      # core/engine 严格门禁（稳定化周期红线）
-npm run typecheck:type-debt:engine   # broad-any 债务守卫
-npm run verify:p0p1      # build + 构建 + P0/P1 验证门
-npm run verify:release-gate  # PR 触及发布门禁时必跑（见 README 稳定化周期）
-npm run verify:commit-size   # HEAD 提交超 1000 行或 30 文件须带说明 body（CPB_COMMIT_SIZE_OVERRIDE 绕过）
 ```
+
+<!-- BEGIN REPOSITORY COMMAND CONTRACT -->
+## Local code index and repository checks
+
+Use the repository-owned local index before relying on code-search results. The index lives outside the source tree and does not use an MCP server, daemon, PID file, socket, or `.codegraph` state.
+
+```bash
+cpb code-index status -s . --json
+cpb code-index build -s . --json
+cpb code-index query definitions --symbol runJob -s . --json
+cpb code-index query references --symbol runJob -s . --json
+cpb code-index query inventory -s . --json
+```
+
+Use indexed results only when status reports `available: true` and `fresh: true`. Rebuild a missing or stale index, then check status again. Read the source file directly for exact text. If status reports file-inventory-only coverage, describe only file-level coverage; do not claim a complete symbol or call graph.
+
+The repository commands below are the supported development entry points:
+
+- `npm ci` installs the locked dependencies.
+- `npm run build:node` compiles the application to `dist/`.
+- `npm run build:tests` compiles tests to `dist-tests/`.
+- `npm run typecheck` checks the application and tests without emitting files.
+- `npm test` runs the default Node and shell test suites.
+- `npm run test:main` runs the main-flow profile and shell checks.
+- `npm run test:integration` runs the real-process integration profile.
+- `npm run test:specialized` runs benchmark, evaluation, release-rehearsal, and packaging checks.
+- `node dist-tests/scripts/run-node-tests.js --main --list` prints the current main-flow file set without running it; documentation must not copy a fixed file count.
+- `npm run verify:release-contracts` runs the focused release-contract checks.
+- `npm run verify:release-gate` runs the complete release gate and requires configured signing and external evidence.
+<!-- END REPOSITORY COMMAND CONTRACT -->
 
 ## 测试结构
 
-- `tests/*.test.ts` — **230+ 个** Node 内置 test runner 单元/集成测试（编译到 `dist-tests/` 执行）
+- `tests/*.test.ts` — Node 内置 test runner 单元/契合测试（编译到 `dist-tests/` 执行）
 - `tests/integration/` — 端到端集成测试
 - `tests/fixtures/` — fake ACP agent stub
 - `tests/helpers/` — 测试工具（spawn-file 等）
@@ -207,20 +226,17 @@ node dist-tests/scripts/run-node-tests.js --integration  # 仅 integration
 
 runner 启动时清掉所有 `CPB_*` 环境变量并强制 `CPB_CHECKLIST_DECOMPOSE=0` / `CPB_WORKER_DISPATCH_ENABLED=0`（测试用 fake agent pool，生产默认行为不受影响）。
 
-## HTTP 服务（仅可选）
+## HTTP 服务（可选）
 
-项目**默认无 HTTP server**。唯一可选服务是 `cpb stream`，基于 Node 原生 `http` 提供 SSE 事件流：
+项目有两个基于 Node 原生 `http` 的可选服务，不依赖 Fastify 或 Express：
 
-```
-GET  /events          # SSE — 实时推送 event log (job/phase/wiki 变更)
-GET  /jobs            # job 列表 JSON
-```
+- `cpb hub start` 启动 `server/index.ts` 的 Hub API，提供身份检查、健康状态、项目清单和内部 worker 状态入口。Hub 默认监听回环地址；服务令牌或 OIDC 用于认证，匿名开发模式只能显式用于回环地址。
+- `cpb stream` 启动 `server/services/stream/stream-server.ts`，提供 `/stream` SSE、`/jobs` 和只读 job/wiki 查询。它默认要求 bearer token；匿名开发模式同样只允许回环地址。
 
-由 `server/services/stream/stream-server.ts` 实现，无 Fastify/Express 依赖。
+两个服务在非回环地址上使用明文 HTTP 时都要求显式确认；正式部署应在可信反向代理处终止 TLS。
 
 ## 注意事项
 
-- **代码探索优先本地索引**：先运行 `cpb code-index status -s .`；只有 `available: true` 且 `fresh: true` 时才依赖索引结果。缺失或过期时先运行 `cpb code-index build -s .`。符号和结构查询使用 `cpb code-index query definitions/references --symbol <name>`，精确源码再直接读取；fallback 只能声称文件级覆盖。
 - 项目名只允许 `[a-zA-Z0-9-]`，通过 `require_safe_name` 校验
 - **领域核心入口是 `core/engine/run-job.ts`**（不是 server/）—— server/engine-runner 只是注入 ctx 的桥
 - `core/` 严禁 import `server/`（分层不变量，注释中声明）

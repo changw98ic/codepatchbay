@@ -267,7 +267,12 @@ async function createV1IndexMigrationInput(
         version: null,
         extractorFingerprint: "fake-extractor",
         available: false,
-        coverage: "file-inventory-only",
+        coverage: {
+          effective: "file-inventory-only",
+          partial: true,
+          failedFiles: 0,
+          oversizedFiles: 0,
+        },
         errors: [],
       },
       indexMapHash: "0000000000000000000000000000000000000000000000000000000000000000",

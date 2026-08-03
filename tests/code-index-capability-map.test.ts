@@ -18,7 +18,10 @@ import type {
   LocalCodeIndexQueryResult,
 } from "../core/indexing/local-code-index/contracts.js";
 import { registerProject } from "../server/services/hub/hub-registry.js";
-import { generateProjectCapabilityMaps } from "../server/services/project-capability-map.js";
+import {
+  generateProjectCapabilityMaps,
+  projectCapabilityMapGate,
+} from "../server/services/project-capability-map.js";
 import { readJson } from "./helpers.js";
 
 // ── Temp directory management ──
@@ -148,10 +151,54 @@ test("generateProjectCapabilityMaps uses queryLocalCodeIndex inventory to build 
   assert.ok(maps.project_capability_map.testSurfaces.includes("tests/scheduler.test.js"));
   assert.equal(maps.safety_boundary_map.confidence, "high");
   assert.equal(maps.high_risk_area_map.confidence, "high");
+  assert.ok(maps.project_capability_map.summary.nodeCount > 0);
+  assert.ok(maps.project_capability_map.summary.languages.javascript >= 2);
 
   // Verify the code index readiness metadata is present.
   assert.equal(maps.codeIndexReadiness.available, true);
   assert.equal(maps.codeIndexReadiness.ref.schemaVersion, 2);
+});
+
+test("generateProjectCapabilityMaps reports low confidence when ast-grep is unavailable", async () => {
+  const sourcePath = await createSourceFixture();
+  const cpbRoot = await tempDir("cpbroot-no-parser");
+
+  await ensureLocalCodeIndex({
+    cpbRoot,
+    sourcePath,
+    force: true,
+    astGrepBinaryPath: path.join(cpbRoot, "missing-ast-grep"),
+  });
+  const maps = await generateProjectCapabilityMaps({ cpbRoot, sourcePath });
+
+  assert.equal(maps.capabilityMapConfidence, "low");
+  assert.equal(maps.project_capability_map.confidence, "low");
+  assert.equal(maps.safety_boundary_map.confidence, "low");
+  assert.equal(maps.high_risk_area_map.confidence, "low");
+  assert.deepEqual(projectCapabilityMapGate(maps), {
+    available: false,
+    reason: "project_capability_map_not_high_confidence",
+    confidence: "low",
+  });
+});
+
+test("generateProjectCapabilityMaps paginates inventories larger than 500 files", async () => {
+  const sourcePath = await tempDir("large-source");
+  const cpbRoot = await tempDir("cpbroot-large-source");
+  await mkdir(path.join(sourcePath, "notes"), { recursive: true });
+  await Promise.all(Array.from({ length: 505 }, (_, index) =>
+    writeFile(path.join(sourcePath, "notes", `note-${String(index).padStart(3, "0")}.txt`), `${index}\n`, "utf8")
+  ));
+
+  await ensureLocalCodeIndex({
+    cpbRoot,
+    sourcePath,
+    force: true,
+    astGrepBinaryPath: path.join(cpbRoot, "missing-ast-grep"),
+  });
+  const maps = await generateProjectCapabilityMaps({ cpbRoot, sourcePath });
+
+  assert.equal(maps.project_capability_map.summary.fileCount, 505);
 });
 
 test("queryLocalCodeIndex inventory returns indexed files", async () => {
