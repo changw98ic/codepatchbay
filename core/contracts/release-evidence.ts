@@ -13,9 +13,11 @@ import {
   type CanonicalJsonValue,
 } from "./canonical-json.js";
 
+export type ExternalEvidenceKind = "live_release" | "draft_pr" | "product";
+
 export type SignedExternalEvidence = Readonly<{
   schemaVersion: 1;
-  kind: "live_release" | "verified_5" | "draft_pr" | "product";
+  kind: ExternalEvidenceKind;
   releaseSourceFingerprint: string;
   generatedAt: string;
   expiresAt: string;
@@ -46,6 +48,8 @@ export type ReleaseGateReceipt = Readonly<{
   stderrArtifactPath: string;
   stdoutSha256: string;
   stderrSha256: string;
+  stdoutRedactedSha256: string;
+  stderrRedactedSha256: string;
   evidence: CanonicalJsonValue;
   signerKeyId: string;
   signatureAlgorithm: "Ed25519";
@@ -253,5 +257,181 @@ export function isCanonicalUtcTimestamp(value: unknown): value is string {
 export function assertReleaseHash(value: unknown, field: string): asserts value is string {
   if (!isSha256Identifier(value)) {
     throw releaseEvidenceError(`${field} must use sha256:<64 lowercase hex>`, "RELEASE_GATE_RECEIPT_INVALID", { field });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Strongly-typed payload decoders for signed external evidence.
+// Each decoder mirrors the output schema of the corresponding verifier script:
+//   - decodeLiveReleasePayload  ↔ scripts/verify-live-release-evidence.ts#verifyLiveReleaseEvidence
+//   - decodeDraftPrPayload      ↔ scripts/verify-live-release-evidence.ts#draftPrRehearsalViolations
+//   - decodeProductPayload      ↔ scripts/verify-product-gate.ts#verifyProductGateEvidenceFile
+// ---------------------------------------------------------------------------
+
+const DRAFT_PR_GENERATOR = "scripts/rehearse-disposable-draft-pr.ts#rehearseDisposableDraftPr";
+const REHEARSAL_BRANCH_PATTERN = /^cpb-release-rehearsal\/[A-Za-z0-9._-]+$/;
+const HEX40_PATTERN = /^[0-9a-f]{40}$/i;
+const GITHUB_PR_URL_PATTERN = /^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+$/;
+const DRAFT_PR_OPERATION_NAMES = [
+  "origin.verify",
+  "github.auth.verify",
+  "repository.verify",
+  "marker.verify",
+  "branch.create.verify",
+  "payload.write.verify",
+  "pull_request.create.verify",
+  "pull_request.read.verify",
+  "pull_request.close.verify",
+  "branch.delete.verify",
+] as const;
+
+function payloadError(message: string, details: Record<string, unknown> = {}): Error {
+  return releaseEvidenceError(message, "RELEASE_EVIDENCE_PAYLOAD_INVALID", details);
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function nonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+/**
+ * Validates a live_release evidence payload, mirroring the output of
+ * verifyLiveReleaseEvidence: { ok, providerEvidenceFile, draftPrEvidenceFile,
+ * productEvidenceFile, productRecordCount, officialScoreBundleCount, violations }.
+ */
+export function decodeLiveReleasePayload(payload: unknown): void {
+  if (!isPlainRecord(payload)) {
+    throw payloadError("live_release payload must be a JSON object");
+  }
+  if (payload.ok !== true) {
+    throw payloadError("live_release payload ok must be true", { field: "ok" });
+  }
+  for (const field of ["providerEvidenceFile", "draftPrEvidenceFile", "productEvidenceFile"] as const) {
+    if (!nonEmptyString(payload[field])) {
+      throw payloadError(`live_release payload ${field} must be a non-empty string`, { field });
+    }
+  }
+  const productRecordCount = payload.productRecordCount;
+  if (typeof productRecordCount !== "number" || !Number.isFinite(productRecordCount) || productRecordCount < 3) {
+    throw payloadError("live_release payload productRecordCount must be >= 3", { field: "productRecordCount" });
+  }
+  const officialScoreBundleCount = payload.officialScoreBundleCount;
+  if (typeof officialScoreBundleCount !== "number" || !Number.isFinite(officialScoreBundleCount) || officialScoreBundleCount < 1) {
+    throw payloadError("live_release payload officialScoreBundleCount must be >= 1", { field: "officialScoreBundleCount" });
+  }
+  if (!Array.isArray(payload.violations) || payload.violations.length !== 0) {
+    throw payloadError("live_release payload violations must be an empty array", { field: "violations" });
+  }
+}
+
+/**
+ * Validates a draft_pr evidence payload, mirroring the bundle structure checked
+ * by draftPrRehearsalViolations: schemaVersion, generator, ok, mode, violations,
+ * target, branch, pullRequest, cleanup, operations.
+ */
+export function decodeDraftPrPayload(payload: unknown): void {
+  if (!isPlainRecord(payload)) {
+    throw payloadError("draft_pr payload must be a JSON object");
+  }
+  if (payload.schemaVersion !== 1) {
+    throw payloadError("draft_pr payload schemaVersion must be 1", { field: "schemaVersion" });
+  }
+  if (payload.generator !== DRAFT_PR_GENERATOR) {
+    throw payloadError("draft_pr payload generator must identify the disposable rehearsal generator", { field: "generator" });
+  }
+  if (payload.ok !== true) {
+    throw payloadError("draft_pr payload ok must be true", { field: "ok" });
+  }
+  if (payload.mode !== "live") {
+    throw payloadError("draft_pr payload mode must be 'live'", { field: "mode" });
+  }
+  if (!Array.isArray(payload.violations) || payload.violations.length !== 0) {
+    throw payloadError("draft_pr payload violations must be an empty array", { field: "violations" });
+  }
+
+  const target = payload.target;
+  if (!isPlainRecord(target)) {
+    throw payloadError("draft_pr payload target must be an object", { field: "target" });
+  }
+  if (!nonEmptyString(target.repository)) {
+    throw payloadError("draft_pr payload target.repository must be a non-empty string", { field: "target.repository" });
+  }
+  if (target.disposable !== true || target.markerVerified !== true) {
+    throw payloadError("draft_pr payload target must be disposable and markerVerified", { field: "target" });
+  }
+  if (!nonEmptyString(target.repositoryId)) {
+    throw payloadError("draft_pr payload target.repositoryId must be a non-empty string", { field: "target.repositoryId" });
+  }
+  if (target.markerPath !== ".cpb-disposable-target.json") {
+    throw payloadError("draft_pr payload target.markerPath must be .cpb-disposable-target.json", { field: "target.markerPath" });
+  }
+  if (!nonEmptyString(target.markerSha) || !HEX40_PATTERN.test(target.markerSha.trim())) {
+    throw payloadError("draft_pr payload target.markerSha must be a 40-character hex string", { field: "target.markerSha" });
+  }
+
+  if (!nonEmptyString(payload.branch) || !REHEARSAL_BRANCH_PATTERN.test(payload.branch.trim())) {
+    throw payloadError("draft_pr payload branch must use the cpb-release-rehearsal/ namespace", { field: "branch" });
+  }
+
+  const pullRequest = payload.pullRequest;
+  if (!isPlainRecord(pullRequest)) {
+    throw payloadError("draft_pr payload pullRequest must be an object", { field: "pullRequest" });
+  }
+  if (!Number.isInteger(pullRequest.number) || Number(pullRequest.number) <= 0) {
+    throw payloadError("draft_pr payload pullRequest.number must be a positive integer", { field: "pullRequest.number" });
+  }
+  if (!nonEmptyString(pullRequest.url) || !GITHUB_PR_URL_PATTERN.test(pullRequest.url.trim())) {
+    throw payloadError("draft_pr payload pullRequest.url must be a GitHub pull request URL", { field: "pullRequest.url" });
+  }
+  if (pullRequest.draft !== true || pullRequest.state !== "closed") {
+    throw payloadError("draft_pr payload pullRequest must be a closed draft", { field: "pullRequest" });
+  }
+
+  const cleanup = payload.cleanup;
+  if (!isPlainRecord(cleanup)) {
+    throw payloadError("draft_pr payload cleanup must be an object", { field: "cleanup" });
+  }
+  if (cleanup.pullRequestClosed !== true || cleanup.branchDeleted !== true) {
+    throw payloadError("draft_pr payload cleanup must prove PR closure and branch deletion", { field: "cleanup" });
+  }
+
+  const operations = payload.operations;
+  if (!Array.isArray(operations)) {
+    throw payloadError("draft_pr payload operations must be an array", { field: "operations" });
+  }
+  const operationNames = operations.map((op) => isPlainRecord(op) ? op.name : null);
+  if (
+    operationNames.length !== DRAFT_PR_OPERATION_NAMES.length
+    || operationNames.some((name, index) => name !== DRAFT_PR_OPERATION_NAMES[index])
+  ) {
+    throw payloadError("draft_pr payload operations must contain the complete ordered rehearsal sequence", { field: "operations" });
+  }
+}
+
+/**
+ * Validates a product evidence payload, mirroring the output of
+ * verifyProductGateEvidenceFile: { ok, recordCount,
+ * supplementalOfficialScoreBundleCount, violations }.
+ */
+export function decodeProductPayload(payload: unknown): void {
+  if (!isPlainRecord(payload)) {
+    throw payloadError("product payload must be a JSON object");
+  }
+  if (payload.ok !== true) {
+    throw payloadError("product payload ok must be true", { field: "ok" });
+  }
+  const recordCount = payload.recordCount;
+  if (typeof recordCount !== "number" || !Number.isFinite(recordCount) || recordCount < 3) {
+    throw payloadError("product payload recordCount must be >= 3", { field: "recordCount" });
+  }
+  const supplementalOfficialScoreBundleCount = payload.supplementalOfficialScoreBundleCount;
+  if (typeof supplementalOfficialScoreBundleCount !== "number" || !Number.isFinite(supplementalOfficialScoreBundleCount) || supplementalOfficialScoreBundleCount < 1) {
+    throw payloadError("product payload supplementalOfficialScoreBundleCount must be >= 1", { field: "supplementalOfficialScoreBundleCount" });
+  }
+  if (!Array.isArray(payload.violations) || payload.violations.length !== 0) {
+    throw payloadError("product payload violations must be an empty array", { field: "violations" });
   }
 }

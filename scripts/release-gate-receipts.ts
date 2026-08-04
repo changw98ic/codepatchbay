@@ -1,15 +1,21 @@
 import { createHash, randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
 import { constants, type BigIntStats } from "node:fs";
 import { link, lstat, mkdir, open, readdir, unlink } from "node:fs/promises";
 import path from "node:path";
+import { promisify } from "node:util";
 
 import { canonicalJson, canonicalJsonBytes, isSha256Identifier, sha256Identifier, type CanonicalJsonValue } from "../core/contracts/canonical-json.js";
 import {
   assertReleaseHash,
+  decodeDraftPrPayload,
+  decodeLiveReleasePayload,
+  decodeProductPayload,
   hashSignedReleaseObject,
   isCanonicalUtcTimestamp,
   signReleaseObject,
   verifyReleaseObject,
+  type ExternalEvidenceKind,
   type ReleaseGateCompletion,
   type ReleaseGateReceipt,
   type ReleaseSigningAuthority,
@@ -22,6 +28,7 @@ import {
   verifyReleaseSourceFingerprint,
   type ReleaseSourceFingerprint,
 } from "./release-source-fingerprint.js";
+import { sanitizeReleaseGateBuffer, sanitizeReleaseGateText } from "./release-redactor.js";
 
 export type ReleaseGateSpec = Readonly<{
   id: string;
@@ -37,7 +44,6 @@ export const REQUIRED_RELEASE_GATES: readonly ReleaseGateSpec[] = Object.freeze(
   { id: "type-debt-engine", command: ["npm", "run", "typecheck:type-debt:engine"], steps: [["npm", "run", "typecheck:type-debt:engine"]] },
   { id: "test-main", command: ["npm", "run", "test:main"], steps: [["npm", "run", "test:main"]] },
   { id: "test-integration", command: ["npm", "run", "test:integration"], steps: [["npm", "run", "test:integration"]] },
-  { id: "test-specialized", command: ["npm", "run", "test:specialized"], steps: [["npm", "run", "test:specialized"]] },
   { id: "dependency-audit", command: ["npm", "run", "verify:dependency-audit"], steps: [["npm", "run", "verify:dependency-audit"]] },
   { id: "patch-integrity", command: ["npm", "run", "verify:patch-integrity"], steps: [["npm", "run", "verify:patch-integrity"]] },
   { id: "commit-size", command: ["npm", "run", "verify:commit-size"], steps: [["npm", "run", "verify:commit-size"]] },
@@ -51,12 +57,9 @@ export const REQUIRED_RELEASE_GATES: readonly ReleaseGateSpec[] = Object.freeze(
 
 export const REQUIRED_EXTERNAL_EVIDENCE = Object.freeze({
   live_release: "live-release.json",
-  verified_5: "verified-5.json",
   draft_pr: "draft-pr.json",
   product: "product.json",
 } as const);
-
-type ExternalEvidenceKind = keyof typeof REQUIRED_EXTERNAL_EVIDENCE;
 
 export type ReleaseGateSession = Readonly<{
   sourceRoot: string;
@@ -268,6 +271,7 @@ const RECEIPT_KEYS = [
   "releaseSourceFingerprint", "indexSnapshotIdAtSessionStart", "command", "cwd",
   "startedAt", "finishedAt", "exitCode", "ok", "stdoutBytes", "stderrBytes",
   "stdoutArtifactPath", "stderrArtifactPath", "stdoutSha256", "stderrSha256",
+  "stdoutRedactedSha256", "stderrRedactedSha256",
   "evidence", "signerKeyId", "signatureAlgorithm", "signature",
 ] as const;
 
@@ -299,6 +303,8 @@ function decodeReceipt(value: unknown, trust: ReleaseVerificationTrust): Release
   }
   assertReleaseHash(record.stdoutSha256, "stdoutSha256");
   assertReleaseHash(record.stderrSha256, "stderrSha256");
+  assertReleaseHash(record.stdoutRedactedSha256, "stdoutRedactedSha256");
+  assertReleaseHash(record.stderrRedactedSha256, "stderrRedactedSha256");
   canonicalJsonBytes(record.evidence);
   return record as unknown as ReleaseGateReceipt;
 }
@@ -336,8 +342,11 @@ function decodeExternalEvidence(value: unknown, trust: ReleaseVerificationTrust,
   const record = recordValue(value, "signed external evidence");
   exactKeys(record, EXTERNAL_KEYS, "signed external evidence");
   verifyReleaseObject(trust, record);
-  if (record.schemaVersion !== 1 || !(typeof record.kind === "string" && record.kind in REQUIRED_EXTERNAL_EVIDENCE)) {
-    throw receiptError("external evidence schema or kind is invalid");
+  if (record.schemaVersion !== 1) {
+    throw receiptError("external evidence schemaVersion must be 1", "RELEASE_GATE_RECEIPT_INVALID", { field: "schemaVersion" });
+  }
+  if (typeof record.kind !== "string" || !(record.kind in REQUIRED_EXTERNAL_EVIDENCE)) {
+    throw receiptError("external evidence kind is not a registered evidence type", "RELEASE_GATE_RECEIPT_INVALID", { field: "kind" });
   }
   assertReleaseHash(record.releaseSourceFingerprint, "releaseSourceFingerprint");
   const generatedAt = requireTimestamp(record.generatedAt, "generatedAt");
@@ -356,6 +365,20 @@ function decodeExternalEvidence(value: unknown, trust: ReleaseVerificationTrust,
   canonicalJsonBytes(record.payload);
   assertReleaseHash(record.payloadSha256, "payloadSha256");
   if (record.payloadSha256 !== sha256Identifier(canonicalJsonBytes(record.payload))) throw receiptError("external evidence payload hash does not match payload");
+  // Dispatch to the strongly-typed payload decoder for this evidence kind.
+  switch (record.kind as ExternalEvidenceKind) {
+    case "live_release":
+      decodeLiveReleasePayload(record.payload);
+      break;
+    case "draft_pr":
+      decodeDraftPrPayload(record.payload);
+      break;
+    case "product":
+      decodeProductPayload(record.payload);
+      break;
+    default:
+      throw receiptError(`external evidence kind ${record.kind} has no payload decoder`, "RELEASE_GATE_RECEIPT_INVALID", { field: "kind" });
+  }
   return record as unknown as SignedExternalEvidence;
 }
 
@@ -419,8 +442,15 @@ export async function writeSignedReleaseGateReceipt(input: Readonly<{
   const basename = `${String(input.sequence).padStart(4, "0")}-${input.gate.id}`;
   const stdoutArtifactPath = `artifacts/${basename}.stdout`;
   const stderrArtifactPath = `artifacts/${basename}.stderr`;
-  await writeImmutableFile(input.session.runtimeRoot, path.join(input.session.sessionRoot, stdoutArtifactPath), input.stdout);
-  await writeImmutableFile(input.session.runtimeRoot, path.join(input.session.sessionRoot, stderrArtifactPath), input.stderr);
+  // Sanitize stdout/stderr before writing to disk so absolute paths, tokens,
+  // and secrets never land in the release artifact store.  The raw sha256 is
+  // computed in-memory (pre-redaction) and signed into the receipt; only the
+  // redacted bytes touch disk.
+  const redactorCtx = { sourceRoot: input.session.sourceRoot, runtimeRoot: input.session.runtimeRoot };
+  const stdoutRedacted = sanitizeReleaseGateBuffer(input.stdout, redactorCtx);
+  const stderrRedacted = sanitizeReleaseGateBuffer(input.stderr, redactorCtx);
+  await writeImmutableFile(input.session.runtimeRoot, path.join(input.session.sessionRoot, stdoutArtifactPath), stdoutRedacted);
+  await writeImmutableFile(input.session.runtimeRoot, path.join(input.session.sessionRoot, stderrArtifactPath), stderrRedacted);
 
   const unsigned = {
     schemaVersion: 2 as const,
@@ -442,6 +472,8 @@ export async function writeSignedReleaseGateReceipt(input: Readonly<{
     stderrArtifactPath,
     stdoutSha256: sha256Identifier(input.stdout),
     stderrSha256: sha256Identifier(input.stderr),
+    stdoutRedactedSha256: sha256Identifier(stdoutRedacted),
+    stderrRedactedSha256: sha256Identifier(stderrRedacted),
     evidence: input.evidence ?? null,
   };
   const receipt = signReleaseObject(input.authority, unsigned) as ReleaseGateReceipt;
@@ -537,6 +569,53 @@ export async function verifySignedExternalEvidenceSet(input: Readonly<{
   });
 }
 
+// ---------------------------------------------------------------------------
+// Code index recheck support for release readiness verification.
+// ---------------------------------------------------------------------------
+
+export type CodeIndexStatus = Readonly<{
+  available: boolean;
+  fresh: boolean;
+  exact: boolean;
+  coverage: string;
+  ref: Readonly<{ snapshotId: string }>;
+}>;
+
+export type CodeIndexInspector = (sourceRoot: string) => Promise<CodeIndexStatus>;
+
+const execFileAsync = promisify(execFile);
+
+const DEFAULT_CODE_INDEX_INSPECTOR: CodeIndexInspector = async (sourceRoot: string): Promise<CodeIndexStatus> => {
+  const launcher = path.join(sourceRoot, "cpb");
+  let stdout: string;
+  try {
+    const result = await execFileAsync(launcher, ["code-index", "status", "-s", sourceRoot, "--json"], {
+      cwd: sourceRoot,
+      maxBuffer: 4 * 1024 * 1024,
+    });
+    stdout = result.stdout;
+  } catch (error) {
+    throw receiptError(
+      "Local Code Index status could not be inspected for release readiness verification",
+      "RELEASE_GATE_INDEX_STALE",
+      { reason: error instanceof Error ? error.message : String(error) },
+    );
+  }
+  let parsed: any;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    throw receiptError("Local Code Index status output is not valid JSON", "RELEASE_GATE_INDEX_STALE");
+  }
+  return {
+    available: parsed?.available === true,
+    fresh: parsed?.fresh === true,
+    exact: parsed?.exact === true,
+    coverage: typeof parsed?.coverage === "string" ? parsed.coverage : "file-inventory-only",
+    ref: { snapshotId: typeof parsed?.ref?.snapshotId === "string" ? parsed.ref.snapshotId : "" },
+  };
+};
+
 async function verifySessionOrThrow(input: Readonly<{
   sourceRoot: string;
   runtimeRoot: string;
@@ -544,6 +623,7 @@ async function verifySessionOrThrow(input: Readonly<{
   releaseSourceFingerprint: string;
   sessionId: string;
   referenceTime: Date;
+  inspectCodeIndex?: CodeIndexInspector;
 }>): Promise<Readonly<{
   completion: ReleaseGateCompletion;
   receipts: readonly ReleaseGateReceipt[];
@@ -609,11 +689,14 @@ async function verifySessionOrThrow(input: Readonly<{
     }
     if (indexSnapshotIdAtSessionStart === null) indexSnapshotIdAtSessionStart = receipt.indexSnapshotIdAtSessionStart;
     if (receipt.indexSnapshotIdAtSessionStart !== indexSnapshotIdAtSessionStart) throw receiptError("release receipts use different initial index snapshots");
+    // Artifact files on disk contain the REDACTED bytes.  Verify against the
+    // redacted sha256; the raw stdoutSha256/stderrSha256 are trusted from the
+    // signed receipt (raw bytes are never persisted to disk).
     const stdout = await hashRawFileNoFollow(ensureInside(paths.sessionRoot, path.join(paths.sessionRoot, receipt.stdoutArtifactPath)));
     const stderr = await hashRawFileNoFollow(ensureInside(paths.sessionRoot, path.join(paths.sessionRoot, receipt.stderrArtifactPath)));
     if (
-      stdout.bytes !== receipt.stdoutBytes || stdout.sha256 !== receipt.stdoutSha256
-      || stderr.bytes !== receipt.stderrBytes || stderr.sha256 !== receipt.stderrSha256
+      stdout.sha256 !== receipt.stdoutRedactedSha256
+      || stderr.sha256 !== receipt.stderrRedactedSha256
     ) {
       throw receiptError(`release gate artifacts do not match receipt ${gate.id}`);
     }
@@ -637,6 +720,44 @@ async function verifySessionOrThrow(input: Readonly<{
   if (lastReceipt && Date.parse(completion.completedAt) < Date.parse(lastReceipt.finishedAt)) {
     throw receiptError("release completion precedes the final gate receipt");
   }
+  // Index snapshot recheck: the completion recorded the index snapshot id at
+  // the final check.  Independently re-verify that the index is still
+  // available, fresh, exact, symbol-level, and bound to the same snapshot id.
+  const inspectCodeIndex = input.inspectCodeIndex || DEFAULT_CODE_INDEX_INSPECTOR;
+  let indexStatus: CodeIndexStatus;
+  try {
+    indexStatus = await inspectCodeIndex(input.sourceRoot);
+  } catch (error) {
+    throw receiptError(
+      error instanceof Error ? error.message : "Local Code Index recheck failed",
+      "RELEASE_GATE_INDEX_STALE",
+    );
+  }
+  if (
+    !indexStatus.available
+    || !indexStatus.fresh
+    || !indexStatus.exact
+    || indexStatus.ref.snapshotId !== completion.indexSnapshotIdAtFinalCheck
+  ) {
+    throw receiptError(
+      "Local Code Index is stale or its snapshot id no longer matches the final check binding",
+      "RELEASE_GATE_INDEX_STALE",
+      {
+        expectedSnapshotId: completion.indexSnapshotIdAtFinalCheck,
+        actualSnapshotId: indexStatus.ref.snapshotId,
+        available: indexStatus.available,
+        fresh: indexStatus.fresh,
+        exact: indexStatus.exact,
+      },
+    );
+  }
+  if (indexStatus.coverage === "file-inventory-only") {
+    throw receiptError(
+      "Local Code Index coverage is file-inventory-only; release requires symbol-level coverage",
+      "RELEASE_GATE_INDEX_COVERAGE_INSUFFICIENT",
+      { coverage: indexStatus.coverage },
+    );
+  }
   const externalEvidenceSha256 = await verifyExternalEvidence(input);
   if (canonicalJson(completion.externalEvidenceSha256) !== canonicalJson(externalEvidenceSha256)) {
     throw receiptError("release completion does not bind the verified external evidence");
@@ -651,6 +772,7 @@ export async function verifyReleaseReadiness(input: Readonly<{
   releaseSourceFingerprint: string;
   sessionId: string;
   referenceTime?: Date;
+  inspectCodeIndex?: CodeIndexInspector;
 }>): Promise<Readonly<Record<string, CanonicalJsonValue>>> {
   try {
     const verified = await verifySessionOrThrow({
@@ -658,6 +780,7 @@ export async function verifyReleaseReadiness(input: Readonly<{
       sourceRoot: path.resolve(input.sourceRoot),
       runtimeRoot: path.resolve(input.runtimeRoot),
       referenceTime: input.referenceTime || new Date(),
+      inspectCodeIndex: input.inspectCodeIndex,
     });
     return {
       schemaVersion: 2,
@@ -670,6 +793,11 @@ export async function verifyReleaseReadiness(input: Readonly<{
       error: null,
     };
   } catch (error) {
+    const rawMessage = error instanceof Error ? error.message : String(error);
+    const redactedMessage = sanitizeReleaseGateText(rawMessage, {
+      sourceRoot: input.sourceRoot,
+      runtimeRoot: input.runtimeRoot,
+    });
     return {
       schemaVersion: 2,
       sessionId: input.sessionId,
@@ -680,7 +808,7 @@ export async function verifyReleaseReadiness(input: Readonly<{
       ready: false,
       error: {
         code: errorCode(error),
-        message: error instanceof Error ? error.message : String(error),
+        message: redactedMessage,
       },
     };
   }

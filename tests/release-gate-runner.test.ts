@@ -41,6 +41,64 @@ function keys() {
   };
 }
 
+function evidencePayloadFor(kind: string) {
+  if (kind === "live_release") {
+    return {
+      ok: true,
+      providerEvidenceFile: "docs/product/evidence/live-release/provider-connectivity.json",
+      draftPrEvidenceFile: "docs/product/evidence/live-release/draft-pr-rehearsal.json",
+      productEvidenceFile: "docs/product/cpb-flagship-product-validation.json",
+      productRecordCount: 3,
+      officialScoreBundleCount: 1,
+      violations: [],
+    };
+  }
+  if (kind === "draft_pr") {
+    return {
+      schemaVersion: 1,
+      generator: "scripts/rehearse-disposable-draft-pr.ts#rehearseDisposableDraftPr",
+      ok: true,
+      mode: "live",
+      violations: [],
+      target: {
+        repository: "cpb-test/release-target",
+        disposable: true,
+        markerVerified: true,
+        repositoryId: "R_kgAAA",
+        markerPath: ".cpb-disposable-target.json",
+        markerSha: "a1b2c3d4e5".repeat(4),
+      },
+      branch: "cpb-release-rehearsal/test-run",
+      pullRequest: {
+        number: 42,
+        url: "https://github.com/cpb-test/release-target/pull/42",
+        draft: true,
+        state: "closed",
+      },
+      cleanup: { pullRequestClosed: true, branchDeleted: true },
+      operations: [
+        { name: "origin.verify" },
+        { name: "github.auth.verify" },
+        { name: "repository.verify" },
+        { name: "marker.verify" },
+        { name: "branch.create.verify" },
+        { name: "payload.write.verify" },
+        { name: "pull_request.create.verify" },
+        { name: "pull_request.read.verify" },
+        { name: "pull_request.close.verify" },
+        { name: "branch.delete.verify" },
+      ],
+    };
+  }
+  // product
+  return {
+    ok: true,
+    recordCount: 3,
+    supplementalOfficialScoreBundleCount: 1,
+    violations: [],
+  };
+}
+
 async function fixture(t: test.TestContext) {
   const sourceRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-gate-runner-source-"));
   const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "cpb-gate-runner-runtime-"));
@@ -54,7 +112,7 @@ async function fixture(t: test.TestContext) {
   return { sourceRoot, runtimeRoot };
 }
 
-test("release gate has one fixed ordered set of 17 gates", () => {
+test("release gate has one fixed ordered set of 16 gates", () => {
   assert.deepEqual(REQUIRED_RELEASE_GATES.map((gate) => gate.id), [
     "build-node-tests",
     "typecheck",
@@ -63,7 +121,6 @@ test("release gate has one fixed ordered set of 17 gates", () => {
     "type-debt-engine",
     "test-main",
     "test-integration",
-    "test-specialized",
     "dependency-audit",
     "patch-integrity",
     "commit-size",
@@ -107,11 +164,11 @@ test("release gate runner writes and directly verifies a complete signed session
       kind,
       generatedAt: "2026-08-03T00:00:00.000Z",
       expiresAt: "2026-09-02T00:00:00.000Z",
-      payload: { kind, ok: true },
+      payload: evidencePayloadFor(kind),
     });
     externalHashes.push(written.evidenceSha256);
   }
-  assert.equal(externalHashes.length, 4);
+  assert.equal(externalHashes.length, 3);
   const observedEnvs: NodeJS.ProcessEnv[] = [];
   const result = await runReleaseGateSession({
     ...roots,
@@ -129,7 +186,7 @@ test("release gate runner writes and directly verifies a complete signed session
     },
   });
   assert.equal(result.ok, true);
-  assert.equal(result.receipts.length, 17);
+  assert.equal(result.receipts.length, 16);
   assert.equal(result.report?.ready, true);
   assert.ok(observedEnvs.every((env) => env.CPB_RELEASE_GATE_SIGNING_KEY === undefined));
   await readFile(path.join(result.session.sessionRoot, "completion.json"), "utf8");

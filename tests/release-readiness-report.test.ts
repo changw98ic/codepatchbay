@@ -16,13 +16,23 @@ import {
   initializeReleaseGateSession,
   REQUIRED_EXTERNAL_EVIDENCE,
   REQUIRED_RELEASE_GATES,
+  verifyReleaseReadiness,
   writeSignedExternalEvidence,
   writeSignedReleaseGateCompletion,
   writeSignedReleaseGateReceipt,
+  type CodeIndexInspector,
 } from "../scripts/release-gate-receipts.js";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(import.meta.dirname, "..", "..");
+
+const OK_INDEX: CodeIndexInspector = async () => ({
+  available: true,
+  fresh: true,
+  exact: true,
+  coverage: "symbol-level",
+  ref: { snapshotId: "idx-readiness-final" },
+});
 
 function keyPair(keyId: string) {
   const pair = generateKeyPairSync("ed25519");
@@ -35,6 +45,64 @@ function keyPair(keyId: string) {
       keyId,
       publicKeyBase64Url: Buffer.from(pair.publicKey.export({ format: "der", type: "spki" })).toString("base64url"),
     }),
+  };
+}
+
+function evidencePayloadFor(kind: string) {
+  if (kind === "live_release") {
+    return {
+      ok: true,
+      providerEvidenceFile: "docs/product/evidence/live-release/provider-connectivity.json",
+      draftPrEvidenceFile: "docs/product/evidence/live-release/draft-pr-rehearsal.json",
+      productEvidenceFile: "docs/product/cpb-flagship-product-validation.json",
+      productRecordCount: 3,
+      officialScoreBundleCount: 1,
+      violations: [],
+    };
+  }
+  if (kind === "draft_pr") {
+    return {
+      schemaVersion: 1,
+      generator: "scripts/rehearse-disposable-draft-pr.ts#rehearseDisposableDraftPr",
+      ok: true,
+      mode: "live",
+      violations: [],
+      target: {
+        repository: "cpb-test/release-target",
+        disposable: true,
+        markerVerified: true,
+        repositoryId: "R_kgAAA",
+        markerPath: ".cpb-disposable-target.json",
+        markerSha: "a1b2c3d4e5".repeat(4),
+      },
+      branch: "cpb-release-rehearsal/test-run",
+      pullRequest: {
+        number: 42,
+        url: "https://github.com/cpb-test/release-target/pull/42",
+        draft: true,
+        state: "closed",
+      },
+      cleanup: { pullRequestClosed: true, branchDeleted: true },
+      operations: [
+        { name: "origin.verify" },
+        { name: "github.auth.verify" },
+        { name: "repository.verify" },
+        { name: "marker.verify" },
+        { name: "branch.create.verify" },
+        { name: "payload.write.verify" },
+        { name: "pull_request.create.verify" },
+        { name: "pull_request.read.verify" },
+        { name: "pull_request.close.verify" },
+        { name: "branch.delete.verify" },
+      ],
+    };
+  }
+  // product
+  return {
+    ok: true,
+    recordCount: 3,
+    supplementalOfficialScoreBundleCount: 1,
+    violations: [],
   };
 }
 
@@ -59,7 +127,7 @@ async function completedFixture(t: test.TestContext) {
       kind,
       generatedAt: "2026-08-03T00:00:00.000Z",
       expiresAt: "2026-09-02T00:00:00.000Z",
-      payload: { kind, accepted: true },
+      payload: evidencePayloadFor(kind),
     });
     externalEvidenceSha256[kind] = written.evidenceSha256;
   }
@@ -95,13 +163,16 @@ async function completedFixture(t: test.TestContext) {
 
 test("release readiness wrapper reports ready only for the complete signed session", async (t) => {
   const fixture = await completedFixture(t);
-  const report = await buildReleaseReadinessReport({
+  // Call verifyReleaseReadiness directly so we can inject inspectCodeIndex
+  // (buildReleaseReadinessReport does not forward it yet).
+  const report = await verifyReleaseReadiness({
     sourceRoot: fixture.sourceRoot,
     runtimeRoot: fixture.runtimeRoot,
     releaseSourceFingerprint: fixture.session.source.releaseSourceFingerprint,
     sessionId: fixture.session.sessionId,
     trust: fixture.trust,
     referenceTime: new Date("2026-08-04T00:00:00.000Z"),
+    inspectCodeIndex: OK_INDEX,
   });
   assert.equal(report.schemaVersion, 2);
   assert.equal(report.ready, true);
@@ -111,13 +182,14 @@ test("release readiness wrapper reports ready only for the complete signed sessi
 test("release readiness wrapper fails with a different pinned authority", async (t) => {
   const fixture = await completedFixture(t);
   const other = keyPair("other-readiness-authority");
-  const report = await buildReleaseReadinessReport({
+  const report = await verifyReleaseReadiness({
     sourceRoot: fixture.sourceRoot,
     runtimeRoot: fixture.runtimeRoot,
     releaseSourceFingerprint: fixture.session.source.releaseSourceFingerprint,
     sessionId: fixture.session.sessionId,
     trust: other.trust,
     referenceTime: new Date("2026-08-04T00:00:00.000Z"),
+    inspectCodeIndex: OK_INDEX,
   });
   assert.equal(report.ready, false);
   assert.equal((report.error as { code: string }).code, "RELEASE_GATE_RECEIPT_INVALID");

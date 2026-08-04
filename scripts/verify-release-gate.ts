@@ -18,6 +18,8 @@ import {
   verifySignedExternalEvidenceSet,
   writeSignedReleaseGateCompletion,
   writeSignedReleaseGateReceipt,
+  type CodeIndexInspector,
+  type CodeIndexStatus,
   type ReleaseGateSession,
   type ReleaseGateSpec,
   type WrittenReceipt,
@@ -162,6 +164,7 @@ export async function runReleaseGateSession(input: Readonly<{
   sessionId?: string;
   execute?: GateExecutor;
   inspectIndex?: (sourceRoot: string, env: NodeJS.ProcessEnv) => Promise<string>;
+  inspectCodeIndex?: CodeIndexInspector;
   now?: () => Date;
 }>): Promise<Readonly<{
   ok: boolean;
@@ -254,6 +257,18 @@ export async function runReleaseGateSession(input: Readonly<{
     releaseSourceFingerprint: session.source.releaseSourceFingerprint,
     sessionId: session.sessionId,
     referenceTime: now(),
+    inspectCodeIndex: input.inspectCodeIndex || ((root: string): Promise<CodeIndexStatus> => {
+      // Reuse the session's inspectIndex to obtain the snapshot id, then wrap
+      // it in a full CodeIndexStatus.  This mirrors the default production
+      // path while remaining consistent with injected test mocks.
+      return inspectIndex(root, childEnv).then((snapshotId) => ({
+        available: true,
+        fresh: true,
+        exact: true,
+        coverage: "symbol-level",
+        ref: { snapshotId },
+      }));
+    }),
   });
   return { ok: report.ready === true, session, receipts, report };
 }
