@@ -1,0 +1,57 @@
+name: Release benchmark
+
+# Runs the local-code-index v2 performance benchmark on a clean, idle CI runner
+# (where the CPU <50% / >=2GiB / SSD preflight gates pass trivially) and commits
+# the resulting signed benchmark evidence back into the repo so the
+# verify:local-code-index-v2-release release gate has a fresh, valid artifact.
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: "17 4 * * 1"
+
+permissions:
+  contents: write
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v6
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build application and tests
+        run: |
+          npm run build:node
+          npm run build:tests
+
+      - name: Run local-code-index v2 benchmark
+        run: node dist/scripts/bench-local-code-index-v2.js --output artifacts/bench/local-code-index-v2.json
+
+      - name: Verify benchmark evidence passes the release scanner
+        run: node dist/scripts/verify-local-code-index-v2-release.js
+
+      - name: Upload benchmark evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: local-code-index-v2-benchmark
+          path: artifacts/bench/local-code-index-v2.json
+
+      - name: Commit refreshed benchmark evidence
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add artifacts/bench/local-code-index-v2.json
+          if git diff --cached --quiet; then
+            echo "benchmark evidence unchanged"
+          else
+            git commit -m "chore(bench): refresh local-code-index v2 benchmark evidence [skip ci]"
+            git push
+          fi

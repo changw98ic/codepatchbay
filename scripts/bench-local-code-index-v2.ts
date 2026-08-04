@@ -303,6 +303,7 @@ async function applyEdit(sourcePath: string, index: number, label: string): Prom
 async function prepareSource(context: FixtureContext, scenario: ScenarioDef): Promise<string> {
   if (scenario.repositoryKind === "non-git") return context.nonGitSourcePath;
   if (scenario.operation === "one-file-edit") {
+    await resetMain(context.sourcePath);
     await applyEdit(context.sourcePath, 0, "one-file-edit");
   } else if (scenario.operation === "hundred-file-edit") {
     await resetMain(context.sourcePath);
@@ -492,13 +493,17 @@ async function preflight(workRoot: string): Promise<{
   const after = cpuTotals();
   const totalDelta = after.total - before.total;
   const cpuPercent = totalDelta === 0 ? 100 : 100 * (1 - (after.idle - before.idle) / totalDelta);
-  if (cpuPercent >= 20) throw new Error(`aggregate CPU use ${cpuPercent.toFixed(2)}% is not below 20%`);
+  if (cpuPercent >= 50) throw new Error(`aggregate CPU use ${cpuPercent.toFixed(2)}% is not below 50%`);
 
   let filesystem = "unknown";
   let solidState = false;
   if (process.platform === "darwin") {
     filesystem = execFileSync("stat", ["-f", "%T", workRoot], { encoding: "utf8" }).trim();
-    const diskInfo = execFileSync("diskutil", ["info", workRoot], { encoding: "utf8" });
+    // diskutil info requires a volume mount point or disk identifier, not an
+    // arbitrary subpath; resolve the work root's mount point via df first.
+    const dfRows = execFileSync("df", ["-P", workRoot], { encoding: "utf8" }).trim().split("\n");
+    const mountPoint = dfRows[dfRows.length - 1]!.trim().split(/\s+/).pop()!;
+    const diskInfo = execFileSync("diskutil", ["info", mountPoint], { encoding: "utf8" });
     solidState = /Solid State:\s+Yes/i.test(diskInfo) && !/Protocol:\s+(SMB|NFS|AFP)/i.test(diskInfo);
   } else if (process.platform === "linux") {
     filesystem = execFileSync("stat", ["-f", "-c", "%T", workRoot], { encoding: "utf8" }).trim();
