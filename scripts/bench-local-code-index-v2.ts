@@ -508,8 +508,7 @@ async function preflight(workRoot: string): Promise<{
   } else if (process.platform === "linux") {
     filesystem = execFileSync("stat", ["-f", "-c", "%T", workRoot], { encoding: "utf8" }).trim();
     const source = execFileSync("findmnt", ["-n", "-o", "SOURCE", "--target", workRoot], { encoding: "utf8" }).trim();
-    const device = path.basename(source).replace(/[0-9]+$/, "");
-    const rotational = execFileSync("lsblk", ["-dn", "-o", "ROTA", `/dev/${device}`], { encoding: "utf8" }).trim();
+    const rotational = execFileSync("lsblk", ["-dno", "ROTA", source], { encoding: "utf8" }).trim();
     solidState = rotational === "0";
   }
   if (!solidState) throw new Error("benchmark work root is not verified as local SSD storage");
