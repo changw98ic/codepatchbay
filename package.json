@@ -37,11 +37,9 @@
   "scripts": {
     "prepack": "npm run build",
     "pretest:node": "npm run build:node && npm run build:tests",
-    "test": "npm run test:node && npm run test:shell",
+    "test": "npm run test:node",
     "test:node": "node dist-tests/scripts/run-node-tests.js",
-    "test:shell": "bash tests/cpb-bridges.test.sh && bash tests/cpb-jobs.test.sh",
-    "test:main": "npm run test:node -- --main && npm run test:shell",
-    "test:specialized": "npm run test:node -- --specialized",
+    "test:main": "npm run test:node -- --main",
     "test:unit": "node dist-tests/scripts/run-node-tests.js --unit",
     "test:integration": "node dist-tests/scripts/run-node-tests.js --integration",
     "test:live": "npm run build:node && npm run build:tests && node dist-tests/scripts/run-node-tests.js --live",

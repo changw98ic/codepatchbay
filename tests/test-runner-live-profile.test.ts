@@ -34,7 +34,7 @@ test("ordinary test profiles never enumerate real-provider live E2E tests", asyn
 
 test("unit list output describes the files the fast unit profile actually runs", async () => {
   const files = await listProfile("--unit");
-  assert.ok(files.includes("tests/job-projection.test.js"));
+  assert.ok(files.includes("tests/docs-contract.test.js"));
   assert.equal(files.includes("tests/job-runner.test.js"), false, "slow unit leaked into --unit --list");
   assert.equal(files.some((file) => file.startsWith("tests/integration/")), false);
 });

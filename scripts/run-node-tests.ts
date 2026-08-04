@@ -144,25 +144,6 @@ const discoveredFiles = requestedFiles.length > 0
   ? requestedFiles
   : await collectTestFiles(path.join(artifactRoot, "tests"));
 
-// These suites validate optional benchmark/evaluation and release-rehearsal
-// tooling. They are valuable coverage, but they are not part of the normal
-// HubOrchestrator -> ManagedWorker delivery path. Keep them in the default
-// full run while allowing the main-flow acceptance path to exclude them
-// explicitly. The list is intentional and reviewable; do not infer it from
-// file size alone.
-const specializedTestFiles = new Set([
-  "tests/coding-comparison.test.js",
-  "tests/disposable-draft-pr-rehearsal.test.js",
-  "tests/e2e-npm-pack-safety.test.js",
-  "tests/live-release-evidence.test.js",
-  "tests/plan-tournament.test.js",
-  "tests/promote-live-release-evidence.test.js",
-  "tests/swebench-batch-queue.test.js",
-  "tests/swebench-plan-prompt.test.js",
-  "tests/swebench-product-validation.test.js",
-  "tests/swebench-three-way-runner.test.js",
-]);
-
 // This service-level index suite has its own four-way OS/Node CI matrix. Keep
 // it off the already process-heavy generic unit runners so those jobs cannot
 // exhaust their VM before reaching it.
@@ -171,13 +152,12 @@ const dedicatedLocalIndexTestFiles = new Set([
 ]);
 
 const mainOnly = process.argv.includes("--main");
-const specializedOnly = process.argv.includes("--specialized");
 const integrationOnly = process.argv.includes("--integration");
 const unitOnly = process.argv.includes("--unit");
 const liveOnly = process.argv.includes("--live");
 const listOnly = process.argv.includes("--list");
-if ([mainOnly, specializedOnly, integrationOnly, unitOnly, liveOnly].filter(Boolean).length > 1) {
-  console.error("--main, --specialized, --integration, --unit, and --live are mutually exclusive");
+if ([mainOnly, integrationOnly, unitOnly, liveOnly].filter(Boolean).length > 1) {
+  console.error("--main, --integration, --unit, and --live are mutually exclusive");
   process.exit(1);
 }
 
@@ -189,8 +169,7 @@ const ordinaryDiscoveredFiles = discoveredFiles.filter((file) => !isLiveTestFile
 // successful real task is the product-path check, while these suites are
 // fault-injection and authority-boundary checks.
 const mainFlowFiles = discoveredFiles.filter((file) => (
-  !specializedTestFiles.has(file)
-  && !dedicatedLocalIndexTestFiles.has(file)
+  !dedicatedLocalIndexTestFiles.has(file)
   && !file.startsWith("tests/integration/")
   && !isLiveTestFile(file)
 ));
@@ -199,24 +178,20 @@ const allFiles = liveOnly
   ? discoveredFiles.filter(isLiveTestFile)
   : mainOnly
     ? mainFlowFiles
-    : specializedOnly
-      ? ordinaryDiscoveredFiles.filter((file) => specializedTestFiles.has(file))
-      : integrationOnly
-        ? ordinaryDiscoveredFiles.filter((file) => file.startsWith("tests/integration/"))
-        : ordinaryDiscoveredFiles;
+    : integrationOnly
+      ? ordinaryDiscoveredFiles.filter((file) => file.startsWith("tests/integration/"))
+      : ordinaryDiscoveredFiles;
 
 if (allFiles.length === 0) {
   console.error(liveOnly
     ? "No live-provider Node test files found"
     : mainOnly
       ? "No main-flow Node test files found"
-      : specializedOnly
-        ? "No specialized Node test files found"
-        : integrationOnly
-          ? "No integration Node test files found"
-          : unitOnly
-            ? "No fast unit Node test files found"
-            : "No Node test files found");
+      : integrationOnly
+        ? "No integration Node test files found"
+        : unitOnly
+          ? "No fast unit Node test files found"
+          : "No Node test files found");
   process.exit(1);
 }
 
@@ -259,6 +234,11 @@ const isolatedUnitFiles = new Set([
   // parallel suite, process-heavy Hub tests can starve the probe long enough
   // to turn a successful command into a false timeout.
   "tests/checklist-verifier-gate.test.js",
+  // Starts a real Hub process through the public CLI and waits for it to bind
+  // a loopback port. Under the parallel fast-unit batch, process pressure can
+  // starve Hub startup until it exits non-zero; run it serially like the other
+  // real-process suites.
+  "tests/e2e/hub-cli.test.js",
   // Runs real syntax/test subprocesses through the verification hard gate.
   // Parallel process pressure can exhaust the bounded 30-second command
   // window and manufacture a verification failure even though the same

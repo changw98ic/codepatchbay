@@ -24,10 +24,9 @@ The repository commands below are the supported development entry points:
 - `npm run build:node` compiles the application to `dist/`.
 - `npm run build:tests` compiles tests to `dist-tests/`.
 - `npm run typecheck` checks the application and tests without emitting files.
-- `npm test` runs the default Node and shell test suites.
-- `npm run test:main` runs the main-flow profile and shell checks.
+- `npm test` runs the default Node test suites.
+- `npm run test:main` runs the main-flow profile.
 - `npm run test:integration` runs the real-process integration profile.
-- `npm run test:specialized` runs benchmark, evaluation, release-rehearsal, and packaging checks.
 - `node dist-tests/scripts/run-node-tests.js --main --list` prints the current main-flow file set without running it; documentation must not copy a fixed file count.
 - `npm run verify:release-contracts` runs the focused release-contract checks.
 - `npm run verify:release-gate` runs the complete release gate and requires configured signing and external evidence.
@@ -37,7 +36,7 @@ The repository commands below are the supported development entry points:
 Use ES modules throughout. `.editorconfig` enforces UTF-8, LF endings, final newlines, trimmed trailing whitespace, and two-space indentation. TypeScript strict mode. Use kebab-case for command and test files, camelCase for functions. Keep new CLI commands in `cli/commands/`.
 
 ## Testing Guidelines
-Backend and CLI coverage uses Node’s built-in test runner via `*.test.ts`; shell integration checks use `tests/cpb-*.test.sh`. Add focused regression tests for handoff, event, phase, runtime, CLI, or review behavior. Do not edit fakes, fixtures, snapshots, or test doubles just to hide production behavior changes. No fixed coverage threshold is enforced; document untested risk in the PR.
+Backend and CLI coverage uses Node’s built-in test runner via `*.test.ts`. Add focused regression tests for handoff, event, phase, runtime, CLI, or review behavior. Do not edit fakes, fixtures, snapshots, or test doubles just to hide production behavior changes. No fixed coverage threshold is enforced; document untested risk in the PR.
 
 ## Commit & Pull Request Guidelines
 History uses short imperative subjects with concrete scope, such as `Fix bridge import paths and add missing phase shell wrappers` or `Add dynamic workflow engine, bridges, and DW acceptance gates`. Keep diffs small and focused. Fill `.github/pull_request_template.md` with summary, change type, safety checklist, and verification. Do not include secrets, runtime state, logs, `.env` files, generated dependency folders, or unverified guarantees. Link issues when relevant and update docs for behavior changes.

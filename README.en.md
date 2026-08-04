@@ -312,7 +312,7 @@ npm test
 npm run verify:release-gate
 ```
 
-`npm test` runs unit tests and offline local real-process end-to-end tests. Real Codex and Claude Code checks require explicit opt-in with `CPB_LIVE_E2E=1 npm run test:live:e2e`; see the [testing guide](docs/testing.md).
+`npm test` runs unit tests and offline local real-process end-to-end tests. Real Codex and Claude Code checks require explicit opt-in with `npm run test:live`; see the [testing guide](docs/testing.md).
 
 ## License
 

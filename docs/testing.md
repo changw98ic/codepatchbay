@@ -17,15 +17,14 @@ npm test
 The live suite sends the same bounded file-edit task through both Codex and Claude Code. It verifies the exact file content, confirms no extra workspace files were created, and checks CPB's provider audit trail.
 
 ```bash
-CPB_LIVE_E2E=1 npm run test:live:e2e
+npm run test:live
 ```
 
 Codex uses the registered `codex` agent. Claude Code uses the registered `claude` agent by default. To exercise Claude Code with an explicitly configured provider variant, select another registered Claude agent:
 
 ```bash
-CPB_LIVE_E2E=1 \
 CPB_LIVE_E2E_CLAUDE_AGENT=claude-glm \
-npm run test:live:e2e
+npm run test:live
 ```
 
 Supported examples include `claude`, `claude-glm`, `claude-mimo`, and `claude-bedrock` when their required credentials are configured. A missing login, credential, adapter, audit record, or expected file edit fails the suite; the test does not report these cases as skipped passes.

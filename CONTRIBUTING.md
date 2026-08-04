@@ -47,6 +47,6 @@ npm run test:main
 npm run test:integration
 ```
 
-Run `npm run test:integration` when changing process, ACP, worker, reconciliation, or authority boundaries. Use `npm run test:specialized` for benchmark, evaluation, release-rehearsal, or packaging work.
+Run `npm run test:integration` when changing process, ACP, worker, reconciliation, or authority boundaries.
 
 Do not run agents against repositories you do not control.

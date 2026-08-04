@@ -18,10 +18,9 @@ The repository commands below are the supported development entry points:
 - `npm run build:node` compiles the application to `dist/`.
 - `npm run build:tests` compiles tests to `dist-tests/`.
 - `npm run typecheck` checks the application and tests without emitting files.
-- `npm test` runs the default Node and shell test suites.
-- `npm run test:main` runs the main-flow profile and shell checks.
+- `npm test` runs the default Node test suites.
+- `npm run test:main` runs the main-flow profile.
 - `npm run test:integration` runs the real-process integration profile.
-- `npm run test:specialized` runs benchmark, evaluation, release-rehearsal, and packaging checks.
 - `node dist-tests/scripts/run-node-tests.js --main --list` prints the current main-flow file set without running it; documentation must not copy a fixed file count.
 - `npm run verify:release-contracts` runs the focused release-contract checks.
 - `npm run verify:release-gate` runs the complete release gate and requires configured signing and external evidence.

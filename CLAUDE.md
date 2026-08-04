@@ -87,7 +87,7 @@ cpb                         # bin 入口 → cli/cpb.ts (纯 Node.js 命令路�
 | HTTP（可选） | Node 原生 `http`：Hub API，以及独立的 `cpb stream` SSE/只读服务 |
 | 持久化 | 文件系统（JSONL events / JSON state / Markdown wiki / checkpoint） |
 | 并发控制 | leader-lock（单 leader）+ worker-supervisor + reconciler，checkpoint 恢复 |
-| 构建/测试 | `tsc` 编译；Node 内置 test runner；shell 冒烟测试 |
+| 构建/测试 | `tsc` 编译；Node 内置 test runner |
 
 ## 核心数据流
 
@@ -193,10 +193,9 @@ The repository commands below are the supported development entry points:
 - `npm run build:node` compiles the application to `dist/`.
 - `npm run build:tests` compiles tests to `dist-tests/`.
 - `npm run typecheck` checks the application and tests without emitting files.
-- `npm test` runs the default Node and shell test suites.
-- `npm run test:main` runs the main-flow profile and shell checks.
+- `npm test` runs the default Node test suites.
+- `npm run test:main` runs the main-flow profile.
 - `npm run test:integration` runs the real-process integration profile.
-- `npm run test:specialized` runs benchmark, evaluation, release-rehearsal, and packaging checks.
 - `node dist-tests/scripts/run-node-tests.js --main --list` prints the current main-flow file set without running it; documentation must not copy a fixed file count.
 - `npm run verify:release-contracts` runs the focused release-contract checks.
 - `npm run verify:release-gate` runs the complete release gate and requires configured signing and external evidence.
@@ -208,7 +207,6 @@ The repository commands below are the supported development entry points:
 - `tests/integration/` — 端到端集成测试
 - `tests/fixtures/` — fake ACP agent stub
 - `tests/helpers/` — 测试工具（spawn-file 等）
-- `tests/cpb-bridges.test.sh` / `cpb-jobs.test.sh` — shell 冒烟测试
 - 测试包含 **10 轮 adversarial-round-{1..10}** 验证
 - 入口: `npm test`（经 `pretest:node` 自动 `build:node + build:tests`）→ `node dist-tests/scripts/run-node-tests.js`
 
