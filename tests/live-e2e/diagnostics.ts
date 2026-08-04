@@ -1,6 +1,14 @@
+import { createHash } from "node:crypto";
+import os from "node:os";
 import path from "node:path";
 
 type DiagnosticRecord = Record<string, any>;
+
+export type SanitizeRuntimeTextContext = {
+  cpbRoot?: string;
+  hubRoot?: string;
+  executorRoot?: string;
+};
 
 export type LivePipelineDiagnosticInput = {
   queue: unknown;
@@ -29,6 +37,16 @@ const MAX_DIAGNOSTIC_KEYS = 100;
 const MAX_DIAGNOSTIC_ARRAY_ITEMS = 50;
 const MAX_DIAGNOSTIC_STRING_LENGTH = 4_096;
 const SECRET_KEY = /(?:authorization|cookie|credential|password|secret|session|token)/i;
+
+const SECRET_VALUE_PATTERNS: RegExp[] = [
+  /sk-[A-Za-z0-9_-]{8,}/g,
+  /Bearer\s+\S+/g,
+  /eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g,
+  /\b[A-Fa-f0-9]{32,}\b/g,
+  /\b[A-Za-z0-9+/_=-]{40,}\b/g,
+];
+
+const ABSOLUTE_PATH_PATTERN = /\/(?:[A-Za-z0-9._@-]+\/)+[A-Za-z0-9._@-]+/g;
 
 const STATE_KEYS = [
   "id",
@@ -73,15 +91,48 @@ function recordValue(value: unknown): DiagnosticRecord {
     : {};
 }
 
+function sha256Short(value: string): string {
+  return createHash("sha256").update(value).digest("hex").slice(0, 12);
+}
+
+export function sanitizeRuntimeText(value: unknown, ctx: SanitizeRuntimeTextContext = {}): string {
+  if (typeof value !== "string") return "";
+  let out = value;
+  const prefixes = [ctx.cpbRoot, ctx.hubRoot, ctx.executorRoot]
+    .filter((candidate): candidate is string => Boolean(candidate));
+  prefixes.sort((a, b) => b.length - a.length);
+  for (const prefix of prefixes) {
+    if (prefix && out.includes(prefix)) {
+      out = out.split(prefix).join(`<root:${sha256Short(prefix)}>`);
+    }
+  }
+  const tmp = os.tmpdir();
+  if (tmp && out.includes(tmp)) {
+    out = out.split(tmp).join("<tmp>");
+  }
+  const home = os.homedir();
+  if (home && out.includes(home)) {
+    out = out.split(home).join("<home>");
+  }
+  out = out.replace(ABSOLUTE_PATH_PATTERN, (match) => `<path:${sha256Short(match)}>`);
+  for (const pattern of SECRET_VALUE_PATTERNS) {
+    pattern.lastIndex = 0;
+    out = out.replace(pattern, () => "[REDACTED:sha256:12]");
+  }
+  return out.length <= MAX_DIAGNOSTIC_STRING_LENGTH
+    ? out
+    : `${out.slice(0, MAX_DIAGNOSTIC_STRING_LENGTH)}…[truncated]`;
+}
+
 function sanitizeDiagnosticValue(value: unknown, key = "", depth = 0): unknown {
+  if (typeof value === "string") {
+    const sanitized = sanitizeRuntimeText(value);
+    if (SECRET_KEY.test(key)) return "[REDACTED]";
+    return sanitized;
+  }
   if (SECRET_KEY.test(key)) return "[REDACTED]";
   if (value === null || value === undefined || typeof value === "boolean" || typeof value === "number") {
     return value;
-  }
-  if (typeof value === "string") {
-    return value.length <= MAX_DIAGNOSTIC_STRING_LENGTH
-      ? value
-      : `${value.slice(0, MAX_DIAGNOSTIC_STRING_LENGTH)}…[truncated]`;
   }
   if (depth >= MAX_DIAGNOSTIC_DEPTH) return "[truncated-depth]";
   if (Array.isArray(value)) {

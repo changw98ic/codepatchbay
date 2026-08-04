@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "kind": "cpb-real-live-pipeline-e2e",
-  "runId": "1785654278323-13e0298a-b22d-4158-8f66-673773a86aa3",
+  "runId": "[REDACTED:sha256:12]",
   "recordedAt": "2026-08-02T07:04:38.394Z",
   "provider": "codex",
   "realProviderRequired": true,
@@ -39,7 +39,7 @@
       "code": null
     },
     "finalizationStatus": "review_bundle",
-    "worktreePath": "/private/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-live-pipeline-codex-7Gr0SZ/hub/projects/live-pipeline-codex/worktrees/job-q-msbggbn7-a2ak-pipeline-52bf4064692d",
+    "worktreePath": "/private<tmp><path:53f44e4f261c>",
     "editedFile": "target.txt"
   },
   "ok": true

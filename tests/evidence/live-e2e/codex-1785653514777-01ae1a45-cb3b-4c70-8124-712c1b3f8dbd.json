@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "kind": "cpb-real-live-pipeline-e2e",
-  "runId": "1785653514777-01ae1a45-cb3b-4c70-8124-712c1b3f8dbd",
+  "runId": "[REDACTED:sha256:12]",
   "recordedAt": "2026-08-02T06:51:54.846Z",
   "provider": "codex",
   "realProviderRequired": true,
@@ -33,13 +33,13 @@
     "finalizerEvent": "audit_finalized",
     "eventCount": 31,
     "finalizer": null,
-    "worktreePath": "/private/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-live-pipeline-codex-DMGvwO/hub/projects/live-pipeline-codex/worktrees/job-q-msbfzyhm-7cxn-pipeline-bd0c4b8cd513",
+    "worktreePath": "/private<tmp><path:19ce321cce86>",
     "editedFile": "target.txt"
   },
   "ok": false,
   "artifactPaths": {
-    "result": "../../../var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-live-pipeline-codex-DMGvwO/hub/assignments/a-q-msbfzyhm-7cxn/attempts/001/result.json",
-    "events": "../../../var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-live-pipeline-codex-DMGvwO/hub/projects/live-pipeline-codex/events/live-pipeline-codex/job-q-msbfzyhm-7cxn.jsonl"
+    "result": "..<path:f2edd8059be3><tmp><path:5187cbac65f9>",
+    "events": "..<path:f2edd8059be3><tmp><path:c73c52698013>"
   },
   "failure": {
     "message": "queue did not complete\n+ actual - expected\n\n+ 'scheduled'\n- 'completed'\n",

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "kind": "cpb-real-live-pipeline-e2e",
-  "runId": "1785685298047-0f9b512d-b53b-4ea7-bc6f-b6bb2510e38e",
+  "runId": "[REDACTED:sha256:12]",
   "recordedAt": "2026-08-02T15:41:38.498Z",
   "provider": "codex",
   "realProviderRequired": true,
@@ -19,7 +19,7 @@
   "evidence": {},
   "ok": false,
   "failure": {
-    "message": "ENOENT: no such file or directory, open '/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-live-pipeline-codex-fR7p1Q/hub/assignments/a-q-msbyx76e-hoy8/attempts/001/result.json'",
+    "message": "ENOENT: no such file or directory, open '<tmp><path:72e70eb98207>'",
     "code": "ENOENT"
   }
 }

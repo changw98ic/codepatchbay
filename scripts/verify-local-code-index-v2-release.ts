@@ -88,7 +88,7 @@ const SCHEMA_OWNER_FILES: ReadonlyMap<SchemaOwner, ReadonlySet<string>> = new Ma
     "server/services/hub/worker-state-broker.ts",
     "server/services/infra.ts",
     "server/services/job/job-store.ts",
-    "tests/checklist-decompose-integration.test.ts",
+    "tests/unit/hub-queue.test.ts",
     "tests/queue-orchestrator.test.ts",
   ])],
 ]);

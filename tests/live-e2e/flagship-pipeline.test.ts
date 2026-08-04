@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import { tmpdir } from "node:os";
@@ -9,6 +9,7 @@ import { test } from "node:test";
 
 import { run as runPipeline } from "../../cli/commands/pipeline.js";
 import { ensureLocalCodeIndex } from "../../core/indexing/local-code-index/index.js";
+import { cpbHome } from "../../core/paths.js";
 import { HubOrchestrator } from "../../server/orchestrator/hub-orchestrator.js";
 import { registerProject } from "../../server/services/hub/hub-registry.js";
 import { listQueue } from "../../server/services/hub/hub-queue.js";
@@ -17,11 +18,11 @@ import {
   assertLivePipelineCompleted,
   buildLivePipelineDiagnostics,
   resolveLiveWorktreeEvidence,
+  sanitizeRuntimeText,
 } from "./diagnostics.js";
 
 const execFile = promisify(execFileCallback);
 const artifactRoot = path.resolve(import.meta.dirname, "../..");
-const sourceRoot = path.resolve(artifactRoot, "..");
 const timeoutValue = Number(process.env.CPB_LIVE_E2E_PIPELINE_TIMEOUT_MS);
 const pipelineTimeoutMs = Number.isFinite(timeoutValue) && timeoutValue > 0
   ? timeoutValue
@@ -133,7 +134,8 @@ function preserveEnvironment(keys: string[]) {
 }
 
 async function writeRunRecord(record: JsonRecord) {
-  const directory = path.join(sourceRoot, "tests", "evidence", "live-e2e");
+  const directory = process.env.CPB_LIVE_E2E_EVIDENCE_ROOT
+    || path.join(cpbHome(), "evidence", "live-e2e");
   await mkdir(directory, { recursive: true });
   const provider = String(record.provider || "provider").replace(/[^A-Za-z0-9._-]/g, "-");
   const runId = String(record.runId || randomUUID()).replace(/[^A-Za-z0-9._-]/g, "-");
@@ -316,7 +318,8 @@ for (const provider of configuredAgents) {
           eventCount: types.length,
           finalizer: result.finalization || result.finalizeResult || jobResult.finalizeResult || jobResult.finalizer || null,
           finalizationStatus: recordValue(result.finalization).status || null,
-          worktreePath: worktreeEvidence.path,
+          worktreePathBasename: path.basename(worktreeEvidence.path),
+          worktreePathSha256: createHash("sha256").update(worktreeEvidence.path).digest("hex"),
           worktreeCleanup: {
             disposition: worktreeEvidence.cleanup.disposition,
             cleanupVerified: worktreeEvidence.cleanup.cleanupVerified,
@@ -349,7 +352,10 @@ for (const provider of configuredAgents) {
         ...record,
         ok: false,
         failure: {
-          message: error instanceof Error ? error.message : String(error),
+          message: sanitizeRuntimeText(
+            error instanceof Error ? error.message : String(error),
+            { cpbRoot, hubRoot, executorRoot: artifactRoot },
+          ),
           code: error && typeof error === "object" && "code" in error ? String(error.code || "") : null,
         },
         queue: {
@@ -424,7 +430,12 @@ for (const provider of configuredAgents) {
               workerId: worker.workerId || null,
               status: worker.status || null,
             })),
-            error: cleanupError instanceof Error ? cleanupError.message : cleanupError ? String(cleanupError) : null,
+            error: cleanupError == null
+              ? null
+              : sanitizeRuntimeText(
+                cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+                { cpbRoot, hubRoot, executorRoot: artifactRoot },
+              ),
           },
         },
       };

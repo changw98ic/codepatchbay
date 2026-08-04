@@ -67,7 +67,7 @@ handling, and documenting the no-selection-repair CLI shape for aborted cleanup.
 可写的隔离 runtime/hub/release 目录；只有 Phase 3/4 需要 provider 凭据和可丢弃
 GitHub 仓库。
 
-代码索引不在本次修复范围内。开始每个实施批次前都必须运行
+Local Code Index v2 的接口与存储变更纳入本次 v0.5 发布：CLI 查询语法统一为位置参数式 canonical（`cpb code-index query definitions --symbol X`、`query references --symbol X`、`query inventory`），旧的 `--definitions`/`--references`/`--related-file` 选择器现为硬语法错误；查询结果 schema 调整（inventory 增加 `nodeCount`），持久化 `coverage` 字段从字符串枚举改为 summary 对象。上述破坏性变更可在稳定化版本接受，因为旧索引加载时会触发 `unsupported_index_schema` 守卫并自动重建为新的 summary 形态，无需维护者手工迁移（见提交 `c409f1d7`）。开始每个实施批次前都必须运行
 `cpb code-index status -s .`；只有当次输出同时包含 `available: true`、
 `fresh: true` 和 `exact: true` 时才可依赖该快照；还必须按 `tool.coverage` 限定声明范围。
 `effective: "file-inventory-only"` 或 `partial: true` 只能证明文件清单，不能声称完整符号、引用
@@ -148,7 +148,7 @@ v0.5 发布候选必须满足：
 - 不把历史运行失败改写成成功，不用旧官方评分替代新 CPB 运行。
 - 不自动提交、推送、打 tag、合并或关闭临时 PR；这些操作需要发布维护者明确授权。
 - 不自动终止用户的 ChatGPT、Codex 或其他长生命周期进程。
-- 不改变 Local Code Index v2 的公开接口或存储设计。
+- Local Code Index v2 的 CLI 查询语法、查询结果 schema 与持久化 `coverage` 字段已纳入 v0.5（详见 §1 与提交 `c409f1d7`；旧索引经 `unsupported_index_schema` 守卫自动重建，无需手工迁移）；本次仍不改变索引存储位置规则（不得写入源码目录），也不新增索引后端。
 
 ## 5. 设计原则
 

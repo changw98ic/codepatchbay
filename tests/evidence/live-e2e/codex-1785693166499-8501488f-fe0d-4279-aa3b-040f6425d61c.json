@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "kind": "cpb-real-live-pipeline-e2e",
-  "runId": "1785693166499-8501488f-fe0d-4279-aa3b-040f6425d61c",
+  "runId": "[REDACTED:sha256:12]",
   "recordedAt": "2026-08-02T17:52:46.562Z",
   "provider": "codex",
   "realProviderRequired": true,
@@ -39,7 +39,7 @@
       "code": null
     },
     "finalizationStatus": "review_bundle",
-    "worktreePath": "/private/var/folders/nl/1kt4gw6j22l4zd8h1929k64w0000gn/T/cpb-live-pipeline-codex-SX1SHc/hub/projects/live-pipeline-codex/worktrees/.cpb-cleanup-quarantine-job-q-msc3ltxg-urxd-pipeline-3fb739060968-1785693275915-c9186d19-4d14-473f-a635-da4c945d23bd/worktree",
+    "worktreePath": "/private<tmp><path:2809aa8235e5>",
     "worktreeCleanup": {
       "disposition": "quarantined",
       "cleanupVerified": true,

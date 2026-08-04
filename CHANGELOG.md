@@ -57,6 +57,12 @@ consult `docs/product/dw08-migration-runbook.md`.
   `6bfda609`, `b6506ca0`, `20e73276`, `dfbcef2f`, `25e580f0`, `ef4a4116`).
 - GLM quota handoffs now **route to MiMo** without weakening agent policy (`5bdde0e0`);
   provider admission coordinated across isolated workers (`e55942d5`).
+- **Local Code Index v2 CLI query syntax is now positional** —
+  `cpb code-index query definitions --symbol X` / `references --symbol X` /
+  `inventory` is the canonical form; the legacy `--definitions` / `--references` /
+  `--related-file` selectors are now hard syntax errors. The persisted `coverage` field
+  changed from a string enum to a summary object; legacy indexes are rebuilt automatically
+  via the `unsupported_index_schema` guard (`c409f1d7`).
 
 ### Removed
 - Redis dependency and `ProjectWorker` (`554fd4e5`).

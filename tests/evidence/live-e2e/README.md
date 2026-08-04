@@ -1,6 +1,6 @@
 # Real-provider E2E evidence
 
-Each real-provider test writes a JSON summary here after every run. `flagship-pipeline.test.ts` records the full queue-to-finalizer path; `provider-edit.test.ts` records the direct Codex/Claude ACP path. A flagship record is valid release evidence only when it has:
+This directory holds archived, redacted real-provider E2E evidence records. New runtime evidence is written **outside the source tree** to `CPB_LIVE_E2E_EVIDENCE_ROOT` (defaulting to `~/.cpb/evidence/live-e2e` — see `tests/live-e2e/flagship-pipeline.test.ts`); the records kept here are historical and have been sanitized of absolute paths, hostnames, and secrets. A flagship record is valid release evidence only when it has:
 
 - `realProviderRequired: true` and `fakeProvider: false`;
 - completed queue, assignment, and managed-worker result statuses;

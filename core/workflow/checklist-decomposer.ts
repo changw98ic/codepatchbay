@@ -393,7 +393,7 @@ export async function decomposeTaskToChecklistItems({
           items,
           diagnostics: {
             source: "local_code_index_exact_symbol",
-            indexSnapshotId: ref.snapshotId,
+            snapshotId: ref.snapshotId,
             allowedFiles: items.flatMap((item) => item.allowedFiles),
           },
         };
