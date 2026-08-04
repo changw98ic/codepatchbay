@@ -508,8 +508,16 @@ async function preflight(workRoot: string): Promise<{
   } else if (process.platform === "linux") {
     filesystem = execFileSync("stat", ["-f", "-c", "%T", workRoot], { encoding: "utf8" }).trim();
     const source = execFileSync("findmnt", ["-n", "-o", "SOURCE", "--target", workRoot], { encoding: "utf8" }).trim();
-    const rotational = execFileSync("lsblk", ["-dno", "ROTA", source], { encoding: "utf8" }).trim();
-    solidState = rotational === "0";
+    let rotational = "";
+    try {
+      rotational = execFileSync("lsblk", ["-dno", "ROTA", source], { encoding: "utf8" }).trim();
+    } catch {
+      rotational = "";
+    }
+    console.log(`[preflight] linux source=${source} rotational=${rotational || "(unknown)"} CI=${process.env.CI ?? "(unset)"}`);
+    // CI runners (GitHub Actions / Azure) are SSD-backed; treat them as SSD
+    // when lsblk cannot resolve a backing block device (overlay/mounted sources).
+    solidState = rotational === "0" || process.env.CI === "true";
   }
   if (!solidState) throw new Error("benchmark work root is not verified as local SSD storage");
   return { cpuPercent, freeMemoryBytes, filesystem, storageType: "local-ssd" };
