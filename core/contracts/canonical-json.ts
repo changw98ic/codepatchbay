@@ -75,7 +75,16 @@ function serializeCanonicalJson(value: unknown, ancestors: Set<object>, location
   }
 }
 
-/** RFC 8785/JCS-compatible JSON for the JSON value domain used by CPB contracts. */
+/**
+ * RFC 8785/JCS-compatible JSON for the JSON value domain used by CPB contracts.
+ *
+ * Distinct protocol from core/indexing/local-code-index/canonical-json.ts
+ * (which serves content-addressed index identity under different rules: a
+ * trailing newline, lenient coercion of undefined/bigint to null, and a bare
+ * hex digest). The two must NOT be unified — merging would alter signed
+ * release digests and index object identities. This serializer is the
+ * authoritative canonical form for release-evidence signing.
+ */
 export function canonicalJson(value: unknown): string {
   return serializeCanonicalJson(value, new Set<object>(), "$");
 }

@@ -14,6 +14,13 @@
  *   - Uses node:crypto for SHA-256 (built-in).
  *   - Output is always valid JSON terminated by exactly one trailing newline.
  *
+ * Distinct protocol from core/contracts/canonical-json.ts (release-evidence
+ * signing): that serializer is strict RFC 8785/JCS (rejects unpaired
+ * surrogates, sparse arrays, non-plain objects, and cycles), emits NO trailing
+ * newline, and yields a `sha256:<hex>` identifier. The two must NOT be unified —
+ * this module's trailing newline and bare-hex digest are load-bearing for
+ * content-addressed index identities.
+ *
  * Spec: docs/architecture/local-code-index-v2-spec.md
  */
 
