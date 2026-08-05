@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { test } from "node:test";
 
@@ -12,6 +13,12 @@ import {
   worktreeCurrentPointer,
 } from "../core/indexing/local-code-index/paths.js";
 import { tempRoot } from "./helpers.js";
+
+// flow-2hh: getVersion() prefers the in-process @ast-grep/napi version over the
+// configured ast-grep CLI binary's version, so the index identity reflects the
+// native references backend.
+const requireFromTest = createRequire(import.meta.url);
+const napiVersion = (requireFromTest("@ast-grep/napi/package.json") as { version: string }).version;
 
 // ── Publication: ensure writes index and status reports correctly ────────────
 
@@ -72,7 +79,8 @@ test("ensureLocalCodeIndex uses the configured ast-grep executable for structura
   });
 
   assert.equal(result.tool.available, true);
-  assert.equal(result.tool.version, "0.0.0-test");
+  // getVersion prefers @ast-grep/napi's version over the configured CLI binary.
+  assert.equal(result.tool.version, napiVersion);
   assert.deepEqual(result.tool.coverage, {
     effective: "file-inventory-only",
     partial: true,
@@ -142,21 +150,6 @@ test("ensureLocalCodeIndex uses the configured ast-grep executable for structura
       },
     ],
   );
-
-  const parserSource = await readFile(fakeAstGrep, "utf8");
-  await writeFile(
-    fakeAstGrep,
-    parserSource.replace("ast-grep 0.0.0-test", "ast-grep 0.0.1-test"),
-    "utf8",
-  );
-  const reparsed = await ensureLocalCodeIndex({
-    cpbRoot,
-    sourcePath,
-    astGrepBinaryPath: fakeAstGrep,
-  });
-  assert.equal(reparsed.tool.version, "0.0.1-test");
-  assert.equal(reparsed.stats.parsedFiles, 2);
-  assert.notEqual(reparsed.ref.snapshotId, result.ref.snapshotId);
 });
 
 test("ensureLocalCodeIndex amortizes outline process startup while retaining bounded reference batches", async () => {

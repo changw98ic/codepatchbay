@@ -15,6 +15,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { createRequire } from "node:module";
 
 import type { LocalCodeIndexCoverage, SourceRange } from "./contracts.js";
 import { objectId } from "./canonical-json.js";
@@ -951,6 +952,23 @@ const SYMBOL_SCHEMA_HASH = createHash("sha256")
  * @param parserVersion The ast-grep version string, or null if unavailable.
  * @returns A 32-hex-char fingerprint string.
  */
+const requireForNapiVersion = createRequire(import.meta.url);
+/**
+ * @ast-grep/napi package version, read once for extractor-fingerprint salting.
+ * "unknown" when the optional dependency is absent. flow-2hh: references are
+ * extracted in-process via @ast-grep/napi; salting the fingerprint with the
+ * backend + version ensures a native-backend rebuild cannot reuse (or collide
+ * with) a prior CLI-backend index, and that a napi version bump rebuilds.
+ */
+export const NAPI_BACKEND_VERSION: string = (() => {
+  try {
+    const v = (requireForNapiVersion("@ast-grep/napi/package.json") as { version?: unknown }).version;
+    return typeof v === "string" && v.length > 0 ? v : "unknown";
+  } catch {
+    return "unknown";
+  }
+})();
+
 export function computeLanguageExtractorFingerprint(
   language: SupportedLanguage,
   parserMode: ParserMode,
@@ -968,6 +986,8 @@ export function computeLanguageExtractorFingerprint(
     `symbol-schema-hash:${SYMBOL_SCHEMA_HASH}`,
     `language:${language}`,
     `parser-mode:${parserMode}`,
+    `extractor-backend:napi`,
+    `napi-version:${NAPI_BACKEND_VERSION}`,
   ].join("\0");
 
   return createHash("sha256").update(fingerprint).digest("hex").slice(0, 32);

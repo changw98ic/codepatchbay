@@ -118,6 +118,8 @@ import {
   extractFileFacts,
   languageForFile,
   computeLanguageExtractorFingerprint,
+  NAPI_BACKEND_VERSION,
+  MAX_SYMBOLS_PER_FILE,
 } from "./extract.js";
 import {
   AstGrepAdapter,
@@ -213,6 +215,8 @@ function indexExtractorFingerprint(parserVersion: string | null): string {
       `parser:${parserVersion ?? "none"}`,
       `extraction-schema:${INDEX_EXTRACTION_SCHEMA_VERSION}`,
       `shard-layout:${SHARD_LAYOUT_VERSION}`,
+      `extractor-backend:napi`,
+      `napi-version:${NAPI_BACKEND_VERSION}`,
     ].join("\0"))
     .digest("hex")
     .slice(0, 32);
@@ -1875,6 +1879,10 @@ async function extractAndPublishObjects(
       let hasStructuralFacts = parserVersion !== null
         && batch.every((entry) => outlineAvailablePaths.has(entry.path));
 
+      // flow-2hh: capture per-file references failures so coverage stays honest.
+      const failedLangPaths = new Set<string>();
+      const referencesTruncatedPaths = new Set<string>();
+
       if (hasStructuralFacts) {
         const astGrepStart = Date.now();
         try {
@@ -1883,6 +1891,12 @@ async function extractAndPublishObjects(
             { signal },
           );
           astGrepMs += Date.now() - astGrepStart;
+          if (references.failedLangPaths) {
+            for (const p of references.failedLangPaths) failedLangPaths.add(p);
+          }
+          if (references.truncatedPaths) {
+            for (const p of references.truncatedPaths) referencesTruncatedPaths.add(p);
+          }
           const declarationPositions = new Map<string, Set<string>>();
           const importRanges = new Map<string, AstGrepSymbol[]>();
 
@@ -1939,6 +1953,12 @@ async function extractAndPublishObjects(
         }
       }
 
+      // flow-2hh: a file whose references language was unavailable must not be
+      // published as ast-grep-structural with empty references. Drop it from the
+      // structural batch so extractFileFacts falls back to lexical mode
+      // (lexical-reference-fallback coverage), keeping definitions honest.
+      for (const p of failedLangPaths) batchFiles.delete(p);
+
       for (const entry of batch) {
         signal?.throwIfAborted();
 
@@ -1975,6 +1995,25 @@ async function extractAndPublishObjects(
 
         extractionResults.set(entry.path, result);
         coverageOutcomes.push(result.coverage);
+        if (
+          referencesTruncatedPaths.has(entry.path)
+          && result.truncation.every((t) => t.limitKind !== "max-references")
+        ) {
+          // flow-2hh: the in-process references extractor capped this file's
+          // references; surface it so the published FileObject.truncated is
+          // honest rather than silently reporting a complete reference set.
+          extractionResults.set(entry.path, {
+            ...result,
+            truncation: [
+              ...result.truncation,
+              {
+                limitKind: "max-references",
+                limit: MAX_SYMBOLS_PER_FILE,
+                actual: MAX_SYMBOLS_PER_FILE,
+              },
+            ],
+          });
+        }
 
         if (result.truncation.some((t) => t.limitKind === "max-file-size")) {
           oversizedFiles += 1;

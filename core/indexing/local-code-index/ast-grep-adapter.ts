@@ -13,7 +13,8 @@
  */
 
 import { execFile } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
+import { createRequire } from "node:module";
 import path from "node:path";
 
 import { LocalCodeIndexUnavailableError } from "./contracts.js";
@@ -100,6 +101,23 @@ const NAPI_DYNAMIC_PACKS: ReadonlyArray<readonly [string, () => Promise<NapiLang
 
 let napiModuleCache: NapiModule | null = null;
 let napiRegisteredLangs: ReadonlySet<string> | null = null;
+
+const nativeRequire = createRequire(import.meta.url);
+
+/**
+ * Read the installed @ast-grep/napi package version, or null if the optional
+ * dependency is absent. Used both for the extractor version and for salting the
+ * extractor fingerprint so a native-backend rebuild cannot reuse or collide
+ * with a prior CLI-backend index.
+ */
+function readNapiVersion(): string | null {
+  try {
+    const v = (nativeRequire("@ast-grep/napi/package.json") as { version?: unknown }).version;
+    return typeof v === "string" && v.length > 0 ? v : null;
+  } catch {
+    return null;
+  }
+}
 
 /** Read the LangRegistration out of a dynamically imported @ast-grep/lang-* pack. */
 function extractLangRegistration(mod: unknown): NapiLangRegistration {
@@ -336,13 +354,6 @@ interface RawFileOutline {
   items?: unknown;
 }
 
-interface RawMatch {
-  text?: unknown;
-  file?: unknown;
-  language?: unknown;
-  range?: RawRange;
-}
-
 // ── Internal helpers ─────────────────────────────────────────────────────────
 
 /**
@@ -503,62 +514,6 @@ function validateLine(line: string): AstGrepFileResult | null {
     path: raw.path,
     language: raw.language,
     symbols,
-  };
-}
-
-function validateReferenceLine(line: string): {
-  path: string;
-  language: string;
-  symbol: AstGrepSymbol;
-} | null {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(line);
-  } catch {
-    return null;
-  }
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return null;
-  }
-  const match = parsed as RawMatch;
-  if (
-    typeof match.text !== "string"
-    || match.text.length === 0
-    || typeof match.file !== "string"
-    || match.file.length === 0
-    || typeof match.language !== "string"
-    || match.range === null
-    || typeof match.range !== "object"
-    || match.range.start === null
-    || typeof match.range.start !== "object"
-    || match.range.end === null
-    || typeof match.range.end !== "object"
-    || !isValidNonNegInt(match.range.start.line)
-    || !isValidNonNegInt(match.range.start.column)
-    || !isValidNonNegInt(match.range.end.line)
-    || !isValidNonNegInt(match.range.end.column)
-  ) {
-    return null;
-  }
-  return {
-    path: match.file,
-    language: match.language,
-    symbol: {
-      name: match.text,
-      kind: "identifier",
-      role: "reference",
-      range: {
-        startLine: match.range.start.line + 1,
-        startColumn: match.range.start.column + 1,
-        endLine: match.range.end.line + 1,
-        endColumn: match.range.end.column + 1,
-      },
-      exported: false,
-      signature: null,
-      astKind: "identifier",
-      isImport: false,
-      members: [],
-    },
   };
 }
 
@@ -744,6 +699,12 @@ export class AstGrepAdapter {
   }
 
   private async captureVersion(signal?: AbortSignal): Promise<string | null> {
+    // Prefer the in-process @ast-grep/napi version (the references extractor)
+    // so the index identity reflects the native backend. Fall back to the
+    // ast-grep CLI version when napi is not installed (optional dependency
+    // absent) so outline-only installs still report a version.
+    const napiVersion = readNapiVersion();
+    if (napiVersion !== null) return napiVersion;
     try {
       const stdout = await runAstGrep(this.binaryPath, ["--version"], {
         timeoutMs: this.timeoutMs,
@@ -882,7 +843,7 @@ export class AstGrepAdapter {
    */
   async extractReferences(
     paths: readonly string[],
-    options?: Readonly<{ lang?: string; signal?: AbortSignal }>,
+    options?: Readonly<{ signal?: AbortSignal }>,
   ): Promise<AstGrepExtractionResult> {
     if (paths.length === 0) {
       return {
@@ -924,14 +885,17 @@ export class AstGrepAdapter {
       let src: string;
       try {
         const abs = this.cwd ? path.resolve(this.cwd, relPath) : relPath;
+        // Bound the read BEFORE it happens: stat first and refuse oversized
+        // sources so a huge file cannot pressure memory only to be rejected
+        // after being fully buffered.
+        const sizeStat = await stat(abs);
+        if (sizeStat.size > MAX_OUTPUT_BYTES) {
+          truncatedPaths.add(relPath);
+          return;
+        }
         src = decoder.decode(await readFile(abs));
       } catch (error) {
         errors.push(`references: unreadable ${relPath}: ${(error as Error).message}`);
-        return;
-      }
-      // OOM guard: refuse to feed oversized source to the native parser.
-      if (Buffer.byteLength(src, "utf8") > MAX_OUTPUT_BYTES) {
-        truncatedPaths.add(relPath);
         return;
       }
       let sgRoot: { root: () => { findAll: (matcher: unknown) => NapiSgNode[] } };
@@ -977,7 +941,28 @@ export class AstGrepAdapter {
       files.push({ path: relPath, language: lang, symbols });
     };
 
-    await mapBounded(paths, NAPI_REFERENCES_CONCURRENCY, perFile);
+    // Per-batch timeout: native parse cannot be forcibly cancelled mid-flight,
+    // but a pathological file must not hold the index lock indefinitely. Race
+    // the batch against a timer; on timeout reject operation_aborted. In-flight
+    // parses still finish on the libuv thread, but no further result is used.
+    const batchTimeoutMs = this.timeoutMs;
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+    const batchTimeout = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(
+        () => reject(new LocalCodeIndexUnavailableError("operation_aborted", {
+          cause: new Error(`references batch exceeded ${batchTimeoutMs}ms`),
+        })),
+        batchTimeoutMs,
+      );
+    });
+    try {
+      await Promise.race([
+        mapBounded(paths, NAPI_REFERENCES_CONCURRENCY, perFile),
+        batchTimeout,
+      ]);
+    } finally {
+      if (timeoutHandle !== null) clearTimeout(timeoutHandle);
+    }
 
     if (signal?.aborted) {
       throw new LocalCodeIndexUnavailableError("operation_aborted");
