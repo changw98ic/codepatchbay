@@ -125,6 +125,26 @@ function extractLangRegistration(mod: unknown): NapiLangRegistration {
  * language pack merely excludes that language from the registered set
  * (extractReferences then routes its files to failedLangPaths).
  */
+let napiInitPromise: Promise<{
+  napi: NapiModule;
+  registeredLangs: ReadonlySet<string>;
+}> | null = null;
+
+/**
+ * Lazily load @ast-grep/napi and register the dynamic language packs.
+ *
+ * Concurrent first-time callers share a single in-flight initialization
+ * (napiInitPromise) so registerDynamicLanguage — which must be called exactly
+ * once — is not invoked twice. Without this guard, a second concurrent init
+ * could observe the "already registered" rejection, leave the registered set
+ * at builtins-only, and overwrite the cache.
+ *
+ * Returns the module and the set of available language names (built-ins plus
+ * successfully registered dynamic packs). Throws `parser_unavailable` only if
+ * the napi module itself cannot be loaded; a missing/unavailable dynamic
+ * language pack merely excludes that language from the registered set
+ * (extractReferences then routes its files to failedLangPaths).
+ */
 async function loadNapi(): Promise<{
   napi: NapiModule;
   registeredLangs: ReadonlySet<string>;
@@ -132,6 +152,27 @@ async function loadNapi(): Promise<{
   if (napiModuleCache !== null && napiRegisteredLangs !== null) {
     return { napi: napiModuleCache, registeredLangs: napiRegisteredLangs };
   }
+  if (napiInitPromise === null) {
+    napiInitPromise = doLoadNapi().then(
+      (result) => {
+        napiModuleCache = result.napi;
+        napiRegisteredLangs = result.registeredLangs;
+        return result;
+      },
+      (error) => {
+        // Reset so a later call can retry; do not cache a failed init.
+        napiInitPromise = null;
+        throw error;
+      },
+    );
+  }
+  return napiInitPromise;
+}
+
+async function doLoadNapi(): Promise<{
+  napi: NapiModule;
+  registeredLangs: ReadonlySet<string>;
+}> {
   let napi: NapiModule;
   try {
     napi = await import("@ast-grep/napi");
@@ -158,8 +199,6 @@ async function loadNapi(): Promise<{
       // Registration rejected (e.g. already registered): no dynamic langs added.
     }
   }
-  napiModuleCache = napi;
-  napiRegisteredLangs = registered;
   return { napi, registeredLangs: registered };
 }
 
@@ -633,6 +672,23 @@ export type AstGrepAdapterOptions = Readonly<{
 }>;
 
 /**
+ * Structural contract for the ast-grep adapter, satisfied by {@link AstGrepAdapter}
+ * and by test stubs. Lets tests inject a fake adapter by implementing the
+ * interface rather than subclassing the concrete adapter (no refused bequest).
+ */
+export interface LocalCodeIndexAdapter {
+  getVersion(signal?: AbortSignal): Promise<string | null>;
+  extractFiles(
+    paths: readonly string[],
+    options?: Readonly<{ lang?: string; signal?: AbortSignal }>,
+  ): Promise<AstGrepExtractionResult>;
+  extractReferences(
+    paths: readonly string[],
+    options?: Readonly<{ signal?: AbortSignal }>,
+  ): Promise<AstGrepExtractionResult>;
+}
+
+/**
  * The sole ast-grep process adapter for the local code index.
  *
  * All ast-grep invocations go through this adapter.  It:
@@ -647,7 +703,7 @@ export type AstGrepAdapterOptions = Readonly<{
  * Spec section 6: "ast-grep is a true external executable. The implementation
  * invokes it through one internal process adapter."
  */
-export class AstGrepAdapter {
+export class AstGrepAdapter implements LocalCodeIndexAdapter {
   private readonly binaryPath: string;
   private readonly cwd: string | undefined;
   private readonly timeoutMs: number;

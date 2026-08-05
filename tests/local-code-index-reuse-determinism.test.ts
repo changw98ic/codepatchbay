@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 
 import { ensureLocalCodeIndex } from "../core/indexing/local-code-index/service.js";
 import { queryLocalCodeIndex } from "../core/indexing/local-code-index/query.js";
-import { tempRoot, listFiles } from "./helpers.js";
+import { tempRoot, readDirFilesSorted } from "./helpers.js";
 
 // flow-2hh napi 迁移的关键基线门（策略无关）。
 //
@@ -73,11 +73,7 @@ test("ensureLocalCodeIndex reuses snapshot on second build and force-rebuild is 
   // 读 build #1 的 file object canonical 字节（最硬的确定性锚点）。
   const storageRoot = path.join(cpbRoot, "indexes", "local-code", "v2");
   const filesDir = path.join(storageRoot, "repositories", r1.ref.repositoryKey, "objects", "files");
-  const readObjectBytes = async (): Promise<string[]> => {
-    const files = await listFiles(filesDir);
-    return Promise.all(files.sort().map((f) => readFile(f, "utf8")));
-  };
-  const bytesAfterBuild1 = await readObjectBytes();
+  const bytesAfterBuild1 = await readDirFilesSorted(filesDir);
   assert.ok(bytesAfterBuild1.length > 0, "file object must be published");
 
   // ── build #2：无 force，应复用（抓指纹漂移）─────────────────────────────
@@ -98,7 +94,7 @@ test("ensureLocalCodeIndex reuses snapshot on second build and force-rebuild is 
   assert.equal(r3.tool.extractorFingerprint, fp1, "build #3 same fingerprint");
 
   // force 重建后 file object 字节必须与 build #1 byte-identical（确定性硬证据）。
-  const bytesAfterBuild3 = await readObjectBytes();
+  const bytesAfterBuild3 = await readDirFilesSorted(filesDir);
   assert.deepEqual(
     bytesAfterBuild3,
     bytesAfterBuild1,

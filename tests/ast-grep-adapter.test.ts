@@ -15,18 +15,17 @@ import { tempRoot } from "./helpers.js";
 async function makeAdapterWithFiles(
   label: string,
   files: ReadonlyArray<readonly [string, string]>,
-): Promise<{ adapter: AstGrepAdapter; sourcePath: string }> {
+): Promise<AstGrepAdapter> {
   const sourcePath = await tempRoot(`adapter-${label}`);
   await mkdir(sourcePath, { recursive: true });
   for (const [name, content] of files) {
     await writeFile(path.join(sourcePath, name), content, "utf8");
   }
-  const adapter = new AstGrepAdapter({ binaryPath: "ast-grep", cwd: sourcePath });
-  return { adapter, sourcePath };
+  return new AstGrepAdapter({ binaryPath: "ast-grep", cwd: sourcePath });
 }
 
 test("extractReferences rejects an already-aborted signal with operation_aborted", async () => {
-  const { adapter } = await makeAdapterWithFiles("abort", [["a.ts", "const a = 1;\n"]]);
+  const adapter = await makeAdapterWithFiles("abort", [["a.ts", "const a = 1;\n"]]);
   const ac = new AbortController();
   ac.abort();
   await assert.rejects(
@@ -36,7 +35,7 @@ test("extractReferences rejects an already-aborted signal with operation_aborted
 });
 
 test("extractReferences extracts references across multiple languages", async () => {
-  const { adapter } = await makeAdapterWithFiles("multilang", [
+  const adapter = await makeAdapterWithFiles("multilang", [
     ["mod.ts", "export function alpha(x: number): number { return alpha(x); }\n"],
     ["a.py", "def beta(y):\n    return beta(y)\n"],
     ["b.go", "package main\nfunc gamma(w int) int { return gamma(w) }\n"],
@@ -58,7 +57,7 @@ test("extractReferences extracts references across multiple languages", async ()
 });
 
 test("extractReferences returns files in path-sorted order regardless of input order", async () => {
-  const { adapter } = await makeAdapterWithFiles("order", [
+  const adapter = await makeAdapterWithFiles("order", [
     ["zeta.ts", "const z = 1;\n"],
     ["alpha.ts", "const a = 1;\n"],
     ["mid.ts", "const m = 1;\n"],
@@ -73,7 +72,7 @@ test("extractReferences returns files in path-sorted order regardless of input o
 test("extractReferences caps per-file references and marks truncatedPaths", async () => {
   // 10001 identifier occurrences -> capped at 10000, file marked truncated.
   const big = `${Array.from({ length: 10001 }, () => "a").join(";\n")};\n`;
-  const { adapter } = await makeAdapterWithFiles("trunc", [["big.ts", big]]);
+  const adapter = await makeAdapterWithFiles("trunc", [["big.ts", big]]);
   const result = await adapter.extractReferences(["big.ts"]);
   assert.equal(result.files.length, 1);
   assert.equal(result.files[0]!.symbols.length, 10_000);
@@ -82,7 +81,7 @@ test("extractReferences caps per-file references and marks truncatedPaths", asyn
 });
 
 test("extractReferences always returns the failedLangPaths and truncatedPaths contract fields", async () => {
-  const { adapter } = await makeAdapterWithFiles("contract", [["a.ts", "const a = 1;\n"]]);
+  const adapter = await makeAdapterWithFiles("contract", [["a.ts", "const a = 1;\n"]]);
   const result = await adapter.extractReferences(["a.ts"]);
   assert.ok(result.failedLangPaths instanceof Set);
   assert.ok(result.truncatedPaths instanceof Set);
@@ -90,7 +89,7 @@ test("extractReferences always returns the failedLangPaths and truncatedPaths co
 });
 
 test("extractReferences records a failedLangPath for an unreadable file", async () => {
-  const { adapter } = await makeAdapterWithFiles("readfail", [["real.ts", "const a = 1;\n"]]);
+  const adapter = await makeAdapterWithFiles("readfail", [["real.ts", "const a = 1;\n"]]);
   // "ghost.ts" does not exist on disk -> read fails -> failedLangPaths.
   const result = await adapter.extractReferences(["real.ts", "ghost.ts"]);
   assert.ok(result.failedLangPaths.has("ghost.ts"), "unreadable file marked failedLang");
@@ -99,7 +98,7 @@ test("extractReferences records a failedLangPath for an unreadable file", async 
 });
 
 test("extractReferences is deterministic across two runs", async () => {
-  const { adapter } = await makeAdapterWithFiles("det", [
+  const adapter = await makeAdapterWithFiles("det", [
     ["m.ts", "export function f(x: number) { return f(x); }\n"],
     ["a.py", "def g():\n    return g()\n"],
   ]);

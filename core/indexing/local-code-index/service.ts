@@ -123,6 +123,7 @@ import {
 } from "./extract.js";
 import {
   AstGrepAdapter,
+  LocalCodeIndexAdapter,
   AST_GREP_OUTLINE_BATCH_SIZE,
   AST_GREP_REFERENCE_BATCH_SIZE,
   outlineFileToParseResult,
@@ -286,9 +287,9 @@ function coalesceKey(storageRoot: string, sourceKey: string): string {
 // seams). Tests inject a fake adapter to exercise the failed-language /
 // truncation coverage paths without uninstalling native packages. The leading
 // underscore marks it internal; it is not re-exported through the public barrel.
-let testAdapterFactory: ((binaryPath: string, cwd: string) => AstGrepAdapter) | null = null;
+let testAdapterFactory: ((binaryPath: string, cwd: string) => LocalCodeIndexAdapter) | null = null;
 export function _setTestAdapterFactory(
-  factory: ((binaryPath: string, cwd: string) => AstGrepAdapter) | null,
+  factory: ((binaryPath: string, cwd: string) => LocalCodeIndexAdapter) | null,
 ): void {
   testAdapterFactory = factory;
 }
@@ -406,7 +407,7 @@ async function ensureLocalCodeIndexInner(
   sourceKey: string,
   canonicalSource: string,
   isGit: boolean,
-  astGrepAdapter: AstGrepAdapter,
+  astGrepAdapter: LocalCodeIndexAdapter,
   force: boolean,
   signal?: AbortSignal,
 ): Promise<EnsureLocalCodeIndexResult> {
@@ -634,7 +635,7 @@ async function runPublicationProtocol(
   changePlan: ChangePlan,
   currentPtr: CurrentPointer | null,
   isGit: boolean,
-  astGrepAdapter: AstGrepAdapter,
+  astGrepAdapter: LocalCodeIndexAdapter,
   parserVersion: string | null,
   expectedExtractorFingerprint: string,
   force: boolean,
@@ -1804,7 +1805,7 @@ async function extractAndPublishObjects(
   sourceState: SourceState,
   changePlan: ChangePlan,
   lockOwner: IndexLockOwner,
-  adapter: AstGrepAdapter,
+  adapter: LocalCodeIndexAdapter,
   parserVersion: string | null,
   expectedExtractorFingerprint: string,
   signal: AbortSignal | undefined,
@@ -2039,6 +2040,14 @@ async function extractAndPublishObjects(
             ...result,
             parserMode: "lexical-fallback",
             coverage: "lexical-reference-fallback",
+            // Recompute the fingerprint for the downgraded parserMode so the
+            // file object identity is consistent with lexical-fallback state
+            // (the original fingerprint was computed for structural mode).
+            extractorFingerprint: computeLanguageExtractorFingerprint(
+              result.language,
+              "lexical-fallback",
+              parserVersion,
+            ),
             errors: [...result.errors, ...reasonErrors],
           };
         }

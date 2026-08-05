@@ -52,3 +52,9 @@ export async function listFiles(dir) {
   }
   return out;
 }
+
+/** Read every file under a directory as utf-8 text, in sorted path order. */
+export async function readDirFilesSorted(dir) {
+  const files = await listFiles(dir);
+  return Promise.all(files.sort().map((f) => readFile(f, "utf8")));
+}
