@@ -4,6 +4,7 @@ import path from "node:path";
 import { test } from "node:test";
 
 import { ensureLocalCodeIndex, _setTestAdapterFactory } from "../core/indexing/local-code-index/service.js";
+import { LocalCodeIndexUnavailableError } from "../core/indexing/local-code-index/contracts.js";
 import { queryLocalCodeIndex } from "../core/indexing/local-code-index/query.js";
 import {
   LocalCodeIndexAdapter,
@@ -119,6 +120,60 @@ test("failed references language downgrades coverage but keeps outline definitio
     assert.ok(
       summary.file?.definitions.some((d) => d.symbol === "alpha"),
       "outline definition must be retained on failed-language downgrade",
+    );
+  } finally {
+    _setTestAdapterFactory(null);
+  }
+});
+
+// An adapter whose extractReferences throws (simulating @ast-grep/napi entirely
+// unavailable). The whole batch must downgrade but retain outline definitions.
+class ThrowingReferencesAdapter implements LocalCodeIndexAdapter {
+  async getVersion(): Promise<string | null> { return "test-version"; }
+  async getCliVersion(): Promise<string | null> { return "test-cli-version"; }
+  async extractFiles(
+    paths: readonly string[],
+  ): Promise<AstGrepExtractionResult> {
+    const def: AstGrepSymbol = {
+      name: "alpha", kind: "function", role: "definition",
+      range: { startLine: 1, startColumn: 1, endLine: 1, endColumn: 22 },
+      exported: true, signature: null, astKind: null, isImport: false, members: [],
+    };
+    return {
+      files: paths.map((p) => ({ path: p, language: "typescript", symbols: [def] })),
+      version: "test-version", truncated: false, errors: [],
+    };
+  }
+  async extractReferences(): Promise<AstGrepExtractionResult> {
+    throw new LocalCodeIndexUnavailableError("parser_unavailable");
+  }
+}
+
+test("whole-batch references failure downgrades coverage but keeps outline definitions", async () => {
+  const root = await tempRoot("cov-batchfail");
+  const sourcePath = path.join(root, "src");
+  const cpbRoot = path.join(root, ".cpb");
+  await mkdir(sourcePath, { recursive: true });
+  await mkdir(cpbRoot, { recursive: true });
+  await writeFile(path.join(sourcePath, "mod.ts"), "export function alpha() {}\n", "utf8");
+
+  _setTestAdapterFactory(() => new ThrowingReferencesAdapter());
+  try {
+    const result = await ensureLocalCodeIndex({ cpbRoot, sourcePath });
+    assert.equal(result.available, true);
+    assert.equal(result.tool.coverage.failedFiles, 1);
+    assert.equal(result.tool.coverage.partial, true);
+
+    const summary = await queryLocalCodeIndex(
+      result.ref,
+      { kind: "file-summary", path: "mod.ts" },
+      { cpbRoot },
+    );
+    if (summary.kind !== "file-summary") throw new Error("expected file-summary");
+    assert.equal(summary.file?.coverage, "lexical-reference-fallback");
+    assert.ok(
+      summary.file?.definitions.some((d) => d.symbol === "alpha"),
+      "outline definition retained on whole-batch references failure",
     );
   } finally {
     _setTestAdapterFactory(null);

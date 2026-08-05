@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
+import { promisify } from "node:util";
 
 import { AstGrepAdapter } from "../core/indexing/local-code-index/ast-grep-adapter.js";
 import { tempRoot } from "./helpers.js";
+
+const execFileAsync = promisify(execFile);
 
 // flow-2hh: direct adapter tests for the in-process @ast-grep/napi references
 // path. failedLang-scenario and service-stub coverage (which need a loadNapi
@@ -109,4 +113,77 @@ test("extractReferences is deterministic across two runs", async () => {
     JSON.parse(JSON.stringify(r2.files)),
   );
 });
+
+// ── Gate A: ordered CLI↔NAPI identifier equivalence across 7 languages ───────
+// The core migration invariant: for each structural language, the in-process
+// @ast-grep/napi extraction must produce the SAME identifiers in the SAME order
+// as the external `ast-grep run --kind identifier` CLI. Skipped when the CLI is
+// not on PATH (e.g., CI without ast-grep installed).
+
+const GATE_A_FIXTURES: ReadonlyArray<readonly [string, string]> = [
+  ["a.ts", "const alpha = 1;\nfunction beta() { return beta(); }\n"],
+  ["b.tsx", "const x = 1;\nfunction Foo() { return <Foo />; }\n"],
+  ["c.js", "const a = 1;\nfunction b() { return b(); }\n"],
+  ["d.jsx", "const c = 1;\nfunction Bar() { return <Bar />; }\n"],
+  ["e.py", "def delta():\n    delta()\n"],
+  ["f.go", "package main\nfunc gamma() { gamma() }\n"],
+  ["g.rs", "fn epsilon() { epsilon() }\n"],
+];
+
+async function cliIdentifiers(absFile: string): Promise<ReadonlyArray<readonly [string, number, number]>> {
+  const { stdout } = await execFileAsync(
+    "ast-grep",
+    ["run", "--kind", "identifier", "--json=stream", absFile],
+    { maxBuffer: 16 * 1024 * 1024 },
+  );
+  const out: Array<readonly [string, number, number]> = [];
+  for (const line of stdout.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      const j = JSON.parse(trimmed) as { text?: unknown; range?: { start?: { line?: unknown; column?: unknown } } };
+      if (
+        typeof j.text === "string"
+        && Number.isInteger(j.range?.start?.line)
+        && Number.isInteger(j.range?.start?.column)
+      ) {
+        out.push([j.text, j.range!.start!.line as number, j.range!.start!.column as number]);
+      }
+    } catch { /* skip non-JSON lines */ }
+  }
+  return out;
+}
+
+test("Gate A: napi references match CLI identifier order across all structural languages", async () => {
+  let cliAvailable = true;
+  try {
+    await execFileAsync("ast-grep", ["--version"]);
+  } catch {
+    cliAvailable = false;
+  }
+  if (!cliAvailable) {
+    console.log("[Gate A] skipped: ast-grep CLI not on PATH");
+    return;
+  }
+
+  const dir = await tempRoot("gate-a");
+  await mkdir(dir, { recursive: true });
+  for (const [name, content] of GATE_A_FIXTURES) {
+    await writeFile(path.join(dir, name), content, "utf8");
+  }
+  const adapter = new AstGrepAdapter({ binaryPath: "ast-grep", cwd: dir });
+  const result = await adapter.extractReferences(GATE_A_FIXTURES.map(([name]) => name));
+
+  for (const [name] of GATE_A_FIXTURES) {
+    const cli = await cliIdentifiers(path.join(dir, name));
+    const napi = (result.files.find((f) => f.path === name)?.symbols ?? [])
+      .map((s) => [s.name, s.range.startLine - 1, s.range.startColumn - 1] as const);
+    assert.deepEqual(
+      napi,
+      cli,
+      `Gate A ordered equivalence failed for ${name}: napi !== CLI`,
+    );
+  }
+});
+
 
