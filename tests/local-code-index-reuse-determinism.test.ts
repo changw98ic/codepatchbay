@@ -46,10 +46,28 @@ test("ensureLocalCodeIndex reuses snapshot on second build and force-rebuild is 
 
   await mkdir(sourcePath, { recursive: true });
   await mkdir(cpbRoot, { recursive: true });
-  // 真 .ts：alpha 既是定义名又被调用 + 顶层引用。references 路径必须有产出。
+  // Multiple files across languages, parsed concurrently by the napi adapter's
+  // bounded worker pool. The byte-identical force-rebuild check below reads
+  // EVERY published file object, so it exercises multi-file concurrency
+  // determinism — the single-file shape could not catch completion-order leaks.
   await writeFile(
     path.join(sourcePath, "mod.ts"),
     "export function alpha(x: number): number { return alpha(x); }\nconst b = alpha(1);\n",
+    "utf8",
+  );
+  await writeFile(
+    path.join(sourcePath, "util.ts"),
+    "import { alpha } from './mod';\nexport function beta() { return alpha(0); }\nconst c = beta();\n",
+    "utf8",
+  );
+  await writeFile(
+    path.join(sourcePath, "a.py"),
+    "def delta(y):\n    return delta(y - 1) if y > 0 else 0\nz = delta(3)\n",
+    "utf8",
+  );
+  await writeFile(
+    path.join(sourcePath, "b.go"),
+    "package main\nfunc gamma(w int) int { return gamma(w) }\n",
     "utf8",
   );
 

@@ -17,6 +17,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 import { LocalCodeIndexUnavailableError } from "./contracts.js";
+import { languageForFile } from "./extract.js";
 import type { AstGrepNode, AstGrepParseResult } from "./extract.js";
 
 // ── Bounded constants (spec section 9.3) ──────────────────────────────────────
@@ -163,43 +164,36 @@ async function loadNapi(): Promise<{
 }
 
 /**
- * Map a source-relative path to its napi language name for references
- * extraction, or null if the file is not a structural references target.
+ * Translate a `SupportedLanguage` (extract.ts's 12-member structural language
+ * union, single-sourced via `languageForFile`) into the @ast-grep/napi
+ * language name used for references extraction. Non-structural languages
+ * (json/css/html/markdown/yaml) map to null (file-inventory-only; references
+ * are not extracted). The extension-to-SupportedLanguage mapping is NOT
+ * duplicated here — it is delegated to `languageForFile` so the outline and
+ * references paths can never drift apart.
  *
- * Mirrors the structural language set of extract.ts languageForExtension
- * (typescript / typescriptreact / javascript / javascriptreact / python / rust
- * / go). Non-structural languages (json/css/html/markdown/yaml) and unmatched
- * extensions (.mts/.cts/.pyw/.java/...) return null → file-inventory-only.
- * Returns the napi language name as a string (NapiLang = Lang | CustomLang);
- * built-in names are the Lang enum's string values ("TypeScript", "Tsx", ...).
- *
- * Note: .jsx maps to JavaScript because the default Lang enum has no Jsx member
- * and the JavaScript parser handles JSX syntax (verified by the flow-2hh PoC).
+ * .jsx → JavaScript because the default Lang enum has no Jsx member and the
+ * JavaScript parser handles JSX syntax (verified by the flow-2hh PoC).
  */
+const SUPPORTED_TO_NAPI_LANG: Readonly<Record<string, string | null>> = {
+  typescript: "TypeScript",
+  typescriptreact: "Tsx",
+  javascript: "JavaScript",
+  javascriptreact: "JavaScript",
+  python: "python",
+  rust: "rust",
+  go: "go",
+  json: null,
+  css: null,
+  html: null,
+  markdown: null,
+  yaml: null,
+};
+
 export function langForPath(relPath: string): string | null {
-  const dot = relPath.lastIndexOf(".");
-  if (dot < 0) return null;
-  const ext = relPath.slice(dot + 1).toLowerCase();
-  switch (ext) {
-    case "ts":
-      return "TypeScript";
-    case "tsx":
-      return "Tsx";
-    case "js":
-    case "mjs":
-    case "cjs":
-    case "jsx":
-      return "JavaScript";
-    case "py":
-    case "pyi":
-      return "python";
-    case "go":
-      return "go";
-    case "rs":
-      return "rust";
-    default:
-      return null;
-  }
+  const supported = languageForFile(relPath);
+  if (supported === null) return null;
+  return SUPPORTED_TO_NAPI_LANG[supported] ?? null;
 }
 
 /** Structural surface of an napi SgNode used by references extraction. */
@@ -988,6 +982,13 @@ export class AstGrepAdapter {
     if (signal?.aborted) {
       throw new LocalCodeIndexUnavailableError("operation_aborted");
     }
+
+    // Deterministic output order regardless of which file finished parsing
+    // first under bounded concurrency. (Service consumes `files` into a
+    // path-keyed map whose insertion order is input-determined, so completion
+    // order does not leak into FileObjects today; sorting removes any future
+    // leak risk and lets multi-file determinism be asserted directly.)
+    files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 
     return {
       files,

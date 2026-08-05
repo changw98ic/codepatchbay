@@ -271,6 +271,8 @@ cpb doctor [--json]
 cpb version
 ```
 
+> **本地代码索引提取模型**：outline（定义/导入）仍 spawn 外部 `ast-grep` CLI；references（符号引用）在进程内通过 `@ast-grep/napi` 提取，消除每批 references 的进程启动。`@ast-grep/napi` 及语言包 lang-python/go/rust 随 `dependencies` 安装（napi 通过其平台 optionalDependencies 提供 native 二进制，lang 包内含各平台 prebuild）；某平台缺少二进制时，该语言的引用降级、outline 不受影响。
+
 ### Checklist Artifacts
 
 Checklist-aware tasks also produce a frozen acceptance checklist, execution map,

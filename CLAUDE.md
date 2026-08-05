@@ -4,7 +4,7 @@
 
 ## 项目概览
 
-CodePatchbay 是一个 **纯 Node.js CLI 工具**（运行时依赖：`chokidar` (bundled) + `@ast-grep/napi` 及语言包 lang-python/go/rust (native，按平台 optionalDeps)；outline/version 仍 spawn 外部 `ast-grep` CLI），定位为本地/私有化的 coding-agent 交付运行时。它不替代 Claude Code / Codex / 其他 agent，而是用 ACP stdio 协议中立地连接它们，编排 plan → execute → verify 流水线，记录 evidence/checklist/verdict，并通过 durable event log + checkpoint 支持中断恢复与多 worker 调度。
+CodePatchbay 是一个 **纯 Node.js CLI 工具**（运行时依赖：`chokidar` (bundled) + `@ast-grep/napi` 及语言包 lang-python/go/rust（均声明在 `dependencies`；`@ast-grep/napi` 通过其自身的平台 optionalDependencies 提供 native 二进制，lang 包内含各平台 prebuild）。outline/version 仍 spawn 外部 `ast-grep` CLI），定位为本地/私有化的 coding-agent 交付运行时。它不替代 Claude Code / Codex / 其他 agent，而是用 ACP stdio 协议中立地连接它们，编排 plan → execute → verify 流水线，记录 evidence/checklist/verdict，并通过 durable event log + checkpoint 支持中断恢复与多 worker 调度。
 
 核心使用路径：`cpb pipeline <project> "<task>" [retries]` 一条全自动流水线；也可单命令手动触发各阶段。
 
@@ -81,7 +81,7 @@ cpb                         # bin 入口 → cli/cpb.ts (纯 Node.js 命令路�
 | 层 | 技术 |
 |---|---|
 | 语言 | TypeScript (strict, ESM) → 编译到 `dist/` 执行 |
-| 运行时 | Node.js ≥ 20；`chokidar` (bundled, 文件监听) + `@ast-grep/napi` 及语言包 lang-python/go/rust (native，按平台 optionalDeps)；outline/version 仍用外部 `ast-grep` CLI |
+| 运行时 | Node.js ≥ 20；`chokidar` (bundled, 文件监听) + `@ast-grep/napi` 及语言包 lang-python/go/rust（声明在 `dependencies`；`@ast-grep/napi` 自带平台 optionalDeps native 二进制，lang 包内含 prebuild）；outline/version 仍用外部 `ast-grep` CLI |
 | CLI | 纯 Node.js（`cli/cpb.ts`，无第三方 CLI 框架） |
 | ACP 通信 | JSON-RPC over stdio |
 | HTTP（可选） | Node 原生 `http`：Hub API，以及独立的 `cpb stream` SSE/只读服务 |
