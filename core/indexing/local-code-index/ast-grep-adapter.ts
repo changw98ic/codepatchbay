@@ -52,6 +52,154 @@ const MAX_SIGNATURE_BYTES = 16 * 1024;
  */
 const DEFAULT_TIMEOUT_MS = 60_000;
 
+// ── Native @ast-grep/napi loader (references extraction) ─────────────────────
+//
+// References extraction runs in-process via @ast-grep/napi, eliminating the
+// per-batch CLI spawn (83 spawns per 10000-file round). outline + version
+// extraction stay on the external ast-grep CLI. The napi module and its
+// dynamic language packs are loaded LAZILY on the first references extraction:
+// a static top-level `import "@ast-grep/napi"` would crash this entire module
+// when a platform .node binary is missing, taking down the still-CLI
+// outline/version path with it. Dynamic import isolates any failure to the
+// references path only (extractReferences throws parser_unavailable; outline
+// and getVersion continue via runAstGrep).
+//
+// registerDynamicLanguage is documented to be called exactly once per process;
+// loadNapi memoizes the module and the registered-language set so registration
+// happens at most once.
+
+type NapiModule = typeof import("@ast-grep/napi");
+
+/** Registration object exposed by each @ast-grep/lang-* pack. */
+interface NapiLangRegistration {
+  libraryPath: string;
+  extensions: string[];
+  languageSymbol?: string;
+  metaVarChar?: string;
+  expandoChar?: string;
+}
+
+/** Built-in languages available without dynamic registration (default Lang enum). */
+const NAPI_BUILTIN_LANGS: ReadonlySet<string> = new Set([
+  "TypeScript",
+  "Tsx",
+  "JavaScript",
+  "Css",
+  "Html",
+]);
+
+/** Dynamic language packs registered on first load; key = napi language name. */
+const NAPI_DYNAMIC_PACKS: ReadonlyArray<readonly [string, () => Promise<NapiLangRegistration>]> = [
+  ["python", async () => extractLangRegistration(await import("@ast-grep/lang-python"))],
+  ["go", async () => extractLangRegistration(await import("@ast-grep/lang-go"))],
+  ["rust", async () => extractLangRegistration(await import("@ast-grep/lang-rust"))],
+];
+
+let napiModuleCache: NapiModule | null = null;
+let napiRegisteredLangs: ReadonlySet<string> | null = null;
+
+/** Read the LangRegistration out of a dynamically imported @ast-grep/lang-* pack. */
+function extractLangRegistration(mod: unknown): NapiLangRegistration {
+  // The packs are CJS modules whose default/namespace export is the
+  // { libraryPath, extensions, languageSymbol, expandoChar } object.
+  const reg = (mod as { default?: unknown }).default ?? mod;
+  if (
+    reg !== null
+    && typeof reg === "object"
+    && typeof (reg as { libraryPath?: unknown }).libraryPath === "string"
+  ) {
+    return reg as NapiLangRegistration;
+  }
+  throw new Error("dynamic language pack did not expose a libraryPath registration");
+}
+
+/**
+ * Lazily load @ast-grep/napi and register the dynamic language packs.
+ *
+ * Returns the module and the set of available language names (built-ins plus
+ * successfully registered dynamic packs). Throws `parser_unavailable` only if
+ * the napi module itself cannot be loaded; a missing/unavailable dynamic
+ * language pack merely excludes that language from the registered set
+ * (extractReferences then routes its files to failedLangPaths).
+ */
+async function loadNapi(): Promise<{
+  napi: NapiModule;
+  registeredLangs: ReadonlySet<string>;
+}> {
+  if (napiModuleCache !== null && napiRegisteredLangs !== null) {
+    return { napi: napiModuleCache, registeredLangs: napiRegisteredLangs };
+  }
+  let napi: NapiModule;
+  try {
+    napi = await import("@ast-grep/napi");
+  } catch (error) {
+    throw new LocalCodeIndexUnavailableError("parser_unavailable", {
+      cause: error instanceof Error ? error : new Error(String(error)),
+    });
+  }
+  const registered = new Set<string>(NAPI_BUILTIN_LANGS);
+  const dynamic: Record<string, NapiLangRegistration> = {};
+  for (const [name, load] of NAPI_DYNAMIC_PACKS) {
+    try {
+      dynamic[name] = await load();
+    } catch {
+      // Pack missing or unsupported on this platform: left unregistered.
+      // extractReferences routes files of this language to failedLangPaths.
+    }
+  }
+  if (Object.keys(dynamic).length > 0) {
+    try {
+      napi.registerDynamicLanguage(dynamic);
+      for (const name of Object.keys(dynamic)) registered.add(name);
+    } catch {
+      // Registration rejected (e.g. already registered): no dynamic langs added.
+    }
+  }
+  napiModuleCache = napi;
+  napiRegisteredLangs = registered;
+  return { napi, registeredLangs: registered };
+}
+
+/**
+ * Map a source-relative path to its napi language name for references
+ * extraction, or null if the file is not a structural references target.
+ *
+ * Mirrors the structural language set of extract.ts languageForExtension
+ * (typescript / typescriptreact / javascript / javascriptreact / python / rust
+ * / go). Non-structural languages (json/css/html/markdown/yaml) and unmatched
+ * extensions (.mts/.cts/.pyw/.java/...) return null → file-inventory-only.
+ * Returns the napi language name as a string (NapiLang = Lang | CustomLang);
+ * built-in names are the Lang enum's string values ("TypeScript", "Tsx", ...).
+ *
+ * Note: .jsx maps to JavaScript because the default Lang enum has no Jsx member
+ * and the JavaScript parser handles JSX syntax (verified by the flow-2hh PoC).
+ */
+export function langForPath(relPath: string): string | null {
+  const dot = relPath.lastIndexOf(".");
+  if (dot < 0) return null;
+  const ext = relPath.slice(dot + 1).toLowerCase();
+  switch (ext) {
+    case "ts":
+      return "TypeScript";
+    case "tsx":
+      return "Tsx";
+    case "js":
+    case "mjs":
+    case "cjs":
+    case "jsx":
+      return "JavaScript";
+    case "py":
+    case "pyi":
+      return "python";
+    case "go":
+      return "go";
+    case "rs":
+      return "rust";
+    default:
+      return null;
+  }
+}
+
 // ── Symbol schema types ──────────────────────────────────────────────────────
 
 /**
