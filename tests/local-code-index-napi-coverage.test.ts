@@ -50,6 +50,9 @@ class FailedLangAdapter implements LocalCodeIndexAdapter {
   async getVersion(): Promise<string | null> {
     return "test-version";
   }
+  async getCliVersion(): Promise<string | null> {
+    return "test-cli-version";
+  }
   async extractFiles(
     paths: readonly string[],
   ): Promise<AstGrepExtractionResult> {

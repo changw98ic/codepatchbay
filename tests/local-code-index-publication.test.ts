@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { test } from "node:test";
 
@@ -12,6 +13,11 @@ import {
   worktreeCurrentPointer,
 } from "../core/indexing/local-code-index/paths.js";
 import { tempRoot } from "./helpers.js";
+
+// flow-2hh: getVersion() reports the @ast-grep/napi version (references backend);
+// the CLI version (outline backend) is captured separately for the fingerprint.
+const requireFromTest = createRequire(import.meta.url);
+const napiVersion = (requireFromTest("@ast-grep/napi/package.json") as { version: string }).version;
 
 // ── Publication: ensure writes index and status reports correctly ────────────
 
@@ -72,7 +78,8 @@ test("ensureLocalCodeIndex uses the configured ast-grep executable for structura
   });
 
   assert.equal(result.tool.available, true);
-  assert.equal(result.tool.version, "0.0.0-test");
+  // getVersion reports the @ast-grep/napi version (references backend).
+  assert.equal(result.tool.version, napiVersion);
   assert.deepEqual(result.tool.coverage, {
     effective: "file-inventory-only",
     partial: true,
@@ -157,7 +164,10 @@ test("ensureLocalCodeIndex uses the configured ast-grep executable for structura
     sourcePath,
     astGrepBinaryPath: fakeAstGrep,
   });
-  assert.equal(reparsed.tool.version, "0.0.1-test");
+  // outline still uses the external CLI, so a CLI version bump changes the
+  // extractor identity (getCliVersion feeds the fingerprint) and forces a
+  // re-parse, even though the reported tool.version (napi) is unchanged.
+  assert.equal(reparsed.tool.version, napiVersion);
   assert.equal(reparsed.stats.parsedFiles, 2);
   assert.notEqual(reparsed.ref.snapshotId, result.ref.snapshotId);
 });

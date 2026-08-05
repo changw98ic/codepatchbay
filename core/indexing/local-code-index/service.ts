@@ -411,7 +411,11 @@ async function ensureLocalCodeIndexInner(
   force: boolean,
   signal?: AbortSignal,
 ): Promise<EnsureLocalCodeIndexResult> {
-  const parserVersion = await astGrepAdapter.getVersion(signal);
+  // parserVersion (CLI, outline backend) salts the extractor fingerprint and
+  // gates structural availability. reportedVersion (napi, references backend)
+  // is the publicly reported tool version.
+  const parserVersion = await astGrepAdapter.getCliVersion(signal);
+  const reportedVersion = await astGrepAdapter.getVersion(signal);
   const expectedExtractorFingerprint = indexExtractorFingerprint(parserVersion);
   let isFirstAttempt = true;
 
@@ -597,6 +601,7 @@ async function ensureLocalCodeIndexInner(
         isGit,
         astGrepAdapter,
         parserVersion,
+        reportedVersion,
         expectedExtractorFingerprint,
         force,
         signal,
@@ -637,6 +642,7 @@ async function runPublicationProtocol(
   isGit: boolean,
   astGrepAdapter: LocalCodeIndexAdapter,
   parserVersion: string | null,
+  reportedVersion: string | null,
   expectedExtractorFingerprint: string,
   force: boolean,
   signal: AbortSignal | undefined,
@@ -790,7 +796,7 @@ async function runPublicationProtocol(
 
       const toolState: LocalCodeIndexToolState = {
         name: "ast-grep",
-        version: extractionResult.parserVersion,
+        version: reportedVersion,
         extractorFingerprint: extractionResult.extractorFingerprint,
         available: extractionResult.parserVersion !== null,
         coverage: extractionResult.coverage,
@@ -810,7 +816,7 @@ async function runPublicationProtocol(
         bytesRead: extractionResult.bytesRead,
         bytesWritten: snapshotResult.bytesWritten + shardResult.bytesWritten,
         coverage: extractionResult.coverage,
-        parserVersion: extractionResult.parserVersion,
+        parserVersion: reportedVersion,
         timings,
         durationMs: runDurationMs,
       };

@@ -13,6 +13,7 @@
  */
 
 import { execFile } from "node:child_process";
+import { createRequire } from "node:module";
 import path from "node:path";
 
 import { LocalCodeIndexUnavailableError } from "./contracts.js";
@@ -100,6 +101,18 @@ const NAPI_DYNAMIC_PACKS: ReadonlyArray<readonly [string, () => Promise<NapiLang
 
 let napiModuleCache: NapiModule | null = null;
 let napiRegisteredLangs: ReadonlySet<string> | null = null;
+
+const nativeRequire = createRequire(import.meta.url);
+
+/** Installed @ast-grep/napi package version, or null if the optional dep is absent. */
+function readNapiVersion(): string | null {
+  try {
+    const v = (nativeRequire("@ast-grep/napi/package.json") as { version?: unknown }).version;
+    return typeof v === "string" && v.length > 0 ? v : null;
+  } catch {
+    return null;
+  }
+}
 
 /** Read the LangRegistration out of a dynamically imported @ast-grep/lang-* pack. */
 function extractLangRegistration(mod: unknown): NapiLangRegistration {
@@ -678,6 +691,7 @@ export type AstGrepAdapterOptions = Readonly<{
  */
 export interface LocalCodeIndexAdapter {
   getVersion(signal?: AbortSignal): Promise<string | null>;
+  getCliVersion(signal?: AbortSignal): Promise<string | null>;
   extractFiles(
     paths: readonly string[],
     options?: Readonly<{ lang?: string; signal?: AbortSignal }>,
@@ -707,7 +721,8 @@ export class AstGrepAdapter implements LocalCodeIndexAdapter {
   private readonly binaryPath: string;
   private readonly cwd: string | undefined;
   private readonly timeoutMs: number;
-  private versionPromise: Promise<string | null> | null = null;
+  private cliVersionPromise: Promise<string | null> | null = null;
+  private napiVersionPromise: Promise<string | null> | null = null;
 
   constructor(options: AstGrepAdapterOptions) {
     if (typeof options.binaryPath !== "string" || options.binaryPath.length === 0) {
@@ -724,24 +739,35 @@ export class AstGrepAdapter implements LocalCodeIndexAdapter {
   }
 
   /**
-   * Capture and cache the ast-grep version string.
-   *
-   * Runs `ast-grep --version` once and caches the result.  Returns `null`
-   * when the binary is not available or its output cannot be parsed.
+   * Reported extractor version: the in-process @ast-grep/napi version (the
+   * references backend). Cached. Null when the optional napi dependency is
+   * absent. The outline-backend CLI version is exposed separately via
+   * {@link getCliVersion} for the extractor fingerprint.
    */
-  async getVersion(signal?: AbortSignal): Promise<string | null> {
-    if (this.versionPromise === null) {
-      this.versionPromise = this.captureVersion(signal);
+  async getVersion(_signal?: AbortSignal): Promise<string | null> {
+    if (this.napiVersionPromise === null) {
+      this.napiVersionPromise = Promise.resolve(readNapiVersion());
     }
-    return this.versionPromise;
+    return this.napiVersionPromise;
+  }
+
+  /**
+   * The external ast-grep CLI version (the outline backend), used to salt the
+   * extractor fingerprint. Runs `ast-grep --version` once and caches the
+   * result. Returns null when the binary is unavailable or unparseable.
+   */
+  async getCliVersion(signal?: AbortSignal): Promise<string | null> {
+    if (this.cliVersionPromise === null) {
+      this.cliVersionPromise = this.captureVersion(signal);
+    }
+    return this.cliVersionPromise;
   }
 
   private async captureVersion(signal?: AbortSignal): Promise<string | null> {
-    // The outline path still runs the external ast-grep CLI, so the reported
-    // extractor version is the CLI version. The @ast-grep/napi version (the
-    // references backend) is captured separately into the extractor
-    // fingerprint salt (extract.ts NAPI_BACKEND_VERSION / LANG_PACK_VERSIONS),
-    // so the index identity reflects BOTH backends.
+    // Captures the external ast-grep CLI version (the outline backend) used to
+    // salt the extractor fingerprint. The reported extractor version (napi) is
+    // returned by getVersion(); the CLI/lang-pack versions are combined into
+    // the fingerprint so the index identity reflects BOTH backends.
     try {
       const stdout = await runAstGrep(this.binaryPath, ["--version"], {
         timeoutMs: this.timeoutMs,
