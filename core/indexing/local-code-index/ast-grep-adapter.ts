@@ -13,6 +13,8 @@
  */
 
 import { execFile } from "node:child_process";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 
 import { LocalCodeIndexUnavailableError } from "./contracts.js";
 import type { AstGrepNode, AstGrepParseResult } from "./extract.js";
@@ -200,6 +202,62 @@ export function langForPath(relPath: string): string | null {
   }
 }
 
+/** Structural surface of an napi SgNode used by references extraction. */
+interface NapiSgNode {
+  text(): string;
+  range(): {
+    start: { line: number; column: number };
+    end: { line: number; column: number };
+  };
+}
+
+/**
+ * Bound concurrency for in-process references parsing. Matches the durable
+ * write concurrency so references parsing overlaps I/O without exhausting
+ * memory by holding many parsed ASTs live at once.
+ */
+const NAPI_REFERENCES_CONCURRENCY = 8;
+
+/**
+ * Stable positional ordering for references within a file. napi findAll is
+ * already deterministic and matches the CLI order, but an explicit sort
+ * guarantees byte-identical re-index (the object-identity collision guard)
+ * regardless of any internal traversal ordering.
+ */
+function compareReferencePosition(a: AstGrepSymbol, b: AstGrepSymbol): number {
+  return (
+    a.range.startLine - b.range.startLine
+    || a.range.startColumn - b.range.startColumn
+    || a.range.endLine - b.range.endLine
+    || a.range.endColumn - b.range.endColumn
+    || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)
+  );
+}
+
+/**
+ * Run an async callback over items with bounded concurrency, preserving the
+ * inability to cancel native parsing in flight: callers check the abort signal
+ * between items so abort stops dispatching new work (running parses finish on
+ * the libuv thread).
+ */
+async function mapBounded<T>(
+  items: readonly T[],
+  concurrency: number,
+  fn: (item: T, index: number) => Promise<unknown>,
+): Promise<void> {
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (true) {
+      const index = next;
+      next += 1;
+      if (index >= items.length) return;
+      await fn(items[index]!, index);
+    }
+  };
+  const size = Math.max(1, Math.min(concurrency, items.length));
+  await Promise.all(Array.from({ length: size }, () => worker()));
+}
+
 // ── Symbol schema types ──────────────────────────────────────────────────────
 
 /**
@@ -244,6 +302,19 @@ export type AstGrepExtractionResult = Readonly<{
   version: string | null;
   truncated: boolean;
   errors: readonly string[];
+  /**
+   * Paths whose references were truncated at the per-file symbol cap
+   * (or refused for being oversized). Optional: outline extraction never
+   * truncates per-file, so it omits this field.
+   */
+  truncatedPaths?: ReadonlySet<string>;
+  /**
+   * Paths whose references could not be extracted because their language was
+   * unavailable (dynamic language pack missing or unsupported on the
+   * platform). The service downgrades these files' coverage rather than
+   * publishing empty references under ast-grep-structural.
+   */
+  failedLangPaths?: ReadonlySet<string>;
 }>;
 
 // ── Raw output types (untrusted, pre-validation) ─────────────────────────────
@@ -824,58 +895,106 @@ export class AstGrepAdapter {
         files: [],
         version: await this.getVersion(options?.signal),
         truncated: false,
+        truncatedPaths: new Set<string>(),
+        failedLangPaths: new Set<string>(),
         errors: [],
       };
     }
     if (paths.length > AST_GREP_REFERENCE_BATCH_SIZE) {
       throw new LocalCodeIndexUnavailableError("parser_output_invalid");
     }
-    const args = [
-      "run",
-      "--kind",
-      "identifier",
-      "--json=stream",
-      "--color",
-      "never",
-    ];
-    if (options?.lang) args.push("--lang", options.lang);
-    args.push(...paths);
-    const stdout = await runAstGrep(this.binaryPath, args, {
-      timeoutMs: this.timeoutMs,
-      signal: options?.signal,
-      maxBuffer: MAX_OUTPUT_BYTES,
-      cwd: this.cwd,
-    });
-    const byPath = new Map<string, { language: string; symbols: AstGrepSymbol[] }>();
-    const errors: string[] = [];
-    let truncated = false;
-    for (const [index, line] of stdout.split("\n").entries()) {
-      if (line.length === 0) continue;
-      const validated = validateReferenceLine(line);
-      if (validated === null) {
-        errors.push(`malformed reference at line ${index + 1}`);
-        truncated = true;
-        continue;
-      }
-      const group = byPath.get(validated.path) ?? {
-        language: validated.language,
-        symbols: [],
-      };
-      if (group.symbols.length >= MAX_SYMBOLS_PER_FILE) {
-        truncated = true;
-        continue;
-      }
-      group.symbols.push(validated.symbol);
-      byPath.set(validated.path, group);
+    const signal = options?.signal;
+    if (signal?.aborted) {
+      throw new LocalCodeIndexUnavailableError("operation_aborted");
     }
+
+    // In-process references extraction via @ast-grep/napi (Strategy B:
+    // per-file parseAsync + findAll). Eliminates the per-batch CLI spawn.
+    // outline + version extraction stay on the external ast-grep CLI.
+    const { napi, registeredLangs } = await loadNapi();
+
+    const files: AstGrepFileResult[] = [];
+    const truncatedPaths = new Set<string>();
+    const failedLangPaths = new Set<string>();
+    const errors: string[] = [];
+    const decoder = new TextDecoder();
+
+    const perFile = async (relPath: string): Promise<void> => {
+      if (signal?.aborted) return;
+      const lang = langForPath(relPath);
+      if (lang === null) return; // non-structural: references not extracted
+      if (!registeredLangs.has(lang)) {
+        failedLangPaths.add(relPath);
+        return;
+      }
+      let src: string;
+      try {
+        const abs = this.cwd ? path.resolve(this.cwd, relPath) : relPath;
+        src = decoder.decode(await readFile(abs));
+      } catch (error) {
+        errors.push(`references: unreadable ${relPath}: ${(error as Error).message}`);
+        return;
+      }
+      // OOM guard: refuse to feed oversized source to the native parser.
+      if (Buffer.byteLength(src, "utf8") > MAX_OUTPUT_BYTES) {
+        truncatedPaths.add(relPath);
+        return;
+      }
+      let sgRoot: { root: () => { findAll: (matcher: unknown) => NapiSgNode[] } };
+      try {
+        // parseAsync returns an SgRoot; findAll lives on the root SgNode
+        // obtained via SgRoot.root() (verified in the flow-2hh PoC).
+        sgRoot = (await napi.parseAsync(lang, src)) as unknown as {
+          root: () => { findAll: (matcher: unknown) => NapiSgNode[] };
+        };
+      } catch (error) {
+        errors.push(`references: parse failed ${relPath}: ${(error as Error).message}`);
+        return;
+      }
+      if (signal?.aborted) return;
+      const nodes = sgRoot.root().findAll({ rule: { kind: "identifier" } });
+      const symbols: AstGrepSymbol[] = [];
+      for (const node of nodes) {
+        if (symbols.length >= MAX_SYMBOLS_PER_FILE) {
+          truncatedPaths.add(relPath);
+          break;
+        }
+        const r = node.range();
+        symbols.push({
+          name: node.text(),
+          kind: "identifier",
+          role: "reference",
+          range: {
+            startLine: r.start.line + 1,
+            startColumn: r.start.column + 1,
+            endLine: r.end.line + 1,
+            endColumn: r.end.column + 1,
+          },
+          exported: false,
+          signature: null,
+          astKind: "identifier",
+          isImport: false,
+          members: [],
+        });
+      }
+      // Stable positional order: guarantees byte-identical re-index
+      // (object-identity collision guard), independent of traversal order.
+      symbols.sort(compareReferencePosition);
+      files.push({ path: relPath, language: lang, symbols });
+    };
+
+    await mapBounded(paths, NAPI_REFERENCES_CONCURRENCY, perFile);
+
+    if (signal?.aborted) {
+      throw new LocalCodeIndexUnavailableError("operation_aborted");
+    }
+
     return {
-      files: [...byPath].map(([filePath, group]) => ({
-        path: filePath,
-        language: group.language,
-        symbols: group.symbols,
-      })),
+      files,
       version: await this.getVersion(options?.signal),
-      truncated,
+      truncated: truncatedPaths.size > 0,
+      truncatedPaths,
+      failedLangPaths,
       errors,
     };
   }

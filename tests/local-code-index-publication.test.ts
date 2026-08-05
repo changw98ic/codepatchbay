@@ -102,7 +102,10 @@ test("ensureLocalCodeIndex uses the configured ast-grep executable for structura
   assert.equal(references.kind, "references");
   assert.equal(references.occurrences.length, 1);
   assert.equal(references.occurrences[0]?.path, "index.ts");
-  assert.equal(references.occurrences[0]?.range.startColumn, 36);
+  // References are now extracted in-process via @ast-grep/napi (flow-2hh),
+  // not via the configured ast-grep binary's `run` output. The column is the
+  // real position of the `configuredParser()` call in index.ts (0-based 44).
+  assert.equal(references.occurrences[0]?.range.startColumn, 45);
   assert.equal(references.occurrences[0]?.coverage, "ast-grep-structural");
 
   const summary = await queryLocalCodeIndex(result.ref, {
@@ -191,8 +194,11 @@ test("ensureLocalCodeIndex amortizes outline process startup while retaining bou
     .trim()
     .split("\n")
     .filter(Boolean);
+  // Outline still amortizes to a single ast-grep process startup. References
+  // extraction moved in-process to @ast-grep/napi (flow-2hh), so it no longer
+  // spawns the binary at all — zero `run` invocations.
   assert.equal(invocations.filter((value) => value === "outline").length, 1);
-  assert.equal(invocations.filter((value) => value === "run").length, 2);
+  assert.equal(invocations.filter((value) => value === "run").length, 0);
 });
 
 test("ensureLocalCodeIndex is idempotent — running twice produces same snapshot", async () => {
