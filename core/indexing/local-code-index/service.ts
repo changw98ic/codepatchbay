@@ -334,7 +334,7 @@ export async function ensureLocalCodeIndex(
     commonGitDir,
     canonicalSource,
   );
-  const astGrepAdapter = new AstGrepAdapter({
+  const astGrepAdapter = options.adapter ?? new AstGrepAdapter({
     binaryPath: astGrepBinaryPath,
     cwd: canonicalSource,
   });
@@ -1953,12 +1953,6 @@ async function extractAndPublishObjects(
         }
       }
 
-      // flow-2hh: a file whose references language was unavailable must not be
-      // published as ast-grep-structural with empty references. Drop it from the
-      // structural batch so extractFileFacts falls back to lexical mode
-      // (lexical-reference-fallback coverage), keeping definitions honest.
-      for (const p of failedLangPaths) batchFiles.delete(p);
-
       for (const entry of batch) {
         signal?.throwIfAborted();
 
@@ -1983,7 +1977,7 @@ async function extractAndPublishObjects(
           ? batchFiles.get(entry.path)
           : undefined;
         const fileFactExtractionStart = Date.now();
-        const result = extractFileFacts(
+        let result = extractFileFacts(
           sourceBytes,
           entry.path,
           parserVersion,
@@ -1993,16 +1987,26 @@ async function extractAndPublishObjects(
         );
         fileFactExtractionMs += Date.now() - fileFactExtractionStart;
 
-        extractionResults.set(entry.path, result);
-        coverageOutcomes.push(result.coverage);
+        // flow-2hh: a file whose references language was unavailable keeps its
+        // structural outline definitions, but must not be published as
+        // ast-grep-structural with empty references — downgrade coverage so the
+        // missing references are reported honestly.
+        if (failedLangPaths.has(entry.path)) {
+          result = {
+            ...result,
+            parserMode: "lexical-fallback",
+            coverage: "lexical-reference-fallback",
+          };
+        }
+        // flow-2hh: surface references truncation on the SAME result used to
+        // build the FileObject. (An earlier version wrote a second copy into the
+        // results map that the object builder never read, so truncated stayed
+        // false — the truncation marker must be on `result` before fileObject.)
         if (
           referencesTruncatedPaths.has(entry.path)
           && result.truncation.every((t) => t.limitKind !== "max-references")
         ) {
-          // flow-2hh: the in-process references extractor capped this file's
-          // references; surface it so the published FileObject.truncated is
-          // honest rather than silently reporting a complete reference set.
-          extractionResults.set(entry.path, {
+          result = {
             ...result,
             truncation: [
               ...result.truncation,
@@ -2012,9 +2016,11 @@ async function extractAndPublishObjects(
                 actual: MAX_SYMBOLS_PER_FILE,
               },
             ],
-          });
+          };
         }
 
+        extractionResults.set(entry.path, result);
+        coverageOutcomes.push(result.coverage);
         if (result.truncation.some((t) => t.limitKind === "max-file-size")) {
           oversizedFiles += 1;
         }

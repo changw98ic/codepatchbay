@@ -873,9 +873,13 @@ export class AstGrepAdapter {
     const failedLangPaths = new Set<string>();
     const errors: string[] = [];
     const decoder = new TextDecoder();
+    // Set by the per-batch timeout so mapBounded workers stop dispatching new
+    // parses once the budget is exhausted; parses already in flight still
+    // finish on the libuv thread, but no further file is started.
+    let batchStopped = false;
 
     const perFile = async (relPath: string): Promise<void> => {
-      if (signal?.aborted) return;
+      if (batchStopped || signal?.aborted) return;
       const lang = langForPath(relPath);
       if (lang === null) return; // non-structural: references not extracted
       if (!registeredLangs.has(lang)) {
@@ -896,6 +900,7 @@ export class AstGrepAdapter {
         src = decoder.decode(await readFile(abs));
       } catch (error) {
         errors.push(`references: unreadable ${relPath}: ${(error as Error).message}`);
+        failedLangPaths.add(relPath);
         return;
       }
       let sgRoot: { root: () => { findAll: (matcher: unknown) => NapiSgNode[] } };
@@ -907,6 +912,7 @@ export class AstGrepAdapter {
         };
       } catch (error) {
         errors.push(`references: parse failed ${relPath}: ${(error as Error).message}`);
+        failedLangPaths.add(relPath);
         return;
       }
       if (signal?.aborted) return;
@@ -949,9 +955,15 @@ export class AstGrepAdapter {
     let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
     const batchTimeout = new Promise<never>((_, reject) => {
       timeoutHandle = setTimeout(
-        () => reject(new LocalCodeIndexUnavailableError("operation_aborted", {
-          cause: new Error(`references batch exceeded ${batchTimeoutMs}ms`),
-        })),
+        () => {
+          // Halt dispatch of any not-yet-started file before rejecting, so the
+          // timeout actually bounds work rather than letting workers keep
+          // pulling new paths while the race has already rejected.
+          batchStopped = true;
+          reject(new LocalCodeIndexUnavailableError("operation_aborted", {
+            cause: new Error(`references batch exceeded ${batchTimeoutMs}ms`),
+          }));
+        },
         batchTimeoutMs,
       );
     });

@@ -9,6 +9,8 @@
 
 import { createHash } from "node:crypto";
 
+import type { AstGrepAdapter } from "./ast-grep-adapter.js";
+
 // ── Limits ──────────────────────────────────────────────────────────────────
 
 /** Default result limit when caller omits `limit`. */
@@ -154,6 +156,13 @@ export type EnsureLocalCodeIndexOptions = Readonly<{
   astGrepBinaryPath?: string;
   force?: boolean;
   signal?: AbortSignal;
+  /**
+   * Test-only injection seam for the ast-grep adapter. When omitted, the
+   * service constructs the real AstGrepAdapter. Production callers must not
+   * set this; it exists so coverage-downgrade paths (failedLangPaths /
+   * truncatedPaths) can be exercised without uninstalling native packages.
+   */
+  adapter?: AstGrepAdapter;
 }>;
 
 export type EnsureLocalCodeIndexResult = Readonly<{
