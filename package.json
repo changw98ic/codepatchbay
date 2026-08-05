@@ -75,6 +75,10 @@
     "verify:release-gate": "npm run build && npm run build:tests && node dist/scripts/verify-release-gate.js"
   },
   "dependencies": {
+    "@ast-grep/lang-go": "0.0.6",
+    "@ast-grep/lang-python": "0.0.6",
+    "@ast-grep/lang-rust": "0.0.7",
+    "@ast-grep/napi": "0.45.0",
     "chokidar": "4.0.3"
   },
   "devDependencies": {
