@@ -92,6 +92,21 @@ test("extractReferences always returns the failedLangPaths and truncatedPaths co
   assert.equal(result.failedLangPaths.size, 0);
 });
 
+test("extractReferences handles malformed/binary source gracefully (tree-sitter recovery)", async () => {
+  // napi parseAsync does NOT throw on pathological input (tree-sitter error
+  // recovery handles empty/binary/null-byte/malformed). This confirms the
+  // adapter degrades gracefully rather than crashing or spuriously marking
+  // failedLangPaths. (A true parseAsync throw is not reliably triggerable, so
+  // the parse-failure catch is covered by the identical read-failure catch path.)
+  const adapter = await makeAdapterWithFiles("malformed", [
+    ["bad.py", `${Buffer.from([0xff, 0xfe, 0x00, 0x01, 0x80, 0xde]).toString("latin1")}\n`],
+    ["broken.ts", "function (((( )))) :::: undefined\n"],
+  ]);
+  const result = await adapter.extractReferences(["bad.py", "broken.ts"]);
+  assert.equal(result.files.length, 2);
+  assert.equal(result.failedLangPaths.size, 0, "recovery must not spuriously mark failedLang");
+});
+
 test("extractReferences records a failedLangPath for an unreadable file", async () => {
   const adapter = await makeAdapterWithFiles("readfail", [["real.ts", "const a = 1;\n"]]);
   // "ghost.ts" does not exist on disk -> read fails -> failedLangPaths.
