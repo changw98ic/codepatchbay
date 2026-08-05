@@ -119,6 +119,7 @@ import {
   languageForFile,
   computeLanguageExtractorFingerprint,
   NAPI_BACKEND_VERSION,
+  LANG_PACK_VERSIONS,
   MAX_SYMBOLS_PER_FILE,
 } from "./extract.js";
 import {
@@ -217,6 +218,7 @@ function indexExtractorFingerprint(parserVersion: string | null): string {
       `shard-layout:${SHARD_LAYOUT_VERSION}`,
       `extractor-backend:napi`,
       `napi-version:${NAPI_BACKEND_VERSION}`,
+      `lang-pack-versions:${LANG_PACK_VERSIONS}`,
     ].join("\0"))
     .digest("hex")
     .slice(0, 32);
@@ -340,6 +342,23 @@ export async function ensureLocalCodeIndex(
   });
 
   // ── Promise coalescing ────────────────────────────────────────────────
+  // A test-injected adapter is intentionally NOT coalesced: the coalescing key
+  // does not capture the adapter identity, so two different adapters on the same
+  // source could otherwise reuse each other's in-flight result.
+  if (options.adapter !== undefined) {
+    return ensureLocalCodeIndexInner(
+      storageRoot,
+      repositoryKey,
+      worktreeKey,
+      sourceKey,
+      canonicalSource,
+      isGit,
+      astGrepAdapter,
+      force,
+      signal,
+    );
+  }
+
   const key = `${coalesceKey(storageRoot, sourceKey)}\0${astGrepBinaryPath}`;
   const existing = inflightEnsure.get(key);
   if (existing !== undefined) {
@@ -1947,9 +1966,12 @@ async function extractAndPublishObjects(
           ) {
             throw error;
           }
-          // Do not claim structural coverage if references could not be read.
-          hasStructuralFacts = false;
-          batchFiles.clear();
+          // flow-2hh: references extraction failed for the whole batch (e.g.
+          // @ast-grep/napi unavailable). The outline (CLI) is still valid, so
+          // keep the structural definitions and downgrade each file's coverage
+          // (definitions retained, references unavailable) via failedLangPaths
+          // rather than clearing the outline.
+          for (const entry of batch) failedLangPaths.add(entry.path);
         }
       }
 
@@ -2020,7 +2042,12 @@ async function extractAndPublishObjects(
         }
 
         extractionResults.set(entry.path, result);
-        coverageOutcomes.push(result.coverage);
+        // flow-2hh: a downgraded (failed-language) file counts as a failed file
+        // in the aggregate coverage so the snapshot reports failedFiles/partial
+        // honestly, even though its per-file coverage is lexical-reference-fallback.
+        coverageOutcomes.push(
+          failedLangPaths.has(entry.path) ? "failed" : result.coverage,
+        );
         if (result.truncation.some((t) => t.limitKind === "max-file-size")) {
           oversizedFiles += 1;
         }

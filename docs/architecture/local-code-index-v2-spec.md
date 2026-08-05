@@ -467,8 +467,13 @@ assumes structural success merely because no occurrence was returned.
   in-process dependencies.
 - Filesystem and Git are local-substitutable dependencies tested through
   temporary repositories.
-- ast-grep is a true external executable. The implementation invokes it through
-  one internal process adapter. Tests use a fake executable adapter.
+- ast-grep runs in two modes. Outline (definitions/imports) and version
+  extraction invoke the external `ast-grep` CLI through one internal process
+  adapter; tests use a fake executable adapter for that path. References
+  extraction runs in-process via the optional `@ast-grep/napi` native
+  dependency (with `@ast-grep/lang-*` packs for python/go/rust); when the
+  native backend is unavailable, affected files downgrade to
+  lexical-reference-fallback coverage while outline definitions are retained.
 
 These are internal seams. They are not exposed through the public interface.
 

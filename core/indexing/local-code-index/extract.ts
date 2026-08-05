@@ -969,6 +969,25 @@ export const NAPI_BACKEND_VERSION: string = (() => {
   }
 })();
 
+/**
+ * Installed @ast-grep/lang-* pack versions ("name:ver,...", "absent" if the
+ * optional dep is missing). Salts the extractor fingerprint so a language-pack
+ * bump (which can change that language's references) invalidates the index.
+ */
+export const LANG_PACK_VERSIONS: string = (() => {
+  const names = ["@ast-grep/lang-python", "@ast-grep/lang-go", "@ast-grep/lang-rust"];
+  const parts: string[] = [];
+  for (const name of names) {
+    try {
+      const v = (requireForNapiVersion(`${name}/package.json`) as { version?: unknown }).version;
+      parts.push(`${name}:${typeof v === "string" && v.length > 0 ? v : "unknown"}`);
+    } catch {
+      parts.push(`${name}:absent`);
+    }
+  }
+  return parts.join(",");
+})();
+
 export function computeLanguageExtractorFingerprint(
   language: SupportedLanguage,
   parserMode: ParserMode,
@@ -988,6 +1007,7 @@ export function computeLanguageExtractorFingerprint(
     `parser-mode:${parserMode}`,
     `extractor-backend:napi`,
     `napi-version:${NAPI_BACKEND_VERSION}`,
+    `lang-pack-versions:${LANG_PACK_VERSIONS}`,
   ].join("\0");
 
   return createHash("sha256").update(fingerprint).digest("hex").slice(0, 32);

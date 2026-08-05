@@ -122,6 +122,10 @@ test("failed references language downgrades coverage but keeps outline definitio
     adapter: new FailedLangAdapter(),
   });
   assert.equal(result.available, true);
+  // The failed-language file counts toward the aggregate failedFiles/partial so
+  // the snapshot reports the failure honestly.
+  assert.equal(result.tool.coverage.failedFiles, 1);
+  assert.equal(result.tool.coverage.partial, true);
 
   const summary = await queryLocalCodeIndex(
     result.ref,

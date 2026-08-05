@@ -13,13 +13,12 @@
  */
 
 import { execFile } from "node:child_process";
-import { readFile, stat } from "node:fs/promises";
-import { createRequire } from "node:module";
 import path from "node:path";
 
 import { LocalCodeIndexUnavailableError } from "./contracts.js";
-import { languageForFile } from "./extract.js";
+import { languageForFile, MAX_INDEX_FILE_SIZE_BYTES } from "./extract.js";
 import type { AstGrepNode, AstGrepParseResult } from "./extract.js";
+import { readBoundedFileNoFollow } from "./safe-files.js";
 
 // ── Bounded constants (spec section 9.3) ──────────────────────────────────────
 
@@ -101,23 +100,6 @@ const NAPI_DYNAMIC_PACKS: ReadonlyArray<readonly [string, () => Promise<NapiLang
 
 let napiModuleCache: NapiModule | null = null;
 let napiRegisteredLangs: ReadonlySet<string> | null = null;
-
-const nativeRequire = createRequire(import.meta.url);
-
-/**
- * Read the installed @ast-grep/napi package version, or null if the optional
- * dependency is absent. Used both for the extractor version and for salting the
- * extractor fingerprint so a native-backend rebuild cannot reuse or collide
- * with a prior CLI-backend index.
- */
-function readNapiVersion(): string | null {
-  try {
-    const v = (nativeRequire("@ast-grep/napi/package.json") as { version?: unknown }).version;
-    return typeof v === "string" && v.length > 0 ? v : null;
-  } catch {
-    return null;
-  }
-}
 
 /** Read the LangRegistration out of a dynamically imported @ast-grep/lang-* pack. */
 function extractLangRegistration(mod: unknown): NapiLangRegistration {
@@ -699,12 +681,11 @@ export class AstGrepAdapter {
   }
 
   private async captureVersion(signal?: AbortSignal): Promise<string | null> {
-    // Prefer the in-process @ast-grep/napi version (the references extractor)
-    // so the index identity reflects the native backend. Fall back to the
-    // ast-grep CLI version when napi is not installed (optional dependency
-    // absent) so outline-only installs still report a version.
-    const napiVersion = readNapiVersion();
-    if (napiVersion !== null) return napiVersion;
+    // The outline path still runs the external ast-grep CLI, so the reported
+    // extractor version is the CLI version. The @ast-grep/napi version (the
+    // references backend) is captured separately into the extractor
+    // fingerprint salt (extract.ts NAPI_BACKEND_VERSION / LANG_PACK_VERSIONS),
+    // so the index identity reflects BOTH backends.
     try {
       const stdout = await runAstGrep(this.binaryPath, ["--version"], {
         timeoutMs: this.timeoutMs,
@@ -889,20 +870,20 @@ export class AstGrepAdapter {
       let src: string;
       try {
         const abs = this.cwd ? path.resolve(this.cwd, relPath) : relPath;
-        // Bound the read BEFORE it happens: stat first and refuse oversized
-        // sources so a huge file cannot pressure memory only to be rejected
-        // after being fully buffered.
-        const sizeStat = await stat(abs);
-        if (sizeStat.size > MAX_OUTPUT_BYTES) {
-          truncatedPaths.add(relPath);
-          return;
-        }
-        src = decoder.decode(await readFile(abs));
+        // Bounded to the 5 MiB source-file cap (matching the service) and
+        // symlink-safe (O_NOFOLLOW): an oversized or symlinked source is refused
+        // before the native parser sees it, so it cannot pressure memory or read
+        // outside the repository.
+        const bytes = await readBoundedFileNoFollow(abs, MAX_INDEX_FILE_SIZE_BYTES);
+        src = decoder.decode(bytes);
       } catch (error) {
         errors.push(`references: unreadable ${relPath}: ${(error as Error).message}`);
         failedLangPaths.add(relPath);
         return;
       }
+      // Re-check after the read: an abort or batch timeout that arrived while
+      // reading must not proceed into a native parse.
+      if (batchStopped || signal?.aborted) return;
       let sgRoot: { root: () => { findAll: (matcher: unknown) => NapiSgNode[] } };
       try {
         // parseAsync returns an SgRoot; findAll lives on the root SgNode

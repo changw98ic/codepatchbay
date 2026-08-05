@@ -40,13 +40,15 @@ test("extractReferences extracts references across multiple languages", async ()
     ["mod.ts", "export function alpha(x: number): number { return alpha(x); }\n"],
     ["a.py", "def beta(y):\n    return beta(y)\n"],
     ["b.go", "package main\nfunc gamma(w int) int { return gamma(w) }\n"],
+    ["c.rs", "fn delta(z: i32) -> i32 { delta(z) }\n"],
   ]);
-  const result = await adapter.extractReferences(["mod.ts", "a.py", "b.go"]);
-  assert.equal(result.files.length, 3);
+  const result = await adapter.extractReferences(["mod.ts", "a.py", "b.go", "c.rs"]);
+  assert.equal(result.files.length, 4);
   const byLang = new Map(result.files.map((f) => [f.language, f.symbols.length]));
   assert.ok((byLang.get("TypeScript") ?? 0) > 0, "TypeScript references");
   assert.ok((byLang.get("python") ?? 0) > 0, "python references");
   assert.ok((byLang.get("go") ?? 0) > 0, "go references");
+  assert.ok((byLang.get("rust") ?? 0) > 0, "rust references");
   // Every emitted symbol is a reference (role set by the napi path).
   for (const file of result.files) {
     for (const symbol of file.symbols) {
