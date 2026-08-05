@@ -88,3 +88,26 @@ test("extractReferences always returns the failedLangPaths and truncatedPaths co
   assert.ok(result.truncatedPaths instanceof Set);
   assert.equal(result.failedLangPaths.size, 0);
 });
+
+test("extractReferences records a failedLangPath for an unreadable file", async () => {
+  const { adapter } = await makeAdapterWithFiles("readfail", [["real.ts", "const a = 1;\n"]]);
+  // "ghost.ts" does not exist on disk -> read fails -> failedLangPaths.
+  const result = await adapter.extractReferences(["real.ts", "ghost.ts"]);
+  assert.ok(result.failedLangPaths.has("ghost.ts"), "unreadable file marked failedLang");
+  assert.ok(result.files.some((f) => f.path === "real.ts"), "readable file still extracted");
+  assert.ok(result.errors.some((e) => e.includes("ghost.ts")), "failure reason recorded");
+});
+
+test("extractReferences is deterministic across two runs", async () => {
+  const { adapter } = await makeAdapterWithFiles("det", [
+    ["m.ts", "export function f(x: number) { return f(x); }\n"],
+    ["a.py", "def g():\n    return g()\n"],
+  ]);
+  const r1 = await adapter.extractReferences(["m.ts", "a.py"]);
+  const r2 = await adapter.extractReferences(["m.ts", "a.py"]);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(r1.files)),
+    JSON.parse(JSON.stringify(r2.files)),
+  );
+});
+

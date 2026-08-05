@@ -118,8 +118,7 @@ import {
   extractFileFacts,
   languageForFile,
   computeLanguageExtractorFingerprint,
-  NAPI_BACKEND_VERSION,
-  LANG_PACK_VERSIONS,
+  backendFingerprintSalt,
   MAX_SYMBOLS_PER_FILE,
 } from "./extract.js";
 import {
@@ -216,9 +215,7 @@ function indexExtractorFingerprint(parserVersion: string | null): string {
       `parser:${parserVersion ?? "none"}`,
       `extraction-schema:${INDEX_EXTRACTION_SCHEMA_VERSION}`,
       `shard-layout:${SHARD_LAYOUT_VERSION}`,
-      `extractor-backend:napi`,
-      `napi-version:${NAPI_BACKEND_VERSION}`,
-      `lang-pack-versions:${LANG_PACK_VERSIONS}`,
+      ...backendFingerprintSalt(),
     ].join("\0"))
     .digest("hex")
     .slice(0, 32);
@@ -284,6 +281,18 @@ function coalesceKey(storageRoot: string, sourceKey: string): string {
   return `${storageRoot}\0${sourceKey}`;
 }
 
+// flow-2hh: internal test-only seam for the ast-grep adapter. Kept OUT of the
+// public EnsureLocalCodeIndexOptions (public contracts must not expose internal
+// seams). Tests inject a fake adapter to exercise the failed-language /
+// truncation coverage paths without uninstalling native packages. The leading
+// underscore marks it internal; it is not re-exported through the public barrel.
+let testAdapterFactory: ((binaryPath: string, cwd: string) => AstGrepAdapter) | null = null;
+export function _setTestAdapterFactory(
+  factory: ((binaryPath: string, cwd: string) => AstGrepAdapter) | null,
+): void {
+  testAdapterFactory = factory;
+}
+
 // ── Public entry: ensureLocalCodeIndex ─────────────────────────────────────
 
 /**
@@ -336,16 +345,18 @@ export async function ensureLocalCodeIndex(
     commonGitDir,
     canonicalSource,
   );
-  const astGrepAdapter = options.adapter ?? new AstGrepAdapter({
-    binaryPath: astGrepBinaryPath,
-    cwd: canonicalSource,
-  });
+  const astGrepAdapter = testAdapterFactory !== null
+    ? testAdapterFactory(astGrepBinaryPath, canonicalSource)
+    : new AstGrepAdapter({
+      binaryPath: astGrepBinaryPath,
+      cwd: canonicalSource,
+    });
 
   // ── Promise coalescing ────────────────────────────────────────────────
   // A test-injected adapter is intentionally NOT coalesced: the coalescing key
   // does not capture the adapter identity, so two different adapters on the same
   // source could otherwise reuse each other's in-flight result.
-  if (options.adapter !== undefined) {
+  if (testAdapterFactory !== null) {
     return ensureLocalCodeIndexInner(
       storageRoot,
       repositoryKey,
@@ -1901,8 +1912,33 @@ async function extractAndPublishObjects(
       // flow-2hh: capture per-file references failures so coverage stays honest.
       const failedLangPaths = new Set<string>();
       const referencesTruncatedPaths = new Set<string>();
+      const referencesErrors: string[] = [];
 
       if (hasStructuralFacts) {
+        // Pre-fill batchFiles from the outline BEFORE references extraction so
+        // a whole-batch references failure still leaves the outline definitions
+        // in place (downgraded via failedLangPaths), not an empty batchFiles.
+        const declarationPositions = new Map<string, Set<string>>();
+        const importRanges = new Map<string, AstGrepSymbol[]>();
+        for (const entry of batch) {
+          const outline = structuralOutlines.get(entry.path);
+          const file: AstGrepFileResult = outline === undefined
+            ? {
+              path: entry.path,
+              language: sourceEntriesByPath.get(entry.path)?.language ?? "unknown",
+              symbols: [],
+            }
+            : { ...outline, symbols: [...outline.symbols] };
+          batchFiles.set(entry.path, file);
+          const positions = new Set<string>();
+          collectDeclarationPositions(file.symbols, positions);
+          declarationPositions.set(entry.path, positions);
+          importRanges.set(
+            entry.path,
+            file.symbols.filter((symbol) => symbol.isImport),
+          );
+        }
+
         const astGrepStart = Date.now();
         try {
           const references = await adapter.extractReferences(
@@ -1916,27 +1952,7 @@ async function extractAndPublishObjects(
           if (references.truncatedPaths) {
             for (const p of references.truncatedPaths) referencesTruncatedPaths.add(p);
           }
-          const declarationPositions = new Map<string, Set<string>>();
-          const importRanges = new Map<string, AstGrepSymbol[]>();
-
-          for (const entry of batch) {
-            const outline = structuralOutlines.get(entry.path);
-            const file: AstGrepFileResult = outline === undefined
-              ? {
-                path: entry.path,
-                language: sourceEntriesByPath.get(entry.path)?.language ?? "unknown",
-                symbols: [],
-              }
-              : { ...outline, symbols: [...outline.symbols] };
-            batchFiles.set(entry.path, file);
-            const positions = new Set<string>();
-            collectDeclarationPositions(file.symbols, positions);
-            declarationPositions.set(entry.path, positions);
-            importRanges.set(
-              entry.path,
-              file.symbols.filter((symbol) => symbol.isImport),
-            );
-          }
+          for (const message of references.errors) referencesErrors.push(message);
 
           for (const file of references.files) {
             const normalizedPath = normalizedAstGrepPath(canonicalSource, file.path);
@@ -2014,10 +2030,16 @@ async function extractAndPublishObjects(
         // ast-grep-structural with empty references — downgrade coverage so the
         // missing references are reported honestly.
         if (failedLangPaths.has(entry.path)) {
+          // Surface the adapter's read/parse error reason (matched by path) so
+          // file-summary.errors can diagnose why coverage was downgraded.
+          const reasonErrors = referencesErrors
+            .filter((message) => message.includes(entry.path))
+            .map((message) => ({ message, range: null, severity: "warning" as const }));
           result = {
             ...result,
             parserMode: "lexical-fallback",
             coverage: "lexical-reference-fallback",
+            errors: [...result.errors, ...reasonErrors],
           };
         }
         // flow-2hh: surface references truncation on the SAME result used to

@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 
-import { ensureLocalCodeIndex } from "../core/indexing/local-code-index/service.js";
+import { ensureLocalCodeIndex, _setTestAdapterFactory } from "../core/indexing/local-code-index/service.js";
 import { queryLocalCodeIndex } from "../core/indexing/local-code-index/query.js";
 import {
   AstGrepAdapter,
@@ -12,28 +12,12 @@ import type {
   AstGrepExtractionResult,
   AstGrepSymbol,
 } from "../core/indexing/local-code-index/ast-grep-adapter.js";
-import { tempRoot } from "./helpers.js";
+import { tempRoot, listFiles } from "./helpers.js";
 
 // flow-2hh: service-level coverage tests for the napi references path.
 // (1) references truncation surfaces end-to-end as FileObject.truncated.
 // (2) a failed references language yields lexical-reference-fallback coverage
 //     while keeping the structural outline definitions (via an adapter stub).
-
-async function listFiles(dir: string): Promise<string[]> {
-  let entries: import("node:fs").Dirent[];
-  try {
-    entries = await readdir(dir, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-  const out: string[] = [];
-  for (const entry of entries) {
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) out.push(...await listFiles(full));
-    else out.push(full);
-  }
-  return out;
-}
 
 async function readObjectBytes(filesDir: string): Promise<string[]> {
   const files = await listFiles(filesDir);
@@ -116,28 +100,32 @@ test("failed references language downgrades coverage but keeps outline definitio
   await mkdir(cpbRoot, { recursive: true });
   await writeFile(path.join(sourcePath, "mod.ts"), "export function alpha() {}\n", "utf8");
 
-  const result = await ensureLocalCodeIndex({
-    cpbRoot,
-    sourcePath,
-    adapter: new FailedLangAdapter(),
-  });
-  assert.equal(result.available, true);
-  // The failed-language file counts toward the aggregate failedFiles/partial so
-  // the snapshot reports the failure honestly.
-  assert.equal(result.tool.coverage.failedFiles, 1);
-  assert.equal(result.tool.coverage.partial, true);
+  _setTestAdapterFactory(() => new FailedLangAdapter());
+  try {
+    const result = await ensureLocalCodeIndex({
+      cpbRoot,
+      sourcePath,
+    });
+    assert.equal(result.available, true);
+    // The failed-language file counts toward the aggregate failedFiles/partial so
+    // the snapshot reports the failure honestly.
+    assert.equal(result.tool.coverage.failedFiles, 1);
+    assert.equal(result.tool.coverage.partial, true);
 
-  const summary = await queryLocalCodeIndex(
-    result.ref,
-    { kind: "file-summary", path: "mod.ts" },
-    { cpbRoot },
-  );
-  if (summary.kind !== "file-summary") throw new Error("expected file-summary");
-  // Coverage downgraded (references language unavailable) ...
-  assert.equal(summary.file?.coverage, "lexical-reference-fallback");
-  // ... but the outline definition is retained.
-  assert.ok(
-    summary.file?.definitions.some((d) => d.symbol === "alpha"),
-    "outline definition must be retained on failed-language downgrade",
-  );
+    const summary = await queryLocalCodeIndex(
+      result.ref,
+      { kind: "file-summary", path: "mod.ts" },
+      { cpbRoot },
+    );
+    if (summary.kind !== "file-summary") throw new Error("expected file-summary");
+    // Coverage downgraded (references language unavailable) ...
+    assert.equal(summary.file?.coverage, "lexical-reference-fallback");
+    // ... but the outline definition is retained.
+    assert.ok(
+      summary.file?.definitions.some((d) => d.symbol === "alpha"),
+      "outline definition must be retained on failed-language downgrade",
+    );
+  } finally {
+    _setTestAdapterFactory(null);
+  }
 });

@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 
 import { ensureLocalCodeIndex } from "../core/indexing/local-code-index/service.js";
 import { queryLocalCodeIndex } from "../core/indexing/local-code-index/query.js";
-import { tempRoot } from "./helpers.js";
+import { tempRoot, listFiles } from "./helpers.js";
 
 // flow-2hh napi 迁移的关键基线门（策略无关）。
 //
@@ -18,26 +18,6 @@ import { tempRoot } from "./helpers.js";
 //       → object_identity_collision。build #3 必须成功。
 //   (3) references 被抽空（迁移 bug）：references 查询必须非空。
 //   (4) 身份不稳：snapshotId / fingerprint 跨构建必须不变。
-
-/** 递归列出 dir 下所有文件（用于定位 file object 的 canonical json 字节）。 */
-async function listFiles(dir: string): Promise<string[]> {
-  let entries: import("node:fs").Dirent[];
-  try {
-    entries = await readdir(dir, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-  const out: string[] = [];
-  for (const entry of entries) {
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      out.push(...await listFiles(full));
-    } else {
-      out.push(full);
-    }
-  }
-  return out;
-}
 
 test("ensureLocalCodeIndex reuses snapshot on second build and force-rebuild is byte-deterministic", async () => {
   const root = await tempRoot("reuse-determinism");

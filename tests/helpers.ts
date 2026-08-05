@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { after } from "node:test";
@@ -34,4 +34,21 @@ export async function writeJson(filePath, value) {
 
 export function oldIso(msAgo = 300_000) {
   return new Date(Date.now() - msAgo).toISOString();
+}
+
+/** Recursively list all files under a directory (empty array if missing). */
+export async function listFiles(dir) {
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const out = [];
+  for (const entry of entries) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...await listFiles(full));
+    else out.push(full);
+  }
+  return out;
 }

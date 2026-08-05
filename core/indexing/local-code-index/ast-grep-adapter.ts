@@ -896,7 +896,7 @@ export class AstGrepAdapter {
         failedLangPaths.add(relPath);
         return;
       }
-      if (signal?.aborted) return;
+      if (batchStopped || signal?.aborted) return;
       const nodes = sgRoot.root().findAll({ rule: { kind: "identifier" } });
       const symbols: AstGrepSymbol[] = [];
       for (const node of nodes) {
@@ -948,6 +948,15 @@ export class AstGrepAdapter {
         batchTimeoutMs,
       );
     });
+    // Listen to the external abort signal too: on abort, set batchStopped so
+    // perFile checks (start / post-read / post-parse) halt dispatch and skip
+    // in-flight work promptly. The post-batch signal check below turns the
+    // abort into an operation_aborted rejection.
+    const onAbort = (): void => { batchStopped = true; };
+    if (signal !== undefined) {
+      if (signal.aborted) batchStopped = true;
+      else signal.addEventListener("abort", onAbort, { once: true });
+    }
     try {
       await Promise.race([
         mapBounded(paths, NAPI_REFERENCES_CONCURRENCY, perFile),
@@ -955,6 +964,7 @@ export class AstGrepAdapter {
       ]);
     } finally {
       if (timeoutHandle !== null) clearTimeout(timeoutHandle);
+      if (signal !== undefined) signal.removeEventListener("abort", onAbort);
     }
 
     if (signal?.aborted) {

@@ -988,6 +988,19 @@ export const LANG_PACK_VERSIONS: string = (() => {
   return parts.join(",");
 })();
 
+/**
+ * The shared backend-identity salt added to BOTH extractor fingerprints
+ * (per-file and snapshot), so the references backend (napi + lang packs) is
+ * captured in exactly one place and cannot drift between the two fingerprints.
+ */
+export function backendFingerprintSalt(): readonly string[] {
+  return [
+    "extractor-backend:napi",
+    `napi-version:${NAPI_BACKEND_VERSION}`,
+    `lang-pack-versions:${LANG_PACK_VERSIONS}`,
+  ];
+}
+
 export function computeLanguageExtractorFingerprint(
   language: SupportedLanguage,
   parserMode: ParserMode,
@@ -1005,9 +1018,7 @@ export function computeLanguageExtractorFingerprint(
     `symbol-schema-hash:${SYMBOL_SCHEMA_HASH}`,
     `language:${language}`,
     `parser-mode:${parserMode}`,
-    `extractor-backend:napi`,
-    `napi-version:${NAPI_BACKEND_VERSION}`,
-    `lang-pack-versions:${LANG_PACK_VERSIONS}`,
+    ...backendFingerprintSalt(),
   ].join("\0");
 
   return createHash("sha256").update(fingerprint).digest("hex").slice(0, 32);
