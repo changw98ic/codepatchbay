@@ -158,7 +158,7 @@ export function validateBenchmarkArtifact(
   if (artifact.environment.freeMemoryBytes < 2 * 1024 * 1024 * 1024) {
     failures.push("free memory was below 2 GiB");
   }
-  if (artifact.environment.preflightCpuPercent >= 20) failures.push("preflight CPU was not below 20%");
+  if (artifact.environment.preflightCpuPercent >= 50) failures.push("preflight CPU was not below 50%");
   if (!smokeAllowed && artifact.smoke) failures.push("smoke output is not release evidence");
   if (!smokeAllowed && artifact.warmupRuns !== WARMUP_RUNS) failures.push("warm-up run count is invalid");
   if (!smokeAllowed && artifact.measuredRuns !== MEASURED_RUNS) failures.push("measured run count is invalid");

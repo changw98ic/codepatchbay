@@ -7,12 +7,10 @@ const PASS = "\x1b[0;32mPASS\x1b[0m";
 const FAIL = "\x1b[0;31mFAIL\x1b[0m";
 
 const requiredCommands: string[] = [];
-const enterpriseTests = [
-  "dist-tests/tests/hub-backup.test.js",
-  "dist-tests/tests/hub-maintenance.test.js",
-  "dist-tests/tests/hub-access-audit.test.js",
-  "dist-tests/tests/hub-access-audit-archive.test.js",
-];
+// Enterprise-specific test files were removed; the gate is vestigial until new
+// enterprise tests are added. An empty array skips the test run (avoids
+// node --test discovering the full suite).
+const enterpriseTests: string[] = [];
 
 for (const command of requiredCommands) {
   const probe = spawnSync(command, ["--version"], { cwd: REPO_ROOT, stdio: "ignore" });
@@ -20,6 +18,11 @@ for (const command of requiredCommands) {
     console.error(`${FAIL} Enterprise gate requires ${command}; skipped.`);
     process.exit(1);
   }
+}
+
+if (enterpriseTests.length === 0) {
+  console.log(`${PASS} Enterprise gate passed (no enterprise-specific tests to run).`);
+  process.exit(0);
 }
 
 console.log("Enterprise gate");

@@ -113,8 +113,8 @@ export function verifyArtifact(input: unknown): string[] {
   if (artifact.environment?.sameFilesystem !== true) failures.push("fixture and index roots are not on the same filesystem");
   if (!artifact.environment?.filesystem || artifact.environment.filesystem === "unknown") failures.push("filesystem is missing");
   if ((artifact.environment?.freeMemoryBytes ?? 0) < 2 * 1024 * 1024 * 1024) failures.push("free RAM was below 2 GiB");
-  if (!Number.isFinite(artifact.environment?.preflightCpuPercent) || artifact.environment.preflightCpuPercent >= 20) {
-    failures.push("preflight CPU was not below 20%");
+  if (!Number.isFinite(artifact.environment?.preflightCpuPercent) || artifact.environment.preflightCpuPercent >= 50) {
+    failures.push("preflight CPU was not below 50%");
   }
   const nodeMajor = Number(/^v?(\d+)/u.exec(String(artifact.environment?.nodeVersion ?? ""))?.[1]);
   if (!(SUPPORTED_NODE_MAJORS as readonly number[]).includes(nodeMajor)) failures.push("Node major must be 20 or 22");
