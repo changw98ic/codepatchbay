@@ -112,7 +112,7 @@ async function fixture(t: test.TestContext) {
   return { sourceRoot, runtimeRoot };
 }
 
-test("release gate has one fixed ordered set of 16 gates", () => {
+test("release gate has one fixed ordered set of 15 gates", () => {
   assert.deepEqual(REQUIRED_RELEASE_GATES.map((gate) => gate.id), [
     "build-node-tests",
     "typecheck",
@@ -125,7 +125,6 @@ test("release gate has one fixed ordered set of 16 gates", () => {
     "patch-integrity",
     "commit-size",
     "v2-release-scan",
-    "enterprise-gate",
     "docs-contract",
     "product-gate",
     "live-release-evidence",
@@ -186,7 +185,7 @@ test("release gate runner writes and directly verifies a complete signed session
     },
   });
   assert.equal(result.ok, true);
-  assert.equal(result.receipts.length, 16);
+  assert.equal(result.receipts.length, 15);
   assert.equal(result.report?.ready, true);
   assert.ok(observedEnvs.every((env) => env.CPB_RELEASE_GATE_SIGNING_KEY === undefined));
   await readFile(path.join(result.session.sessionRoot, "completion.json"), "utf8");

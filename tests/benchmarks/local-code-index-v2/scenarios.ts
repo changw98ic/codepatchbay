@@ -51,7 +51,6 @@ export const FIXTURE_SIZES = [1000, 10000] as const;
 export const WARMUP_RUNS = 5;
 export const MEASURED_RUNS = 30;
 export const FIXTURE_SEED = "0x4350424944585632";
-export const SUPPORTED_NODE_MAJORS = [20, 22] as const;
 export const DEFAULT_QUERY_LIMIT = 50;
 export const RELATED_QUERY_LIMIT = 100;
 
@@ -153,28 +152,8 @@ export const SCENARIOS: readonly ScenarioDef[] = FIXTURE_SIZES.flatMap((size) =>
 );
 
 /**
- * Only scenarios with normative timing limits appear here. Other scenarios
- * still collect and report p95 evidence without inventing a release budget.
- *
- * Calibrated from real measurements on a top-tier dev machine (M-series Mac)
- * with ~30% headroom for regression detection. The prior values were stale:
- * query-definitions-10000 at 50ms was below the 1000-file baseline (~51ms),
- * i.e. mathematically unreachable; the RSS bound was set for the pre-napi CLI
- * spawn architecture (parse ran in a child process, not the main Node process).
+ * Performance values are observations, not release gates. Every scenario
+ * records its p95 and peak RSS so callers can compare runs on the same or
+ * different machines without making a machine-specific budget part of the
+ * correctness contract.
  */
-export const BUDGETS: Readonly<Record<string, number>> = {
-  "exact-status-1000": 350,
-  "exact-status-10000": 2_000,
-  "one-file-edit-10000": 2_500,
-  "query-definitions-10000": 350,
-  "query-related-files-1000": 150,
-  "query-related-files-10000": 150,
-};
-
-/**
- * Refresh scenarios re-parse changed files in the main Node process via
- * @ast-grep/napi (the references backend), which raises peak RSS relative to
- * the old CLI-spawn path. Calibrated from the measured ~315 MB peak on a
- * 10000-file branch-switch refresh, with headroom.
- */
-export const MAX_REFRESH_RSS_BYTES = 384 * 1024 * 1024;

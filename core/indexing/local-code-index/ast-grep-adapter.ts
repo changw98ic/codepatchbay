@@ -13,12 +13,16 @@
  */
 
 import { execFile } from "node:child_process";
-import { createRequire } from "node:module";
 import path from "node:path";
 
 import { LocalCodeIndexUnavailableError } from "./contracts.js";
-import { languageForFile, MAX_INDEX_FILE_SIZE_BYTES } from "./extract.js";
+import {
+  languageForFile,
+  MAX_INDEX_FILE_SIZE_BYTES,
+  MAX_REFERENCES_PER_FILE,
+} from "./extract.js";
 import type { AstGrepNode, AstGrepParseResult } from "./extract.js";
+import { readOptionalPackageVersion } from "./optional-package-metadata.js";
 import { readBoundedFileNoFollow } from "./safe-files.js";
 
 // ── Bounded constants (spec section 9.3) ──────────────────────────────────────
@@ -39,7 +43,7 @@ export const AST_GREP_OUTLINE_BATCH_SIZE = 2_048;
 export const AST_GREP_REFERENCE_BATCH_SIZE = 120;
 
 /**
- * Maximum symbols per file (definitions + references combined).
+ * Maximum outline symbols per file (definitions/imports).
  * Spec section 9.3: "maximum symbols per file: 10,000".
  */
 const MAX_SYMBOLS_PER_FILE = 10_000;
@@ -102,16 +106,9 @@ const NAPI_DYNAMIC_PACKS: ReadonlyArray<readonly [string, () => Promise<NapiLang
 let napiModuleCache: NapiModule | null = null;
 let napiRegisteredLangs: ReadonlySet<string> | null = null;
 
-const nativeRequire = createRequire(import.meta.url);
-
 /** Installed @ast-grep/napi package version, or null if the optional dep is absent. */
 function readNapiVersion(): string | null {
-  try {
-    const v = (nativeRequire("@ast-grep/napi/package.json") as { version?: unknown }).version;
-    return typeof v === "string" && v.length > 0 ? v : null;
-  } catch {
-    return null;
-  }
+  return readOptionalPackageVersion("@ast-grep/napi");
 }
 
 /** Read the LangRegistration out of a dynamically imported @ast-grep/lang-* pack. */
@@ -982,7 +979,8 @@ export class AstGrepAdapter implements LocalCodeIndexAdapter {
       const nodes = sgRoot.root().findAll({ rule: { kind: "identifier" } });
       const symbols: AstGrepSymbol[] = [];
       for (const node of nodes) {
-        if (symbols.length >= MAX_SYMBOLS_PER_FILE) {
+        // References have their own larger bound than outline symbols.
+        if (symbols.length >= MAX_REFERENCES_PER_FILE) {
           truncatedPaths.add(relPath);
           break;
         }

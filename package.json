@@ -71,7 +71,6 @@
     "build:tests": "test -f tsconfig.tests.json && test -f tsconfig.node.json && test -f scripts/build-output.mjs || { echo \"build:tests must run from the source checkout; refusing to remove dist-tests\" >&2; exit 1; } && node scripts/build-output.mjs tests",
     "build": "npm run build:node",
     "verify:p0p1": "npm run build && npm run build:tests && node dist/scripts/verify-p0-p1.js",
-    "verify:enterprise-gate": "npm run build && npm run build:tests && node dist/scripts/verify-enterprise-gate.js",
     "verify:release-gate": "npm run build && npm run build:tests && node dist/scripts/verify-release-gate.js"
   },
   "dependencies": {

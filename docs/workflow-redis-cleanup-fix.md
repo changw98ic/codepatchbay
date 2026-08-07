@@ -92,7 +92,7 @@ const fixOtherFiles = await agent(
 1. server/services/event/event-types.ts - 移除 "redis" 类型变体
 2. core/workflow/probe-runner.ts - 移除注释/字符串中的 Redis 引用
 3. shared/types/leader-fence.ts - 检查是否有 Redis 引用
-4. scripts/verify-enterprise-gate.ts - 移除 Redis 引用
+4. 已移除空的企业门禁脚本
 5. scripts/verify-stabilization.ts - 移除 Redis 引用
 6. scripts/run-node-tests.ts - 移除 Redis 引用
 

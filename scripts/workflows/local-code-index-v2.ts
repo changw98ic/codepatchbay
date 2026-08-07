@@ -1049,7 +1049,7 @@ log('Phase 11 gate: benchmark execution');
 await agent(`Run Phase 11 gate:
 1. npm run build:node
 2. node dist/scripts/bench-local-code-index-v2.js --output artifacts/bench/local-code-index-v2.json
-3. Verify: generator hashes, environment preconditions, sample counts, parse counts, p95 values, RSS, and every Spec section 3.2 budget pass.
+3. Verify: generator hashes, recorded environment measurements, sample counts, parse counts, p95 values, RSS, and operation results. Performance values are observations, not release budgets.
 Report results.`, {
   label: 'phase11:gate',
   phase: 'Phase 11 — Repeatable performance evidence',

@@ -15,10 +15,10 @@
  */
 
 import { createHash } from "node:crypto";
-import { createRequire } from "node:module";
 
 import type { LocalCodeIndexCoverage, SourceRange } from "./contracts.js";
 import { objectId } from "./canonical-json.js";
+import { readOptionalPackageVersion } from "./optional-package-metadata.js";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -952,7 +952,6 @@ const SYMBOL_SCHEMA_HASH = createHash("sha256")
  * @param parserVersion The ast-grep version string, or null if unavailable.
  * @returns A 32-hex-char fingerprint string.
  */
-const requireForNapiVersion = createRequire(import.meta.url);
 /**
  * @ast-grep/napi package version, read once for extractor-fingerprint salting.
  * "unknown" when the optional dependency is absent. flow-2hh: references are
@@ -960,14 +959,7 @@ const requireForNapiVersion = createRequire(import.meta.url);
  * backend + version ensures a native-backend rebuild cannot reuse (or collide
  * with) a prior CLI-backend index, and that a napi version bump rebuilds.
  */
-export const NAPI_BACKEND_VERSION: string = (() => {
-  try {
-    const v = (requireForNapiVersion("@ast-grep/napi/package.json") as { version?: unknown }).version;
-    return typeof v === "string" && v.length > 0 ? v : "unknown";
-  } catch {
-    return "unknown";
-  }
-})();
+export const NAPI_BACKEND_VERSION: string = readOptionalPackageVersion("@ast-grep/napi") ?? "unknown";
 
 /**
  * Installed @ast-grep/lang-* pack versions ("name:ver,...", "absent" if the
@@ -978,12 +970,7 @@ export const LANG_PACK_VERSIONS: string = (() => {
   const names = ["@ast-grep/lang-python", "@ast-grep/lang-go", "@ast-grep/lang-rust"];
   const parts: string[] = [];
   for (const name of names) {
-    try {
-      const v = (requireForNapiVersion(`${name}/package.json`) as { version?: unknown }).version;
-      parts.push(`${name}:${typeof v === "string" && v.length > 0 ? v : "unknown"}`);
-    } catch {
-      parts.push(`${name}:absent`);
-    }
+    parts.push(`${name}:${readOptionalPackageVersion(name) ?? "absent"}`);
   }
   return parts.join(",");
 })();

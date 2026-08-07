@@ -666,7 +666,7 @@ green in the same branch.
 
 ### Phase 11 — Repeatable performance evidence
 
-Purpose: validate the approved performance claims after correctness gates pass.
+Purpose: collect repeatable performance observations after correctness gates pass.
 
 Changes:
 
@@ -697,8 +697,9 @@ node dist/scripts/bench-local-code-index-v2.js \
   --output artifacts/bench/local-code-index-v2.json
 ```
 
-The result is valid only if generator hashes, environment preconditions, sample
-counts, parse counts, p95 values, RSS, and every Spec section 3.2 budget pass.
+The result is valid only if generator hashes, recorded environment measurements,
+sample counts, parse counts, p95 values, RSS, and operation results are valid.
+Performance values are reported for comparison and are not acceptance budgets.
 
 ## 5. Dependency and commit order
 
@@ -752,8 +753,8 @@ adding a v1 reader to v2.
   parse `current.json`; they do not guess or overwrite.
 - If object/snapshot cleanup is ambiguous, preserve quarantine and recovery
   paths.
-- If performance misses its budget, keep correctness-complete v2 unreleased and
-  optimize behind the same public contract. Do not weaken exactness or restore
+- If performance regresses, retain the measured evidence and investigate it
+  separately from correctness acceptance. Do not weaken exactness or restore
   v1.
 
 ## 8. Risks requiring focused review

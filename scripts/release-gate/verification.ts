@@ -45,7 +45,6 @@ export const REQUIRED_RELEASE_GATES: readonly ReleaseGateSpec[] = Object.freeze(
   { id: "patch-integrity", command: ["npm", "run", "verify:patch-integrity"], steps: [["npm", "run", "verify:patch-integrity"]] },
   { id: "commit-size", command: ["npm", "run", "verify:commit-size"], steps: [["npm", "run", "verify:commit-size"]] },
   { id: "v2-release-scan", command: ["npm", "run", "verify:v2-release-scan"], steps: [["npm", "run", "verify:v2-release-scan"]] },
-  { id: "enterprise-gate", command: ["npm", "run", "verify:enterprise-gate"], steps: [["npm", "run", "verify:enterprise-gate"]] },
   { id: "docs-contract", command: ["npm", "run", "verify:docs-contract"], steps: [["npm", "run", "verify:docs-contract"]] },
   { id: "product-gate", command: ["npm", "run", "verify:product-gate"], steps: [["npm", "run", "verify:product-gate"]] },
   { id: "live-release-evidence", command: ["npm", "run", "verify:live-release-evidence"], steps: [["npm", "run", "verify:live-release-evidence"]] },

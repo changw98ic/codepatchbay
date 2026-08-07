@@ -1,4 +1,5 @@
 import { mkdtemp, mkdir, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import type { Dirent } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { after } from "node:test";
@@ -37,14 +38,14 @@ export function oldIso(msAgo = 300_000) {
 }
 
 /** Recursively list all files under a directory (empty array if missing). */
-export async function listFiles(dir) {
-  let entries;
+export async function listFiles(dir: string): Promise<string[]> {
+  let entries: Dirent<string>[];
   try {
     entries = await readdir(dir, { withFileTypes: true });
   } catch {
     return [];
   }
-  const out = [];
+  const out: string[] = [];
   for (const entry of entries) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) out.push(...await listFiles(full));
@@ -54,7 +55,7 @@ export async function listFiles(dir) {
 }
 
 /** Read every file under a directory as utf-8 text, in sorted path order. */
-export async function readDirFilesSorted(dir) {
+export async function readDirFilesSorted(dir: string): Promise<string[]> {
   const files = await listFiles(dir);
   return Promise.all(files.sort().map((f) => readFile(f, "utf8")));
 }

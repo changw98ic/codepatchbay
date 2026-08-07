@@ -67,10 +67,6 @@ test("package exposes stabilization verifier entrypoint", async () => {
     pkg.scripts["verify:stabilization"],
     "npm run build && npm run build:tests && node dist/scripts/verify-stabilization.js",
   );
-  assert.equal(
-    pkg.scripts["verify:enterprise-gate"],
-    "npm run build && npm run build:tests && node dist/scripts/verify-enterprise-gate.js",
-  );
   assert.equal(pkg.scripts["test:node"], "node dist-tests/scripts/run-node-tests.js");
   assert.equal(pkg.scripts["test:main"], "npm run test:node -- --main");
   assert.equal(pkg.scripts["test:integration"], "node dist-tests/scripts/run-node-tests.js --integration");

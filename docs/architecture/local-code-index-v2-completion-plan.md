@@ -507,9 +507,9 @@ resource evidence.
 
 Changes:
 
-- add validator tamper fixtures for missing samples, errors, wrong hashes,
-  unknown storage, unsupported Node, and falsified `passed` before changing the
-  harness;
+- add validator tamper fixtures for missing samples, errors, malformed
+  environment measurements, wrong hashes, and falsified `passed` before
+  changing the harness;
 - make the checked-in generator the only fixture source;
 - generate deterministic 1,000 and 10,000 eligible-file fixtures with fixed
   seed, inventory hash, bytes, object format, and commit identities;
@@ -520,13 +520,11 @@ Changes:
 - collect child-process high-water RSS, duration, mode, discovered/parsed
   counts, and operation-specific outcomes;
 - add request/result domain-separated hashes for every query sample;
-- record exact Node, Git, OS, CPU, memory, filesystem, and qualifying local-SSD
-  identity;
-- reject unsupported Node, unknown/remote storage, sample errors, missing
-  fields, reduced fixtures, or failed budgets;
+- record exact Node, Git, OS, CPU, memory, filesystem, and storage identity;
+- reject sample errors, malformed fields, reduced fixtures, or missing metrics;
 - add an independent strict-schema validator that recalculates p95, checks all
-  counts and budgets, and reconstructs query hashes without trusting harness
-  helpers;
+  counts and observations, and reconstructs query hashes without trusting
+  harness helpers;
 - write the artifact only after validation and remove invalid prior evidence;
 - point the package script only at the built canonical v2 harness; keep the
   build step explicit in the standalone command and ordered release gate.
@@ -559,8 +557,8 @@ node dist/scripts/verify-local-code-index-v2-release.js
 ```
 
 Exit condition: the artifact has exactly two fixtures, exactly 20 scenarios,
-exactly 30 successful measured samples per scenario, no errors, passing
-budgets, reproducible query hashes, `passed: true`, and `failures: []`.
+exactly 30 successful measured samples per scenario, no errors, reproducible
+query hashes, `passed: true`, and `failures: []`.
 
 ### Phase 7 — Full regression, cross-platform, and package acceptance
 

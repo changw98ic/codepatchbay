@@ -119,7 +119,7 @@ import {
   languageForFile,
   computeLanguageExtractorFingerprint,
   backendFingerprintSalt,
-  MAX_SYMBOLS_PER_FILE,
+  MAX_REFERENCES_PER_FILE,
 } from "./extract.js";
 import {
   AstGrepAdapter,
@@ -2071,8 +2071,8 @@ async function extractAndPublishObjects(
               ...result.truncation,
               {
                 limitKind: "max-references",
-                limit: MAX_SYMBOLS_PER_FILE,
-                actual: MAX_SYMBOLS_PER_FILE,
+                limit: MAX_REFERENCES_PER_FILE,
+                actual: MAX_REFERENCES_PER_FILE,
               },
             ],
           };

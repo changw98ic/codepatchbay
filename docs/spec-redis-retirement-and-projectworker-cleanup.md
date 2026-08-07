@@ -29,7 +29,7 @@
 | `server/services/hub/hub-redis-retention.ts` | 216 | Redis 数据保留策略 | **删除** |
 | `server/services/audit/hub-access-audit-redis-export.ts` | ? | Redis 审计导出 | **删除** |
 | `shared/hub-leader-fence.ts` | 12 | Redis leader fence 类型封装 | **重构**（当前全部依赖 Redis 类型） |
-| `scripts/verify-enterprise-gate.ts` | ? | 企业门禁验证 | **删除或修改** |
+| `scripts/verify-enterprise-gate.ts` | — | 已移除的空企业门禁 | **删除** |
 | **总计** | **~5200+** | | |
 
 ### 2.2 Redis 消费者（需要修改）

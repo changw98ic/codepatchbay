@@ -26,10 +26,10 @@ test("references truncation surfaces as FileObject.truncated end-to-end", async 
   const cpbRoot = path.join(root, ".cpb");
   await mkdir(sourcePath, { recursive: true });
   await mkdir(cpbRoot, { recursive: true });
-  // 10001 identifier occurrences -> capped at 10000, marked truncated.
+  // 100001 identifier occurrences -> capped at 100000, marked truncated.
   await writeFile(
     path.join(sourcePath, "big.ts"),
-    `${Array.from({ length: 10001 }, () => "a").join(";\n")};\n`,
+    `${Array.from({ length: 100001 }, () => "a").join(";\n")};\n`,
     "utf8",
   );
 

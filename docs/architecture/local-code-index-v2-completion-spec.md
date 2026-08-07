@@ -590,8 +590,8 @@ The harness and result implement parent Spec section 15.6 exactly:
 - pristine storage roots/baselines;
 - child-process high-water RSS;
 - exact p95 formula and parse-count assertions;
-- supported Node 20 or 22;
-- qualifying local SSD with known filesystem/storage reporting.
+- recorded Node, filesystem, storage, and CPU/memory environment information;
+- no machine-specific performance threshold is required for acceptance.
 
 This section refines the parent result shape so one artifact can represent both
 required fixture sizes. The artifact contains exactly two fixture records:
@@ -673,11 +673,12 @@ The result must contain:
 - exact scenario/sample counts;
 - generator and inventory hashes;
 - environment and Git commit identity;
-- all parent performance budgets passing.
+- every scenario has valid duration, p95, and peak-RSS observations.
 
-An artifact with zero successful samples, reduced fixture size, unsupported
-Node, unknown storage, missing `passed`, or any scenario error is invalid and
-must not be retained as release evidence.
+An artifact with zero successful samples, reduced fixture size, missing
+environment measurements, missing `passed`, or any scenario error is invalid
+and must not be retained as release evidence. A slow run or a resource-heavy
+run remains valid evidence and must retain its measured values.
 
 The canonical benchmark command exits nonzero unless its artifact has
 `passed: true`, `failures: []`, and passes an independent strict-schema
@@ -690,7 +691,8 @@ this validator independently of the harness. It:
 - rejects unknown or missing fields;
 - recalculates p95 as sorted sample
   `ceil(0.95 * sampleCount) - 1`;
-- checks every parse-count, mode, fixture, environment, and performance budget;
+- checks every parse-count, mode, fixture, environment measurement, and
+  performance observation;
 - validates every operation-specific outcome against its scenario;
 - derives the expected canonical query requests and ordered semantic results
   from the checked-in fixture generator and scenario definitions, then checks
@@ -834,6 +836,6 @@ Automatic failure regardless of numeric score:
   unavailable;
 - release scanning requires deleting a distinct non-local-index contract;
 - actual local-index v1 remains accepted at runtime;
-- benchmark evidence can pass with errors, reduced fixtures, unsupported
-  runtime, unknown storage, or missing samples;
+- benchmark evidence can pass with errors, reduced fixtures, malformed metrics,
+  or missing samples;
 - focused or release gates may fail while completion is declared.

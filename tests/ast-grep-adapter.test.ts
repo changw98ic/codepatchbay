@@ -74,12 +74,12 @@ test("extractReferences returns files in path-sorted order regardless of input o
 });
 
 test("extractReferences caps per-file references and marks truncatedPaths", async () => {
-  // 10001 identifier occurrences -> capped at 10000, file marked truncated.
-  const big = `${Array.from({ length: 10001 }, () => "a").join(";\n")};\n`;
+  // 100001 identifier occurrences -> capped at the 100000-reference bound.
+  const big = `${Array.from({ length: 100001 }, () => "a").join(";\n")};\n`;
   const adapter = await makeAdapterWithFiles("trunc", [["big.ts", big]]);
   const result = await adapter.extractReferences(["big.ts"]);
   assert.equal(result.files.length, 1);
-  assert.equal(result.files[0]!.symbols.length, 10_000);
+  assert.equal(result.files[0]!.symbols.length, 100_000);
   assert.equal(result.truncated, true);
   assert.ok(result.truncatedPaths?.has("big.ts"));
 });
@@ -200,5 +200,3 @@ test("Gate A: napi references match CLI identifier order across all structural l
     );
   }
 });
-
-

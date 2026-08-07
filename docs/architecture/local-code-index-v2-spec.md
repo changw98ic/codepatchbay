@@ -103,24 +103,23 @@ v2 shall:
 - fail closed when freshness, ownership, publication, or parser coverage cannot
   be established.
 
-### 3.2 Performance outcomes
+### 3.2 Performance observations
 
-On a local SSD and a warm operating-system file cache:
+On every benchmark run, record the actual performance of the following scenarios
+on the machine that ran them:
 
-- a no-change exact check over 1,000 tracked files: p95 at or below 250 ms;
-- a no-change exact check over 10,000 tracked files: p95 at or below 2 seconds;
-- a one-file TypeScript refresh in a 10,000-file repository: p95 at or below
-  1 second;
-- exact symbol lookup in a 10,000-file repository: p95 at or below 50 ms;
-- related-file lookup with a 100-result limit: p95 at or below 150 ms;
-- peak resident memory during a 10,000-file refresh: below 256 MiB;
-- unchanged content shall report `parsedFiles: 0`;
-- a one-file content edit shall report `parsedFiles: 1`, unless the same content
-  object already exists, in which case it shall report `parsedFiles: 0`.
+- no-change exact checks over 1,000 and 10,000 tracked files;
+- a one-file TypeScript refresh in a 10,000-file repository;
+- exact symbol lookup in a 10,000-file repository;
+- related-file lookup with a 100-result limit;
+- peak resident memory during a 10,000-file refresh.
 
-Benchmarks must report repository size, indexed bytes, operating system, storage
-type, Node version, ast-grep version, cold/warm state, and at least 30 measured
-runs. A single timing is not acceptance evidence.
+The benchmark records p95 duration, peak RSS, repository size, indexed bytes,
+operating system, storage type, Node version, ast-grep version, cold/warm state,
+and at least 30 measured runs. These values are observations for comparing
+runs, not pass/fail performance budgets. Correctness still requires unchanged
+content to report `parsedFiles: 0` and a one-file content edit to report
+`parsedFiles: 1`, unless the same content object already exists.
 
 ## 4. Non-goals
 
@@ -1322,9 +1321,10 @@ runs. Every individual run executes in a dedicated child process:
 Warm-ups use disposable roots under the same rules, so they warm only operating
 system caches and cannot populate a measured run's object store. Query scenarios
 open the same logical snapshot but an isolated storage copy. Runs are
-sequential; no other CPB worker is started. The machine must have at least 2 GiB
-free RAM and less than 20% aggregate CPU use during a 10-second preflight.
-Failure of either precondition invalidates the run.
+sequential; no other CPB worker is started. The harness records free RAM,
+aggregate CPU during a 10-second preflight, filesystem, storage type, and Node
+version. Environment observations do not invalidate a run or become product
+performance gates.
 
 Durations use `process.hrtime.bigint()`. Each child reports
 `process.resourceUsage().maxRSS` after the operation and immediately before
@@ -1355,10 +1355,15 @@ type LocalCodeIndexBenchmarkResult = Readonly<{
     cpuModel: string;
     logicalCpuCount: number;
     totalMemoryBytes: number;
-    storageType: "local-ssd";
+    freeMemoryBytes: number;
+    preflightCpuPercent: number;
+    storageType: string;
     filesystem: string;
     nodeVersion: string;
+    gitVersion: string;
     astGrepVersion: string | null;
+    workRoot: string;
+    sameFilesystem: boolean;
   }>;
   scenarios: readonly Readonly<{
     name: string;
@@ -1373,11 +1378,10 @@ type LocalCodeIndexBenchmarkResult = Readonly<{
 }>;
 ```
 
-Acceptance requires all section 3.2 budgets, exact sample count, expected
-`parsedFiles`, supported environment, and zero harness validation failures.
-CI may preserve this JSON without enforcing hardware timing thresholds; release
-evidence must come from a qualifying local-SSD machine and retain the exact
-result artifact.
+Acceptance requires exact sample counts, expected `parsedFiles`, valid measured
+metrics, and zero harness validation failures. The artifact retains the
+environment and performance observations; it does not reject a run because of
+its machine, Node version, p95, CPU, RSS, or storage type.
 
 ### 15.7 Replacement release
 

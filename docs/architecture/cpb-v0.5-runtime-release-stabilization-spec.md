@@ -2523,7 +2523,6 @@ operator 文档，不能再用“JSON 文件本身证明不是手写”的绝对
 | `patch-integrity` | `npm run verify:patch-integrity` |
 | `commit-size` | `npm run verify:commit-size` |
 | `v2-release-scan` | `npm run verify:v2-release-scan` |
-| `enterprise-gate` | `npm run verify:enterprise-gate` |
 | `docs-contract` | 新命令 `npm run verify:docs-contract` |
 | `product-gate` | `npm run verify:product-gate`，包含 verified-5 新报告 |
 | `live-release-evidence` | `npm run verify:live-release-evidence` |

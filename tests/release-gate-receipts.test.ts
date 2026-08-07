@@ -223,12 +223,12 @@ function receiptPath(session: ReleaseGateSession, index: number) {
   return path.join(session.sessionRoot, "gates", `${String(index + 1).padStart(4, "0")}-${gate.id}.json`);
 }
 
-test("signed release session verifies all 16 gates, receipt chain, artifacts, and external evidence", async (t) => {
+test("signed release session verifies all 15 gates, receipt chain, artifacts, and external evidence", async (t) => {
   const fixture = await completeSession(t);
   const report = await reportFor(fixture);
   assert.equal(report.ready, true);
-  assert.equal((report.requiredGateIds as unknown[]).length, 16);
-  assert.equal(Object.keys(report.gates as object).length, 16);
+  assert.equal((report.requiredGateIds as unknown[]).length, 15);
+  assert.equal(Object.keys(report.gates as object).length, 15);
 });
 
 test("release readiness rejects a tampered signed receipt", async (t) => {
