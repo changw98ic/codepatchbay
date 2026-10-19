@@ -1,3 +1,9 @@
+> **停止维护与迁移公告 / Maintenance ended and development moved**
+>
+> CodePatchBay 已停止维护，后续开发转向 [CAYW](https://github.com/changw98ic/CAYW)。CAYW 目前处于开发初期。本仓库原有代码与下方文档保留作历史参考。
+>
+> CodePatchBay is no longer maintained. Future development will continue in [CAYW](https://github.com/changw98ic/CAYW), which is in early development. The existing code and documentation below are retained for historical reference.
+
 # CodePatchBay
 
 [![npm version](https://img.shields.io/npm/v/codepatchbay.svg)](https://www.npmjs.com/package/codepatchbay) [中文](README.md)
